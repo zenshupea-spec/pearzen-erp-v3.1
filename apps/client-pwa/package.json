@@ -1,0 +1,26 @@
+{
+  "name": "pearzen-erp-client-pwa",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "next": "*",
+    "react": "*",
+    "react-dom": "*"
+  },
+  "devDependencies": {
+    "@types/react": "*",
+    "@types/react-dom": "*",
+    "autoprefixer": "*",
+    "postcss": "*",
+    "tailwindcss": "*",
+    "typescript": "*"
+  }
+}
+

@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { getSettings, updateSettings } from "../../../actions/settingsActions";
 
+export const dynamic = "force-dynamic";
+
 export default function ExecutiveSettings() {
   // Mock state for company settings - will wire to Supabase company_configs table
   const [settings, setSettings] = useState({

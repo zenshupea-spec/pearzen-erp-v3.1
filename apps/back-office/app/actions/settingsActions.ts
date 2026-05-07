@@ -1,5 +1,6 @@
 "use server";
 
+import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "../../../../packages/supabase/server";
 
 export type MdSettingsUpdateInput = {
@@ -56,12 +57,16 @@ export async function updateSettings(input: MdSettingsUpdateInput) {
       if (error) {
         return { success: false, error: error.message };
       }
+
+      revalidatePath("/executive/dashboard/settings");
     } else {
       const { error } = await supabase.from("md_settings").insert([input]);
 
       if (error) {
         return { success: false, error: error.message };
       }
+
+      revalidatePath("/executive/dashboard/settings");
     }
 
     return { success: true };

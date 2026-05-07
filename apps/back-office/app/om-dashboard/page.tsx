@@ -2,16 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import {
-  getPendingVerifications,
-  processVerification,
-} from "../actions/omActions";
+// @ts-expect-error - Ignoring missing TS declaration for this JS file
+import { getPendingVerifications, approveShift } from "../actions/omActions";
 
 export default function OmDashboardPage() {
-  const [pendingLogs, setPendingLogs] = useState([]);
+  const [pendingLogs, setPendingLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
-  const [processingIds, setProcessingIds] = useState({});
+  const [processingIds, setProcessingIds] = useState<Record<string, boolean>>({});
   const requestIdRef = useRef(0);
 
   const fetchQueue = useCallback(async () => {
@@ -26,7 +24,7 @@ export default function OmDashboardPage() {
       }
     } catch (error) {
       if (requestIdRef.current === requestId) {
-        setErrorMessage(error.message || "Failed to fetch verification queue.");
+        setErrorMessage((error as Error).message || "Failed to fetch verification queue.");
       }
     } finally {
       if (requestIdRef.current === requestId) {
@@ -39,17 +37,19 @@ export default function OmDashboardPage() {
     fetchQueue();
   }, [fetchQueue]);
 
-  const handleDecision = async (id, decision) => {
+  const handleDecision = async (id: string, decision: string) => {
     if (processingIds[id]) return;
 
     setProcessingIds((prev) => ({ ...prev, [id]: true }));
     setErrorMessage("");
 
     try {
-      await processVerification(id, decision);
+      if (decision === "Approved") {
+        await approveShift(id);
+      }
       await fetchQueue();
     } catch (error) {
-      setErrorMessage(error.message || "Error processing verification.");
+      setErrorMessage((error as Error).message || "Error processing verification.");
     } finally {
       setProcessingIds((prev) => ({ ...prev, [id]: false }));
     }

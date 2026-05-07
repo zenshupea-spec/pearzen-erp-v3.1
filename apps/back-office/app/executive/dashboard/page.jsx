@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useEffect } from "react";
 import { getExecutiveMetrics } from "../../actions/executiveActions";
 
@@ -84,7 +85,10 @@ export default function ExecutiveDashboard() {
                 Action Center
               </h2>
 
-              <button className="w-full bg-white border border-gray-200 p-5 rounded-2xl shadow-sm flex justify-between items-center hover:bg-gray-50 active:scale-[0.98] transition-all">
+              <Link
+                href="/fm-dashboard"
+                className="w-full bg-white border border-gray-200 p-5 rounded-2xl shadow-sm flex justify-between items-center hover:bg-gray-50 active:scale-[0.98] transition-all"
+              >
                 <div className="flex items-center space-x-3">
                   <div className="w-2 h-2 bg-green-500 rounded-full" />
                   <span className="font-bold text-gray-800">
@@ -92,9 +96,12 @@ export default function ExecutiveDashboard() {
                   </span>
                 </div>
                 <span className="text-gray-300 font-bold">→</span>
-              </button>
+              </Link>
 
-              <button className="w-full bg-white border border-gray-200 p-5 rounded-2xl shadow-sm flex justify-between items-center hover:bg-gray-50 active:scale-[0.98] transition-all">
+              <Link
+                href="/executive/dashboard/settings"
+                className="w-full bg-white border border-gray-200 p-5 rounded-2xl shadow-sm flex justify-between items-center hover:bg-gray-50 active:scale-[0.98] transition-all"
+              >
                 <div className="flex items-center space-x-3">
                   <div className="w-2 h-2 bg-blue-500 rounded-full" />
                   <span className="font-bold text-gray-800">
@@ -102,7 +109,7 @@ export default function ExecutiveDashboard() {
                   </span>
                 </div>
                 <span className="text-gray-300 font-bold">→</span>
-              </button>
+              </Link>
             </div>
           </>
         )}

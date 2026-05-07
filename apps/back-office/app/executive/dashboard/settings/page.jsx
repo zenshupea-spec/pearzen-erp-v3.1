@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { getSettings, updateSettings } from "../../../actions/settingsActions";
 
 export default function ExecutiveSettings() {
   // Mock state for company settings - will wire to Supabase company_configs table
@@ -12,19 +13,58 @@ export default function ExecutiveSettings() {
   });
 
   const [isSaving, setIsSaving] = useState(false);
+  const [isLoadingSettings, setIsLoadingSettings] = useState(true);
+  const [statusMessage, setStatusMessage] = useState("");
+  const [statusType, setStatusType] = useState("");
+
+  useEffect(() => {
+    async function loadSettings() {
+      setIsLoadingSettings(true);
+      setStatusMessage("");
+
+      const response = await getSettings();
+      if (response.success && response.data) {
+        setSettings((prev) => ({
+          ...prev,
+          hospitalityModule: Boolean(response.data.hospitality_module),
+          advancedGeofencing: Boolean(response.data.advanced_geofencing),
+          autoApprovePayroll: Boolean(response.data.auto_approve_payroll),
+        }));
+      } else if (!response.success) {
+        setStatusType("error");
+        setStatusMessage(response.error || "Failed to load settings from database.");
+      }
+
+      setIsLoadingSettings(false);
+    }
+
+    loadSettings();
+  }, []);
 
   const handleToggle = (key) => {
     setSettings((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const handleSave = (e) => {
+  const handleSave = async (e) => {
     e.preventDefault();
     setIsSaving(true);
-    // Simulate API delay
-    setTimeout(() => {
-      setIsSaving(false);
-      alert("Settings securely saved to vault.");
-    }, 800);
+    setStatusMessage("");
+
+    const response = await updateSettings({
+      hospitality_module: settings.hospitalityModule,
+      advanced_geofencing: settings.advancedGeofencing,
+      auto_approve_payroll: settings.autoApprovePayroll,
+    });
+
+    if (response.success) {
+      setStatusType("success");
+      setStatusMessage("Settings securely saved to vault.");
+    } else {
+      setStatusType("error");
+      setStatusMessage(response.error || "Failed to save configuration.");
+    }
+
+    setIsSaving(false);
   };
 
   return (
@@ -41,7 +81,24 @@ export default function ExecutiveSettings() {
           </div>
         </div>
 
-        <form onSubmit={handleSave} className="space-y-6">
+        {statusMessage ? (
+          <div
+            className={`p-3 rounded-xl text-sm font-medium ${
+              statusType === "success"
+                ? "bg-green-50 border border-green-200 text-green-700"
+                : "bg-red-50 border border-red-200 text-red-700"
+            }`}
+          >
+            {statusMessage}
+          </div>
+        ) : null}
+
+        {isLoadingSettings ? (
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 text-gray-500 font-semibold text-center">
+            Loading current settings...
+          </div>
+        ) : (
+          <form onSubmit={handleSave} className="space-y-6">
           {/* General Profile */}
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 space-y-4">
             <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider">
@@ -146,7 +203,8 @@ export default function ExecutiveSettings() {
           >
             {isSaving ? "Encrypting & Saving..." : "Save Configuration"}
           </button>
-        </form>
+          </form>
+        )}
       </div>
     </div>
   );

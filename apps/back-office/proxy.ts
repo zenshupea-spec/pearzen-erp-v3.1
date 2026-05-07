@@ -86,6 +86,7 @@ export async function proxy(req: NextRequest) {
   const role = roleError ? null : (roleData as { role?: unknown })?.role;
   const roleString = typeof role === "string" ? role : null;
   const expectedPortal = portalPathForRole(roleString);
+  const isGodMode = roleString === "MD" || roleString === "OD";
 
   const { pathname } = req.nextUrl;
 
@@ -129,6 +130,11 @@ export async function proxy(req: NextRequest) {
     pathname === "/fm-dashboard" ||
     pathname.startsWith("/fm-dashboard/")
   ) {
+    // "God Mode" users can access any protected dashboard route.
+    if (isGodMode) {
+      return response;
+    }
+
     if (!expectedPortal || pathname !== expectedPortal) {
       if (expectedPortal) {
         const redirectResponse = NextResponse.redirect(

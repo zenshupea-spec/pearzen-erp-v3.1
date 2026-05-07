@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "../../../../packages/supabase/server";
 
 export type MdSettingsUpdateInput = {
+  trading_name: string;
   hospitality_module: boolean;
   advanced_geofencing: boolean;
   auto_approve_payroll: boolean;

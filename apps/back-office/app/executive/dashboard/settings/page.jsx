@@ -28,6 +28,7 @@ export default function ExecutiveSettings() {
       if (response.success && response.data) {
         setSettings((prev) => ({
           ...prev,
+          companyName: response.data.trading_name || prev.companyName,
           hospitalityModule: Boolean(response.data.hospitality_module),
           advancedGeofencing: Boolean(response.data.advanced_geofencing),
           autoApprovePayroll: Boolean(response.data.auto_approve_payroll),
@@ -53,6 +54,7 @@ export default function ExecutiveSettings() {
     setStatusMessage("");
 
     const response = await updateSettings({
+      trading_name: settings.companyName,
       hospitality_module: settings.hospitalityModule,
       advanced_geofencing: settings.advancedGeofencing,
       auto_approve_payroll: settings.autoApprovePayroll,

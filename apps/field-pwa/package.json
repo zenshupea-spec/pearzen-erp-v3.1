@@ -1,5 +1,5 @@
 {
-  "name": "pearzen-erp-field-pwa",
+  "name": "field-pwa",
   "private": true,
   "version": "0.0.0",
   "scripts": {
@@ -11,9 +11,9 @@
   },
   "dependencies": {
     "idb": "^8.0.3",
-    "next": "*",
-    "react": "*",
-    "react-dom": "*"
+    "next": "^16.2.5",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
   },
   "devDependencies": {
     "@types/react": "*",

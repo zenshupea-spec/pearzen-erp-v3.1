@@ -1,6 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
-
 import { createSupabaseRouteClient } from "../../../../../../packages/supabase/route";
 
 type EmpLoginBody = {
@@ -17,26 +16,18 @@ export async function POST(request: Request) {
   const empNumber = String(body.empNumber ?? "").trim().toUpperCase();
 
   if (!empNumber) {
-    return NextResponse.json(
-      { error: "EMP_NUMBER_REQUIRED" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "EMP_NUMBER_REQUIRED" }, { status: 400 });
   }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!serviceRoleKey) {
-    return NextResponse.json(
-      { error: "SUPABASE_SERVICE_ROLE_KEY_MISSING" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "SUPABASE_SERVICE_ROLE_KEY_MISSING" }, { status: 500 });
   }
 
-  // Build a response object up front so Supabase can write session cookies.
   const response = NextResponse.json({ ok: true });
   const supabase = createSupabaseRouteClient(nextRequest, response);
 
-  // 1) Validate EMP number exists in your `users` table and is ACTIVE.
   const lookupClient = createClient(supabaseUrl, serviceRoleKey);
 
   const { data: userRow, error: lookupError } = await lookupClient
@@ -46,8 +37,9 @@ export async function POST(request: Request) {
     .maybeSingle();
 
   if (lookupError) {
+    console.error("CRITICAL SUPABASE ERROR:", lookupError);
     return NextResponse.json(
-      { error: "EMP_LOOKUP_FAILED" },
+      { error: "EMP_LOOKUP_FAILED", details: lookupError.message },
       { status: 500 }
     );
   }
@@ -61,11 +53,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "EMP_NOT_ACTIVE" }, { status: 403 });
   }
 
-  // 2) Derive Supabase Auth credentials.
-  // Guard provides only EMP number; we derive the dummy email server-side.
   const derivedEmail = `${empNumber}@pearzen.local`;
-
-  // Password is derived using server-managed env config.
   const derivedPassword =
     process.env.FIELD_PWA_AUTH_PASSWORD ??
     (process.env.FIELD_PWA_AUTH_PASSWORD_TEMPLATE
@@ -73,23 +61,17 @@ export async function POST(request: Request) {
       : null);
 
   if (!derivedPassword) {
-    return NextResponse.json(
-      { error: "FIELD_PWA_AUTH_PASSWORD_NOT_CONFIGURED" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "FIELD_PWA_AUTH_PASSWORD_NOT_CONFIGURED" }, { status: 500 });
   }
 
-  // 3) Sign in to Supabase Auth using the service-role key.
-  // We then copy the session into the cookie-writing client so the browser
-  // receives an authenticated session.
   const serviceRoleAuthClient = createClient(supabaseUrl, serviceRoleKey);
-  const { data: signInData, error: signInError } =
-    await serviceRoleAuthClient.auth.signInWithPassword({
-      email: derivedEmail,
-      password: derivedPassword,
-    });
+  const { data: signInData, error: signInError } = await serviceRoleAuthClient.auth.signInWithPassword({
+    email: derivedEmail,
+    password: derivedPassword,
+  });
 
   if (signInError || !signInData?.session) {
+    console.error("AUTH SIGN IN ERROR:", signInError);
     return NextResponse.json(
       { error: signInError?.message ?? "SUPABASE_SIGN_IN_FAILED" },
       { status: 401 }
@@ -102,12 +84,9 @@ export async function POST(request: Request) {
   });
 
   if (setSessionError) {
-    return NextResponse.json(
-      { error: setSessionError.message },
-      { status: 500 }
-    );
+    console.error("SESSION WRITE ERROR:", setSessionError);
+    return NextResponse.json({ error: setSessionError.message }, { status: 500 });
   }
 
   return response;
 }
-

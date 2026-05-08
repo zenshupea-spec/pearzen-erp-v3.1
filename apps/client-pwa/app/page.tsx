@@ -1,6 +1,6 @@
-export default function Page() {
-  return (
-    <main className="p-6" aria-label="Scaffold placeholder" />
-  );
-}
+import { redirect } from "next/navigation";
 
+export default function Home() {
+  // Instantly push traffic from the root directly to the dashboard
+  redirect("/dashboard");
+}

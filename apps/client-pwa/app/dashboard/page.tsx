@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-export default function ClientDashboard() {
+export default function DashboardPage() {
   // Mock data for the client's site metrics - will be wired to Supabase later
   const [metrics] = useState({
     activeGuards: 12,
@@ -14,6 +14,7 @@ export default function ClientDashboard() {
   return (
     <div className="min-h-screen bg-gray-50 p-4 md:p-8">
       <div className="max-w-md mx-auto space-y-6">
+        
         {/* Header */}
         <div className="bg-gray-900 text-white p-6 rounded-3xl shadow-xl flex justify-between items-center border border-gray-800">
           <div>
@@ -26,6 +27,17 @@ export default function ClientDashboard() {
             C
           </div>
         </div>
+
+        {/* EMERGENCY ACTION BUTTON */}
+        <a
+          href="tel:+94112345678" 
+          className="w-full bg-red-500 hover:bg-red-600 active:scale-95 transition-all text-white p-4 rounded-2xl flex items-center justify-center font-bold text-sm tracking-wider shadow-md border border-red-400"
+        >
+          <svg className="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+          </svg>
+          EMERGENCY: CALL DUTY MANAGER
+        </a>
 
         {/* Metrics Grid */}
         <div className="grid grid-cols-2 gap-4">

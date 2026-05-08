@@ -1,5 +1,3 @@
-@reference "tailwindcss";
-@config "../tailwind.config.js";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -12,12 +10,14 @@
   }
 
   body {
-    @apply bg-zinc-950 text-zinc-100 antialiased;
+    background-color: #09090b; /* zinc-950 */
+    color: #f4f4f5; /* zinc-100 */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 }
 
 @layer utilities {
-  /* Glassmorphism utilities (translucent background + backdrop blur + subtle border). */
   .glass-panel {
     background: var(--glass-bg);
     border: 1px solid var(--glass-border);
@@ -38,7 +38,6 @@
     height: 1px;
   }
 
-  /* Enforce ALL CAPS on text inputs (matches DB trigger expectations). */
   .all-caps-input {
     text-transform: uppercase;
   }
@@ -52,4 +51,3 @@
     text-transform: uppercase;
   }
 }
-

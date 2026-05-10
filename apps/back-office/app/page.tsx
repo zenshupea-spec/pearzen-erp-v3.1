@@ -1,7 +1,5 @@
 import type { Metadata } from "next";
-
 import { createSupabaseServerClient } from "../../../packages/supabase/server";
-
 import GoogleSignInButton from "./GoogleSignInButton";
 
 export const metadata: Metadata = {
@@ -10,23 +8,25 @@ export const metadata: Metadata = {
 };
 
 export default async function Page(props: {
-  searchParams?: { [key: string]: string | string[] | undefined };
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   const supabase = await createSupabaseServerClient();
   const { data } = await supabase.auth.getUser();
   const user = data.user;
 
+  // Next.js 15 Fix: Await the searchParams promise before reading
+  const searchParams = await props.searchParams;
   const error =
-    typeof props.searchParams?.error === "string"
-      ? props.searchParams?.error
+    typeof searchParams?.error === "string"
+      ? searchParams?.error
       : undefined;
 
   return (
     <main className="min-h-screen flex items-center justify-center p-6">
       <div className="w-full max-w-md glass-panel rounded-2xl p-6">
         <div className="mb-6">
-          <div className="text-lg font-semibold">PEARZEN ERP</div>
-          <div className="text-sm text-zinc-300">Back Office</div>
+          <div className="text-lg font-semibold uppercase tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-emerald-600">PEARZEN ERP</div>
+          <div className="text-sm text-zinc-300 uppercase tracking-wide">Back Office</div>
         </div>
 
         {user ? (
@@ -39,7 +39,7 @@ export default async function Page(props: {
         ) : (
           <>
             {error ? (
-              <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">
+              <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200 uppercase font-bold">
                 {error === "oauth_failed"
                   ? "Google login failed. Please try again."
                   : "Login error. Please try again."}
@@ -53,4 +53,3 @@ export default async function Page(props: {
     </main>
   );
 }
-

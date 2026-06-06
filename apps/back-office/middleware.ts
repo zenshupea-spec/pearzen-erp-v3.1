@@ -147,10 +147,16 @@ async function runAuthProxy(
       return stampTenant(response, tenantSlug);
     }
 
-    return stampTenant(
-      NextResponse.redirect(new URL("/login/head-office", req.url)),
-      tenantSlug,
-    );
+    const loginUrl = new URL("/login/head-office", req.url);
+    const returnPath = `${pathname}${req.nextUrl.search}`;
+    if (returnPath.startsWith("/") && !returnPath.startsWith("//")) {
+      loginUrl.searchParams.set("next", returnPath);
+    }
+    if (tenantSlug) {
+      loginUrl.searchParams.set("tenant", tenantSlug);
+    }
+
+    return stampTenant(NextResponse.redirect(loginUrl), tenantSlug);
   }
 
   const user = userData.user;

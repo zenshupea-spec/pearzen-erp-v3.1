@@ -21,14 +21,20 @@ const LOGIN_ERRORS: Record<string, string> = {
     "This tenant account is suspended. Contact Pearzen support or your account manager.",
 };
 
+function safeNextPath(raw: string | null | undefined): string {
+  if (!raw?.startsWith("/") || raw.startsWith("//")) return "/";
+  return raw;
+}
+
 export default async function HeadOfficeLoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string; role?: string }>;
+  searchParams: Promise<{ error?: string; role?: string; next?: string }>;
 }) {
   const params = await searchParams;
   const authError = params.error ? LOGIN_ERRORS[params.error] ?? null : null;
   const authErrorRole = params.role ?? null;
+  const oauthNext = safeNextPath(params.next);
 
   const supabase = await createSupabaseServerClient();
   const {
@@ -61,7 +67,7 @@ export default async function HeadOfficeLoginPage({
       companyName={tenant?.name ?? null}
       authError={resolvedAuthError}
       authErrorDetail={authErrorDetail}
-      oauthNext="/"
+      oauthNext={oauthNext}
       signInDisabled={tenantSuspended}
     />
   );

@@ -4,7 +4,15 @@ module.exports = {
   content: ["./app/**/*.{js,ts,jsx,tsx,mdx}", "./components/**/*.{js,ts,jsx,tsx,mdx}"],
   theme: {
     extend: {
-      // Glass-related tokens are defined in CSS variables in `app/globals.css`.
+      keyframes: {
+        "connection-beam": {
+          "0%, 100%": { opacity: "0.4", filter: "blur(0px) brightness(0.95)" },
+          "50%": { opacity: "1", filter: "blur(0.2px) brightness(1.15)" },
+        },
+      },
+      animation: {
+        "connection-beam": "connection-beam 1.8s ease-in-out infinite",
+      },
     },
   },
   plugins: [],

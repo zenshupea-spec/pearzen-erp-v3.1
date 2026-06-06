@@ -6,14 +6,36 @@
     "apps/*"
   ],
   "scripts": {
-    "dev": "turbo dev",
+    "dev:kill": "sh -c 'for port in 3000 3001 3002 3003 3004 3005; do lsof -ti:$port 2>/dev/null | xargs kill -9 2>/dev/null; done; rm -rf apps/*/.next'",
+    "dev": "npm run dev:kill && turbo dev",
     "build": "turbo build",
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
-    "clean": "turbo clean"
+    "clean": "turbo clean",
+    "db:invoice-setup": "node scripts/run-invoice-setup.mjs",
+    "db:sync-invoice-md": "node scripts/sync-invoice-md-settings.mjs",
+    "db:md-settings-sql": "node scripts/print-md-settings-migration.mjs",
+    "db:apply-md-settings": "node scripts/apply-md-settings-migration.mjs",
+    "db:apply-epf-columns": "node scripts/apply-employees-personal-columns.mjs",
+    "provision:guard-portal": "node scripts/provision-guard-portal-auth.mjs",
+    "seed:hr-employees": "node scripts/seed-hr-dummy-employees.mjs",
+    "wire:backend": "node scripts/wire-backend-env.mjs",
+    "check:backend": "node scripts/check-backend.mjs",
+    "seed:scale-demo": "node scripts/seed-scale-demo.mjs",
+    "seed:scale-demo:purge": "SEED_PURGE=1 node scripts/seed-scale-demo.mjs --purge",
+    "seed:sync-demo": "node scripts/seed-sync-demo.mjs",
+    "db:reset-baseline": "node scripts/reset-tenant-baseline.mjs",
+    "db:provision-tenant": "node scripts/provision-tenant.mjs",
+    "db:apply-tenant-host": "node scripts/apply-tenant-host-migration.mjs",
+    "db:sm-portal-sql": "node scripts/apply-sm-portal-sql.mjs",
+    "setup:tenant-production": "node scripts/setup-tenant-production.mjs",
+    "setup:local-tenant-hosts": "sh scripts/local-tenant-hosts.sh",
+    "setup": "npm run wire:backend && npm run check:backend"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.4",
+    "pg": "^8.21.0",
+    "postgres": "^3.4.9",
     "turbo": "*",
     "typescript": "*"
   },

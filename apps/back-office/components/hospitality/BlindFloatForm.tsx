@@ -9,7 +9,7 @@ export default function BlindFloatForm({ expectedTotal, onComplete }: { expected
   const [variance, setVariance] = useState<number>(0);
 
   const handleSubmit = async (e: React.FormEvent) => {
-  preventDefault();
+    e.preventDefault();
     
     const calcVariance = declaredCash - expectedTotal;
     setVariance(calcVariance);

@@ -1,3 +1,5 @@
+@import url("https://fonts.cdnfonts.com/css/university-roman-std");
+
 @reference "tailwindcss";
 @config "../tailwind.config.js";
 @tailwind base;
@@ -17,6 +19,15 @@
 }
 
 @layer utilities {
+  .font-university-roman {
+    font-family: "University Roman Std", "Times New Roman", Georgia, serif;
+    font-weight: 400;
+    letter-spacing: 0.1em;
+    -webkit-text-stroke: 0.35px currentColor;
+    paint-order: stroke fill;
+    text-shadow: 0 0 0.5px currentColor;
+  }
+
   /* Glassmorphism utilities (translucent background + backdrop blur + subtle border). */
   .glass-panel {
     background: var(--glass-bg);

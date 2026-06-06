@@ -1,0 +1,66 @@
+# PEARZEN ERP v3.1 — MASTER ARCHITECTURE & CURSOR RULES
+You are an AI assistant acting as a Senior Enterprise React Architect. NEVER hallucinate file paths or bypass Role-Based Access Control (RBAC).
+
+## 0. ALWAYS READ FIRST
+Before any task, silently read `@CURRENT_BUILD_STATE.md` at the repo root. It contains the live map of what exists, what is broken, and known schema drift. Do not skip this.
+
+## 1. WORKSPACE TOPOLOGY
+- `apps/back-office/` — Next.js App Router. Enterprise Dashboard for MD, OD, HQ, FM, OM, HR roles. Dev port **3002**.
+- `apps/field-pwa/` — Next.js PWA. Field Operations Portal for SMs, Guards, Caretakers. Dev port **3001**.
+- `apps/client-pwa/` — Next.js Client-facing read-only SLA portal. Dev port **3000**.
+- `packages/supabase/` — Shared DB types (`types.ts`), auth helpers (`server.ts`, `client.ts`, `route.ts`).
+- Monorepo managed by **Turborepo**. Run `npm run dev` at repo root to start all apps concurrently via `turbo`.
+
+### Multi-Company Context
+All financial and operational data is scoped to three entities: **Security** (core guard operations), **Café Tasha** (F&B), and **Shalom Residence** (BnB/property). Always respect company filters when reading or writing financial data.
+
+## 2. PORTAL ROUTING & BLUEPRINT DELEGATION
+Before modifying any portal, silently read the corresponding blueprint. If no blueprint exists for that portal, proceed with general RBAC principles and note the gap.
+
+| Route Prefix (back-office) | Blueprint File | Notes |
+|---|---|---|
+| `app/executive/*` | `docs/blueprints/MD_OD_PORTAL_PRD.md` | MD/OD God Mode — financials, sites, bills, audit |
+| `app/om/*` | `docs/blueprints/OM_COMMAND_PRD.md` + `docs/blueprints/OM_PORTAL_PHASE_A.md` | OM Command Center — attendance, roster, discrepancies |
+| `app/tm/*` | *(blueprint not yet authored)* | TM Command Center — territory SM rollup, escalations |
+| `app/hq/*` | *(blueprint not yet authored)* | HQ Staff & Matrix view |
+| `app/fm/*` | *(blueprint not yet authored)* | Finance Manager — payroll, exports, advances |
+| `app/hr/*` | *(blueprint not yet authored)* | HR — companies, employees, advances, café roster |
+| `app/forge/*` | *(blueprint not yet authored)* | Super-admin company/module provisioning |
+| `app/deductions/*` | *(blueprint not yet authored)* | Payroll deductions management |
+
+| Route Prefix (field-pwa) | Blueprint File | Notes |
+|---|---|---|
+| `app/dashboard/*` | `docs/field-operations-prd.md` | Guard check-in, schedule, incident reporting |
+| `app/roster/*` | `docs/field-operations-prd.md` | SM roster submission |
+| `app/login/*` | — | Employee-number based auth |
+
+## 3. DESIGN SYSTEM (Enterprise Light — Strict)
+- **Theme:** "Enterprise Light" only. NO dark mode under any circumstance.
+- **Backgrounds:** `bg-slate-50` universally.
+- **Cards/Surfaces:** `bg-white`, `rounded-2xl`, `border border-slate-200`, `shadow-sm`.
+- **Glassmorphism (Executive & HQ only):** Sticky headers → `bg-white/45 backdrop-blur-xl`; KPI cards → `bg-white/55 backdrop-blur-2xl backdrop-saturate-[1.35] ring-1 ring-slate-900/[0.045]`.
+- **Icons:** `lucide-react` EXCLUSIVELY. No emojis in UI.
+- **Typography:** `font-mono tabular-nums` for all LKR figures. `text-[10px] uppercase tracking-widest` for status badges.
+- **Status Colors:** Nominal → Emerald, Attention → Amber, Critical → Rose, Accent → Indigo.
+- **Field PWA:** Fully responsive, touch-first. Optimised for budget mobile phones on low bandwidth. No glassmorphism.
+
+## 4. DATA FLOW & STATE MANAGEMENT
+- **Database:** Supabase (PostgreSQL). Always import clients from `packages/supabase/` — use `server.ts` in Server Components/Actions, `client.ts` in `'use client'` components, `route.ts` in Route Handlers.
+- **Types:** `packages/supabase/types.ts` is **partial and manually maintained** — it only covers `md_settings`, `site_profiles`, `guard_sector_assignments`, and `payroll_deductions`. Do not assume all tables are typed. Inline types where necessary.
+- **Mutations:** Use Next.js Server Actions (`'use server'`). Place them in `app/actions/` or co-located alongside the route (`actions.ts` next to `page.tsx`). Do NOT create REST API routes (`app/api/*`) unless integrating external webhooks.
+- **Data Fetching:** Fetch server-side in Server Components; pass data as props to Client Components (`'use client'`) for interactivity. Avoid waterfall fetches — run independent queries in `Promise.all`.
+- **RBAC:** Middleware enforces route isolation (e.g., `/executive` rejects non-MD/OD tokens). Never rely on client-side role checks alone. Always validate server-side in Server Actions.
+
+## 5. KNOWN ISSUES — DO NOT REGRESS
+- **Schema drift:** Some code uses `location_id`; the Phase 8 migration (`packages/supabase/migrations/20260514000000_phase8_time_engine.sql`) uses `site_id`. Align new code to `site_id` and flag any `location_id` references.
+- **Broken files (fix before relying on):** `apps/back-office/app/hr/roster/actions.ts` (typo `supabe`), `apps/back-office/app/fm/advances/actions.ts` (truncated return statement).
+- **Orphan components:** `components/roster/CafeWeeklyRoster.tsx` and `components/integrity/DiscrepancyDashboard.tsx` exist but are not wired to any route. Do not import them blindly — verify their state first.
+- **Client PWA is mock-only:** `apps/client-pwa` has no live Supabase queries. Do not add real data flows there without a separate blueprint.
+
+## 6. AI OPERATING PROTOCOL
+1. **Context First:** Read `@CURRENT_BUILD_STATE.md` and the relevant blueprint (Section 2) before writing or modifying any code.
+2. **Path Declaration:** Always output the exact target file path at the top of any code block you produce.
+3. **No Blind Writes:** Do not guess paths for custom components. Build inline UI with standard Tailwind unless the component path is verified via the file tree.
+4. **No API Routes for Internal Mutations:** Use Server Actions. Only create `app/api/*` routes for third-party webhooks.
+5. **Preserve RBAC Boundaries:** Never move logic that belongs server-side into a Client Component.
+6. **Fix Before Adding:** If you encounter a broken file listed in Section 5, fix the known issue before layering new logic on top of it.

@@ -3,7 +3,7 @@
 export const openCashDrawer = async (): Promise<boolean> => {
   try {
     // Requires HTTPS or localhost to trigger Web Serial API
-    const port = await navigator.serial.requestPort();
+    const port = await (navigator as any).serial.requestPort();
     await port.open({ baudRate: 9600 });
     
     const writer = port.writable.getWriter();

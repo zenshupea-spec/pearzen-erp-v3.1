@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Larger base type for field SM users (middle-aged, mobile-first). */
+html {
+  font-size: 118.75%; /* 19px at default 16px — scales all rem-based Tailwind sizes */
+}
+
+body {
+  background-color: #cbd5e1; /* slate-300 */
+  color: #0f172a; /* slate-900 */
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}

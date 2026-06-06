@@ -1,0 +1,68 @@
+import { redirect } from "next/navigation";
+
+import { getCompanyLogoUrl } from "../../../../../packages/supabase/company-branding";
+import { createSupabaseServerClient } from "../../../../../packages/supabase/server";
+import {
+  authenticatedLandingPath,
+  fetchBackOfficeUserProfile,
+} from "../../../lib/hr-portal-access";
+import { resolveTenantCompanyFromRequest } from "../../../lib/tenant-context";
+
+import LoginShell from "../LoginShell";
+
+const LOGIN_ERRORS: Record<string, string> = {
+  executive_denied:
+    "Executive Desk requires MD or OD rank on your MNR record. Ask the Managing Director to set your work email and rank.",
+  geofence_denied: "Access denied — you must be on the office network for this portal.",
+  no_portal_rank:
+    "Signed in, but no portal rank is set on your employee record. Ask HR to set your work email and rank.",
+  oauth_failed: "Google sign-in failed. Please try again.",
+  tenant_suspended:
+    "This tenant account is suspended. Contact Pearzen support or your account manager.",
+};
+
+export default async function HeadOfficeLoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string; role?: string }>;
+}) {
+  const params = await searchParams;
+  const authError = params.error ? LOGIN_ERRORS[params.error] ?? null : null;
+  const authErrorRole = params.role ?? null;
+
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (user) {
+    const profile = await fetchBackOfficeUserProfile(supabase, user);
+    const landing = authenticatedLandingPath(profile.role);
+    if (landing !== "/login/head-office") redirect(landing);
+  }
+
+  const tenant = await resolveTenantCompanyFromRequest();
+  const logoUrl = await getCompanyLogoUrl(tenant?.id);
+  const tenantSuspended = tenant?.isSuspended ?? false;
+  const resolvedAuthError =
+    tenantSuspended && !authError ? LOGIN_ERRORS.tenant_suspended : authError;
+
+  const authErrorDetail =
+    params.error === "executive_denied" && authErrorRole
+      ? `Your current MNR rank: ${authErrorRole}`
+      : params.error === "no_portal_rank" && user?.email
+        ? `Signed in as ${user.email}`
+        : null;
+
+  return (
+    <LoginShell
+      variant="head-office"
+      logoUrl={logoUrl}
+      companyName={tenant?.name ?? null}
+      authError={resolvedAuthError}
+      authErrorDetail={authErrorDetail}
+      oauthNext="/"
+      signInDisabled={tenantSuspended}
+    />
+  );
+}

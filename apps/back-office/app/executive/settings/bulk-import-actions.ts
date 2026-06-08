@@ -19,7 +19,10 @@ import {
   type BulkImportSummary,
 } from '../../../lib/bulk-data-import';
 import { buildBulkDataWorkbook } from '../../../lib/bulk-data-workbook';
-import { encrypt, decrypt } from '../../../lib/encryption';
+import {
+  decryptEmployeePiiRecord,
+  encryptEmployeePiiRecord,
+} from '../../../lib/employee-pii';
 import { clampGeofenceRadiusM } from '../../../lib/site-geofence';
 import { fetchBackOfficeUserProfile } from '../../../lib/hr-portal-access';
 import { getRankPayMatrix } from './rank-matrix-actions';
@@ -43,48 +46,37 @@ async function requireManagingDirector() {
 }
 
 function mapEmployeeExportRow(emp: Record<string, unknown>) {
-  let nic = '';
-  let phone = '';
-  try {
-    nic = emp.nic ? decrypt(String(emp.nic)) : '';
-  } catch {
-    nic = '';
-  }
-  try {
-    phone = emp.phone ? decrypt(String(emp.phone)) : '';
-  } catch {
-    phone = '';
-  }
+  const decrypted = decryptEmployeePiiRecord(emp);
 
   return {
-    employee_id: emp.id ?? '',
-    emp_number: emp.emp_number ?? '',
-    full_name: emp.full_name ?? '',
-    nic,
-    passport_no: emp.passport_no ?? '',
-    epf_no: emp.epf_no ?? emp.epf_num ?? '',
-    phone,
-    dob: emp.dob ?? '',
-    gender: emp.gender ?? '',
-    nationality: emp.nationality ?? '',
-    religion: emp.religion ?? '',
-    home_address: emp.home_address ?? '',
-    role: emp.role ?? '',
-    group: emp.group ?? '',
-    rank: emp.rank ?? '',
-    site: emp.site ?? '',
-    date_joined: emp.date_joined ?? '',
-    status: emp.status ?? '',
-    base_salary: emp.base_salary ?? emp.basic_salary ?? '',
-    salary_type: emp.salary_type ?? '',
-    epf_yn: emp.epf_yn ?? false,
-    bank_code: emp.bank_code ?? '',
-    bank_name: emp.bank_name ?? '',
-    branch_code: emp.branch_code ?? '',
-    account_number: emp.account_number ?? '',
-    mod_expiry: emp.mod_expiry ?? '',
-    police_expiry: emp.police_expiry ?? '',
-    maternity_leave: emp.maternity_leave ?? false,
+    employee_id: decrypted.id ?? '',
+    emp_number: decrypted.emp_number ?? '',
+    full_name: decrypted.full_name ?? '',
+    nic: decrypted.nic ?? '',
+    passport_no: decrypted.passport_no ?? '',
+    epf_no: decrypted.epf_no ?? decrypted.epf_num ?? '',
+    phone: decrypted.phone ?? '',
+    dob: decrypted.dob ?? '',
+    gender: decrypted.gender ?? '',
+    nationality: decrypted.nationality ?? '',
+    religion: decrypted.religion ?? '',
+    home_address: decrypted.home_address ?? '',
+    role: decrypted.role ?? '',
+    group: decrypted.group ?? '',
+    rank: decrypted.rank ?? '',
+    site: decrypted.site ?? '',
+    date_joined: decrypted.date_joined ?? '',
+    status: decrypted.status ?? '',
+    base_salary: decrypted.base_salary ?? decrypted.basic_salary ?? '',
+    salary_type: decrypted.salary_type ?? '',
+    epf_yn: decrypted.epf_yn ?? false,
+    bank_code: decrypted.bank_code ?? '',
+    bank_name: decrypted.bank_name ?? '',
+    branch_code: decrypted.branch_code ?? '',
+    account_number: decrypted.account_number ?? '',
+    mod_expiry: decrypted.mod_expiry ?? '',
+    police_expiry: decrypted.police_expiry ?? '',
+    maternity_leave: decrypted.maternity_leave ?? false,
   };
 }
 
@@ -210,12 +202,12 @@ async function applyBulkImport(
     const mapped = mapEmployeeImportRow(row);
     const { employeeId, empNumber, payload } = mapped;
 
-    const record: Record<string, unknown> = {
+    const record = encryptEmployeePiiRecord({
       ...payload,
       company_id: companyId,
-      nic: payload.nicPlain ? encrypt(payload.nicPlain) : null,
-      phone: payload.phonePlain ? encrypt(payload.phonePlain) : null,
-    };
+      nic: payload.nicPlain || null,
+      phone: payload.phonePlain || null,
+    });
     delete record.nicPlain;
     delete record.phonePlain;
 

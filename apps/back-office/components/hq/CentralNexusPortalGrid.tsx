@@ -58,6 +58,7 @@ function canSeePortal(
   if (href === '/om') return role === 'OM' || role === 'HR' || role === 'FM';
   if (href === '/hr/mnr') return role === 'HR' || role === 'FM' || role === 'OM';
   if (href === '/fm') return role === 'FM' || role === 'HR';
+  if (href === '/hq/audit') return role === 'HR' || role === 'FM' || role === 'OM';
   if (href.startsWith('/hq/')) return role === 'HR' || role === 'FM';
   if (href === '/invoice-desk') return isGodMode;
   return false;

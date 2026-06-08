@@ -9,11 +9,14 @@ import {
   normalizeTenantSlug,
   parseTenantSlugFromHostname,
 } from "./lib/tenant-host";
+import { isPublicCustomerMenuHost } from "./lib/customer-menu-host";
+import { canAccessHqHub } from "./lib/hq-hub";
 import {
   authenticatedLandingPath,
   fetchBackOfficeUserProfile,
   portalPathForRole,
 } from "./lib/hr-portal-access";
+import { resolveCafeEmployeeForUser } from "./lib/cafe-front-auth";
 import { verifyOfficeLocation } from "./utils/geofence";
 
 const AUTH_MATCHER = [
@@ -23,6 +26,8 @@ const AUTH_MATCHER = [
   "/hq",
   "/hq/:path*",
   "/executive/:path*",
+  "/cafe-front",
+  "/cafe-front/:path*",
   "/om",
   "/om/:path*",
   "/tm/:path*",
@@ -112,10 +117,12 @@ async function runAuthProxy(
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   if (!supabaseUrl || !supabaseAnonKey) {
-    return stampTenant(
-      NextResponse.next({ request: { headers: requestHeaders } }),
-      tenantSlug,
-    );
+    const loginPath = pathname.startsWith("/cafe-front")
+      ? "/login/cafe-front"
+      : "/login/head-office";
+    const loginUrl = new URL(loginPath, req.url);
+    loginUrl.searchParams.set("error", "auth_unconfigured");
+    return stampTenant(NextResponse.redirect(loginUrl), tenantSlug);
   }
 
   let cookiesToSet: Array<{
@@ -147,7 +154,10 @@ async function runAuthProxy(
       return stampTenant(response, tenantSlug);
     }
 
-    const loginUrl = new URL("/login/head-office", req.url);
+    const loginPath = pathname.startsWith("/cafe-front")
+      ? "/login/cafe-front"
+      : "/login/head-office";
+    const loginUrl = new URL(loginPath, req.url);
     const returnPath = `${pathname}${req.nextUrl.search}`;
     if (returnPath.startsWith("/") && !returnPath.startsWith("//")) {
       loginUrl.searchParams.set("next", returnPath);
@@ -193,6 +203,21 @@ async function runAuthProxy(
         ),
       );
     }
+    if (!canAccessHqHub(roleString)) {
+      const fallback =
+        expectedPortal ??
+        (authenticatedLandingPath(roleString) !== "/login/head-office"
+          ? authenticatedLandingPath(roleString)
+          : null);
+      if (fallback) {
+        return applyCookies(NextResponse.redirect(new URL(fallback, req.url)));
+      }
+      return applyCookies(
+        NextResponse.redirect(
+          new URL("/login/head-office?error=no_portal_rank", req.url),
+        ),
+      );
+    }
     return stampTenant(response, tenantSlug);
   }
 
@@ -213,15 +238,31 @@ async function runAuthProxy(
     return stampTenant(response, tenantSlug);
   }
 
+  if (pathname === "/cafe-front" || pathname.startsWith("/cafe-front/")) {
+    const cafeEmployee = await resolveCafeEmployeeForUser(user);
+    if (!cafeEmployee) {
+      const deniedUrl = new URL("/login/cafe-front", req.url);
+      deniedUrl.searchParams.set("error", "cafe_denied");
+      return applyCookies(NextResponse.redirect(deniedUrl));
+    }
+    return stampTenant(response, tenantSlug);
+  }
+
   if (pathname === "/executive" || pathname.startsWith("/executive/")) {
     const isExecutive = roleString === "MD" || roleString === "OD";
+    const isCafeBackoffice =
+      pathname === "/executive/cafe" || pathname.startsWith("/executive/cafe/");
     if (!isExecutive) {
-      const deniedUrl = new URL("/login/head-office", req.url);
-      deniedUrl.searchParams.set("error", "executive_denied");
-      if (roleString) {
-        deniedUrl.searchParams.set("role", roleString);
+      const cafeAllowed =
+        isCafeBackoffice && (roleString === "HR" || roleString === "FM");
+      if (!cafeAllowed) {
+        const deniedUrl = new URL("/login/head-office", req.url);
+        deniedUrl.searchParams.set("error", "executive_denied");
+        if (roleString) {
+          deniedUrl.searchParams.set("role", roleString);
+        }
+        return applyCookies(NextResponse.redirect(deniedUrl));
       }
-      return applyCookies(NextResponse.redirect(deniedUrl));
     }
     return stampTenant(response, tenantSlug);
   }
@@ -244,10 +285,18 @@ async function runAuthProxy(
       return stampTenant(response, tenantSlug);
     }
 
+    const tmSharedOmPath =
+      roleString === "TM" &&
+      (pathname === "/om/sites/location" ||
+        pathname.startsWith("/om/sites/location/") ||
+        pathname === "/om/guard-cards" ||
+        pathname.startsWith("/om/guard-cards/"));
+
     const inOwnPortal =
       expectedPortal &&
       (pathname === expectedPortal ||
-        pathname.startsWith(`${expectedPortal}/`));
+        pathname.startsWith(`${expectedPortal}/`) ||
+        tmSharedOmPath);
 
     if (!expectedPortal || !inOwnPortal) {
       if (expectedPortal) {
@@ -295,6 +344,20 @@ async function runAuthProxy(
 }
 
 export async function middleware(req: NextRequest) {
+  const hostname = req.headers.get("host")?.split(":")[0] ?? "";
+
+  // Public menu domain must never serve ERP / staff portals (misconfigured DNS guard).
+  if (isPublicCustomerMenuHost(hostname)) {
+    return NextResponse.json(
+      {
+        error: "public_menu_host_only",
+        message:
+          "This hostname is reserved for the public customer menu. Point tasha.lk at the customer menu app, not back-office.",
+      },
+      { status: 403 },
+    );
+  }
+
   const queryTenant = normalizeTenantSlug(req.nextUrl.searchParams.get("tenant"));
   if (queryTenant) {
     const clean = req.nextUrl.clone();

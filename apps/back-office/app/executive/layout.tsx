@@ -3,10 +3,10 @@
 import type { ReactNode } from 'react';
 import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { LOGO_STORAGE_KEY } from '../../../../packages/supabase/branding-constants';
 import { createSupabaseBrowserClient } from '../../../../packages/supabase/client';
-import { HQ_HUB_PATH } from '../../lib/hq-hub';
+import { HQ_HUB_PATH, isCafeHubView } from '../../lib/hq-hub';
 import {
   fetchExecutiveSessionProfile,
   type ExecutiveSessionProfile,
@@ -360,6 +360,7 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
 
 export default function ExecutiveLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sessionProfile, setSessionProfile] = useState<ExecutiveSessionProfile | null>(null);
 
@@ -367,12 +368,16 @@ export default function ExecutiveLayout({ children }: { children: ReactNode }) {
     fetchExecutiveSessionProfile().then(setSessionProfile);
   }, []);
 
+  const fromHub = searchParams.get('hub') === '1';
   const isExecutiveRank =
     sessionProfile?.rank === 'MD' || sessionProfile?.rank === 'OD';
   const operationsOnly =
     pathname.startsWith('/executive/operations') && sessionProfile !== null && !isExecutiveRank;
+  const cafeHubView =
+    pathname.startsWith('/executive/cafe') &&
+    (fromHub || (sessionProfile !== null && isCafeHubView(sessionProfile.rank, false)));
 
-  if (operationsOnly) {
+  if (operationsOnly || cafeHubView) {
     return (
       <div className="min-h-screen w-full overflow-x-hidden bg-slate-50 text-slate-900 antialiased">
         <main className="min-h-screen">{children}</main>
@@ -389,9 +394,7 @@ export default function ExecutiveLayout({ children }: { children: ReactNode }) {
       </div>
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto">
-        {children}
-      </main>
+      <main className="flex-1 overflow-y-auto">{children}</main>
 
     </div>
   );

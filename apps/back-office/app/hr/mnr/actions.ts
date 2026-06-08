@@ -18,7 +18,7 @@ import {
   isHrPortalEditor,
   normalizePortalRole,
 } from "../../../lib/hr-portal-access";
-import { encrypt } from "../../../lib/encryption";
+import { encryptEmployeePiiRecord } from "../../../lib/employee-pii";
 import { getRankPayMatrix } from "../../executive/settings/rank-matrix-actions";
 import type { MnrAccess, MnrSectionKey, SectionEditMeta } from "./mnr-action-types";
 
@@ -95,7 +95,7 @@ export async function saveEmployeeSection(
 
   const { data: existing, error: fetchError } = await supabase
     .from("employees")
-    .select("section_edits, rank, email")
+    .select("section_edits, rank, email, group")
     .eq("id", employeeId)
     .single();
 
@@ -119,33 +119,42 @@ export async function saveEmployeeSection(
   let patch: Record<string, unknown> = { section_edits: sectionEdits };
 
   if (section === "personal") {
+    const groupRaw = String(existing?.group ?? "").trim().toUpperCase();
+    const isHeadOffice = groupRaw === "HEAD_OFFICE";
     const emailRaw =
       typeof payload.email === "string" ? payload.email.trim().toLowerCase() : "";
+    const emailToSave = isHeadOffice
+      ? emailRaw || null
+      : (existing?.email as string | null | undefined) ?? null;
     patch = {
       ...patch,
-      full_name: payload.full_name,
-      email: emailRaw || null,
-      passport_no: payload.passport_no || null,
-      epf_no: payload.epf_no || null,
-      dob: payload.dob || null,
-      gender: payload.gender || null,
-      nationality: payload.nationality || null,
-      religion: payload.religion || null,
-      home_address: payload.home_address || null,
-      nic: encrypt(String(payload.nic ?? "")),
-      phone: encrypt(String(payload.phone ?? "")),
+      ...encryptEmployeePiiRecord({
+        full_name: payload.full_name,
+        email: emailToSave,
+        passport_no: payload.passport_no || null,
+        epf_no: payload.epf_no || null,
+        dob: payload.dob || null,
+        gender: payload.gender || null,
+        nationality: payload.nationality || null,
+        religion: payload.religion || null,
+        home_address: payload.home_address || null,
+        nic: payload.nic ?? "",
+        phone: payload.phone ?? "",
+      }),
     };
   } else if (section === "employment") {
     const rankRaw = typeof payload.rank === "string" ? payload.rank.trim() : "";
     const rank = rankRaw ? rankRaw.toUpperCase() : null;
     if (rank) {
       const matrix = await getRankPayMatrix();
+      const groupRaw =
+        typeof payload.group === "string" ? payload.group.trim().toUpperCase() : "";
       const group =
-        typeof payload.group === "string" ? payload.group.trim() : "";
-      if (group) {
+        groupRaw === "GUARD_FIELD" ? "GUARD" : groupRaw;
+      if (groupRaw) {
         if (!isRankValidForCorporateGroup(matrix, group, rank)) {
           throw new Error(
-            `Rank "${rank}" is not valid for corporate group "${group}". Check MD Settings → Rank Pay Matrix.`,
+            `Rank "${rank}" is not valid for corporate group "${groupRaw}". Check MD Settings → Rank Pay Matrix.`,
           );
         }
       } else if (!isRankInMatrix(matrix, rank)) {
@@ -154,26 +163,34 @@ export async function saveEmployeeSection(
         );
       }
     }
+    const savedGroup =
+      typeof payload.group === "string" && payload.group.trim()
+        ? (groupRaw === "GUARD_FIELD" ? "GUARD" : groupRaw)
+        : null;
     patch = {
       ...patch,
       rank,
-      role: payload.role || null,
-      group: payload.group || null,
+      group: savedGroup,
       site: payload.site || null,
       date_joined: payload.date_joined || null,
       status: payload.status || null,
       base_salary: payload.base_salary != null && payload.base_salary !== ""
         ? Number(payload.base_salary)
         : null,
-      salary_type: payload.salary_type || null,
+      salary_type:
+        typeof payload.salary_type === "string" && payload.salary_type.trim()
+          ? payload.salary_type.trim().toUpperCase()
+          : null,
       epf_yn: payload.epf_yn === true || payload.epf_yn === "true",
     };
   } else if (section === "bank") {
     patch = {
       ...patch,
-      bank_code: payload.bank_code || null,
-      branch_code: payload.branch_code || null,
-      account_number: payload.account_number || null,
+      ...encryptEmployeePiiRecord({
+        bank_code: payload.bank_code || null,
+        branch_code: payload.branch_code || null,
+        account_number: payload.account_number || null,
+      }),
     };
   } else if (section === "vetting") {
     patch = {

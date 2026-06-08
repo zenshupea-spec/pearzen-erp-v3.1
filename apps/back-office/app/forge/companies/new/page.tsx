@@ -8,6 +8,10 @@ import { createNewTenant, fetchDefaultOdEmail } from './actions';
 
 export default function OnboardTenantPage() {
   const router = useRouter();
+
+  useEffect(() => {
+    router.replace('/forge');
+  }, [router]);
   const [formData, setFormData] = useState({
     companyName: '',
     slug: '',

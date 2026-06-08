@@ -1,11 +1,16 @@
 'use client';
 
-import React, { Suspense, useState, useMemo, useRef, useCallback } from 'react';
+import React, { Suspense, useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
-import OmCommandShell from '../../om/components/OmCommandShell';
+import OmCommandShellLayout from '../../om/components/OmCommandShellLayout';
 import OmSubnav from '../../om/components/OmSubnav';
 import GuardCardsTab from '../../om/guard-cards/GuardCardsTab';
-import { tabFromSearchParam } from '../../om/lib/command-center-tabs';
+import SiteAllocationTab from '../../om/components/SiteAllocationTab';
+import { getLiveFieldRadar } from '../../om/actions/field-radar';
+import {
+  COMMAND_CENTER_REFRESH_MS,
+  tabFromSearchParam,
+} from '../../om/lib/command-center-tabs';
 import {
   Activity,
   AlertTriangle,
@@ -139,9 +144,9 @@ interface FieldIncident {
   ack: TriRoleAck;
 }
 
-// ─── Sector Data ──────────────────────────────────────────────────────────────
+// ─── Sector Data (executive preview only — OM portal uses live/empty data) ─────
 
-const SECTORS: SectorCard[] = [
+const EXECUTIVE_PREVIEW_SECTORS: SectorCard[] = [
   {
     id: 'S01',
     name: 'Colombo North',
@@ -406,10 +411,10 @@ function getSectorVacancyStats(sectors: SectorCard[]) {
   return { totalVacancies, siteCount: siteCodes.size };
 }
 
-function getDateViewSectors(dateView: DateView): SectorCard[] {
-  if (dateView === 'today') return SECTORS;
+function getDateViewSectors(sectors: SectorCard[], dateView: DateView): SectorCard[] {
+  if (dateView === 'today') return sectors;
 
-  return SECTORS.map((s): SectorCard => {
+  return sectors.map((s): SectorCard => {
     if (dateView === 'yesterday') {
       const extra = Math.round(s.guardsTotal * 0.05);
       return {
@@ -902,19 +907,27 @@ function IncidentCalendar({
 
 // ─── Incident Command Queue ───────────────────────────────────────────────────
 
-function IncidentCommandQueue({ sectionRef }: { sectionRef?: React.RefObject<HTMLElement | null> }) {
-  const CURRENT_ROLE: RoleKey = 'MD';
-  const today = new Date('2026-05-28T00:00:00Z');
+function IncidentCommandQueue({
+  sectionRef,
+  seedIncidents = INITIAL_FIELD_INCIDENTS,
+  currentRole = 'MD',
+}: {
+  sectionRef?: React.RefObject<HTMLElement | null>;
+  seedIncidents?: FieldIncident[];
+  currentRole?: RoleKey;
+}) {
+  const CURRENT_ROLE = currentRole;
+  const today = new Date();
 
-  const [incidents, setIncidents] = useState<FieldIncident[]>(INITIAL_FIELD_INCIDENTS);
+  const [incidents, setIncidents] = useState<FieldIncident[]>(seedIncidents);
 
-  const defaultDate = INITIAL_FIELD_INCIDENTS.length > 0
-    ? new Date(INITIAL_FIELD_INCIDENTS[0].timestamp.slice(0, 10) + 'T00:00:00Z')
+  const defaultDate = seedIncidents.length > 0
+    ? new Date(seedIncidents[0].timestamp.slice(0, 10) + 'T00:00:00Z')
     : today;
 
   const [selectedDate, setSelectedDate] = useState<Date>(defaultDate);
   const [calendarOpen, setCalendarOpen] = useState(false);
-  const [selectedId,   setSelectedId]   = useState<string>(INITIAL_FIELD_INCIDENTS[0]?.id ?? '');
+  const [selectedId,   setSelectedId]   = useState<string>(seedIncidents[0]?.id ?? '');
 
   const handleAcknowledge = (id: string) => {
     setIncidents((prev) =>
@@ -2235,9 +2248,37 @@ function OperationsPageInner({ portal = 'executive' }: { portal?: OperationsPort
   const [tacticalDeficitsOpen, setTacticalDeficitsOpen] = useState(false);
   const [vacanciesOpen, setVacanciesOpen] = useState(false);
   const [coverageOpen, setCoverageOpen] = useState(false);
+  const [radarLoading, setRadarLoading] = useState(true);
+  const [liveSectors, setLiveSectors] = useState<SectorCard[]>([]);
+  const [liveIncidents, setLiveIncidents] = useState<FieldIncident[]>([]);
+  const [radarError, setRadarError] = useState<string | undefined>();
   const incidentQueueRef = useRef<HTMLElement>(null);
 
-  const activeSectors = getDateViewSectors(dateView);
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async (silent: boolean) => {
+      if (!silent) setRadarLoading(true);
+      const radar = await getLiveFieldRadar();
+      if (cancelled) return;
+      setLiveSectors(radar.sectors as SectorCard[]);
+      setLiveIncidents(radar.fieldIncidents as FieldIncident[]);
+      setRadarError(radar.error);
+      if (!silent) setRadarLoading(false);
+    };
+
+    run(false);
+    const intervalId = window.setInterval(() => {
+      void run(true);
+    }, COMMAND_CENTER_REFRESH_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
+  const activeSectors = getDateViewSectors(liveSectors, dateView);
   const summary = getSummary(activeSectors);
   const vacancyStats = getSectorVacancyStats(activeSectors);
 
@@ -2278,6 +2319,23 @@ function OperationsPageInner({ portal = 'executive' }: { portal?: OperationsPort
     <>
         {activeTab === 'tactical' && (
           <div className="space-y-8">
+            {radarError ? (
+              <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
+                {radarError}
+              </p>
+            ) : null}
+            {radarLoading ? (
+              <div className="space-y-4 animate-pulse">
+                <div className="h-20 rounded-2xl bg-slate-100" />
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <div key={i} className="h-28 rounded-2xl bg-slate-100" />
+                  ))}
+                </div>
+                <div className="h-64 rounded-2xl bg-slate-100" />
+              </div>
+            ) : (
+            <>
             <div className="flex flex-col gap-4 rounded-2xl border border-slate-200/80 bg-white/80 p-4 shadow-sm backdrop-blur-xl sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Field snapshot</p>
@@ -2366,19 +2424,38 @@ function OperationsPageInner({ portal = 'executive' }: { portal?: OperationsPort
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {activeSectors
-                  .slice()
-                  .sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status])
-                  .map((sector) => (
-                    <SectorTile key={sector.id} sector={sector} dateView={dateView} />
-                  ))}
-              </div>
+              {activeSectors.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-slate-200/80 bg-white/60 px-6 py-16 text-center">
+                  <MapPin className="mx-auto h-8 w-8 text-slate-300" />
+                  <p className="mt-3 text-sm font-bold text-slate-700">No sector activity yet</p>
+                  <p className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-slate-500">
+                    Live vacancies, coverage, and deficits appear once sector managers, sites, and
+                    guards are seeded in MNR and site assignments.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {activeSectors
+                    .slice()
+                    .sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status])
+                    .map((sector) => (
+                      <SectorTile key={sector.id} sector={sector} dateView={dateView} />
+                    ))}
+                </div>
+              )}
             </section>
 
-            <IncidentCommandQueue sectionRef={incidentQueueRef} />
+            <IncidentCommandQueue
+              sectionRef={incidentQueueRef}
+              seedIncidents={liveIncidents}
+              currentRole={omPortal ? 'OM' : 'MD'}
+            />
+            </>
+            )}
           </div>
         )}
+
+        {activeTab === 'site-allocation' && <SiteAllocationTab />}
 
         {activeTab === 'guard-cards' && <GuardCardsTab />}
     </>
@@ -2388,7 +2465,7 @@ function OperationsPageInner({ portal = 'executive' }: { portal?: OperationsPort
     return (
       <>
         {modals}
-        <OmCommandShell
+        <OmCommandShellLayout
           title="Tactical dashboard"
           subtitle={`Live field radar · ${dateLabel} · ${timeLabel}`}
           icon={Activity}
@@ -2398,7 +2475,7 @@ function OperationsPageInner({ portal = 'executive' }: { portal?: OperationsPort
           headerExtra={dateChip}
         >
           <div className="space-y-8">{tabContent}</div>
-        </OmCommandShell>
+        </OmCommandShellLayout>
       </>
     );
   }

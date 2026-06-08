@@ -3,7 +3,10 @@
 import { revalidatePath } from 'next/cache';
 
 import { uploadEmployeeIdPhotoFile } from '../../../../packages/supabase/employee-id-photo';
-import { createSupabaseServerClient } from '../../../../packages/supabase/server';
+import {
+  createSupabaseServerClient,
+  createSupabaseServiceClient,
+} from '../../../../packages/supabase/server';
 import { assertMnrEditAllowed } from '../../lib/executive-rank-guard';
 import {
   fetchBackOfficeUserProfile,
@@ -62,8 +65,9 @@ export async function uploadEmployeeIdPhoto(
   }
 
   try {
-    const supabase = await assertCanUploadIdPhoto(employeeId);
-    const result = await uploadEmployeeIdPhotoFile(supabase, employeeId, file);
+    await assertCanUploadIdPhoto(employeeId);
+    const service = createSupabaseServiceClient();
+    const result = await uploadEmployeeIdPhotoFile(service, employeeId, file);
     if (result.success) {
       revalidatePath('/hr/mnr');
       revalidatePath('/hr');

@@ -1,9 +1,17 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+import {
+  CLASSIC_VENTURE_COMPANY_ID,
+  CVS_COMPANY_ID,
+  CVS_TENANT_SLUG,
+} from './company-ids';
 import { getTenantSlugFromRequest, resolveTenantCompany } from './tenant-context';
 
-/** Primary tenant for Classic Venture field ops (seed + OM verification). */
-export const CLASSIC_VENTURE_COMPANY_ID = '9111dd55-9935-4e26-a630-60e36dcb57b5';
+export {
+  CLASSIC_VENTURE_COMPANY_ID,
+  CVS_COMPANY_ID,
+  CVS_TENANT_SLUG,
+} from './company-ids';
 
 const HQ_MASTER_COMPANY_ID = '00000000-0000-0000-0000-000000000000';
 
@@ -67,13 +75,12 @@ export async function resolveCompanyIdForSession(
     if (emp?.company_id) return emp.company_id as string;
   }
 
-  const { data: classic } = await supabase
+  const { data: cvs } = await supabase
     .from('companies')
     .select('id')
-    .ilike('name', '%CLASSIC%')
-    .limit(1)
+    .eq('slug', CVS_TENANT_SLUG)
     .maybeSingle();
-  if (classic?.id) return classic.id as string;
+  if (cvs?.id) return cvs.id as string;
 
-  return CLASSIC_VENTURE_COMPANY_ID;
+  return CVS_COMPANY_ID;
 }

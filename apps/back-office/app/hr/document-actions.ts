@@ -7,7 +7,10 @@ import {
   uploadEmployeeHrDocumentFile,
   type HrDocumentType,
 } from '../../../../packages/supabase/employee-hr-documents';
-import { createSupabaseServerClient } from '../../../../packages/supabase/server';
+import {
+  createSupabaseServerClient,
+  createSupabaseServiceClient,
+} from '../../../../packages/supabase/server';
 import {
   assertHrPortalEditor,
   fetchBackOfficeUserProfile,
@@ -45,9 +48,10 @@ export async function uploadEmployeeHrDocument(
   }
 
   try {
-    const supabase = await requireHrEditor();
+    await requireHrEditor();
+    const service = createSupabaseServiceClient();
     const result = await uploadEmployeeHrDocumentFile(
-      supabase,
+      service,
       employeeId,
       docType as HrDocumentType,
       file,

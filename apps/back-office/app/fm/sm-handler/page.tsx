@@ -1,9 +1,15 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import FmSubnav from '../components/FmSubnav';
 import { usePathname } from 'next/navigation';
-import OmCommandShell from '../../om/components/OmCommandShell';
+import OmCommandShellLayout from '../../om/components/OmCommandShellLayout';
+import {
+  getSmVisitCapsData,
+  type SmVisitCapsProfile,
+  type SmVisitCapsSiteRow,
+  type SmVisitLogEntry,
+} from './actions';
 import {
   Building2,
   Check,
@@ -31,124 +37,22 @@ function DarkGlassCard({
   );
 }
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-interface SMProfileEntry {
-  smId: string;
-  name: string;
-  empNo: string;
-  phone: string;
-  sector: string;
-}
-
-interface SMSiteFreqRow {
-  siteId: string;
-  siteName: string;
-  client: string;
-  location: string;
-  dailyCap: number;
-  weeklyCap: number;
-  monthlyTarget: number;
-}
-
-interface SMVisitEntry {
-  siteId: string;
-  smId: string;
-  date: string;
-}
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const SM_ROSTER: SMProfileEntry[] = [
-  { smId: 'SM-001', name: 'Dissanayake K.P.', empNo: 'EMP-SM-001', phone: '+94 77 123 4567', sector: 'Western Province A' },
-  { smId: 'SM-002', name: 'Perera R.S.',      empNo: 'EMP-SM-002', phone: '+94 71 234 5678', sector: 'Western Province B' },
-  { smId: 'SM-003', name: 'Fernando L.M.',    empNo: 'EMP-SM-003', phone: '+94 76 345 6789', sector: 'Central Province'   },
-  { smId: 'SM-004', name: 'Jayasuriya N.T.',  empNo: 'EMP-SM-004', phone: '+94 75 456 7890', sector: 'Southern Province'  },
-  { smId: 'SM-005', name: 'Gunasekara C.B.',  empNo: 'EMP-SM-005', phone: '+94 77 567 8901', sector: 'North Western'      },
-  { smId: 'SM-006', name: 'Bandara H.W.',     empNo: 'EMP-SM-006', phone: '+94 72 678 9012', sector: ''                   },
-];
-
-function smSiteCount(smId: string, siteFreqs: Record<string, SMSiteFreqRow[]>): number {
+function smSiteCount(smId: string, siteFreqs: Record<string, SmVisitCapsSiteRow[]>): number {
   return (siteFreqs[smId] ?? []).length;
 }
 
 function sortSmRosterBySiteCount(
-  roster: SMProfileEntry[],
-  siteFreqs: Record<string, SMSiteFreqRow[]>,
-): SMProfileEntry[] {
+  roster: SmVisitCapsProfile[],
+  siteFreqs: Record<string, SmVisitCapsSiteRow[]>,
+): SmVisitCapsProfile[] {
   return [...roster].sort((a, b) => {
     const bySites = smSiteCount(b.smId, siteFreqs) - smSiteCount(a.smId, siteFreqs);
     if (bySites !== 0) return bySites;
     return a.name.localeCompare(b.name, 'en', { sensitivity: 'base' });
   });
 }
-
-const INITIAL_SITE_FREQS: Record<string, SMSiteFreqRow[]> = {
-  'SM-001': [
-    { siteId: 's1-1', siteName: 'Lanka Hospitals',        client: 'Lanka Hospitals PLC',       location: 'Narahenpita, Colombo 05',      dailyCap: 1, weeklyCap: 1, monthlyTarget: 4 },
-    { siteId: 's1-2', siteName: 'Commercial Bank HQ',     client: 'Commercial Bank of Ceylon', location: 'Union Place, Colombo 02',      dailyCap: 1, weeklyCap: 1, monthlyTarget: 2 },
-    { siteId: 's1-3', siteName: 'Arpico Supercentre',     client: 'Arpico Retail Ltd',         location: 'Borella, Colombo 08',          dailyCap: 1, weeklyCap: 2, monthlyTarget: 4 },
-    { siteId: 's1-4', siteName: 'BOC Borella Branch',     client: 'Bank of Ceylon',            location: 'Borella, Colombo 08',          dailyCap: 1, weeklyCap: 1, monthlyTarget: 2 },
-    { siteId: 's1-5', siteName: 'Dialog Axiata HQ',       client: 'Dialog Axiata PLC',         location: 'Thimbirigasyaya Rd, Col 05',   dailyCap: 1, weeklyCap: 1, monthlyTarget: 3 },
-  ],
-  'SM-002': [
-    { siteId: 's2-1', siteName: 'Shalom Residence',       client: 'Shalom Pvt Ltd',            location: 'Bambalapitiya, Colombo 04',    dailyCap: 1, weeklyCap: 1, monthlyTarget: 3 },
-    { siteId: 's2-2', siteName: 'Keells Super Dehiwala',  client: 'John Keells Holdings',      location: 'Dehiwala',                     dailyCap: 1, weeklyCap: 2, monthlyTarget: 4 },
-    { siteId: 's2-3', siteName: 'Malay Embassy',          client: 'Ministry of Foreign Affairs', location: 'Jawatte Rd, Colombo 05',    dailyCap: 1, weeklyCap: 1, monthlyTarget: 2 },
-    { siteId: 's2-4', siteName: 'NDB Parkway',            client: 'NDB Bank PLC',              location: 'Park St, Colombo 02',          dailyCap: 1, weeklyCap: 1, monthlyTarget: 2 },
-  ],
-  'SM-003': [
-    { siteId: 's3-1', siteName: 'HNB Kandy City Centre',  client: 'HNB PLC',                   location: 'Kandy City Centre, Kandy',     dailyCap: 1, weeklyCap: 1, monthlyTarget: 2 },
-    { siteId: 's3-2', siteName: 'Cargills Kandy',         client: 'Cargills Ceylon Ltd',       location: 'Kandy',                        dailyCap: 1, weeklyCap: 2, monthlyTarget: 4 },
-    { siteId: 's3-3', siteName: 'Kandy Teaching Hospital', client: 'Govt. Health Services',    location: 'Kandy',                        dailyCap: 1, weeklyCap: 1, monthlyTarget: 3 },
-  ],
-  'SM-004': [
-    { siteId: 's4-1', siteName: 'Galle Fort Hotel',       client: 'Galle Fort Hotel Ltd',      location: 'Galle Fort, Galle',           dailyCap: 1, weeklyCap: 1, monthlyTarget: 2 },
-    { siteId: 's4-2', siteName: 'Peoples Bank Matara',    client: 'Peoples Bank',              location: 'Matara',                       dailyCap: 1, weeklyCap: 1, monthlyTarget: 2 },
-    { siteId: 's4-3', siteName: 'Hambantota Port',        client: 'HIPG',                      location: 'Hambantota',                   dailyCap: 1, weeklyCap: 2, monthlyTarget: 4 },
-    { siteId: 's4-4', siteName: 'Ruhuna University',      client: 'Univ. of Ruhuna',           location: 'Matara',                       dailyCap: 1, weeklyCap: 1, monthlyTarget: 2 },
-  ],
-  'SM-005': [
-    { siteId: 's5-1', siteName: 'Kurunegala Teaching Hospital', client: 'Govt. Health Services', location: 'Kurunegala',                dailyCap: 1, weeklyCap: 1, monthlyTarget: 2 },
-    { siteId: 's5-2', siteName: 'Browns Kurunegala',      client: 'Browns & Company',          location: 'Kurunegala',                   dailyCap: 1, weeklyCap: 1, monthlyTarget: 2 },
-    { siteId: 's5-3', siteName: 'NTB Puttalam',           client: 'Nations Trust Bank',        location: 'Puttalam',                     dailyCap: 1, weeklyCap: 1, monthlyTarget: 2 },
-  ],
-  'SM-006': [],
-};
-
-const DEFAULT_SM_ID = sortSmRosterBySiteCount(SM_ROSTER, INITIAL_SITE_FREQS)[0]?.smId ?? '';
-
-function buildMockVisitLogs(): SMVisitEntry[] {
-  const today = new Date();
-  function daysAgo(n: number): string {
-    const d = new Date(today);
-    d.setDate(today.getDate() - n);
-    return d.toISOString().split('T')[0];
-  }
-  const logs: SMVisitEntry[] = [];
-  [0,7,14,21,28,35,42,49,56].forEach(d => { logs.push({ siteId:'s1-1', smId:'SM-001', date:daysAgo(d) }); });
-  [3,17,31,45,59].forEach(d => { logs.push({ siteId:'s1-2', smId:'SM-001', date:daysAgo(d) }); });
-  [1,8,15,22,29,36,43,50,57].forEach(d => { logs.push({ siteId:'s1-3', smId:'SM-001', date:daysAgo(d) }); });
-  [5,19,33,47].forEach(d => { logs.push({ siteId:'s1-4', smId:'SM-001', date:daysAgo(d) }); });
-  [2,12,22,32,42,52].forEach(d => { logs.push({ siteId:'s1-5', smId:'SM-001', date:daysAgo(d) }); });
-  [2,9,16,23,30,37,44,51,58].forEach(d => { logs.push({ siteId:'s2-1', smId:'SM-002', date:daysAgo(d) }); });
-  [5,12,26,40,54].forEach(d => { logs.push({ siteId:'s2-2', smId:'SM-002', date:daysAgo(d) }); });
-  [10,28,46].forEach(d => { logs.push({ siteId:'s2-3', smId:'SM-002', date:daysAgo(d) }); });
-  [8,30,55].forEach(d => { logs.push({ siteId:'s2-4', smId:'SM-002', date:daysAgo(d) }); });
-  [4,18,40,58].forEach(d => { logs.push({ siteId:'s3-1', smId:'SM-003', date:daysAgo(d) }); });
-  [6,20,34].forEach(d => { logs.push({ siteId:'s3-2', smId:'SM-003', date:daysAgo(d) }); });
-  [15,45].forEach(d => { logs.push({ siteId:'s3-3', smId:'SM-003', date:daysAgo(d) }); });
-  [1,15,29,43,57].forEach(d => { logs.push({ siteId:'s4-1', smId:'SM-004', date:daysAgo(d) }); });
-  [3,17,31,45,59].forEach(d => { logs.push({ siteId:'s4-2', smId:'SM-004', date:daysAgo(d) }); });
-  [2,9,16,23,30,37,44,51].forEach(d => { logs.push({ siteId:'s4-3', smId:'SM-004', date:daysAgo(d) }); });
-  [6,20,34,50].forEach(d => { logs.push({ siteId:'s4-4', smId:'SM-004', date:daysAgo(d) }); });
-  [5,21,40,58].forEach(d => { logs.push({ siteId:'s5-1', smId:'SM-005', date:daysAgo(d) }); });
-  [11,30,52].forEach(d => { logs.push({ siteId:'s5-2', smId:'SM-005', date:daysAgo(d) }); });
-  [18,42].forEach(d => { logs.push({ siteId:'s5-3', smId:'SM-005', date:daysAgo(d) }); });
-  return logs;
-}
-
-const MOCK_VISIT_LOGS = buildMockVisitLogs();
 
 /** Matches FM Settings → Sector Manager per-visit rate preview default */
 const DEFAULT_SM_VISIT_RATE_LKR = 2000;
@@ -161,15 +65,20 @@ function monthlyVisitPay(monthlyTarget: number, rate = DEFAULT_SM_VISIT_RATE_LKR
   return monthlyTarget * rate;
 }
 
-function totalMonthlyVisitPay(sites: SMSiteFreqRow[], rate = DEFAULT_SM_VISIT_RATE_LKR): number {
+function totalMonthlyVisitPay(sites: SmVisitCapsSiteRow[], rate = DEFAULT_SM_VISIT_RATE_LKR): number {
   return sites.reduce((sum, s) => sum + monthlyVisitPay(s.monthlyTarget, rate), 0);
 }
 
-function totalMonthlyVisits(sites: SMSiteFreqRow[]): number {
+function totalMonthlyVisits(sites: SmVisitCapsSiteRow[]): number {
   return sites.reduce((sum, s) => sum + s.monthlyTarget, 0);
 }
 
-function computeVisitScore(smId: string, windowDays: number, sites: SMSiteFreqRow[], allLogs: SMVisitEntry[]): number {
+function computeVisitScore(
+  smId: string,
+  windowDays: number,
+  sites: SmVisitCapsSiteRow[],
+  allLogs: SmVisitLogEntry[],
+): number {
   if (sites.length === 0) return 0;
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - windowDays);
@@ -200,36 +109,42 @@ function ScorePill({ label, score }: { label: string; score: number }) {
 // ─── SM Handler Tab ───────────────────────────────────────────────────────────
 
 function SMHandlerTab({
+  roster,
+  visitLogs,
   selectedSmId,
   setSelectedSmId,
   siteFreqs,
   setSiteFreqs,
   drafts,
   setDrafts,
+  loadError,
 }: {
+  roster: SmVisitCapsProfile[];
+  visitLogs: SmVisitLogEntry[];
   selectedSmId: string;
   setSelectedSmId: React.Dispatch<React.SetStateAction<string>>;
-  siteFreqs: Record<string, SMSiteFreqRow[]>;
-  setSiteFreqs: React.Dispatch<React.SetStateAction<Record<string, SMSiteFreqRow[]>>>;
-  drafts: Record<string, SMSiteFreqRow[]>;
-  setDrafts: React.Dispatch<React.SetStateAction<Record<string, SMSiteFreqRow[]>>>;
+  siteFreqs: Record<string, SmVisitCapsSiteRow[]>;
+  setSiteFreqs: React.Dispatch<React.SetStateAction<Record<string, SmVisitCapsSiteRow[]>>>;
+  drafts: Record<string, SmVisitCapsSiteRow[]>;
+  setDrafts: React.Dispatch<React.SetStateAction<Record<string, SmVisitCapsSiteRow[]>>>;
+  loadError?: string;
 }) {
   const [savedSmId, setSavedSmId] = useState<string | null>(null);
 
-  const sm = SM_ROSTER.find((s) => s.smId === selectedSmId) ?? null;
+  const sm = roster.find((s) => s.smId === selectedSmId) ?? null;
   const baseSites = siteFreqs[selectedSmId] ?? [];
-  const currentRows: SMSiteFreqRow[] = drafts[selectedSmId] ?? baseSites;
+  const currentRows: SmVisitCapsSiteRow[] = drafts[selectedSmId] ?? baseSites;
 
-  const score7  = sm ? computeVisitScore(sm.smId, 7,  baseSites, MOCK_VISIT_LOGS) : 0;
-  const score30 = sm ? computeVisitScore(sm.smId, 30, baseSites, MOCK_VISIT_LOGS) : 0;
-  const score60 = sm ? computeVisitScore(sm.smId, 60, baseSites, MOCK_VISIT_LOGS) : 0;
+  const score7  = sm ? computeVisitScore(sm.smId, 7,  baseSites, visitLogs) : 0;
+  const score30 = sm ? computeVisitScore(sm.smId, 30, baseSites, visitLogs) : 0;
+  const score60 = sm ? computeVisitScore(sm.smId, 60, baseSites, visitLogs) : 0;
 
   const monthlyVisitCount = totalMonthlyVisits(currentRows);
   const monthlyVisitEarnings = totalMonthlyVisitPay(currentRows);
 
   const isDirty = selectedSmId in drafts;
 
-  function updateRow(siteId: string, field: keyof SMSiteFreqRow, raw: string) {
+  function updateRow(siteId: string, field: keyof SmVisitCapsSiteRow, raw: string) {
     const val = Math.max(0, parseInt(raw) || 0);
     setDrafts((prev) => {
       const base = prev[selectedSmId] ?? [...baseSites];
@@ -252,14 +167,29 @@ function SMHandlerTab({
     setDrafts((prev) => { const n = { ...prev }; delete n[selectedSmId]; return n; });
   }
 
-  const smRosterSorted = sortSmRosterBySiteCount(SM_ROSTER, siteFreqs);
+  const smRosterSorted = sortSmRosterBySiteCount(roster, siteFreqs);
 
-  const totalAssigned = SM_ROSTER.filter((s) => s.sector.trim() !== '').length;
+  const totalAssigned = roster.filter((s) => s.sector.trim() !== '').length;
   const totalSites    = Object.values(siteFreqs).reduce((a, v) => a + v.length, 0);
   const sitesNoVisitPlan = Object.values(siteFreqs).reduce(
     (a, v) => a + v.filter((s) => s.dailyCap === 0 && s.weeklyCap === 0 && s.monthlyTarget === 0).length,
     0,
   );
+
+  if (roster.length === 0) {
+    return (
+      <div className="rounded-2xl border border-dashed border-slate-200 bg-white/70 px-6 py-16 text-center">
+        <UserCheck className="mx-auto h-8 w-8 text-slate-300" />
+        <p className="mt-3 text-sm font-bold text-slate-700">No sector managers in MNR</p>
+        <p className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-slate-500">
+          Active sector managers from the employee registry appear here once onboarded. Assign sites via SM assignments.
+        </p>
+        {loadError ? (
+          <p className="mx-auto mt-3 max-w-md text-xs font-semibold text-amber-800">{loadError}</p>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -275,7 +205,7 @@ function SMHandlerTab({
 
       <div className="grid grid-cols-4 gap-3">
         {[
-          { label: 'Total SMs',       value: String(SM_ROSTER.length), dot: 'bg-indigo-500',  color: 'text-slate-900'   },
+          { label: 'Total SMs',       value: String(roster.length), dot: 'bg-indigo-500',  color: 'text-slate-900'   },
           { label: 'Sector Assigned', value: String(totalAssigned),    dot: 'bg-emerald-500', color: 'text-emerald-700' },
           { label: 'Unassigned to Visit', value: String(sitesNoVisitPlan), dot: sitesNoVisitPlan > 0 ? 'bg-amber-500' : 'bg-slate-300', color: sitesNoVisitPlan > 0 ? 'text-amber-700' : 'text-slate-400' },
           { label: 'Total Sites',     value: String(totalSites),       dot: 'bg-sky-500',     color: 'text-slate-900'   },
@@ -452,7 +382,7 @@ function SMHandlerTab({
                             { field: 'dailyCap',      val: row.dailyCap      },
                             { field: 'weeklyCap',     val: row.weeklyCap     },
                             { field: 'monthlyTarget', val: row.monthlyTarget },
-                          ] as { field: keyof SMSiteFreqRow; val: number }[]
+                          ] as { field: keyof SmVisitCapsSiteRow; val: number }[]
                         ).map(({ field, val }) => (
                           <div key={field} className="flex w-14 flex-col items-center gap-1">
                             <input
@@ -520,29 +450,65 @@ export default function SMHandlerPage() {
   const isOmPortal = pathname.startsWith('/om/');
   const holidayCalendarIncomplete = true;
 
-  const [selectedSmId, setSelectedSmId] = useState<string>(DEFAULT_SM_ID);
-  const [siteFreqs, setSiteFreqs] = useState<Record<string, SMSiteFreqRow[]>>(INITIAL_SITE_FREQS);
-  const [drafts, setDrafts] = useState<Record<string, SMSiteFreqRow[]>>({});
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | undefined>();
+  const [roster, setRoster] = useState<SmVisitCapsProfile[]>([]);
+  const [visitLogs, setVisitLogs] = useState<SmVisitLogEntry[]>([]);
+  const [selectedSmId, setSelectedSmId] = useState<string>('');
+  const [siteFreqs, setSiteFreqs] = useState<Record<string, SmVisitCapsSiteRow[]>>({});
+  const [drafts, setDrafts] = useState<Record<string, SmVisitCapsSiteRow[]>>({});
 
-  const smHandlerBody = (
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const data = await getSmVisitCapsData();
+      if (cancelled) return;
+      setRoster(data.roster);
+      setSiteFreqs(data.siteFreqs);
+      setVisitLogs(data.visitLogs);
+      setLoadError(data.error);
+      const sorted = sortSmRosterBySiteCount(data.roster, data.siteFreqs);
+      setSelectedSmId(sorted[0]?.smId ?? '');
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const smHandlerBody = loading ? (
+    <div className="space-y-4 animate-pulse">
+      <div className="h-20 rounded-2xl bg-slate-100" />
+      <div className="grid grid-cols-4 gap-3">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="h-24 rounded-2xl bg-slate-100" />
+        ))}
+      </div>
+      <div className="h-64 rounded-2xl bg-slate-100" />
+    </div>
+  ) : (
     <>
-      <p className="mb-6 rounded-xl border border-amber-200/80 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-950">
-        Preview sector managers and visit caps below — live data syncs when site assignments are seeded in Supabase.
+      <p className="mb-6 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-700">
+        Live sector managers and assigned sites from MNR. Visit scores use SM portal logs. Cap edits are session-only until visit targets are persisted in Supabase.
       </p>
       <SMHandlerTab
+        roster={roster}
+        visitLogs={visitLogs}
         selectedSmId={selectedSmId}
         setSelectedSmId={setSelectedSmId}
         siteFreqs={siteFreqs}
         setSiteFreqs={setSiteFreqs}
         drafts={drafts}
         setDrafts={setDrafts}
+        loadError={loadError}
       />
     </>
   );
 
   if (isOmPortal) {
     return (
-      <OmCommandShell
+      <OmCommandShellLayout
         title="SM visit caps"
         subtitle="Configure daily, weekly, and monthly visit targets per sector manager"
         icon={UserCheck}
@@ -550,7 +516,7 @@ export default function SMHandlerPage() {
         maxWidth="7xl"
       >
         {smHandlerBody}
-      </OmCommandShell>
+      </OmCommandShellLayout>
     );
   }
 

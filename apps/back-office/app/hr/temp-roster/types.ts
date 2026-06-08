@@ -15,6 +15,8 @@ export type TempGuard = {
   activeTo: string | null;
   shiftHistory: TempShiftEntry[];
   accruedPay: number;
+  /** Shift counts keyed by YYYY-MM for liability month calculations. */
+  monthlyShiftCounts?: Record<string, number>;
   mergedToEmpId?: string;
   mergedToName?: string;
   archivedAt?: string;

@@ -56,6 +56,17 @@ const FM_NAV_SECTIONS: FmNavSection[] = [
     ],
   },
   {
+    label: 'Pearzen',
+    items: [
+      {
+        label: 'Pearzen.tech payment',
+        href: '/fm/pearzen-payment',
+        exact: true,
+        icon: Bell,
+      },
+    ],
+  },
+  {
     label: 'Configuration',
     items: [
       {

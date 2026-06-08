@@ -38,8 +38,9 @@ export function portalPathForRole(
 ): string | null {
   const normalized = normalizePortalRole(role);
   if (!normalized) return null;
-  if (normalized === "MD" || normalized === "OD") return "/executive";
+  if (normalized === "MD" || normalized === "OD") return "/executive/finance";
   if (normalized === "OM") return "/om";
+  if (normalized === "TM") return "/tm";
   if (normalized === "HR") return "/hr";
   if (normalized === "FM") return "/fm";
   return null;
@@ -54,6 +55,14 @@ export function authenticatedLandingPath(
   // MD/OD home is the cross-portal HQ nexus, not CV Operations.
   if (normalized === "MD" || normalized === "OD") return "/dashboard";
   return portalPathForRole(normalized) ?? "/login/head-office";
+}
+
+/** HR portal routes (MNR, onboarding, temp roster, etc.). */
+export function canAccessHrPortal(role: string | null | undefined): boolean {
+  const normalized = normalizePortalRole(role);
+  if (!normalized) return false;
+  if (normalized === "MD" || normalized === "OD") return true;
+  return normalized === "HR" || normalized === "FM" || normalized === "OM";
 }
 
 export function isHrPortalEditor(

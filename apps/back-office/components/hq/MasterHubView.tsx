@@ -15,17 +15,25 @@ import {
 } from 'lucide-react';
 
 import {
+  CAFE_FRONT_PORTAL_ROUTE,
+  GUARD_FIELD_PORTAL_ROUTE,
   MASTER_HUB_PILLARS,
   type MasterHubModule,
   type MasterHubPillar,
 } from '../../lib/master-hub-pillars';
+import { cafeFrontPortalLoginUrl, guardPortalLoginUrl } from '../../app/login/portal-urls';
 import { canSeeMasterHubModule } from '../../lib/master-hub-access';
+import type { MasterHubBadges } from '../../lib/master-hub-actions';
+import { CAFE_HUB_ENTRY_PATH, EXECUTIVE_DESK_PATH } from '../../lib/hq-hub';
+import { isExecutiveRank } from '../../lib/portal-role-utils';
 
 const MODULE_ICONS: Record<string, LucideIcon> = {
   '/executive/operations': Crosshair,
   '/om': Crosshair,
   '/tm': Layers,
   '/hq/sm-proxy': Briefcase,
+  [GUARD_FIELD_PORTAL_ROUTE]: ShieldAlert,
+  [CAFE_FRONT_PORTAL_ROUTE]: Coffee,
   '/hq/guard-proxy': ShieldAlert,
   '/fm': Calculator,
   '/hq/deductions': Scissors,
@@ -33,25 +41,37 @@ const MODULE_ICONS: Record<string, LucideIcon> = {
   '/hr': Users,
   '/hr/onboarding': FileText,
   '/executive/cafe': Coffee,
-  '/executive/audit': BookOpen,
+  '/hq/audit': BookOpen,
 };
 
 function iconForRoute(route: string): LucideIcon {
   return MODULE_ICONS[route] ?? FileText;
 }
 
-function filterPillars(role: string): MasterHubPillar[] {
+function filterPillars(role: string, badges: MasterHubBadges): MasterHubPillar[] {
   return MASTER_HUB_PILLARS.map((pillar) => ({
     ...pillar,
-    modules: pillar.modules.filter((mod) => canSeeMasterHubModule(mod.route, role)),
+    modules: pillar.modules
+      .filter((mod) => canSeeMasterHubModule(mod.route, role))
+      .map((mod) => ({
+        ...mod,
+        badge: badges[mod.route] ?? mod.badge,
+      })),
   })).filter((pillar) => pillar.modules.length > 0);
+}
+
+function moduleHref(mod: MasterHubModule): string {
+  if (mod.route === GUARD_FIELD_PORTAL_ROUTE) return guardPortalLoginUrl();
+  if (mod.route === CAFE_FRONT_PORTAL_ROUTE) return cafeFrontPortalLoginUrl();
+  if (mod.route === '/executive/cafe') return CAFE_HUB_ENTRY_PATH;
+  return mod.route;
 }
 
 function ModuleCard({ module: mod }: { module: MasterHubModule }) {
   const Icon = iconForRoute(mod.route);
+  const href = moduleHref(mod);
 
-  return (
-    <Link href={mod.route} className="group block h-full">
+  const card = (
       <div className="relative flex h-full cursor-pointer flex-col gap-4 rounded-2xl border border-white/50 bg-white/70 p-6 shadow-xl backdrop-blur-xl transition-all hover:scale-[1.02] hover:bg-white/85">
         {mod.badge ? (
           <span className="absolute right-4 top-4 z-10 inline-flex items-center rounded-full bg-red-600 px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wider text-white shadow">
@@ -93,6 +113,24 @@ function ModuleCard({ module: mod }: { module: MasterHubModule }) {
           </span>
         </div>
       </div>
+  );
+
+  if (mod.external) {
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="group block h-full"
+      >
+        {card}
+      </a>
+    );
+  }
+
+  return (
+    <Link href={href} className="group block h-full">
+      {card}
     </Link>
   );
 }
@@ -100,15 +138,16 @@ function ModuleCard({ module: mod }: { module: MasterHubModule }) {
 type Props = {
   role: string;
   profileName: string;
-  canAccessExecutive: boolean;
+  badges?: MasterHubBadges;
 };
 
 export default function MasterHubView({
   role,
   profileName,
-  canAccessExecutive,
+  badges = {},
 }: Props) {
-  const pillars = filterPillars(role);
+  const pillars = filterPillars(role, badges);
+  const showExecutiveDeskLink = isExecutiveRank(role);
 
   return (
     <div className="relative min-h-screen overflow-x-hidden bg-slate-100">
@@ -159,10 +198,10 @@ export default function MasterHubView({
       </div>
 
       <main className="relative z-10 flex flex-col items-center px-6 py-14 md:px-12">
-        {canAccessExecutive ? (
+        {showExecutiveDeskLink ? (
           <div className="absolute left-6 top-6 z-50">
             <Link
-              href="/executive/operations"
+              href={EXECUTIVE_DESK_PATH}
               className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-white/80 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-600 shadow-sm backdrop-blur-md transition-all hover:bg-slate-50"
             >
               <ArrowLeft className="h-3 w-3" />

@@ -233,7 +233,8 @@ async function fetchGuardEmployees(companyId: string | null): Promise<EmployeeRo
     return [];
   }
 
-  return (data ?? []) as EmployeeRow[];
+  const { decryptEmployeePiiRecord } = await import('../../../lib/employee-pii');
+  return (data ?? []).map((row) => decryptEmployeePiiRecord(row)) as EmployeeRow[];
 }
 
 async function fetchSiteProfiles(companyId: string | null): Promise<SiteRow[]> {

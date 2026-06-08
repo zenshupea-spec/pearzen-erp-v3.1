@@ -51,3 +51,12 @@
     text-transform: uppercase;
   }
 }
+
+/* Next.js dev portal: don't intercept clicks when the overlay is empty */
+nextjs-portal {
+  pointer-events: none;
+}
+
+nextjs-portal > * {
+  pointer-events: auto;
+}

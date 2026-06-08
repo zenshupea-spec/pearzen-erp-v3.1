@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react';
 import {
+  Briefcase,
   Calculator,
   FileText,
   Layers,
@@ -22,7 +23,7 @@ export type HqPortalNavEntry = {
 /** Shared portal list for HQ hub home + sidebar (server-safe — no 'use client'). */
 export const HQ_PORTAL_NAV: readonly HqPortalNavEntry[] = [
   {
-    href: '/executive',
+    href: '/executive/finance',
     label: 'Executive Vault',
     sub: 'MD operations radar',
     roles: 'MD · OD',
@@ -79,9 +80,16 @@ export const HQ_PORTAL_NAV: readonly HqPortalNavEntry[] = [
     accent: 'slate',
   },
   {
-    href: '/executive/audit',
-    label: 'Audit Ledger',
-    sub: 'Cross-portal activity',
+    href: '/hq/sm-proxy',
+    label: 'SM field stream',
+    sub: 'Rosters & site visits',
+    Icon: Briefcase,
+    accent: 'amber',
+  },
+  {
+    href: '/hq/audit',
+    label: 'Portal Activity Ledger',
+    sub: 'Your portal changes only',
     Icon: FileText,
     accent: 'slate',
   },

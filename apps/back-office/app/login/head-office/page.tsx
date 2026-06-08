@@ -2,10 +2,12 @@ import { redirect } from "next/navigation";
 
 import { getCompanyLogoUrl } from "../../../../../packages/supabase/company-branding";
 import { createSupabaseServerClient } from "../../../../../packages/supabase/server";
+import { EXECUTIVE_DESK_PATH } from "../../../lib/hq-hub";
 import {
   authenticatedLandingPath,
   fetchBackOfficeUserProfile,
 } from "../../../lib/hr-portal-access";
+import { isExecutiveRank } from "../../../lib/portal-role-utils";
 import { resolveTenantCompanyFromRequest } from "../../../lib/tenant-context";
 
 import LoginShell from "../LoginShell";
@@ -13,6 +15,8 @@ import LoginShell from "../LoginShell";
 const LOGIN_ERRORS: Record<string, string> = {
   executive_denied:
     "Executive Desk requires MD or OD rank on your MNR record. Ask the Managing Director to set your work email and rank.",
+  hr_denied:
+    "HR portal requires HR, FM, or OM rank on your MNR record (MD/OD also have access).",
   geofence_denied: "Access denied — you must be on the office network for this portal.",
   no_portal_rank:
     "Signed in, but no portal rank is set on your employee record. Ask HR to set your work email and rank.",
@@ -44,14 +48,21 @@ export default async function HeadOfficeLoginPage({
   if (user) {
     const profile = await fetchBackOfficeUserProfile(supabase, user);
     const landing = authenticatedLandingPath(profile.role);
-    if (landing !== "/login/head-office") redirect(landing);
+    if (landing !== "/login/head-office") {
+      const next = safeNextPath(params.next);
+      if (
+        isExecutiveRank(profile.role) &&
+        (next === EXECUTIVE_DESK_PATH || next.startsWith("/executive/"))
+      ) {
+        redirect(next);
+      }
+      redirect(landing);
+    }
   }
 
   const tenant = await resolveTenantCompanyFromRequest();
   const logoUrl = await getCompanyLogoUrl(tenant?.id);
-  const tenantSuspended = tenant?.isSuspended ?? false;
-  const resolvedAuthError =
-    tenantSuspended && !authError ? LOGIN_ERRORS.tenant_suspended : authError;
+  const resolvedAuthError = authError;
 
   const authErrorDetail =
     params.error === "executive_denied" && authErrorRole
@@ -68,7 +79,7 @@ export default async function HeadOfficeLoginPage({
       authError={resolvedAuthError}
       authErrorDetail={authErrorDetail}
       oauthNext={oauthNext}
-      signInDisabled={tenantSuspended}
+      signInDisabled={false}
     />
   );
 }

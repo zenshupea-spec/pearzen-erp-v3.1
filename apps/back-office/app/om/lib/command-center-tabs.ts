@@ -1,3 +1,6 @@
+/** Shared auto-refresh cadence for OM / MD command center live data. */
+export const COMMAND_CENTER_REFRESH_MS = 5 * 60 * 1000;
+
 export type CommandCenterTabKey =
   | 'tactical'
   | 'site-allocation'

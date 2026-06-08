@@ -6,3 +6,12 @@ body {
   background-color: #cbd5e1; /* slate-300 frame */
   color: #0f172a; /* slate-900 */
 }
+
+/* Next.js dev portal: don't intercept clicks when the overlay is empty */
+nextjs-portal {
+  pointer-events: none;
+}
+
+nextjs-portal > * {
+  pointer-events: auto;
+}

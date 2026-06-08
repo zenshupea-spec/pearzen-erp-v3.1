@@ -1,5 +1,5 @@
-import Link from 'next/link';
-import { ArrowLeft, MapPin } from 'lucide-react';
+import { MapPin } from 'lucide-react';
+import HqHubBackLink from '../../../../components/hq/HqHubBackLink';
 import TmSubnav from '../../../tm/components/TmSubnav';
 import {
   getSitesNeedingGpsCapture,
@@ -22,13 +22,7 @@ export default async function OmSiteLocationPage() {
   return (
     <main className="min-h-screen w-full overflow-x-hidden bg-gradient-to-b from-slate-50 to-white text-slate-900">
       <div className="mx-auto w-full min-w-0 max-w-6xl px-3 py-6 sm:px-4 sm:py-8 md:px-6">
-        <Link
-          href="/dashboard"
-          className="mb-5 inline-flex max-w-full items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-slate-500 hover:text-slate-800 sm:mb-6 sm:text-xs"
-        >
-          <ArrowLeft className="h-4 w-4 shrink-0" />
-          <span className="truncate">Return to HQ Hub</span>
-        </Link>
+        <HqHubBackLink />
 
         <header className="mb-5 border-b border-slate-200 pb-5 sm:mb-6 sm:pb-6">
           <div className="flex flex-wrap items-start gap-3">

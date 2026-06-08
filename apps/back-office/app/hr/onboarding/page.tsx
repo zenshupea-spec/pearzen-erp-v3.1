@@ -19,8 +19,10 @@ import {
 } from '../../../lib/hr-portal-access';
 import { getRankPayMatrix } from '../../executive/settings/rank-matrix-actions';
 import InductionForm from '../InductionForm';
+import { executeRosterMerge } from '../temp-roster/actions';
 import { provisionSMPortalAccess } from '../sm-portal/actions';
 import { uploadEmployeeHrDocumentsFromForm } from '../../../../../packages/supabase/employee-hr-documents';
+import { encryptEmployeePiiRecord } from '../../../lib/employee-pii';
 import {
   UserPlus, ShieldCheck, FileSignature,
   BookOpen, ClipboardList, Home, KeyRound,
@@ -28,7 +30,15 @@ import {
 
 export const dynamic = 'force-dynamic';
 
-export default async function HROnboardingPage() {
+export default async function HROnboardingPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ temp?: string; name?: string }>;
+}) {
+  const { temp: tempEmpId, name: tempNameHint } = await searchParams;
+  const mergeContext = tempEmpId?.trim()
+    ? { tempId: tempEmpId.trim(), nameHint: tempNameHint?.trim() }
+    : undefined;
   const rankMatrix = await getRankPayMatrix();
   const db = await createSupabaseServerClient();
   const {
@@ -78,7 +88,7 @@ export default async function HROnboardingPage() {
       throw new Error('Employee number is required for Sector Managers (SM portal login ID).');
     }
 
-    const insertData = {
+    const insertData = encryptEmployeePiiRecord({
       company_id: companyId,
       full_name: (formData.get('full_name') as string).toUpperCase(),
       nic: (formData.get('nic') as string).toUpperCase(),
@@ -108,8 +118,14 @@ export default async function HROnboardingPage() {
       police_expiry: formData.get('police_expiry') as string,
       date_joined: new Date().toISOString().split('T')[0],
       status: 'ACTIVE',
+      section_edits: {
+        personal: {
+          at: new Date().toISOString(),
+          by: 'HR Onboarding',
+        },
+      },
       ...(empNumber ? { emp_number: empNumber } : {}),
-    };
+    });
 
     const { data: inserted, error } = await db
       .from('employees')
@@ -124,6 +140,12 @@ export default async function HROnboardingPage() {
 
     if (inserted?.id) {
       await uploadEmployeeHrDocumentsFromForm(db, inserted.id, formData);
+    }
+
+    const shadowTempId = ((formData.get('temp_emp_id') as string) || '').trim();
+    if (shadowTempId && inserted?.id) {
+      await executeRosterMerge(shadowTempId, inserted.id);
+      revalidatePath('/hr/temp-roster');
     }
 
     revalidatePath('/hr/onboarding');
@@ -195,6 +217,18 @@ export default async function HROnboardingPage() {
         </div>
       </header>
 
+      {mergeContext && (
+        <div className="rounded-2xl border border-indigo-200 bg-indigo-50 px-5 py-4">
+          <p className="text-sm font-bold text-indigo-900 uppercase tracking-wide">
+            Shadow roster merge — {mergeContext.tempId}
+          </p>
+          <p className="mt-1 text-sm font-semibold text-indigo-700">
+            Complete induction to create the permanent profile. Shift history from this temp ID will
+            transfer to Master Nominal Roll on submit.
+          </p>
+        </div>
+      )}
+
       <div className="grid grid-cols-12 gap-6 items-start">
         <section className="col-span-12 bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
           <div className="flex items-center justify-between px-8 py-5 border-b border-slate-200 bg-gradient-to-r from-white to-rose-50/50">
@@ -218,6 +252,7 @@ export default async function HROnboardingPage() {
             action={onboardEmployee}
             rankMatrix={rankMatrix}
             canManageExecutive={canManageExecutive}
+            mergeContext={mergeContext}
           />
         </section>
       </div>

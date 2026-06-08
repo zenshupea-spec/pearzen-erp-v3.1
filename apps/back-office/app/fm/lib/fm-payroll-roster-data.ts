@@ -1,7 +1,4 @@
-import {
-  MOCK_PINNED_GROUP_SITES_SEED,
-  MOCK_SITES_SEED,
-} from '../page';
+import type { FmPortfolioSiteSeed } from '../portfolio-actions';
 
 export type PayrollWorkforceGroup = 'cvs' | 'cvs_sm' | 'cafe' | 'guard';
 
@@ -34,8 +31,8 @@ export type FmPayrollRosterRow = {
   payslipId: string;
 };
 
-type PortfolioSeedEmployee = (typeof MOCK_SITES_SEED)[number]['employees'][number];
-type PortfolioSeedSite = (typeof MOCK_SITES_SEED)[number];
+type PortfolioSeedEmployee = FmPortfolioSiteSeed['employees'][number];
+type PortfolioSeedSite = FmPortfolioSiteSeed;
 
 const WORKFORCE_LABELS: Record<PayrollWorkforceGroup, string> = {
   cvs: 'CVS',
@@ -126,10 +123,13 @@ function flattenSite(site: PortfolioSeedSite): FmPayrollRosterRow[] {
   }));
 }
 
-export function buildFmPayrollRoster(): FmPayrollRosterRow[] {
+export function buildFmPayrollRoster(
+  pinnedSites: FmPortfolioSiteSeed[] = [],
+  clientSites: FmPortfolioSiteSeed[] = [],
+): FmPayrollRosterRow[] {
   const rows = [
-    ...MOCK_PINNED_GROUP_SITES_SEED.flatMap(flattenSite),
-    ...MOCK_SITES_SEED.flatMap(flattenSite),
+    ...pinnedSites.flatMap(flattenSite),
+    ...clientSites.flatMap(flattenSite),
   ];
   return rows.sort((a, b) => a.name.localeCompare(b.name));
 }

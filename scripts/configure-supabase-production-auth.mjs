@@ -9,8 +9,10 @@
  */
 
 const PROJECT_REF = "ktfgvcrdfbapmefktgjc";
-const PRODUCTION_ORIGIN = "https://pearzen-erp-v3-1-back-office.vercel.app";
-const TENANT_BASE_DOMAIN = process.env.NEXT_PUBLIC_TENANT_BASE_DOMAIN ?? "pearzen.com";
+const TENANT_BASE_DOMAIN = process.env.NEXT_PUBLIC_TENANT_BASE_DOMAIN ?? "pearzen.tech";
+const VERCEL_FALLBACK = "https://pearzen-erp-v3-1-back-office.vercel.app";
+const PRODUCTION_ORIGIN =
+  process.env.PRODUCTION_ORIGIN?.trim() || `https://forge.${TENANT_BASE_DOMAIN}`;
 
 const LOCAL_ORIGINS = [
   "http://127.0.0.1:3002",
@@ -22,6 +24,8 @@ const TENANT_AUTH_CALLBACKS = [
   `https://*.${TENANT_BASE_DOMAIN}/auth/callback/**`,
   `https://forge.${TENANT_BASE_DOMAIN}/auth/callback`,
   `https://erp.${TENANT_BASE_DOMAIN}/auth/callback`,
+  `https://${TENANT_BASE_DOMAIN}/auth/callback`,
+  `https://www.${TENANT_BASE_DOMAIN}/auth/callback`,
 ];
 
 const dryRun = process.argv.includes("--dry-run");
@@ -36,6 +40,8 @@ if (!token) {
 
 const redirectUrls = [
   ...LOCAL_ORIGINS.map((o) => `${o}/auth/callback`),
+  `${VERCEL_FALLBACK}/auth/callback`,
+  `${VERCEL_FALLBACK}/auth/callback/**`,
   `${PRODUCTION_ORIGIN}/auth/callback`,
   `${PRODUCTION_ORIGIN}/auth/callback/**`,
   ...TENANT_AUTH_CALLBACKS,

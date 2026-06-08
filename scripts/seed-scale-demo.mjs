@@ -9,7 +9,7 @@
 import { readFileSync } from 'fs';
 import { createClient } from '@supabase/supabase-js';
 
-const CLASSIC_VENTURE_COMPANY_ID = '9111dd55-9935-4e26-a630-60e36dcb57b5';
+const CLASSIC_VENTURE_COMPANY_ID = '29fbb2ff-6aa6-46c4-8b2d-d19eebb2874e';
 const PREFIX = 'SD';
 const SITE_NAME_PREFIX = 'SD DEMO — ';
 const SYNC = 'SEED_SCALE_DEMO';

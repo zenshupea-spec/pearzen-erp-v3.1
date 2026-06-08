@@ -100,17 +100,15 @@ export default function LoginShell({
       />
 
       <main className="relative z-10 flex min-h-[100dvh] w-full flex-col items-center justify-center px-4 py-8 sm:px-8">
-        {variant !== 'head-office' ? (
-          <div className="absolute left-4 top-6 sm:left-8">
-            <Link
-              href="/login/head-office"
-              className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 transition-colors hover:text-slate-700"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              Head office sign-in
-            </Link>
-          </div>
-        ) : null}
+        <div className="absolute left-4 top-6 sm:left-8">
+          <Link
+            href="/login"
+            className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 transition-colors hover:text-slate-700"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            All portals
+          </Link>
+        </div>
 
         <div className="w-full max-w-md space-y-8">
           <div className="space-y-4 text-center">

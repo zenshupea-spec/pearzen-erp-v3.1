@@ -7,6 +7,7 @@ import {
   getGuardCardLeaderboard,
   type GuardCardDisplay,
 } from './actions';
+import { COMMAND_CENTER_REFRESH_MS } from '../lib/command-center-tabs';
 import GuardCardGrid from './GuardCardGrid';
 
 export default function GuardCardsTab() {
@@ -16,8 +17,8 @@ export default function GuardCardsTab() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError('');
     try {
       const [leaderboard, blacklisted] = await Promise.all([
@@ -31,12 +32,16 @@ export default function GuardCardsTab() {
     } catch {
       setError('Failed to load guard performance cards.');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    load();
+    load(false);
+    const intervalId = window.setInterval(() => {
+      void load(true);
+    }, COMMAND_CENTER_REFRESH_MS);
+    return () => window.clearInterval(intervalId);
   }, [load]);
 
   if (loading) {

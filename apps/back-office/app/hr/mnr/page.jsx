@@ -19,7 +19,7 @@ import {
   filterRanksForEditor,
   isExecutiveRank,
 } from "../../../lib/executive-rank-guard";
-import { getEmployees, setMaternityLeave } from "../../actions/mnrActions";
+import { getEmployees } from "../../actions/mnrActions";
 import { getRankPayMatrix } from "../../executive/settings/rank-matrix-actions";
 import { getMnrAccess, saveEmployeeSection } from "./actions";
 import ClearanceModal from "./ClearanceModal";
@@ -28,6 +28,7 @@ import EmployeeIdPhotoField from "../EmployeeIdPhotoField";
 import { HR_DOCUMENT_META, HR_DOCUMENT_TYPES } from "../../../../../packages/supabase/employee-hr-documents";
 
 const SHIFT_TRACKED_GROUPS = new Set(["GUARD", "GUARD_FIELD", "CAFE"]);
+const GUARD_GROUPS = new Set(["GUARD", "GUARD_FIELD"]);
 
 function normStatus(emp) {
   return (emp.status || "").trim();
@@ -55,16 +56,24 @@ function isShiftTracked(emp) {
   return SHIFT_TRACKED_GROUPS.has((emp.group || "").toUpperCase());
 }
 
+function isGuardGroup(emp) {
+  return GUARD_GROUPS.has((emp.group || "").toUpperCase());
+}
+
+function isOnMaternityLeave(emp) {
+  return Boolean(emp.maternity_leave) && !isGuardGroup(emp);
+}
+
 function isOperationalActive(emp) {
   if (isResigned(emp) || !isHrActive(emp)) return false;
-  if (emp.maternity_leave) return true;
+  if (isOnMaternityLeave(emp)) return true;
   if (!isShiftTracked(emp)) return true;
   return Boolean(emp.has_recent_shift);
 }
 
 function isOperationalInactive(emp) {
   if (isResigned(emp) || !isHrActive(emp)) return false;
-  if (emp.maternity_leave) return false;
+  if (isOnMaternityLeave(emp)) return false;
   if (!isShiftTracked(emp)) return false;
   return !emp.has_recent_shift;
 }
@@ -99,7 +108,6 @@ export default function MasterNominalRoll() {
   const [employees, setEmployees]     = useState([]);
   const [loading, setLoading]         = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
-  const [processingIds, setProcessingIds] = useState({});
 
   const [searchQuery, setSearchQuery]       = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -244,23 +252,6 @@ export default function MasterNominalRoll() {
   const expiringCount        = employees.filter(isVettingExpiring).length;
   const expiredCount         = employees.filter(isVettingExpired).length;
 
-  const handleMaternityToggle = async (id, onLeave) => {
-    if (processingIds[id]) return;
-    setProcessingIds((prev) => ({ ...prev, [id]: true }));
-    setErrorMessage("");
-    try {
-      await setMaternityLeave(id, onLeave);
-      await fetchEmployees();
-      if (drawerEmp?.id === id) {
-        setDrawerEmp((prev) => (prev ? { ...prev, maternity_leave: onLeave } : null));
-      }
-    } catch (error) {
-      setErrorMessage(error?.message || "Failed to update maternity leave.");
-    } finally {
-      setProcessingIds((prev) => ({ ...prev, [id]: false }));
-    }
-  };
-
   const PERSONNEL_CARDS = [
     {
       key: "ACTIVE",
@@ -385,22 +376,12 @@ export default function MasterNominalRoll() {
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-900 space-y-1">
               <p>
                 View-only
-                {!mnrSignedIn
-                  ? " — not signed in"
-                  : mnrViewerRole
-                    ? ` — signed in as ${mnrViewerRole}`
-                    : " — signed in, but no MNR rank (MD, OD, OM, HR, FM) on your email"}
+                {mnrViewerRole
+                  ? ` — signed in as ${mnrViewerRole}`
+                  : " — read-only access for your rank"}
               </p>
               <p className="font-medium text-amber-800">
-                Portal access comes from <span className="font-black">MNR work email + rank</span>. Edit pencil appears when your rank is HR, MD, OD, or FM.
-                {!mnrSignedIn && (
-                  <>
-                    {" "}
-                    <Link href="/login" className="underline font-black text-amber-900 hover:text-amber-950">
-                      Sign in
-                    </Link>
-                  </>
-                )}
+                Edit pencil appears when your rank is HR, MD, OD, or FM.
               </p>
             </div>
           )}
@@ -696,7 +677,7 @@ export default function MasterNominalRoll() {
                             <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wide whitespace-nowrap ${
                               isResigned(emp)
                                 ? "bg-violet-50 text-violet-700 border border-violet-200"
-                                : emp.maternity_leave
+                                : isOnMaternityLeave(emp)
                                   ? "bg-pink-50 text-pink-700 border border-pink-200"
                                   : isOperationalInactive(emp)
                                     ? "bg-amber-50 text-amber-800 border border-amber-200"
@@ -705,7 +686,7 @@ export default function MasterNominalRoll() {
                                       : "bg-slate-100 text-slate-600 border border-slate-200"
                             }`}>
                               {isOperationalActive(emp) ? <CheckCircle2 className="w-2.5 h-2.5 shrink-0" /> : <XCircle className="w-2.5 h-2.5 shrink-0" />}
-                              <span className="truncate max-w-[5.5rem]">{emp.maternity_leave && isHrActive(emp) ? "Mat." : emp.status}</span>
+                              <span className="truncate max-w-[5.5rem]">{isOnMaternityLeave(emp) && isHrActive(emp) ? "Mat." : emp.status}</span>
                             </span>
                           </td>
                           <td className="px-3 py-2 align-middle" onClick={(e) => e.stopPropagation()}>
@@ -785,9 +766,7 @@ export default function MasterNominalRoll() {
               if (fresh) setDrawerEmp(fresh);
             }
           }}
-          onMaternityToggle={handleMaternityToggle}
           onOpenClearanceSummary={(employee) => setClearanceEmp(employee)}
-          processingIds={processingIds}
           mdRankMatrix={mdRankMatrix}
         />
       )}
@@ -882,6 +861,42 @@ const HR_STATUS_OPTIONS = [
   "Suspended",
 ];
 
+const CORPORATE_GROUP_OPTIONS = [
+  { value: "GUARD", label: "Guard" },
+  { value: "SECTOR_MANAGER", label: "Sector Manager" },
+  { value: "HEAD_OFFICE", label: "Head Office" },
+  { value: "CAFE", label: "Café" },
+];
+
+function normalizeCorporateGroup(value) {
+  const v = String(value || "").trim().toUpperCase();
+  return v === "GUARD_FIELD" ? "GUARD" : v;
+}
+
+function isHeadOfficeGroup(emp) {
+  return normalizeCorporateGroup(emp?.group) === "HEAD_OFFICE";
+}
+
+const SALARY_TYPE_OPTIONS = [
+  { value: "BANK", label: "Bank Transfer" },
+  { value: "CASH", label: "Cash Allocation" },
+];
+
+function corporateGroupLabel(value) {
+  if (!value) return null;
+  const normalized = normalizeCorporateGroup(value);
+  const hit = CORPORATE_GROUP_OPTIONS.find((o) => o.value === normalized);
+  return hit?.label ?? value;
+}
+
+function salaryTypeLabel(value) {
+  if (!value) return null;
+  const hit = SALARY_TYPE_OPTIONS.find(
+    (o) => o.value === String(value).trim().toUpperCase(),
+  );
+  return hit?.label ?? value;
+}
+
 function ActionBtn({ icon: Icon, title, color, onClick }) {
   return (
     <button
@@ -915,9 +930,7 @@ function EmployeeDrawer({
   onClose,
   onToggleEdit,
   onSaved,
-  onMaternityToggle,
   onOpenClearanceSummary,
-  processingIds,
   mdRankMatrix,
 }) {
   const [saving, setSaving] = useState(false);
@@ -956,6 +969,9 @@ function EmployeeDrawer({
     emp.email &&
     viewerEmail === String(emp.email).trim().toLowerCase();
   const canUploadIdPhoto = canEdit || Boolean(isOwnRecord);
+  const canEditWorkEmail =
+    isHeadOfficeGroup(emp) &&
+    (!isExecutiveRank(emp.rank) || canManageExecutive);
 
   return (
     <div className="fixed inset-0 z-50 flex">
@@ -1073,15 +1089,28 @@ function EmployeeDrawer({
                     onUploaded={onSaved}
                   />
                   <EditField label="Full Name" name="full_name" defaultValue={emp.full_name} required inputClass={inputClass} />
-                  <EditField
-                    label="Work Email (portal login)"
-                    name="email"
-                    type="email"
-                    defaultValue={emp.email}
-                    required
-                    readOnly={isExecutiveRank(emp.rank) && !canManageExecutive}
-                    inputClass={inputClass}
-                  />
+                  <div className="flex flex-col gap-1 py-2 border-b border-slate-100 last:border-0">
+                    <EditField
+                      label="Work Email (portal login)"
+                      name="email"
+                      type="email"
+                      defaultValue={emp.email}
+                      required={canEditWorkEmail}
+                      readOnly={!canEditWorkEmail}
+                      inputClass={inputClass}
+                      bare
+                    />
+                    {!isHeadOfficeGroup(emp) && (
+                      <p className="text-[10px] text-slate-500 font-bold">
+                        Work email is only for Head Office staff (back-office portal login). Set corporate group to Head Office on the Employment tab first.
+                      </p>
+                    )}
+                    {isHeadOfficeGroup(emp) && isExecutiveRank(emp.rank) && !canManageExecutive && (
+                      <p className="text-[10px] text-amber-800 font-bold">
+                        MD / OD work email can only be changed by MD or OD.
+                      </p>
+                    )}
+                  </div>
                   <EditField label="NIC" name="nic" defaultValue={emp.nic} required mono inputClass={inputClass} />
                   <EditField label="Passport No" name="passport_no" defaultValue={emp.passport_no} mono inputClass={inputClass} />
                   <EditField label="EPF No" name="epf_no" defaultValue={employeeEpfNo(emp)} mono inputClass={inputClass} />
@@ -1104,8 +1133,12 @@ function EmployeeDrawer({
                     canManageExecutive={canManageExecutive}
                     inputClass={inputClass}
                   />
-                  <EditField label="Role" name="role" defaultValue={emp.role} inputClass={inputClass} />
-                  <EditField label="Corporate Group" name="group" defaultValue={emp.group} inputClass={inputClass} />
+                  <CorporateGroupSelectField
+                    label="Corporate Group"
+                    name="group"
+                    defaultValue={emp.group}
+                    inputClass={inputClass}
+                  />
                   <EditField label="Assigned Site" name="site" defaultValue={emp.site} inputClass={inputClass} />
                   <EditField label="Date Joined" name="date_joined" type="date" defaultValue={emp.date_joined} inputClass={inputClass} />
                   <div className="flex flex-col gap-1 py-2">
@@ -1127,7 +1160,12 @@ function EmployeeDrawer({
                     </p>
                   </div>
                   <EditField label="Base Salary (LKR)" name="base_salary" type="number" defaultValue={emp.base_salary} inputClass={inputClass} />
-                  <EditField label="Salary Type" name="salary_type" defaultValue={emp.salary_type} inputClass={inputClass} />
+                  <SalaryTypeSelectField
+                    label="Salary Type"
+                    name="salary_type"
+                    defaultValue={emp.salary_type}
+                    inputClass={inputClass}
+                  />
                   <div className="flex flex-col gap-1 py-2">
                     <label className="text-xs font-black text-slate-500 uppercase tracking-widest">EPF Enrolled</label>
                     <select
@@ -1215,8 +1253,7 @@ function EmployeeDrawer({
                     <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Rank</span>
                     <RankBadge rank={emp.rank} mdRankMatrix={mdRankMatrix} />
                   </div>
-                  <DetailRow label="Role"            value={emp.role} />
-                  <DetailRow label="Corporate Group" value={emp.group} />
+                  <DetailRow label="Corporate Group" value={corporateGroupLabel(emp.group)} />
                   <DetailRow label="Assigned Site"   value={emp.site} />
                   <DetailRow label="Date Joined"     value={emp.date_joined} />
                   <DetailRow label="Status"          value={emp.status} badge={isActive(emp) ? "active" : "inactive"} />
@@ -1228,30 +1265,6 @@ function EmployeeDrawer({
                         : "Not shift-tracked"
                     }
                   />
-                  {canEdit && isHrActive(emp) && isShiftTracked(emp) && (
-                    <div className="py-2 border-b border-slate-100">
-                      <p className="text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Maternity Leave</p>
-                      <p className="text-xs text-slate-500 font-bold mb-3">
-                        Excludes employee from the inactive (no-shift) list while on leave.
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => onMaternityToggle(emp.id, !emp.maternity_leave)}
-                        disabled={Boolean(processingIds[emp.id])}
-                        className={`w-full px-4 py-2.5 text-xs font-black uppercase tracking-wide rounded-xl border transition-all disabled:opacity-50 ${
-                          emp.maternity_leave
-                            ? "bg-pink-50 border-pink-200 text-pink-800 hover:bg-pink-100"
-                            : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
-                        }`}
-                      >
-                        {processingIds[emp.id]
-                          ? "Saving…"
-                          : emp.maternity_leave
-                            ? "Clear Maternity Leave"
-                            : "Mark Maternity Leave"}
-                      </button>
-                    </div>
-                  )}
                   {isResigned(emp) && onOpenClearanceSummary && (
                     <div className="py-3 border-b border-slate-100">
                       <button
@@ -1265,7 +1278,7 @@ function EmployeeDrawer({
                     </div>
                   )}
                   <DetailRow label="Base Salary"     value={emp.base_salary ? `LKR ${Number(emp.base_salary).toLocaleString()}` : null} />
-                  <DetailRow label="Salary Type"     value={emp.salary_type} />
+                  <DetailRow label="Salary Type"     value={salaryTypeLabel(emp.salary_type)} />
                   <DetailRow label="EPF Enrolled"    value={emp.epf_yn ? "Yes" : "No"} />
                 </>
               )}
@@ -1346,6 +1359,76 @@ function RankBadge({ rank, mdRankMatrix }) {
   );
 }
 
+function SalaryTypeSelectField({ label, name, defaultValue, inputClass }) {
+  const normalized = (defaultValue || "").trim().toUpperCase();
+  const knownValues = SALARY_TYPE_OPTIONS.map((o) => o.value);
+  const legacy = normalized && !knownValues.includes(normalized) ? normalized : "";
+
+  return (
+    <div className="flex flex-col gap-1 py-2 border-b border-slate-100 last:border-0">
+      <label className="text-xs font-black text-slate-500 uppercase tracking-widest">{label}</label>
+      {legacy && (
+        <p className="text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+          Current value &ldquo;{legacy}&rdquo; is non-standard. Select Bank or Cash below.
+        </p>
+      )}
+      <select
+        name={name}
+        defaultValue={knownValues.includes(normalized) ? normalized : ""}
+        required
+        className={inputClass}
+      >
+        <option value="" disabled>
+          Select payment route…
+        </option>
+        {SALARY_TYPE_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+        {legacy && <option value={legacy}>{legacy}</option>}
+      </select>
+    </div>
+  );
+}
+
+function CorporateGroupSelectField({ label, name, defaultValue, inputClass }) {
+  const raw = (defaultValue || "").trim().toUpperCase();
+  const normalized = normalizeCorporateGroup(raw);
+  const knownValues = CORPORATE_GROUP_OPTIONS.map((o) => o.value);
+  const legacy = raw && !knownValues.includes(raw) && normalized === raw ? raw : "";
+
+  return (
+    <div className="flex flex-col gap-1 py-2 border-b border-slate-100 last:border-0">
+      <label className="text-xs font-black text-slate-500 uppercase tracking-widest">{label}</label>
+      {legacy && (
+        <p className="text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+          Current group &ldquo;{legacy}&rdquo; is non-standard. Pick a corporate group below.
+        </p>
+      )}
+      <select
+        name={name}
+        defaultValue={knownValues.includes(normalized) ? normalized : ""}
+        required
+        className={inputClass}
+      >
+        <option value="" disabled>
+          Select corporate group…
+        </option>
+        {CORPORATE_GROUP_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+        {legacy && <option value={legacy}>{legacy}</option>}
+      </select>
+      <p className="text-[10px] text-slate-500 font-bold">
+        Drives rank matrix, portal routing, and shift tracking. Rank is the pay grade within this group.
+      </p>
+    </div>
+  );
+}
+
 function RankSelectField({ label, name, defaultValue, mdRankMatrix, canManageExecutive, inputClass }) {
   const normalized = (defaultValue || "").trim().toUpperCase();
   const selectableMatrix = filterRanksForEditor(
@@ -1394,9 +1477,9 @@ function RankSelectField({ label, name, defaultValue, mdRankMatrix, canManageExe
   );
 }
 
-function EditField({ label, name, defaultValue, type = "text", required, mono, multiline, readOnly, inputClass }) {
-  return (
-    <div className="flex flex-col gap-1 py-2 border-b border-slate-100 last:border-0">
+function EditField({ label, name, defaultValue, type = "text", required, mono, multiline, readOnly, inputClass, bare }) {
+  const inner = (
+    <>
       <label className="text-xs font-black text-slate-500 uppercase tracking-widest">{label}</label>
       {multiline ? (
         <textarea
@@ -1416,6 +1499,14 @@ function EditField({ label, name, defaultValue, type = "text", required, mono, m
           className={`${inputClass} ${mono ? "font-mono tracking-wider" : ""} ${readOnly ? "bg-slate-100 text-slate-500 cursor-not-allowed" : ""}`}
         />
       )}
+    </>
+  );
+
+  if (bare) return inner;
+
+  return (
+    <div className="flex flex-col gap-1 py-2 border-b border-slate-100 last:border-0">
+      {inner}
     </div>
   );
 }

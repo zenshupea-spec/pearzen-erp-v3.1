@@ -65,7 +65,7 @@ export default async function OmDiscrepanciesPage() {
         companyId={resolvedCompanyId}
         adminId={adminId}
         adminName={adminName}
-        useDemoFallback
+        useDemoFallback={isPreview}
       />
     </OmCommandShell>
   );

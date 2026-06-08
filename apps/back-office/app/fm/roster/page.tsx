@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowDownAZ,
   ArrowUpDown,
@@ -39,6 +39,7 @@ import {
   historicalPortfolioScale,
   type PayrollPeriod,
 } from '../lib/payroll-period';
+import { getFmPortfolio } from '../portfolio-actions';
 
 function lkr(n: number) {
   return (
@@ -63,8 +64,21 @@ const GROUP_BADGE: Record<FmPayrollRosterRow['workforceGroup'], string> = {
 };
 
 export default function FmPayrollRosterPage() {
-  const allRows = useMemo(() => buildFmPayrollRoster(), []);
+  const [pinnedSites, setPinnedSites] = useState<Parameters<typeof buildFmPayrollRoster>[0]>([]);
+  const [clientSites, setClientSites] = useState<Parameters<typeof buildFmPayrollRoster>[1]>([]);
   const [payrollPeriod, setPayrollPeriod] = useState<PayrollPeriod>(FM_LIVE_PAYROLL_PERIOD);
+
+  useEffect(() => {
+    void getFmPortfolio(payrollPeriod).then((payload) => {
+      setPinnedSites(payload.pinnedSites);
+      setClientSites(payload.sites);
+    });
+  }, [payrollPeriod]);
+
+  const allRows = useMemo(
+    () => buildFmPayrollRoster(pinnedSites, clientSites),
+    [pinnedSites, clientSites],
+  );
   const [query, setQuery] = useState('');
   const [workforce, setWorkforce] = useState<PayrollWorkforceFilter>('all');
   const [sortKey, setSortKey] = useState<RosterSortKey>('name');

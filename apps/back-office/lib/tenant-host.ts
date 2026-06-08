@@ -4,7 +4,7 @@ export const TENANT_SLUG_COOKIE = "pearzen_tenant_slug";
 export const TENANT_SLUG_HEADER = "x-pearzen-tenant-slug";
 
 export function tenantBaseDomain(): string {
-  return process.env.NEXT_PUBLIC_TENANT_BASE_DOMAIN ?? "pearzen.com";
+  return process.env.NEXT_PUBLIC_TENANT_BASE_DOMAIN ?? "pearzen.tech";
 }
 
 export function devBackOfficePort(): string {
@@ -76,16 +76,22 @@ export function parseTenantSlugFromHostname(hostname: string): string | null {
   return normalizeTenantSlug(sub);
 }
 
-/** Forge table → tenant Head Office sign-in URL. */
-export function tenantPortalLoginUrl(
-  slug: string | null | undefined,
-  origin?: string,
-): string | null {
-  const normalized = normalizeTenantSlug(slug);
-  if (!normalized) return null;
+export type TenantSubPortalLink = {
+  id: string;
+  label: string;
+  href: string;
+  external?: boolean;
+};
 
+function buildTenantAppPathUrl(
+  normalized: string,
+  pathname: string,
+  origin?: string,
+): string {
   const base = tenantBaseDomain();
   const port = devBackOfficePort();
+  const [path, rawQuery] = pathname.split("?");
+  const params = new URLSearchParams(rawQuery ?? "");
 
   if (origin) {
     try {
@@ -95,17 +101,189 @@ export function tenantPortalLoginUrl(
         (!tenantSubdomainsLive() && isPlatformHost(hostname));
 
       if (useQueryBootstrap) {
+        params.set("tenant", normalized);
+        const query = params.toString();
+        const fullPath = query ? `${path}?${query}` : path;
+
         if (isLocalDevHost(hostname) && devTenantUsesSubdomains()) {
-          return `${protocol}//${normalized}.${base}:${port}/login/head-office`;
+          return `${protocol}//${normalized}.${base}:${port}${fullPath}`;
         }
-        return `${origin.replace(/\/$/, "")}/login/head-office?tenant=${normalized}`;
+        return `${origin.replace(/\/$/, "")}${fullPath}`;
       }
     } catch {
       /* fall through to subdomain URL */
     }
   }
 
-  return `https://${normalized}.${base}/login/head-office`;
+  const query = params.toString();
+  const fullPath = query ? `${path}?${query}` : path;
+  return `https://${normalized}.${base}${fullPath}`;
+}
+
+/** Tenant-scoped back-office path (adds ?tenant= on platform/local hosts). */
+export function tenantAppPathUrl(
+  slug: string | null | undefined,
+  pathname: string,
+  origin?: string,
+): string | null {
+  const normalized = normalizeTenantSlug(slug);
+  if (!normalized) return null;
+  return buildTenantAppPathUrl(normalized, pathname, origin);
+}
+
+function defaultSmPwaOrigin(): string {
+  if (process.env.NEXT_PUBLIC_SM_PWA_URL) {
+    return process.env.NEXT_PUBLIC_SM_PWA_URL;
+  }
+  return process.env.NODE_ENV === "production"
+    ? `https://sm.${tenantBaseDomain()}`
+    : "http://127.0.0.1:3003";
+}
+
+function defaultFieldPwaOrigin(): string {
+  if (process.env.NEXT_PUBLIC_FIELD_PWA_URL) {
+    return process.env.NEXT_PUBLIC_FIELD_PWA_URL;
+  }
+  return process.env.NODE_ENV === "production"
+    ? `https://field.${tenantBaseDomain()}`
+    : "http://127.0.0.1:3001";
+}
+
+function defaultBackOfficeOrigin(): string {
+  return (
+    process.env.NEXT_PUBLIC_BACK_OFFICE_URL ??
+    `http://127.0.0.1:${devBackOfficePort()}`
+  );
+}
+
+function externalPortalLoginUrl(
+  base: string,
+  pathname: string,
+  slug?: string | null,
+  origin?: string,
+): string {
+  const normalized = normalizeTenantSlug(slug);
+  const root = base.replace(/\/$/, "");
+  const path = pathname.startsWith("/") ? pathname : `/${pathname}`;
+
+  if (origin && normalized) {
+    try {
+      const { hostname } = new URL(origin);
+      const useQueryBootstrap =
+        isLocalDevHost(hostname) ||
+        (!tenantSubdomainsLive() && isPlatformHost(hostname));
+      if (useQueryBootstrap) {
+        const params = new URLSearchParams();
+        params.set("tenant", normalized);
+        return `${root}${path}?${params.toString()}`;
+      }
+    } catch {
+      /* use plain path */
+    }
+  }
+
+  return `${root}${path}`;
+}
+
+export function smPortalLoginUrl(
+  origin?: string,
+  slug?: string | null,
+): string {
+  return externalPortalLoginUrl(
+    defaultSmPwaOrigin(),
+    "/login",
+    slug,
+    origin,
+  );
+}
+
+export function guardPortalLoginUrl(
+  origin?: string,
+  slug?: string | null,
+): string {
+  return externalPortalLoginUrl(
+    defaultFieldPwaOrigin(),
+    "/login",
+    slug,
+    origin,
+  );
+}
+
+export function cafeFrontPortalLoginUrl(
+  origin?: string,
+  slug?: string | null,
+): string {
+  const normalized = normalizeTenantSlug(slug);
+  if (normalized && (origin || tenantSubdomainsLive())) {
+    const tenantUrl = tenantAppPathUrl(normalized, "/login/cafe-front", origin);
+    if (tenantUrl) return tenantUrl;
+  }
+  return externalPortalLoginUrl(
+    defaultBackOfficeOrigin(),
+    "/login/cafe-front",
+    slug,
+    origin,
+  );
+}
+
+/** All tenant portal sign-in links shown in SaaS Forge tenant rows. */
+export function tenantSubPortalLinks(
+  slug: string | null | undefined,
+  origin?: string,
+): TenantSubPortalLink[] {
+  const normalized = normalizeTenantSlug(slug);
+  if (!normalized) return [];
+
+  const pathUrl = (pathname: string) =>
+    buildTenantAppPathUrl(normalized, pathname, origin);
+
+  return [
+    {
+      id: "executive",
+      label: "Executive Portal",
+      href: pathUrl("/login/head-office?next=/executive/finance"),
+    },
+    {
+      id: "hq",
+      label: "HQ Portal",
+      href: pathUrl("/login/head-office"),
+    },
+    {
+      id: "om",
+      label: "OM Portal",
+      href: pathUrl("/login/om"),
+    },
+    {
+      id: "tm",
+      label: "TM Portal",
+      href: pathUrl("/login/tm"),
+    },
+    {
+      id: "sm",
+      label: "SM Portal",
+      href: smPortalLoginUrl(origin, normalized),
+      external: true,
+    },
+    {
+      id: "checkin",
+      label: "Check-in Portal",
+      href: guardPortalLoginUrl(origin, normalized),
+      external: true,
+    },
+    {
+      id: "cafe-front",
+      label: "Café Front Office",
+      href: pathUrl("/login/cafe-front"),
+    },
+  ];
+}
+
+/** Forge table → tenant Head Office sign-in URL. */
+export function tenantPortalLoginUrl(
+  slug: string | null | undefined,
+  origin?: string,
+): string | null {
+  return tenantAppPathUrl(slug, "/login/head-office", origin);
 }
 
 export function tenantProductionDomain(

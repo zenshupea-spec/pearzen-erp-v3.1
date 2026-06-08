@@ -14,7 +14,7 @@ export default async function RootPage() {
   } = await supabase.auth.getUser();
 
   if (!user) {
-    redirect("/login/head-office");
+    redirect("/login");
   }
 
   const profile = await fetchBackOfficeUserProfile(supabase, user);

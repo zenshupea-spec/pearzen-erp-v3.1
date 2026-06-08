@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useTransition } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   Users,
   Search,
@@ -16,9 +17,8 @@ import {
   Trash2,
   Archive,
   FolderArchive,
-  ExternalLink,
-  UserCheck,
   CalendarDays,
+  Loader2,
 } from 'lucide-react';
 import {
   formatPayrollPeriodLabel,
@@ -26,12 +26,14 @@ import {
   prevPayrollMonth,
   type PayrollPeriod,
 } from '../../fm/lib/payroll-period';
-import type { SectorManagerRoster, TempGuard, TempGuardStatus } from './types';
-
-const SMS: SectorManagerRoster[] = [
-  { smId: 'SM-01', name: 'PATHIRANA', sector: 'Colombo North' },
-  { smId: 'SM-02', name: 'SILVA D.M.', sector: 'Colombo South' },
-];
+import {
+  addTempGuardAction,
+  archiveTempGuardAction,
+  removeTempGuardAction,
+  type TempRosterDeskData,
+} from './actions';
+import type { SectorManagerRoster, TempGuard } from './types';
+import { accruedPayForMonth } from './utils';
 
 function formatLKR(amount: number) {
   return new Intl.NumberFormat('en-LK', {
@@ -53,6 +55,12 @@ function totalShifts(guard: TempGuard) {
   return guard.shiftHistory.reduce((n, s) => n + s.shifts, 0);
 }
 
+function fieldIdentityToNameHint(identity: string): string | undefined {
+  const trimmed = identity.trim();
+  if (!trimmed || trimmed === '—') return undefined;
+  return trimmed.replace(/\s*\(Pending\)\s*/i, '').trim();
+}
+
 function currentMonth(): PayrollPeriod {
   const now = new Date();
   return { year: now.getFullYear(), month: now.getMonth() + 1 };
@@ -66,85 +74,50 @@ function isGuardActiveInMonth(guard: TempGuard, period: PayrollPeriod) {
   return guard.activeFrom <= monthEnd && activeEnd >= monthStart;
 }
 
-function buildInitialGuards(): { guards: TempGuard[]; nextSequence: number } {
-  const guards: TempGuard[] = [
-    {
-      id: 'TEMP-00001',
-      sequence: 1,
-      smId: 'SM-01',
-      fieldIdentity: 'Perera W.A. (Pending)',
-      status: 'ACTIVE',
-      activeFrom: '2026-02-10',
-      activeTo: null,
-      shiftHistory: [
-        { site: 'Lanka Hospitals — Night', shifts: 8 },
-        { site: 'BOC Fort — Day', shifts: 4 },
-      ],
-      accruedPay: 18000,
-    },
-    {
-      id: 'TEMP-00002',
-      sequence: 2,
-      smId: 'SM-01',
-      fieldIdentity: '—',
-      status: 'ACTIVE',
-      activeFrom: '2026-05-28',
-      activeTo: null,
-      shiftHistory: [],
-      accruedPay: 0,
-    },
-    {
-      id: 'TEMP-00003',
-      sequence: 3,
-      smId: 'SM-02',
-      fieldIdentity: 'Fernando K.J. (Pending)',
-      status: 'ACTIVE',
-      activeFrom: '2026-03-01',
-      activeTo: null,
-      shiftHistory: [{ site: 'Cinnamon Grand — Night', shifts: 8 }],
-      accruedPay: 12000,
-    },
-    {
-      id: 'TEMP-00004',
-      sequence: 4,
-      smId: 'SM-02',
-      fieldIdentity: 'Unknown Guard',
-      status: 'ACTIVE',
-      activeFrom: '2026-04-15',
-      activeTo: null,
-      shiftHistory: [{ site: 'Dialog HQ — Day', shifts: 4 }],
-      accruedPay: 6000,
-    },
-    {
-      id: 'TEMP-00005',
-      sequence: 5,
-      smId: 'SM-01',
-      fieldIdentity: 'Jayawardena R.S.',
-      status: 'ARCHIVED',
-      activeFrom: '2025-11-01',
-      activeTo: '2026-01-20',
-      archivedAt: '2026-01-22',
-      shiftHistory: [
-        { site: 'Keells Super — Day', shifts: 14 },
-        { site: 'Arpico Maharagama — Night', shifts: 6 },
-      ],
-      accruedPay: 0,
-    },
-  ];
-  return { guards, nextSequence: 6 };
+function comparePayrollPeriods(a: PayrollPeriod, b: PayrollPeriod) {
+  if (a.year !== b.year) return a.year - b.year;
+  return a.month - b.month;
 }
 
-export default function TempRosterClient() {
-  const initial = useMemo(() => buildInitialGuards(), []);
-  const [guards, setGuards] = useState<TempGuard[]>(initial.guards);
-  const [nextSequence, setNextSequence] = useState(initial.nextSequence);
+function isPayrollPeriodOnOrBefore(period: PayrollPeriod, ceiling: PayrollPeriod) {
+  return comparePayrollPeriods(period, ceiling) <= 0;
+}
+
+function liabilityMonthOptions(upTo: PayrollPeriod): PayrollPeriod[] {
+  const options: PayrollPeriod[] = [];
+  let cursor: PayrollPeriod = { year: 2025, month: 1 };
+  while (isPayrollPeriodOnOrBefore(cursor, upTo)) {
+    options.push(cursor);
+    cursor = nextPayrollMonth(cursor);
+  }
+  return options;
+}
+
+export default function TempRosterClient({ initialData }: { initialData: TempRosterDeskData }) {
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
+  const [guards, setGuards] = useState<TempGuard[]>(initialData.guards);
+  const [sectorManagers] = useState<SectorManagerRoster[]>(initialData.sectorManagers);
+  const shiftRateLkr = initialData.shiftRateLkr;
   const [search, setSearch] = useState('');
-  const [expandedSm, setExpandedSm] = useState<Set<string>>(new Set(['SM-01']));
+  const [expandedSm, setExpandedSm] = useState<Set<string>>(() => {
+    const first = initialData.sectorManagers[0]?.smId;
+    return first ? new Set([first]) : new Set();
+  });
   const [expandedGuard, setExpandedGuard] = useState<string | null>(null);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [expandedArchived, setExpandedArchived] = useState<string | null>(null);
-  const [mergeNotice, setMergeNotice] = useState<string | null>(null);
   const [liabilityMonth, setLiabilityMonth] = useState<PayrollPeriod>(currentMonth);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const currentPayrollMonth = useMemo(() => currentMonth(), []);
+  const selectableLiabilityMonths = useMemo(
+    () => liabilityMonthOptions(currentPayrollMonth),
+    [currentPayrollMonth],
+  );
+  const atCurrentLiabilityMonth = useMemo(
+    () => comparePayrollPeriods(liabilityMonth, currentPayrollMonth) >= 0,
+    [liabilityMonth, currentPayrollMonth],
+  );
 
   const activeGuards = guards.filter((g) => g.status === 'ACTIVE');
   const archivedGuards = guards.filter((g) => g.status === 'ARCHIVED');
@@ -162,13 +135,13 @@ export default function TempRosterClient() {
     () =>
       activeGuards
         .filter((g) => isGuardActiveInMonth(g, liabilityMonth))
-        .reduce((acc, g) => acc + g.accruedPay, 0),
-    [activeGuards, liabilityMonth],
+        .reduce((acc, g) => acc + accruedPayForMonth(g, liabilityMonth, shiftRateLkr), 0),
+    [activeGuards, liabilityMonth, shiftRateLkr],
   );
 
   const guardsBySm = useMemo(() => {
     const map = new Map<string, TempGuard[]>();
-    for (const sm of SMS) map.set(sm.smId, []);
+    for (const sm of sectorManagers) map.set(sm.smId, []);
     for (const g of activeGuards) {
       const list = map.get(g.smId) ?? [];
       list.push(g);
@@ -178,10 +151,10 @@ export default function TempRosterClient() {
       list.sort((a, b) => a.sequence - b.sequence);
     }
     return map;
-  }, [activeGuards]);
+  }, [activeGuards, sectorManagers]);
 
   const filteredArchived = archivedGuards.filter((g) => {
-    const sm = SMS.find((s) => s.smId === g.smId);
+    const sm = sectorManagers.find((s) => s.smId === g.smId);
     return sm && matchesSearch(g, sm);
   });
 
@@ -202,29 +175,21 @@ export default function TempRosterClient() {
     setExpandedArchived((prev) => (prev === id ? null : id));
   };
 
-  const allocateId = () => {
-    const seq = nextSequence;
-    setNextSequence((n) => n + 1);
-    return { seq, id: `TEMP-${String(seq).padStart(5, '0')}` };
-  };
-
   const addTempGuard = (smId: string) => {
-    const { seq, id } = allocateId();
-    const today = new Date().toISOString().slice(0, 10);
-    const guard: TempGuard = {
-      id,
-      sequence: seq,
-      smId,
-      fieldIdentity: '—',
-      status: 'ACTIVE',
-      activeFrom: today,
-      activeTo: null,
-      shiftHistory: [],
-      accruedPay: 0,
-    };
-    setGuards((prev) => [...prev, guard]);
-    setExpandedSm((prev) => new Set(prev).add(smId));
-    setExpandedGuard(id);
+    setActionError(null);
+    startTransition(async () => {
+      const result = await addTempGuardAction(smId);
+      if (result.error) {
+        setActionError(result.error);
+        return;
+      }
+      if (result.guard) {
+        setGuards((prev) => [...prev, result.guard!]);
+        setExpandedSm((prev) => new Set(prev).add(smId));
+        setExpandedGuard(result.guard.id);
+        router.refresh();
+      }
+    });
   };
 
   const removeTempGuard = (id: string) => {
@@ -234,26 +199,44 @@ export default function TempRosterClient() {
       window.alert('Cannot remove a temp with logged shifts. Archive or merge first.');
       return;
     }
-    setGuards((prev) => prev.filter((x) => x.id !== id));
-    if (expandedGuard === id) setExpandedGuard(null);
+    setActionError(null);
+    startTransition(async () => {
+      const result = await removeTempGuardAction(id);
+      if (result.error) {
+        setActionError(result.error);
+        return;
+      }
+      setGuards((prev) => prev.filter((x) => x.id !== id));
+      if (expandedGuard === id) setExpandedGuard(null);
+      router.refresh();
+    });
   };
 
   const archiveTempGuard = (id: string) => {
-    const today = new Date().toISOString().slice(0, 10);
-    setGuards((prev) =>
-      prev.map((g) =>
-        g.id === id
-          ? {
-              ...g,
-              status: 'ARCHIVED' as TempGuardStatus,
-              activeTo: g.activeTo ?? today,
-              archivedAt: today,
-            }
-          : g,
-      ),
-    );
-    setExpandedGuard(null);
-    setArchiveOpen(true);
+    setActionError(null);
+    startTransition(async () => {
+      const result = await archiveTempGuardAction(id);
+      if (result.error) {
+        setActionError(result.error);
+        return;
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      setGuards((prev) =>
+        prev.map((g) =>
+          g.id === id
+            ? {
+                ...g,
+                status: 'ARCHIVED',
+                activeTo: g.activeTo ?? today,
+                archivedAt: today,
+              }
+            : g,
+        ),
+      );
+      setExpandedGuard(null);
+      setArchiveOpen(true);
+      router.refresh();
+    });
   };
 
   const mergeToMnr = (id: string) => {
@@ -262,13 +245,10 @@ export default function TempRosterClient() {
       window.alert('Assign shifts before merging, or remove empty slots instead.');
       return;
     }
-    const today = new Date().toISOString().slice(0, 10);
-    setGuards((prev) => prev.filter((x) => x.id !== id));
-    setExpandedGuard(null);
-    setMergeNotice(
-      `${g.id} merged — profile and shift history moved to Master Nominal Roll.`,
-    );
-    setTimeout(() => setMergeNotice(null), 8000);
+    const params = new URLSearchParams({ temp: g.id });
+    const nameHint = fieldIdentityToNameHint(g.fieldIdentity);
+    if (nameHint) params.set('name', nameHint);
+    router.push(`/hr/onboarding?${params.toString()}`);
   };
 
   const smVisible = (sm: SectorManagerRoster) => {
@@ -317,18 +297,16 @@ export default function TempRosterClient() {
       </header>
 
       <main className="mx-auto max-w-7xl p-8 space-y-8">
-        {mergeNotice && (
-          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-start gap-3">
-              <UserCheck className="h-5 w-5 text-emerald-600 shrink-0 mt-0.5" />
-              <p className="text-sm font-semibold text-emerald-800">{mergeNotice}</p>
-            </div>
-            <Link
-              href="/hr/mnr"
-              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-white hover:bg-emerald-700 transition-colors"
-            >
-              Open MNR <ExternalLink className="h-3.5 w-3.5" />
-            </Link>
+        {actionError && (
+          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-5 py-3 text-sm font-semibold text-rose-800">
+            {actionError}
+          </div>
+        )}
+
+        {isPending && (
+          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-indigo-600">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Saving…
           </div>
         )}
 
@@ -375,23 +353,26 @@ export default function TempRosterClient() {
                   }}
                   className="min-w-[6.5rem] cursor-pointer appearance-none rounded-md border-0 bg-transparent py-1 pl-1 pr-4 text-center text-[11px] font-black text-indigo-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
                 >
-                  {Array.from({ length: 3 }, (_, yi) => 2025 + yi).flatMap((year) =>
-                    Array.from({ length: 12 }, (_, mi) => {
-                      const month = mi + 1;
-                      const p = { year, month };
-                      return (
-                        <option key={`${year}-${month}`} value={`${year}-${month}`}>
-                          {formatPayrollPeriodLabel(p)}
-                        </option>
-                      );
-                    }),
-                  )}
+                  {selectableLiabilityMonths.map((p) => (
+                    <option key={`${p.year}-${p.month}`} value={`${p.year}-${p.month}`}>
+                      {formatPayrollPeriodLabel(p)}
+                    </option>
+                  ))}
                 </select>
                 <button
                   type="button"
-                  onClick={() => setLiabilityMonth((m) => nextPayrollMonth(m))}
+                  onClick={() => {
+                    if (!atCurrentLiabilityMonth) {
+                      setLiabilityMonth((m) => nextPayrollMonth(m));
+                    }
+                  }}
+                  disabled={atCurrentLiabilityMonth}
                   aria-label="Next month"
-                  className="flex h-7 w-7 items-center justify-center rounded-md text-indigo-600 transition-colors hover:bg-indigo-100"
+                  className={`flex h-7 w-7 items-center justify-center rounded-md text-indigo-600 transition-colors ${
+                    atCurrentLiabilityMonth
+                      ? 'cursor-not-allowed opacity-40'
+                      : 'hover:bg-indigo-100'
+                  }`}
                 >
                   <ChevronRight className="h-4 w-4" />
                 </button>
@@ -412,7 +393,11 @@ export default function TempRosterClient() {
             <h3 className="text-sm font-bold text-indigo-900 uppercase">Reconciliation Protocol</h3>
             <p className="text-sm font-semibold text-indigo-700 mt-1">
               Expand a Sector Manager to manage temp guards. Each temp receives a permanent unique ID
-              (never reused). Merge sends the guard to{' '}
+              (never reused). Merge opens{' '}
+              <Link href="/hr/onboarding" className="underline font-bold">
+                Onboarding
+              </Link>{' '}
+              to create the permanent profile and transfer shift history to{' '}
               <Link href="/hr/mnr" className="underline font-bold">
                 Master Nominal Roll
               </Link>
@@ -426,20 +411,33 @@ export default function TempRosterClient() {
           <div className="border-b border-slate-200 bg-slate-50 px-6 py-4">
             <h2 className="text-sm font-bold text-slate-900 uppercase tracking-tight">
               Sector Managers — Temp Allocations
+              <span className="text-indigo-600">
+                {' '}
+                · {formatPayrollPeriodLabel(liabilityMonth, 'long')}
+              </span>
             </h2>
             <p className="text-xs font-semibold text-slate-500 mt-1">
-              Click a manager to expand · click a temp row for shift history
+              {formatPayrollPeriodLabel(liabilityMonth, 'long')} view · click a manager to expand ·
+              click a temp row for shift history
             </p>
           </div>
 
           <div className="divide-y divide-slate-100">
-            {SMS.filter(smVisible).map((sm) => {
-              const temps = (guardsBySm.get(sm.smId) ?? []).filter((g) =>
-                matchesSearch(g, sm),
-              );
+            {sectorManagers.length === 0 && (
+              <p className="px-6 py-10 text-center text-sm font-semibold text-slate-400">
+                No active sector managers found. Onboard SMs first to allocate temp guard slots.
+              </p>
+            )}
+            {sectorManagers.filter(smVisible).map((sm) => {
+              const temps = (guardsBySm.get(sm.smId) ?? [])
+                .filter((g) => isGuardActiveInMonth(g, liabilityMonth))
+                .filter((g) => matchesSearch(g, sm));
               const isOpen = expandedSm.has(sm.smId);
               const activeWithShifts = temps.filter((t) => totalShifts(t) > 0).length;
-              const smAccrued = temps.reduce((n, t) => n + t.accruedPay, 0);
+              const smAccrued = temps.reduce(
+                (n, t) => n + accruedPayForMonth(t, liabilityMonth, shiftRateLkr),
+                0,
+              );
 
               return (
                 <div key={sm.smId}>
@@ -486,7 +484,8 @@ export default function TempRosterClient() {
                         <button
                           type="button"
                           onClick={() => addTempGuard(sm.smId)}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-white px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-indigo-700 hover:bg-indigo-50 transition-colors"
+                          disabled={isPending}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-white px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-indigo-700 hover:bg-indigo-50 disabled:opacity-50 transition-colors"
                         >
                           <Plus className="h-3.5 w-3.5" /> Add temp guard
                         </button>
@@ -502,11 +501,14 @@ export default function TempRosterClient() {
                         <GuardRow
                           key={guard.id}
                           guard={guard}
+                          liabilityMonth={liabilityMonth}
+                          shiftRateLkr={shiftRateLkr}
                           expanded={expandedGuard === guard.id}
                           onToggle={() => toggleGuardDetail(guard.id)}
                           onRemove={() => removeTempGuard(guard.id)}
                           onArchive={() => archiveTempGuard(guard.id)}
                           onMerge={() => mergeToMnr(guard.id)}
+                          disabled={isPending}
                         />
                       ))}
                     </div>
@@ -553,12 +555,14 @@ export default function TempRosterClient() {
                 </p>
               ) : (
                 filteredArchived.map((guard) => {
-                  const sm = SMS.find((s) => s.smId === guard.smId)!;
+                  const sm = sectorManagers.find((s) => s.smId === guard.smId)!;
                   return (
                     <div key={guard.id} className="px-4 py-2">
                       <ArchivedGuardRow
                         guard={guard}
                         smLabel={`${sm.name} (${sm.sector})`}
+                        liabilityMonth={liabilityMonth}
+                        shiftRateLkr={shiftRateLkr}
                         expanded={expandedArchived === guard.id}
                         onToggle={() => toggleArchivedDetail(guard.id)}
                       />
@@ -574,9 +578,18 @@ export default function TempRosterClient() {
   );
 }
 
-function ShiftHistoryPanel({ guard }: { guard: TempGuard }) {
+function ShiftHistoryPanel({
+  guard,
+  liabilityMonth,
+  shiftRateLkr,
+}: {
+  guard: TempGuard;
+  liabilityMonth: PayrollPeriod;
+  shiftRateLkr: number;
+}) {
   const shifts = totalShifts(guard);
   const periodEnd = guard.activeTo ? formatDate(guard.activeTo) : 'Present';
+  const monthAccrued = accruedPayForMonth(guard, liabilityMonth, shiftRateLkr);
 
   return (
     <div className="mt-2 rounded-xl border border-slate-200 bg-white p-4 text-sm space-y-3">
@@ -599,11 +612,13 @@ function ShiftHistoryPanel({ guard }: { guard: TempGuard }) {
             </span>
           </div>
         )}
-        {guard.accruedPay > 0 && (
+        {monthAccrued > 0 && (
           <div>
-            <span className="block text-slate-400">Accrued</span>
+            <span className="block text-slate-400">
+              Accrued · {formatPayrollPeriodLabel(liabilityMonth)}
+            </span>
             <span className="text-indigo-600 font-black tabular-nums text-xs">
-              {formatLKR(guard.accruedPay)}
+              {formatLKR(monthAccrued)}
             </span>
           </div>
         )}
@@ -629,21 +644,28 @@ function ShiftHistoryPanel({ guard }: { guard: TempGuard }) {
 
 function GuardRow({
   guard,
+  liabilityMonth,
+  shiftRateLkr,
   expanded,
   onToggle,
   onRemove,
   onArchive,
   onMerge,
+  disabled,
 }: {
   guard: TempGuard;
+  liabilityMonth: PayrollPeriod;
+  shiftRateLkr: number;
   expanded: boolean;
   onToggle: () => void;
   onRemove: () => void;
   onArchive: () => void;
   onMerge: () => void;
+  disabled?: boolean;
 }) {
   const shifts = totalShifts(guard);
   const hasWork = shifts > 0;
+  const monthAccrued = accruedPayForMonth(guard, liabilityMonth, shiftRateLkr);
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
@@ -669,7 +691,7 @@ function GuardRow({
         <div className="flex items-center gap-2 ml-auto shrink-0">
           {hasWork ? (
             <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded-md">
-              {shifts} shifts · {formatLKR(guard.accruedPay)}
+              {shifts} shifts · {formatLKR(monthAccrued)}
             </span>
           ) : (
             <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-md uppercase tracking-widest">
@@ -681,7 +703,8 @@ function GuardRow({
             <button
               type="button"
               onClick={onMerge}
-              className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-white transition-colors"
+              disabled={disabled}
+              className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-white transition-colors"
             >
               <ArrowRightLeft className="h-3 w-3" /> Merge → MNR
             </button>
@@ -691,8 +714,9 @@ function GuardRow({
             <button
               type="button"
               onClick={onArchive}
+              disabled={disabled}
               title="Archive temp guard"
-              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 px-2 py-1.5 text-[10px] font-bold uppercase text-slate-600 transition-colors"
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-50 px-2 py-1.5 text-[10px] font-bold uppercase text-slate-600 transition-colors"
             >
               <Archive className="h-3 w-3" />
             </button>
@@ -700,8 +724,9 @@ function GuardRow({
             <button
               type="button"
               onClick={onRemove}
+              disabled={disabled}
               title="Remove empty slot"
-              className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 px-2 py-1.5 text-[10px] font-bold uppercase text-rose-700 transition-colors"
+              className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 disabled:opacity-50 px-2 py-1.5 text-[10px] font-bold uppercase text-rose-700 transition-colors"
             >
               <Trash2 className="h-3 w-3" />
             </button>
@@ -709,7 +734,15 @@ function GuardRow({
         </div>
       </div>
 
-      {expanded && <div className="px-4 pb-4"><ShiftHistoryPanel guard={guard} /></div>}
+      {expanded && (
+        <div className="px-4 pb-4">
+          <ShiftHistoryPanel
+            guard={guard}
+            liabilityMonth={liabilityMonth}
+            shiftRateLkr={shiftRateLkr}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -717,11 +750,15 @@ function GuardRow({
 function ArchivedGuardRow({
   guard,
   smLabel,
+  liabilityMonth,
+  shiftRateLkr,
   expanded,
   onToggle,
 }: {
   guard: TempGuard;
   smLabel: string;
+  liabilityMonth: PayrollPeriod;
+  shiftRateLkr: number;
   expanded: boolean;
   onToggle: () => void;
 }) {
@@ -751,7 +788,11 @@ function ArchivedGuardRow({
       </button>
       {expanded && (
         <div className="px-4 pb-4">
-          <ShiftHistoryPanel guard={guard} />
+          <ShiftHistoryPanel
+            guard={guard}
+            liabilityMonth={liabilityMonth}
+            shiftRateLkr={shiftRateLkr}
+          />
         </div>
       )}
     </div>

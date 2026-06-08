@@ -1,6 +1,7 @@
 'use server';
 
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
+import { decryptEmployeePiiValue } from '../../../lib/employee-pii';
 
 export async function fetchBankExportData() {
   try {
@@ -42,7 +43,7 @@ export async function fetchBankExportData() {
         emp_id: emp.emp_number || emp.id.substring(0,8).toUpperCase(),
         beneficiary: (emp.full_name || 'UNNAMED EMPLOYEE').toUpperCase(),
         bank_name: bankName,
-        account_number: emp.account_number || 'N/A',
+        account_number: decryptEmployeePiiValue(emp.account_number) || 'N/A',
         net_pay: netPay,
         is_commercial_bank: bankName.includes('COMMERCIAL') || bankName === 'COMBANK',
         reference: `SALARY-${new Date().toISOString().slice(0,7).replace('-','')}`

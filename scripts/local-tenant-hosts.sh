@@ -6,10 +6,9 @@ set -e
 
 MARK="# pearzen-tenant-dev"
 HOSTS="/etc/hosts"
-BASE="${NEXT_PUBLIC_TENANT_BASE_DOMAIN:-pearzen.com}"
+BASE="${NEXT_PUBLIC_TENANT_BASE_DOMAIN:-pearzen.tech}"
 
 entries="
-127.0.0.1 classic-venture.${BASE}
 127.0.0.1 cvs.${BASE}
 127.0.0.1 forge.${BASE}
 127.0.0.1 erp.${BASE}

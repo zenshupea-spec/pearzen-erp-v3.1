@@ -31,12 +31,14 @@ export default function InductionForm({
   action,
   rankMatrix,
   canManageExecutive = false,
+  mergeContext,
 }: {
   action: (formData: FormData) => Promise<void>;
   rankMatrix: RankPayEntry[];
   canManageExecutive?: boolean;
+  mergeContext?: { tempId: string; nameHint?: string };
 }) {
-  const [selectedGroup, setSelectedGroup] = useState('');
+  const [selectedGroup, setSelectedGroup] = useState(mergeContext ? 'GUARD' : '');
   const [selectedRank, setSelectedRank] = useState('');
   const [assignedSite, setAssignedSite] = useState('Unassigned (Bench)');
   const [salaryType, setSalaryType] = useState('BANK');
@@ -70,6 +72,7 @@ export default function InductionForm({
 
   return (
     <form action={action} encType="multipart/form-data" className="p-8 space-y-10">
+      {mergeContext && <input type="hidden" name="temp_emp_id" value={mergeContext.tempId} />}
       {/* ── Section 1: Identity & Demographics ── */}
       <div className="space-y-5">
         <div className="flex items-center gap-3 pb-3 border-b border-slate-200">
@@ -90,6 +93,7 @@ export default function InductionForm({
               type="text"
               name="full_name"
               required
+              defaultValue={mergeContext?.nameHint?.toUpperCase()}
               placeholder="e.g. PATHIRANA K.R.S."
               className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono placeholder:text-slate-400 focus:ring-2 focus:ring-rose-500 outline-none uppercase"
             />

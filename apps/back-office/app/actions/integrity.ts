@@ -69,7 +69,9 @@ export async function resolveDiscrepancy(
     action_type: 'TIME_DISCREPANCY_OVERRIDE',
     admin_id: adminId,
     target_guard_id: log.guard_id,
-    details: `Resolved conflict for Log ${logId}. Action: ${resolutionType}. Final Time: ${finalTime}`,
+    details: {
+      summary: `Resolved conflict for Log ${logId}. Action: ${resolutionType}. Final Time: ${finalTime}`,
+    },
   });
 
   revalidatePath('/om/discrepancies');
@@ -232,7 +234,9 @@ export async function saveRecoveryPlan({
     action_type: 'RECOVERY_PLAN_SAVED',
     admin_id: editorId,
     target_guard_id: guardId,
-    details: `Recovery plan saved for Log ${attendanceLogId}. Method: ${deductionMethod}. Amount: LKR ${recoveryAmountLkr}. Spread over ${monthsToRecover} month(s). Guards: ${guardSummary}.`,
+    details: {
+      summary: `Recovery plan saved for Log ${attendanceLogId}. Method: ${deductionMethod}. Amount: LKR ${recoveryAmountLkr}. Spread over ${monthsToRecover} month(s). Guards: ${guardSummary}.`,
+    },
   });
 
   revalidatePath('/om/discrepancies');

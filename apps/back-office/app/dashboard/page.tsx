@@ -2,7 +2,9 @@ import { redirect } from 'next/navigation';
 
 import MasterHubView from '../../components/hq/MasterHubView';
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
-import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access';
+import { fetchBackOfficeUserProfile, portalPathForRole } from '../../lib/hr-portal-access';
+import { canAccessHqHub } from '../../lib/hq-hub';
+import { getMasterHubBadges } from '../../lib/master-hub-actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,15 +26,19 @@ export default async function HqMasterHubPage() {
     redirect('/login/head-office?error=no_portal_rank');
   }
 
+  if (!canAccessHqHub(role)) {
+    redirect(portalPathForRole(role) ?? '/login/head-office?error=no_portal_rank');
+  }
+
   const profileName =
     profile.full_name?.trim() || user.email?.split('@')[0] || 'User';
-  const canAccessExecutive = role === 'MD' || role === 'OD';
+  const badges = await getMasterHubBadges();
 
   return (
     <MasterHubView
       role={role}
       profileName={profileName}
-      canAccessExecutive={canAccessExecutive}
+      badges={badges}
     />
   );
 }

@@ -10,13 +10,17 @@ import {
   CLASSIC_VENTURE_COMPANY_ID,
   resolveCompanyIdForSession,
 } from "../../lib/company-context";
-import { encrypt, decrypt } from "../../lib/encryption";
+import {
+  decryptEmployeePiiRecord,
+  encryptEmployeePiiRecord,
+} from "../../lib/employee-pii";
 import {
   assertCanChangeEmployeeStatus,
   assertMnrEditAllowed,
 } from "../../lib/executive-rank-guard";
 import {
   assertHrPortalEditor,
+  canAccessHrPortal,
   fetchBackOfficeUserProfile,
   formatHrPortalEditorLabel,
 } from "../../lib/hr-portal-access";
@@ -115,6 +119,20 @@ async function fetchEmployeeRows(supabase, companyId) {
 
 export async function getEmployees() {
   const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    throw new Error("You must be signed in.");
+  }
+
+  const profile = await fetchBackOfficeUserProfile(supabase, user);
+  if (!canAccessHrPortal(profile.role)) {
+    throw new Error("You do not have access to the Master Nominal Roll.");
+  }
+
   const sessionCompanyId = await resolveCompanyIdForSession(supabase);
   const preferredCompanyId = rosterCompanyId(sessionCompanyId);
 
@@ -149,10 +167,8 @@ export async function getEmployees() {
   }
 
   return rows.map((emp) => ({
-    ...emp,
+    ...decryptEmployeePiiRecord(emp),
     base_salary: emp.base_salary ?? emp.basic_salary ?? null,
-    nic: decrypt(emp.nic),
-    phone: decrypt(emp.phone),
     has_recent_shift: employeeHasRecentShift(emp, activity),
   }));
 }
@@ -219,13 +235,13 @@ export async function saveEmployee(formData) {
 
   const id = formData.get("id");
 
-  const employeeData = {
+  const employeeData = encryptEmployeePiiRecord({
     full_name: formData.get("full_name"),
     role: formData.get("role"),
-    nic: encrypt(formData.get("nic")),
-    phone: encrypt(formData.get("phone")),
-    status: "Active", // Default on creation
-  };
+    nic: formData.get("nic"),
+    phone: formData.get("phone"),
+    status: "Active",
+  });
 
   let error;
   if (id) {

@@ -1,8 +1,8 @@
 import { redirect } from 'next/navigation';
 
-import { HQ_HUB_PATH } from '../../lib/hq-hub';
+import { EXECUTIVE_DESK_PATH } from '../../lib/hq-hub';
 
-/** /executive root — send MD/OD to the HQ nexus, not straight into CV Operations. */
+/** /executive root — MD/OD Executive Vault entry. */
 export default function ExecutivePage() {
-  redirect(HQ_HUB_PATH);
+  redirect(EXECUTIVE_DESK_PATH);
 }

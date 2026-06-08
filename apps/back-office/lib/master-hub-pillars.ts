@@ -5,7 +5,14 @@ export type MasterHubModule = {
   badge?: string;
   subtext?: string;
   isProxy?: boolean;
+  external?: boolean;
 };
+
+/** Logical route key for the guard field PWA (resolved to external URL in Master Hub). */
+export const GUARD_FIELD_PORTAL_ROUTE = 'guard-field-portal';
+
+/** Café front-line staff portal (EPF login · orders · compliance photos). */
+export const CAFE_FRONT_PORTAL_ROUTE = 'cafe-front-portal';
 
 export type MasterHubPillar = {
   title: string;
@@ -22,7 +29,6 @@ export const MASTER_HUB_PILLARS: MasterHubPillar[] = [
         description:
           'Live field radar — tactical deployment, guard cards, sector health, and deficit triage.',
         route: '/om',
-        badge: '4 Sites Short',
       },
       {
         label: 'TM Command Center',
@@ -35,16 +41,21 @@ export const MASTER_HUB_PILLARS: MasterHubPillar[] = [
         description:
           'Sector manager view — roster assignments, guard performance, and shift handovers.',
         route: '/hq/sm-proxy',
-        badge: '12 Rosters Pending',
         isProxy: true,
       },
       {
         label: 'Check-in App',
         description:
-          'Guard attendance and geofenced check-in stream, viewed from HQ.',
-        route: '/hq/guard-proxy',
-        badge: '3 Missed Scans',
-        isProxy: true,
+          'Guard attendance and geofenced check-in — open the field portal.',
+        route: GUARD_FIELD_PORTAL_ROUTE,
+        external: true,
+      },
+      {
+        label: 'Café Front Office',
+        description:
+          'Counter staff portal — compliance photos, order queue, expiry lots, menu requests, and roster leave.',
+        route: CAFE_FRONT_PORTAL_ROUTE,
+        external: true,
       },
     ],
   },
@@ -56,21 +67,18 @@ export const MASTER_HUB_PILLARS: MasterHubPillar[] = [
         description:
           'Payroll processing, salary bank export, and deductions — not client AR collections.',
         route: '/fm',
-        badge: '2 Batches Pending',
       },
       {
         label: 'Deductions Admin',
         description:
           'Review and approve deduction entries before payroll lock.',
         route: '/hq/deductions',
-        badge: '5 Unapproved',
       },
       {
         label: 'Invoice Desk',
         description:
           'Client invoice management, aging reports, and payment reconciliation.',
         route: '/invoice-desk',
-        badge: 'LKR 1.2M Overdue',
       },
     ],
   },
@@ -82,7 +90,6 @@ export const MASTER_HUB_PILLARS: MasterHubPillar[] = [
         description:
           'Workforce management, roster administration, advances, and personnel records.',
         route: '/hr',
-        badge: '8 Expiring Clearances',
       },
       {
         label: 'Open Vacancies & Ads',
@@ -100,14 +107,12 @@ export const MASTER_HUB_PILLARS: MasterHubPillar[] = [
         description:
           'Café roster, float reconciliation, inventory, and daily operations.',
         route: '/executive/cafe',
-        badge: 'Stock Alert',
       },
       {
-        label: 'Master Audit Ledger',
+        label: 'Portal Activity Ledger',
         description:
-          'System-wide audit trail across all modules and user actions.',
-        route: '/executive/audit',
-        subtext: 'Excludes MD/OD Vault activity',
+          'Immutable log of your portal actions — every change is recorded.',
+        route: '/hq/audit',
       },
     ],
   },

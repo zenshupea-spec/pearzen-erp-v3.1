@@ -27,6 +27,11 @@ import {
 } from './lib/payroll-period';
 import { getDeductionMonthLockStatus } from '../hq/deductions/actions';
 import {
+  getFmPortfolio,
+  saveFmShiftAdjustment,
+  type FmPortfolioPayload,
+} from './portfolio-actions';
+import {
   getClientDeductionMonthLockedAt,
   payrollMonthFromFmPeriod,
   subscribeDeductionMonthLock,
@@ -1107,6 +1112,33 @@ function initializeShiftState(seed: SiteSeed[]): Site[] {
   }));
 }
 
+function mergePortfolioAdjustments(
+  sites: Site[],
+  adjustments: FmPortfolioPayload['shiftAdjustments'],
+): Site[] {
+  return sites.map((site) => ({
+    ...site,
+    employees: site.employees.map((emp) => {
+      const key = `${site.id}:${emp.id}`;
+      const adj = adjustments[key];
+      if (!adj) return emp;
+      const withDelta: Employee = {
+        ...emp,
+        fmShiftDelta: adj.delta,
+        shiftAuditLog: adj.audit.map((entry) => ({
+          id: crypto.randomUUID(),
+          at: entry.at,
+          source: 'FM' as const,
+          previousShifts: entry.previousShifts,
+          newShifts: entry.newShifts,
+          detail: entry.detail,
+        })),
+      };
+      return syncEmployeeShiftCount(withDelta);
+    }),
+  }));
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const lkr = (n: number) =>
@@ -2091,10 +2123,10 @@ function applyShiftAdjustToSites(
 }
 
 export default function FMPortalPage() {
-  const [pinnedSites, setPinnedSites] = useState(() =>
-    initializeShiftState(MOCK_PINNED_GROUP_SITES_SEED),
-  );
-  const [sites, setSites] = useState(() => initializeShiftState(MOCK_SITES_SEED));
+  const [pinnedSites, setPinnedSites] = useState<Site[]>([]);
+  const [sites, setSites] = useState<Site[]>([]);
+  const [portfolioLoading, setPortfolioLoading] = useState(true);
+  const [portfolioError, setPortfolioError] = useState<string | null>(null);
   const [payrollPeriod, setPayrollPeriod] = useState(FM_LIVE_PAYROLL_PERIOD);
   const [activeReport, setActiveReport] = useState<FmPortfolioReportKind | null>(null);
   const [workflowStatus, setWorkflowStatus] = useState<PayrollWorkflowStatus>(() =>
@@ -2142,6 +2174,37 @@ export default function FMPortalPage() {
     };
   }, [sites, portfolioScale]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setPortfolioLoading(true);
+    void getFmPortfolio(payrollPeriod).then((payload) => {
+      if (cancelled) return;
+      if (payload.error) {
+        setPortfolioError(payload.error);
+        setPinnedSites(initializeShiftState(MOCK_PINNED_GROUP_SITES_SEED));
+        setSites(initializeShiftState(MOCK_SITES_SEED));
+      } else {
+        setPortfolioError(null);
+        setPinnedSites(
+          mergePortfolioAdjustments(
+            initializeShiftState(payload.pinnedSites as SiteSeed[]),
+            payload.shiftAdjustments,
+          ),
+        );
+        setSites(
+          mergePortfolioAdjustments(
+            initializeShiftState(payload.sites as SiteSeed[]),
+            payload.shiftAdjustments,
+          ),
+        );
+      }
+      setPortfolioLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [payrollPeriod]);
+
   useEffect(() => subscribePayrollWorkflow(() => {
     setWorkflowStatus(getGroupWorkflow('security').status);
   }), []);
@@ -2160,6 +2223,22 @@ export default function FMPortalPage() {
     delta: number,
     note: string,
   ): Employee | undefined => {
+    const persistAdjustment = (updatedEmployee?: Employee) => {
+      if (!updatedEmployee || !isLivePeriod) return;
+      const previous = updatedEmployee.shiftAuditLog.at(-1)?.previousShifts;
+      const next = updatedEmployee.shiftAuditLog.at(-1)?.newShifts;
+      if (previous == null || next == null) return;
+      void saveFmShiftAdjustment({
+        employeeId,
+        siteKey: siteId,
+        payrollMonth: livePayrollMonth,
+        delta,
+        previousShifts: previous,
+        newShifts: next,
+        detail: note,
+      });
+    };
+
     if (siteId === 'group-cvs' || siteId === 'group-cvs-sm' || siteId === 'group-cafe') {
       let updatedEmployee: Employee | undefined;
       setPinnedSites((prev) => {
@@ -2167,6 +2246,7 @@ export default function FMPortalPage() {
         updatedEmployee = result.updatedEmployee;
         return result.sites;
       });
+      persistAdjustment(updatedEmployee);
       return updatedEmployee;
     }
 
@@ -2176,6 +2256,7 @@ export default function FMPortalPage() {
       updatedEmployee = result.updatedEmployee;
       return result.sites;
     });
+    persistAdjustment(updatedEmployee);
     return updatedEmployee;
   };
 
@@ -2222,6 +2303,18 @@ export default function FMPortalPage() {
           {/* Status bar */}
           <div className="mt-5 flex w-full flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-3">
+            {portfolioLoading && (
+              <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 shadow-sm">
+                <span className="text-[10px] font-semibold text-blue-700">Loading live portfolio…</span>
+              </div>
+            )}
+            {portfolioError && !portfolioLoading && (
+              <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 shadow-sm">
+                <span className="text-[10px] font-semibold text-amber-800">
+                  Live data unavailable — showing fallback roster
+                </span>
+              </div>
+            )}
             <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
               <Building2 className="h-3.5 w-3.5 text-slate-400" />
               <span className="text-[10px] font-semibold text-slate-500">

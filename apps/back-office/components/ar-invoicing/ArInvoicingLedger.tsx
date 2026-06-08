@@ -40,6 +40,19 @@ import { ExecutiveGlassCard } from '../executive/ExecutiveVaultShell';
 import { InvoiceDeskCard, InvoiceDeskModalCard } from '../invoice-desk/InvoiceDeskShell';
 import { InvoiceDeskBillingModal } from '../invoice-desk/InvoiceDeskBillingModal';
 import { getInvoiceDeskSettings } from '../../app/invoice-desk/actions';
+import { getArLedger, saveArLedger } from '../../app/ar-invoicing/actions';
+import type { ArGuardRosterEntry } from '../../lib/ar-invoicing/live-ledger';
+import {
+  MONTH_SHORT,
+  buildChronoMonthKeys,
+  buildMonthsForYear,
+  buildRollingMonthDefs,
+  getCurrentMonthKey,
+  monthKeyAfter as monthKeyAfterInChrono,
+  monthKeyBefore as monthKeyBeforeInChrono,
+  monthKeyToLabel,
+  type MonthDef,
+} from '../../lib/ar-invoicing/month-window';
 import {
   buildTaxInvoiceHtml,
   openTaxInvoiceDocument,
@@ -60,6 +73,7 @@ import {
   countMissingTaxInvoiceNumbers,
   deriveTaxSeqFromClients,
 } from '../../lib/invoice-desk/tax-invoice';
+import { HQ_HUB_PATH } from '../../lib/hq-hub';
 
 export type ArInvoicingVariant = 'md' | 'exec-admin' | 'invoice-desk';
 
@@ -224,59 +238,24 @@ function filterAuditEventsForVariant(
 
 // ─── Month keys: rolling KPI window + calendar-year grid ─────────────────────
 
-const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
-
-/** Rolling 12 months ending May 2026 — used for KPI scope filters. */
-const MONTHS: { key: string; label: string; short: string }[] = [
-  { key: '2025-06', label: 'Jun 2025', short: 'Jun' },
-  { key: '2025-07', label: 'Jul 2025', short: 'Jul' },
-  { key: '2025-08', label: 'Aug 2025', short: 'Aug' },
-  { key: '2025-09', label: 'Sep 2025', short: 'Sep' },
-  { key: '2025-10', label: 'Oct 2025', short: 'Oct' },
-  { key: '2025-11', label: 'Nov 2025', short: 'Nov' },
-  { key: '2025-12', label: 'Dec 2025', short: 'Dec' },
-  { key: '2026-01', label: 'Jan 2026', short: 'Jan' },
-  { key: '2026-02', label: 'Feb 2026', short: 'Feb' },
-  { key: '2026-03', label: 'Mar 2026', short: 'Mar' },
-  { key: '2026-04', label: 'Apr 2026', short: 'Apr' },
-  { key: '2026-05', label: 'May 2026', short: 'May' },
-];
-
-const GRID_CURRENT_YEAR = 2026;
 const GRID_MIN_YEAR = 2020;
-const GRID_MAX_YEAR = 2026;
-const CURRENT_MONTH_KEY = '2026-05';
 
-function buildChronoMonthKeys(fromYear: number, toYear: number): string[] {
-  const keys: string[] = [];
-  for (let y = fromYear; y <= toYear; y++) {
-    for (let m = 1; m <= 12; m++) {
-      keys.push(`${y}-${String(m).padStart(2, '0')}`);
-    }
-  }
-  return keys;
+function gridMaxYear(): number {
+  return new Date().getFullYear();
 }
 
-const CHRONO_MONTH_KEYS = buildChronoMonthKeys(GRID_MIN_YEAR, GRID_MAX_YEAR + 1);
-
-function buildMonthsForYear(year: number): { key: string; label: string; short: string }[] {
-  return MONTH_SHORT.map((short, i) => {
-    const month = i + 1;
-    const key = `${year}-${String(month).padStart(2, '0')}`;
-    return { key, label: `${short} ${year}`, short };
-  });
+function chronoMonthKeys(): string[] {
+  return buildChronoMonthKeys(GRID_MIN_YEAR, gridMaxYear() + 1);
 }
 
 const BANK_FEE_TOLERANCE = 300;
 
 function monthKeyBefore(monthKey: string): string | undefined {
-  const idx = CHRONO_MONTH_KEYS.indexOf(monthKey);
-  return idx > 0 ? CHRONO_MONTH_KEYS[idx - 1] : undefined;
+  return monthKeyBeforeInChrono(monthKey, chronoMonthKeys());
 }
 
 function monthKeyAfter(monthKey: string): string | undefined {
-  const idx = CHRONO_MONTH_KEYS.indexOf(monthKey);
-  return idx >= 0 && idx < CHRONO_MONTH_KEYS.length - 1 ? CHRONO_MONTH_KEYS[idx + 1] : undefined;
+  return monthKeyAfterInChrono(monthKey, chronoMonthKeys());
 }
 
 function rolloverSourceLabel(monthKey: string): string {
@@ -338,221 +317,6 @@ function applyNextMonthRollover(
   return invoices;
 }
 
-// ─── Demo data ────────────────────────────────────────────────────────────────
-
-function makeCell(
-  status: PayStatus,
-  invNo: string,
-  rankLines: RankShiftLine[],
-  patrols: PatrolVisit[],
-  paidDate?: string,
-  dueDate?: string,
-): InvoiceCell {
-  const rankTotal   = rankLines.reduce((s, l) => s + l.headcount * l.shiftsPerHead * l.ratePerShift, 0);
-  const patrolTotal = patrols.reduce((s, p) => s + p.charge, 0);
-  return { status, invoiceNo: invNo, totalAmount: rankTotal + patrolTotal, rankLines, patrols, paidDate, dueDate };
-}
-
-// ── Sampath Bank May 2026: standard lines + Temp Duty event bill ──────────────
-const SAMPATH_MAY26: InvoiceCell = {
-  status: 'PENDING',
-  invoiceNo: 'INV-2605-001',
-  totalAmount: 248_500, // 2*20*3200 + 1*20*4800 + 4*1*5500 + 2500
-  rankLines: [
-    { rank: 'JSO', headcount: 2, shiftsPerHead: 20, ratePerShift: 3200 },
-    { rank: 'SSO', headcount: 1, shiftsPerHead: 20, ratePerShift: 4800 },
-    {
-      rank: 'JSO',
-      headcount: 4,
-      shiftsPerHead: 1,
-      ratePerShift: 5500,
-      isEventBill: true,
-      eventLabel: 'Tech Conference Security · 15 May',
-    },
-  ],
-  patrols: [{ visitId: 'V8', date: '2026-05-08', sm: 'SSO Pradeep', charge: 2500 }],
-  dueDate: '2026-06-07',
-};
-
-// ── Arpico Supercentre May 2026: includes a Pass-Through Penalty deduction ────
-const ARPICO_MAY26: InvoiceCell = {
-  status: 'PENDING',
-  invoiceNo: 'INV-2605-003',
-  totalAmount: 336_000, // 4*20*4200
-  rankLines: [{ rank: 'JSO', headcount: 4, shiftsPerHead: 20, ratePerShift: 4200 }],
-  patrols: [],
-  dueDate: '2026-06-07',
-  clientDeductions: [
-    {
-      penaltyId: 'PEN-2026-003',
-      incidentRef: 'INC-2026-047',
-      totalClientLoss: 75_000,
-      deductionThisMonth: 37_500,
-      responsibleGuards: [
-        { empNo: 'EMP-1042', name: 'Suresh Bandara' },
-        { empNo: 'EMP-1087', name: 'Ranjith Perera' },
-        { empNo: 'EMP-1103', name: 'Chaminda Silva' },
-      ],
-      monthlyDeductionPerGuard: 12_500,
-      durationMonths: 2,
-      monthsCompleted: 1,
-      recoveredToDate: 37_500,
-      omNote:
-        'Unauthorized access via unmanned rear gate on night shift (04 May). 3 guards confirmed on duty during the incident window.',
-    },
-  ],
-};
-
-/** Demo bank-transfer receipt for MD verification flow testing */
-const DEMO_PAYMENT_PROOF_SVG =
-  'data:image/svg+xml,' +
-  encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="480" height="300" viewBox="0 0 480 300">
-      <rect width="480" height="300" fill="#f8fafc"/>
-      <rect x="24" y="24" width="432" height="252" rx="12" fill="#fff" stroke="#cbd5e1"/>
-      <text x="48" y="72" font-family="system-ui,sans-serif" font-size="18" font-weight="700" fill="#0f172a">Bank Transfer — Demo Receipt</text>
-      <text x="48" y="108" font-family="system-ui,sans-serif" font-size="13" fill="#64748b">Lanka Hospitals · INV-2603-002 · Mar 2026</text>
-      <text x="48" y="148" font-family="system-ui,sans-serif" font-size="14" fill="#334155">Amount: LKR 420,000.00</text>
-      <text x="48" y="176" font-family="system-ui,sans-serif" font-size="12" fill="#64748b">Ref: TRF-20260322-7841 · Exec Admin proof (demo)</text>
-    </svg>`,
-  );
-
-// ── Lanka Hospitals Mar 2026: awaiting MD (Exec Admin proof submitted) ───────
-const LH_MAR26_MD_VERIFY: InvoiceCell = {
-  ...makeCell(
-    'PENDING_MD_VERIFICATION',
-    'INV-2603-002',
-    [
-      { rank: 'JSO', headcount: 3, shiftsPerHead: 27, ratePerShift: 3800 },
-      { rank: 'OIC', headcount: 1, shiftsPerHead: 27, ratePerShift: 5200 },
-    ],
-    [{ visitId: 'V15', date: '2026-03-22', sm: 'OIC Nimal', charge: 3000 }],
-    undefined,
-    '2026-04-07',
-  ),
-  pendingVerificationProof: DEMO_PAYMENT_PROOF_SVG,
-  auditEvents: [
-    {
-      id: 'aud-demo-lh-mar-gen',
-      version: 1,
-      action: 'INVOICE_GENERATED',
-      statusAfter: 'PENDING',
-      at: '2026-03-01T09:00:00.000Z',
-      actor: 'System',
-      detail: 'Invoice INV-2603-002 issued for Mar 2026',
-    },
-    {
-      id: 'aud-demo-lh-mar-proof',
-      version: 2,
-      action: 'PROOF_SUBMITTED',
-      statusAfter: 'PENDING_MD_VERIFICATION',
-      at: '2026-03-22T14:30:00.000Z',
-      actor: 'Exec Admin — Finance',
-      detail:
-        'Payment proof submitted · LKR 420.0K reported received · bank transfer',
-    },
-  ],
-};
-
-// ── Lanka Hospitals Apr 2026: DISPUTED ───────────────────────────────────────
-const LH_APR26: InvoiceCell = {
-  ...makeCell(
-    'DISPUTED',
-    'INV-2604-002',
-    [
-      { rank: 'JSO', headcount: 3, shiftsPerHead: 26, ratePerShift: 3800 },
-      { rank: 'OIC', headcount: 1, shiftsPerHead: 26, ratePerShift: 5200 },
-    ],
-    [],
-    undefined,
-    '2026-05-07',
-  ),
-  disputeRef: 'DISP-2026-018',
-  disputeNote:
-    'Client contesting billed patrol charges for Apr. CCTV review pending — dispute hold placed by Executive Admin; MD approval after resolution.',
-};
-
-const DEMO_CLIENTS: ClientRecord[] = [
-  {
-    clientId: 'C001',
-    clientName: 'Sampath Bank PLC',
-    sector: 'Nugegoda',
-    invoices: {
-      '2025-06': makeCell('PAID', 'INV-2506-001', [{ rank: 'JSO', headcount: 2, shiftsPerHead: 26, ratePerShift: 3200 }, { rank: 'SSO', headcount: 1, shiftsPerHead: 26, ratePerShift: 4200 }], [{ visitId: 'V1', date: '2025-06-12', sm: 'SSO Pradeep', charge: 2500 }, { visitId: 'V2', date: '2025-06-26', sm: 'SSO Pradeep', charge: 2500 }], '2025-07-05', '2025-07-07'),
-      '2025-07': makeCell('PAID', 'INV-2507-001', [{ rank: 'JSO', headcount: 2, shiftsPerHead: 27, ratePerShift: 3200 }, { rank: 'SSO', headcount: 1, shiftsPerHead: 27, ratePerShift: 4200 }], [{ visitId: 'V3', date: '2025-07-10', sm: 'SSO Pradeep', charge: 2500 }], '2025-08-03'),
-      '2025-08': makeCell('PAID', 'INV-2508-001', [{ rank: 'JSO', headcount: 2, shiftsPerHead: 26, ratePerShift: 3200 }, { rank: 'SSO', headcount: 1, shiftsPerHead: 26, ratePerShift: 4200 }], [], '2025-09-04'),
-      '2025-09': makeCell('PAID', 'INV-2509-001', [{ rank: 'JSO', headcount: 2, shiftsPerHead: 25, ratePerShift: 3200 }, { rank: 'SSO', headcount: 1, shiftsPerHead: 25, ratePerShift: 4200 }], [{ visitId: 'V4', date: '2025-09-15', sm: 'SSO Pradeep', charge: 2500 }], '2025-10-06'),
-      '2025-10': makeCell('PAID', 'INV-2510-001', [{ rank: 'JSO', headcount: 2, shiftsPerHead: 27, ratePerShift: 3200 }, { rank: 'SSO', headcount: 1, shiftsPerHead: 27, ratePerShift: 4200 }], [], '2025-11-04'),
-      '2025-11': makeCell('PAID', 'INV-2511-001', [{ rank: 'JSO', headcount: 2, shiftsPerHead: 26, ratePerShift: 3200 }, { rank: 'SSO', headcount: 1, shiftsPerHead: 26, ratePerShift: 4200 }], [{ visitId: 'V5', date: '2025-11-18', sm: 'SSO Pradeep', charge: 2500 }], '2025-12-05'),
-      '2025-12': makeCell('PAID', 'INV-2512-001', [{ rank: 'JSO', headcount: 2, shiftsPerHead: 27, ratePerShift: 3200 }, { rank: 'SSO', headcount: 1, shiftsPerHead: 27, ratePerShift: 4800 }], [], '2026-01-07'),
-      '2026-01': makeCell('PAID', 'INV-2601-001', [{ rank: 'JSO', headcount: 2, shiftsPerHead: 26, ratePerShift: 3200 }, { rank: 'SSO', headcount: 1, shiftsPerHead: 26, ratePerShift: 4800 }], [{ visitId: 'V6', date: '2026-01-14', sm: 'SSO Pradeep', charge: 2500 }], '2026-02-05'),
-      '2026-02': makeCell('PAID', 'INV-2602-001', [{ rank: 'JSO', headcount: 2, shiftsPerHead: 24, ratePerShift: 3200 }, { rank: 'SSO', headcount: 1, shiftsPerHead: 24, ratePerShift: 4800 }], [], '2026-03-06'),
-      '2026-03': makeCell('PAID', 'INV-2603-001', [{ rank: 'JSO', headcount: 2, shiftsPerHead: 27, ratePerShift: 3200 }, { rank: 'SSO', headcount: 1, shiftsPerHead: 27, ratePerShift: 4800 }], [{ visitId: 'V7', date: '2026-03-20', sm: 'SSO Pradeep', charge: 2500 }], '2026-04-04'),
-      '2026-04': makeCell('PAID', 'INV-2604-001', [{ rank: 'JSO', headcount: 2, shiftsPerHead: 26, ratePerShift: 3200 }, { rank: 'SSO', headcount: 1, shiftsPerHead: 26, ratePerShift: 4800 }], [], '2026-05-05'),
-      '2026-05': SAMPATH_MAY26,
-    },
-  },
-  {
-    clientId: 'C002',
-    clientName: 'Lanka Hospitals',
-    sector: 'Colombo 5',
-    invoices: {
-      '2025-06': makeCell('PAID', 'INV-2506-002', [{ rank: 'JSO', headcount: 3, shiftsPerHead: 26, ratePerShift: 3800 }, { rank: 'OIC', headcount: 1, shiftsPerHead: 26, ratePerShift: 5200 }], [{ visitId: 'V9', date: '2025-06-08', sm: 'OIC Nimal', charge: 3000 }, { visitId: 'V10', date: '2025-06-22', sm: 'OIC Nimal', charge: 3000 }], '2025-07-06'),
-      '2025-07': makeCell('PAID', 'INV-2507-002', [{ rank: 'JSO', headcount: 3, shiftsPerHead: 27, ratePerShift: 3800 }, { rank: 'OIC', headcount: 1, shiftsPerHead: 27, ratePerShift: 5200 }], [{ visitId: 'V11', date: '2025-07-15', sm: 'OIC Nimal', charge: 3000 }], '2025-08-07'),
-      '2025-08': makeCell('PAID', 'INV-2508-002', [{ rank: 'JSO', headcount: 3, shiftsPerHead: 26, ratePerShift: 3800 }, { rank: 'OIC', headcount: 1, shiftsPerHead: 26, ratePerShift: 5200 }], [], '2025-09-05'),
-      '2025-09': makeCell('PAID', 'INV-2509-002', [{ rank: 'JSO', headcount: 3, shiftsPerHead: 25, ratePerShift: 3800 }, { rank: 'OIC', headcount: 1, shiftsPerHead: 25, ratePerShift: 5200 }], [{ visitId: 'V12', date: '2025-09-18', sm: 'OIC Nimal', charge: 3000 }], '2025-10-04'),
-      // Oct 2025: partial payment — client remitted LKR 380,000 on a LKR 448,200 invoice (shortfall: LKR 68,200)
-      '2025-10': { ...makeCell('PARTIAL', 'INV-2510-002', [{ rank: 'JSO', headcount: 3, shiftsPerHead: 27, ratePerShift: 3800 }, { rank: 'OIC', headcount: 1, shiftsPerHead: 27, ratePerShift: 5200 }], [], undefined, '2025-11-07'), amountReceived: 380_000 },
-      // Nov 2025: carries the LKR 68,200 shortfall from Oct as a rollover line item
-      '2025-11': { ...makeCell('PAID', 'INV-2511-002', [{ rank: 'JSO', headcount: 3, shiftsPerHead: 26, ratePerShift: 3800 }, { rank: 'OIC', headcount: 1, shiftsPerHead: 26, ratePerShift: 5200 }], [{ visitId: 'V13', date: '2025-11-12', sm: 'OIC Nimal', charge: 3000 }], '2025-12-06'), rolloverDebt: 68_200, rolloverFromMonth: 'Oct 2025' },
-      '2025-12': makeCell('PAID', 'INV-2512-002', [{ rank: 'JSO', headcount: 3, shiftsPerHead: 27, ratePerShift: 3800 }, { rank: 'OIC', headcount: 1, shiftsPerHead: 27, ratePerShift: 5200 }], [], '2026-01-08'),
-      '2026-01': makeCell('PAID', 'INV-2601-002', [{ rank: 'JSO', headcount: 3, shiftsPerHead: 26, ratePerShift: 3800 }, { rank: 'OIC', headcount: 1, shiftsPerHead: 26, ratePerShift: 5200 }], [{ visitId: 'V14', date: '2026-01-20', sm: 'OIC Nimal', charge: 3000 }], '2026-02-06'),
-      '2026-02': makeCell('PAID', 'INV-2602-002', [{ rank: 'JSO', headcount: 3, shiftsPerHead: 24, ratePerShift: 3800 }, { rank: 'OIC', headcount: 1, shiftsPerHead: 24, ratePerShift: 5200 }], [], '2026-03-04'),
-      '2026-03': LH_MAR26_MD_VERIFY,
-      '2026-04': LH_APR26,
-      '2026-05': makeCell('PENDING', 'INV-2605-002', [{ rank: 'JSO', headcount: 3, shiftsPerHead: 20, ratePerShift: 3800 }, { rank: 'OIC', headcount: 1, shiftsPerHead: 20, ratePerShift: 5200 }], [{ visitId: 'V16', date: '2026-05-10', sm: 'OIC Nimal', charge: 3000 }], undefined, '2026-06-07'),
-    },
-  },
-  {
-    clientId: 'C003',
-    clientName: 'Arpico Supercentre',
-    sector: 'Kelaniya',
-    invoices: {
-      '2025-06': makeCell('PAID', 'INV-2506-003', [{ rank: 'JSO', headcount: 4, shiftsPerHead: 26, ratePerShift: 4200 }], [], '2025-07-04'),
-      '2025-07': makeCell('PAID', 'INV-2507-003', [{ rank: 'JSO', headcount: 4, shiftsPerHead: 27, ratePerShift: 4200 }], [{ visitId: 'V17', date: '2025-07-19', sm: 'SSO Chamara', charge: 2000 }], '2025-08-05'),
-      '2025-08': makeCell('PAID', 'INV-2508-003', [{ rank: 'JSO', headcount: 4, shiftsPerHead: 26, ratePerShift: 4200 }], [], '2025-09-06'),
-      '2025-09': makeCell('PAID', 'INV-2509-003', [{ rank: 'JSO', headcount: 4, shiftsPerHead: 25, ratePerShift: 4200 }], [], '2025-10-07'),
-      '2025-10': makeCell('PAID', 'INV-2510-003', [{ rank: 'JSO', headcount: 4, shiftsPerHead: 27, ratePerShift: 4200 }], [{ visitId: 'V18', date: '2025-10-14', sm: 'SSO Chamara', charge: 2000 }], '2025-11-05'),
-      '2025-11': makeCell('PAID', 'INV-2511-003', [{ rank: 'JSO', headcount: 4, shiftsPerHead: 26, ratePerShift: 4200 }], [], '2025-12-04'),
-      '2025-12': makeCell('PAID', 'INV-2512-003', [{ rank: 'JSO', headcount: 4, shiftsPerHead: 27, ratePerShift: 4200 }], [], '2026-01-06'),
-      '2026-01': makeCell('PAID', 'INV-2601-003', [{ rank: 'JSO', headcount: 4, shiftsPerHead: 26, ratePerShift: 4200 }], [{ visitId: 'V19', date: '2026-01-16', sm: 'SSO Chamara', charge: 2000 }], '2026-02-04'),
-      '2026-02': makeCell('PAID', 'INV-2602-003', [{ rank: 'JSO', headcount: 4, shiftsPerHead: 24, ratePerShift: 4200 }], [], '2026-03-07'),
-      '2026-03': makeCell('PAID', 'INV-2603-003', [{ rank: 'JSO', headcount: 4, shiftsPerHead: 27, ratePerShift: 4200 }], [], '2026-04-05'),
-      '2026-04': makeCell('PAID', 'INV-2604-003', [{ rank: 'JSO', headcount: 4, shiftsPerHead: 26, ratePerShift: 4200 }], [{ visitId: 'V20', date: '2026-04-18', sm: 'SSO Chamara', charge: 2000 }], '2026-05-06'),
-      '2026-05': ARPICO_MAY26,
-    },
-  },
-  {
-    clientId: 'C004',
-    clientName: 'Dialog Axiata HQ',
-    sector: 'Colombo 2',
-    invoices: {
-      '2025-06': makeCell('NONE', '', [], [], undefined),
-      '2025-07': makeCell('NONE', '', [], [], undefined),
-      '2025-08': makeCell('NONE', '', [], [], undefined),
-      '2025-09': makeCell('NONE', '', [], [], undefined),
-      '2025-10': makeCell('NONE', '', [], [], undefined),
-      '2025-11': makeCell('NONE', '', [], [], undefined),
-      '2025-12': makeCell('NONE', '', [], [], undefined),
-      '2026-01': makeCell('NONE', '', [], [], undefined),
-      '2026-02': makeCell('NONE', '', [], [], undefined),
-      '2026-03': makeCell('NONE', '', [], [], undefined),
-      '2026-04': makeCell('NONE', '', [], [], undefined),
-      '2026-05': makeCell('PENDING', 'INV-2605-004', [{ rank: 'SSO', headcount: 2, shiftsPerHead: 20, ratePerShift: 5200 }, { rank: 'OIC', headcount: 1, shiftsPerHead: 20, ratePerShift: 6000 }], [], undefined, '2026-06-07'),
-    },
-  },
-];
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function lkr(n: number) {
@@ -566,14 +330,13 @@ function lkr(n: number) {
 const ROLLING_5Y_MONTH_COUNT = 60;
 
 /** Last 60 months ending at the current billing month (rolling 5 years) */
-function buildRolling5YearMonthKeys(endMonthKey: string): string[] {
-  const endIdx = CHRONO_MONTH_KEYS.indexOf(endMonthKey);
-  if (endIdx < 0) return MONTHS.map((m) => m.key);
+function buildRolling5YearMonthKeys(endMonthKey: string, fallbackMonthKeys: string[]): string[] {
+  const chrono = chronoMonthKeys();
+  const endIdx = chrono.indexOf(endMonthKey);
+  if (endIdx < 0) return fallbackMonthKeys;
   const startIdx = Math.max(0, endIdx - (ROLLING_5Y_MONTH_COUNT - 1));
-  return CHRONO_MONTH_KEYS.slice(startIdx, endIdx + 1);
+  return chrono.slice(startIdx, endIdx + 1);
 }
-
-const ROLLING_5Y_MONTH_KEYS = buildRolling5YearMonthKeys(CURRENT_MONTH_KEY);
 
 /** Client balance still owed after credit notes and any partial receipts */
 function invoiceOutstandingBalance(
@@ -717,8 +480,6 @@ function collectPartialRows(
   return rows.sort(compareKpiRows);
 }
 
-const AR_LEDGER_STORAGE_KEY = 'pearzen:ar-invoicing-ledger-v2';
-
 function dispatchKey(clientId: string, monthKey: string) {
   return `${clientId}:${monthKey}`;
 }
@@ -791,13 +552,6 @@ function invoiceGeneratedAt(monthKey: string): string {
   const [y, m] = monthKey.split('-').map(Number);
   if (!y || !m) return new Date().toISOString();
   return new Date(y, m - 1, 1, 9, 0, 0).toISOString();
-}
-
-function monthKeyToLabel(monthKey: string): string {
-  const mo = parseInt(monthKey.split('-')[1] ?? '0', 10);
-  const short = MONTH_SHORT[mo - 1];
-  const yr = monthKey.slice(0, 4);
-  return short ? `${short} ${yr}` : monthKey;
 }
 
 function appendAuditEvent(
@@ -1133,39 +887,12 @@ function TaxInvoicePreviewModal({
   );
 }
 
-// ── Per-client guard roster (for Reconciliation Audit expansion) ──────────────
-
-const GUARD_ROSTERS: Record<string, { empNo: string; name: string; rank: RankKey }[]> = {
-  C001: [
-    { empNo: 'EMP-1021', name: 'Kasun Jayawardena',   rank: 'JSO' },
-    { empNo: 'EMP-1035', name: 'Nuwan Dissanayake',    rank: 'JSO' },
-    { empNo: 'EMP-1048', name: 'Pradeep Fernando',     rank: 'SSO' },
-    { empNo: 'EMP-1061', name: 'Tharaka Wickrama',     rank: 'JSO' },
-    { empNo: 'EMP-1072', name: 'Saman Perera',         rank: 'JSO' },
-    { empNo: 'EMP-1083', name: 'Roshan Kumara',        rank: 'JSO' },
-    { empNo: 'EMP-1094', name: 'Dilshan Bandara',      rank: 'JSO' },
-  ],
-  C002: [
-    { empNo: 'EMP-1105', name: 'Chamara Silva',        rank: 'JSO' },
-    { empNo: 'EMP-1118', name: 'Amal Gunathilake',     rank: 'JSO' },
-    { empNo: 'EMP-1129', name: 'Ruwan Samarasinghe',   rank: 'JSO' },
-    { empNo: 'EMP-1140', name: 'Nimal Rajapaksa',      rank: 'OIC' },
-  ],
-  C003: [
-    { empNo: 'EMP-1042', name: 'Suresh Bandara',       rank: 'JSO' },
-    { empNo: 'EMP-1087', name: 'Ranjith Perera',       rank: 'JSO' },
-    { empNo: 'EMP-1103', name: 'Chaminda Silva',       rank: 'JSO' },
-    { empNo: 'EMP-1155', name: 'Gayan Wijesinghe',     rank: 'JSO' },
-  ],
-  C004: [
-    { empNo: 'EMP-1162', name: 'Lakshan Gunawardena',  rank: 'SSO' },
-    { empNo: 'EMP-1177', name: 'Hashan Perera',        rank: 'SSO' },
-    { empNo: 'EMP-1189', name: 'Malith Jayasooriya',   rank: 'OIC' },
-  ],
-};
-
-function buildAuditLines(clientId: string, rankLines: RankShiftLine[]): GuardAuditLine[] {
-  const roster = GUARD_ROSTERS[clientId] ?? [];
+function buildAuditLines(
+  clientId: string,
+  rankLines: RankShiftLine[],
+  guardRostersByClient: Record<string, ArGuardRosterEntry[]>,
+): GuardAuditLine[] {
+  const roster = guardRostersByClient[clientId] ?? [];
   const lines: GuardAuditLine[] = [];
   let rIdx = 0;
   for (const rl of rankLines) {
@@ -1195,9 +922,15 @@ const SCOPE_OPTS: { key: TimeScope; label: string }[] = [
   { key: 'CUSTOM', label: 'Custom' },
 ];
 
-function getScopeKeys(scope: TimeScope, from: string, to: string): string[] {
-  const all = MONTHS.map((m) => m.key);
-  if (scope === 'D' || scope === 'W' || scope === 'M') return [CURRENT_MONTH_KEY];
+function getScopeKeys(
+  scope: TimeScope,
+  from: string,
+  to: string,
+  rollingMonths: MonthDef[],
+  currentMonthKey: string,
+): string[] {
+  const all = rollingMonths.map((m) => m.key);
+  if (scope === 'D' || scope === 'W' || scope === 'M') return [currentMonthKey];
   if (scope === '1Y' || scope === '5Y') return all;
   const fi = all.indexOf(from);
   const ti = all.indexOf(to);
@@ -1205,14 +938,21 @@ function getScopeKeys(scope: TimeScope, from: string, to: string): string[] {
   return all.slice(fi, ti + 1);
 }
 
-function getScopeLabel(scope: TimeScope, from: string, to: string): string {
-  if (scope === 'D')  return 'Today · May 2026';
-  if (scope === 'W')  return 'This Week · May 2026';
-  if (scope === 'M')  return 'This Month · May 2026';
+function getScopeLabel(
+  scope: TimeScope,
+  from: string,
+  to: string,
+  rollingMonths: MonthDef[],
+  currentMonthKey: string,
+): string {
+  const currentLabel = monthKeyToLabel(currentMonthKey);
+  if (scope === 'D')  return `Today · ${currentLabel}`;
+  if (scope === 'W')  return `This Week · ${currentLabel}`;
+  if (scope === 'M')  return `This Month · ${currentLabel}`;
   if (scope === '1Y') return 'Last 12 Months';
   if (scope === '5Y') return 'All Available Data';
-  const fl = MONTHS.find((m) => m.key === from)?.label ?? from;
-  const tl = MONTHS.find((m) => m.key === to)?.label ?? to;
+  const fl = rollingMonths.find((m) => m.key === from)?.label ?? from;
+  const tl = rollingMonths.find((m) => m.key === to)?.label ?? to;
   return `${fl} – ${tl}`;
 }
 
@@ -1375,6 +1115,7 @@ function TimeRangeSelector({
   customTo,
   onCustomFromChange,
   onCustomToChange,
+  rollingMonths,
 }: {
   scope: TimeScope;
   onScopeChange: (s: TimeScope) => void;
@@ -1382,6 +1123,7 @@ function TimeRangeSelector({
   customTo: string;
   onCustomFromChange: (k: string) => void;
   onCustomToChange: (k: string) => void;
+  rollingMonths: MonthDef[];
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2.5">
@@ -1409,7 +1151,7 @@ function TimeRangeSelector({
             onChange={(e) => onCustomFromChange(e.target.value)}
             className="rounded-xl border border-slate-200/80 bg-white/80 px-3 py-1.5 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
           >
-            {MONTHS.map((m) => (<option key={m.key} value={m.key}>{m.label}</option>))}
+            {rollingMonths.map((m) => (<option key={m.key} value={m.key}>{m.label}</option>))}
           </select>
           <span className="text-[10px] font-bold text-slate-400">to</span>
           <select
@@ -1417,7 +1159,7 @@ function TimeRangeSelector({
             onChange={(e) => onCustomToChange(e.target.value)}
             className="rounded-xl border border-slate-200/80 bg-white/80 px-3 py-1.5 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
           >
-            {MONTHS.map((m) => (<option key={m.key} value={m.key}>{m.label}</option>))}
+            {rollingMonths.map((m) => (<option key={m.key} value={m.key}>{m.label}</option>))}
           </select>
         </div>
       )}
@@ -1851,6 +1593,7 @@ function DrillModal({
   vatRate = 18,
   ssclRate = 2.5,
   onOpenTaxInvoice,
+  guardRostersByClient = {},
 }: {
   variant: ArInvoicingVariant;
   target: DrillTarget | null;
@@ -1872,6 +1615,7 @@ function DrillModal({
   vatRate?: number;
   ssclRate?: number;
   onOpenTaxInvoice?: (mode: 'view' | 'print' | 'download', payload: TaxInvoiceOpenPayload) => void;
+  guardRostersByClient?: Record<string, ArGuardRosterEntry[]>;
 }) {
   const isDesk = variant === 'invoice-desk';
   const isExecAdmin = variant === 'exec-admin';
@@ -1993,7 +1737,7 @@ function DrillModal({
   const { clientId, clientName, monthLabel, cell, rolloverSourceCell } = target;
 
   const auditEvents = filterAuditEventsForVariant(cell.auditEvents ?? [], variant);
-  const auditLines = buildAuditLines(clientId, cell.rankLines);
+  const auditLines = buildAuditLines(clientId, cell.rankLines, guardRostersByClient);
 
   const rankTotal        = cell.rankLines.reduce((s, l) => s + l.headcount * l.shiftsPerHead * l.ratePerShift, 0);
   const patrolTotal      = cell.patrols.reduce((s, p) => s + p.charge, 0);
@@ -2666,7 +2410,7 @@ function DrillModal({
                   const currentLiability  = liabilityMap[ded.penaltyId] ?? 'PASS_TO_GUARD';
                   const isCompanyAbsorbs  = currentLiability === 'COMPANY_ABSORBS';
                   const isEscalated       = mdApprovalEscalated.has(ded.penaltyId);
-                  const rosterForClient   = GUARD_ROSTERS[clientId] ?? [];
+                  const rosterForClient   = guardRostersByClient[clientId] ?? [];
                   const search            = guardSearch[ded.penaltyId] ?? '';
                   const filteredRoster    = rosterForClient.filter(
                     (g) =>
@@ -3535,7 +3279,7 @@ function TrafficCell({
 }) {
   if (!cell || cell.status === 'NONE') {
     return (
-      <td className="px-2 py-3 text-center">
+      <td className="w-[72px] min-w-[72px] px-1 py-3 text-center">
         <span className="inline-flex h-6 w-6 items-center justify-center">
           <Minus className="h-3 w-3 text-slate-300" />
         </span>
@@ -3557,12 +3301,12 @@ function TrafficCell({
   const showChain = cell.status === 'PARTIAL' && nextHasRollover;
 
   return (
-    <td className="px-2 py-3 text-center">
+    <td className="w-[72px] min-w-[72px] px-1 py-3 text-center">
       <button
         type="button"
         onClick={onClick}
         title={`${cell.invoiceNo} · ${lkr(cell.totalAmount)}`}
-        className={`group inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold transition-all hover:scale-110 hover:shadow-md ${st.pill}`}
+        className={`group mx-auto inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-bold transition-all hover:scale-110 hover:shadow-md ${st.pill}`}
       >
         {st.dot && <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${st.dot}`} />}
         {label}
@@ -3586,12 +3330,24 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
   const isDesk = variant === 'invoice-desk';
   const isExecAdmin = variant === 'exec-admin';
   const isMd = variant === 'md';
-  const [clients,    setClients]    = useState<ClientRecord[]>(DEMO_CLIENTS);
+  const [clients,    setClients]    = useState<ClientRecord[]>([]);
   const [drill,      setDrill]      = useState<DrillTarget | null>(null);
   const [scope,      setScope]      = useState<TimeScope>('1Y');
-  const [customFrom, setCustomFrom] = useState('2026-01');
-  const [customTo,   setCustomTo]   = useState('2026-05');
-  const [gridYear,   setGridYear]   = useState(GRID_CURRENT_YEAR);
+  const [currentMonthKey, setCurrentMonthKey] = useState(getCurrentMonthKey());
+  const [rollingMonths, setRollingMonths] = useState<MonthDef[]>(() =>
+    buildRollingMonthDefs(getCurrentMonthKey()),
+  );
+  const [guardRostersByClient, setGuardRostersByClient] = useState<
+    Record<string, ArGuardRosterEntry[]>
+  >({});
+  const rollingMonthKeys = useMemo(() => rollingMonths.map((m) => m.key), [rollingMonths]);
+  const rolling5yMonthKeys = useMemo(
+    () => buildRolling5YearMonthKeys(currentMonthKey, rollingMonthKeys),
+    [currentMonthKey, rollingMonthKeys],
+  );
+  const [customFrom, setCustomFrom] = useState(() => rollingMonthKeys[0] ?? getCurrentMonthKey());
+  const [customTo,   setCustomTo]   = useState(getCurrentMonthKey);
+  const [gridYear,   setGridYear]   = useState(() => new Date().getFullYear());
   const gridMonths = useMemo(() => buildMonthsForYear(gridYear), [gridYear]);
   const [dispatched, setDispatched] = useState<Set<string>>(new Set());
   const [ledgerReady, setLedgerReady] = useState(false);
@@ -3651,38 +3407,51 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
   }, [clients, ledgerReady, isDesk]);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(AR_LEDGER_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as {
-          clients?: ClientRecord[];
-          dispatched?: string[];
-        };
-        const dispatchSet = new Set(
-          Array.isArray(parsed.dispatched) ? parsed.dispatched : [],
-        );
-        setDispatched(dispatchSet);
-        if (Array.isArray(parsed.clients) && parsed.clients.length > 0) {
-          const audited = hydrateLedgerAudit(parsed.clients, dispatchSet);
-          const { clients: withTax, nextSeq } = hydrateLedgerTaxNumbers(
-            audited,
-            {},
-          );
-          setClients(withTax);
-          setTaxSeq(nextSeq);
+    let cancelled = false;
+
+    const hydrateFromParsed = (
+      parsedClients: ClientRecord[],
+      dispatchSet: Set<string>,
+      seq: Record<string, number>,
+    ) => {
+      const audited = hydrateLedgerAudit(parsedClients, dispatchSet);
+      const { clients: withTax, nextSeq } = hydrateLedgerTaxNumbers(audited, seq);
+      setClients(withTax);
+      setDispatched(dispatchSet);
+      setTaxSeq(nextSeq);
+    };
+
+    (async () => {
+      try {
+        const remote = await getArLedger();
+        if (cancelled) return;
+
+        if (remote.billingClients.length) {
+          setBillingClients(remote.billingClients);
         }
-      } else {
-        const { clients: withTax, nextSeq } = hydrateLedgerTaxNumbers(
-          hydrateLedgerAudit(DEMO_CLIENTS, new Set()),
-          {},
-        );
-        setClients(withTax);
-        setTaxSeq(nextSeq);
+
+        setCurrentMonthKey(remote.currentMonthKey);
+        setRollingMonths(buildRollingMonthDefs(remote.currentMonthKey));
+        setGuardRostersByClient(remote.guardRostersByClient);
+        setCustomFrom(remote.rollingMonthKeys[0] ?? remote.currentMonthKey);
+        setCustomTo(remote.currentMonthKey);
+        setGridYear(parseInt(remote.currentMonthKey.slice(0, 4), 10));
+
+        const parsedClients = remote.clients as ClientRecord[];
+        const dispatchSet = new Set(remote.dispatched);
+        const seq = remote.taxSeq;
+
+        hydrateFromParsed(parsedClients, dispatchSet, seq);
+      } catch {
+        // Supabase is source of truth — no localStorage fallback
+      } finally {
+        if (!cancelled) setLedgerReady(true);
       }
-    } catch {
-      // ignore corrupt storage
-    }
-    setLedgerReady(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -3703,15 +3472,16 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
 
   useEffect(() => {
     if (!ledgerReady) return;
-    try {
-      localStorage.setItem(
-        AR_LEDGER_STORAGE_KEY,
-        JSON.stringify({ clients, dispatched: [...dispatched] }),
-      );
-    } catch {
-      // base64 proofs can exceed quota — viewing still works in-session
-    }
-  }, [clients, dispatched, ledgerReady]);
+    const timer = window.setTimeout(() => {
+      void saveArLedger({
+        clients,
+        dispatched: [...dispatched],
+        taxSeq,
+        billingClients: isDesk ? billingClients : undefined,
+      });
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [clients, dispatched, taxSeq, billingClients, ledgerReady, isDesk]);
 
   useEffect(() => {
     if (!isDesk) return;
@@ -4196,13 +3966,13 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
 
   // ── Scope keys ───────────────────────────────────────────────────────────────
   const filteredKeys = useMemo(
-    () => getScopeKeys(scope, customFrom, customTo),
-    [scope, customFrom, customTo],
+    () => getScopeKeys(scope, customFrom, customTo, rollingMonths, currentMonthKey),
+    [scope, customFrom, customTo, rollingMonths, currentMonthKey],
   );
 
   const scopeLabel = useMemo(
-    () => getScopeLabel(scope, customFrom, customTo),
-    [scope, customFrom, customTo],
+    () => getScopeLabel(scope, customFrom, customTo, rollingMonths, currentMonthKey),
+    [scope, customFrom, customTo, rollingMonths, currentMonthKey],
   );
 
   // ── Scope-aware totals ────────────────────────────────────────────────────────
@@ -4263,24 +4033,24 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
 
   const collectionKpis = useMemo(() => {
     if (!isDesk && !isExecAdmin) return null;
-    const rolling5y = sumOutstandingForMonthKeys(clients, ROLLING_5Y_MONTH_KEYS);
-    const thisMonth = sumOutstandingForMonthKeys(clients, [CURRENT_MONTH_KEY]);
+    const rolling5y = sumOutstandingForMonthKeys(clients, rolling5yMonthKeys);
+    const thisMonth = sumOutstandingForMonthKeys(clients, [currentMonthKey]);
     return { rolling5y, thisMonth };
-  }, [clients, isDesk, isExecAdmin]);
+  }, [clients, isDesk, isExecAdmin, rolling5yMonthKeys, currentMonthKey]);
 
   const showCollectionKpis = isDesk || isExecAdmin;
 
   const currentMonthLabel =
-    MONTHS.find((m) => m.key === CURRENT_MONTH_KEY)?.label ?? 'This Month';
+    rollingMonths.find((m) => m.key === currentMonthKey)?.label ?? 'This Month';
 
   const kpiInvoiceLists = useMemo(
     () => ({
-      rolling5y: collectOutstandingRows(clients, ROLLING_5Y_MONTH_KEYS, variant),
-      thisMonth: collectOutstandingRows(clients, [CURRENT_MONTH_KEY], variant),
+      rolling5y: collectOutstandingRows(clients, rolling5yMonthKeys, variant),
+      thisMonth: collectOutstandingRows(clients, [currentMonthKey], variant),
       unpaid: collectUnpaidRows(clients, filteredKeys, variant),
       partial: collectPartialRows(clients, filteredKeys, variant),
     }),
-    [clients, filteredKeys, variant],
+    [clients, filteredKeys, variant, rolling5yMonthKeys, currentMonthKey],
   );
 
   const kpiListMeta = useMemo((): Record<
@@ -4400,6 +4170,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
         vatRate={isDesk ? vatRate : undefined}
         ssclRate={isDesk ? ssclRate : undefined}
         onOpenTaxInvoice={isDesk ? handleOpenTaxInvoice : undefined}
+        guardRostersByClient={guardRostersByClient}
       />
 
       {isDesk && (
@@ -4424,7 +4195,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
         >
           {(isDesk || isExecAdmin) && (
             <Link
-              href="/invoice-desk"
+              href={HQ_HUB_PATH}
               className={`mb-4 inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-bold shadow-sm transition-all hover:shadow-md ${
                 isDesk
                   ? 'border-sky-200/80 bg-gradient-to-r from-white to-sky-50/80 text-sky-800 hover:border-sky-300'
@@ -4507,6 +4278,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
               customTo={customTo}
               onCustomFromChange={setCustomFrom}
               onCustomToChange={setCustomTo}
+              rollingMonths={rollingMonths}
             />
           </div>
 
@@ -4628,7 +4400,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
                 </p>
                 <TrendingUp className="h-4 w-4 text-amber-600" />
               </div>
-              <p className="mt-2 text-3xl font-black tabular-nums text-amber-900">{lkr(totals.partial)}</p>
+              <p className="mt-2 text-3xl font-black tabular-nums text-amber-900">{lkr(-totals.partial)}</p>
               <p className="mt-1 text-[10px] font-semibold text-amber-600">rollovers active</p>
             </GlassCard>
           </div>
@@ -4673,8 +4445,8 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
                   </span>
                   <button
                     type="button"
-                    onClick={() => setGridYear((y) => Math.min(GRID_MAX_YEAR, y + 1))}
-                    disabled={gridYear >= GRID_MAX_YEAR}
+                    onClick={() => setGridYear((y) => Math.min(gridMaxYear(), y + 1))}
+                    disabled={gridYear >= gridMaxYear()}
                     className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-600 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-30"
                     aria-label="Next year"
                   >
@@ -4698,7 +4470,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[900px] text-sm">
+              <table className="w-full min-w-[1084px] border-separate border-spacing-0 text-sm">
                 <thead
                   className={
                     isDesk
@@ -4708,7 +4480,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
                 >
                   <tr>
                     <th
-                      className={`sticky left-0 z-10 px-5 py-3 text-left text-xs font-bold uppercase tracking-wider backdrop-blur-sm ${
+                      className={`sticky left-0 z-10 w-[220px] min-w-[220px] px-5 py-3 text-left text-xs font-bold uppercase tracking-wider backdrop-blur-sm ${
                         isDesk
                           ? 'bg-sky-50/90 text-sky-800'
                           : 'bg-slate-50/80 text-slate-500'
@@ -4719,7 +4491,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
                     {gridMonths.map((m) => (
                       <th
                         key={m.key}
-                        className={`px-2 py-3 text-center text-xs font-bold uppercase tracking-wider ${
+                        className={`w-[72px] min-w-[72px] px-1 py-3 text-center text-xs font-bold uppercase tracking-wider ${
                           isDesk ? 'text-indigo-700/90' : 'text-slate-500'
                         }`}
                       >
@@ -4735,7 +4507,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
                       className={isDesk ? 'transition-colors hover:bg-sky-50/40' : 'hover:bg-white/30 transition-colors'}
                     >
                       <td
-                        className={`sticky left-0 z-10 px-5 py-3 backdrop-blur-sm ${
+                        className={`sticky left-0 z-10 w-[220px] min-w-[220px] px-5 py-3 backdrop-blur-sm ${
                           isDesk ? 'bg-white/85' : 'bg-white/60'
                         }`}
                       >

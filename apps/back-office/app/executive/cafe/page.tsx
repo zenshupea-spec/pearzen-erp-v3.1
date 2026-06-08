@@ -1,6 +1,8 @@
 'use client';
 
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import {
   Coffee,
   User,
@@ -30,13 +32,58 @@ import {
   ChefHat,
   Utensils,
   Layers,
-  Tag,
-  Smartphone,
+  Truck,
+  ShoppingCart,
   Plus,
-  Upload,
-  Satellite,
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
+import { isCafeHubView } from '../../../lib/hq-hub';
+import {
+  fetchExecutiveSessionProfile,
+  type ExecutiveSessionProfile,
+} from '../actions';
+import {
+  getCafeDashboard,
+  getCafeLaborRoster,
+  getCafeStaffDayLogs,
+  issueCafeFine,
+  saveCafeDashboard,
+  updateCafeStaffDayLog,
+  type CafeDashboardPayload,
+  type CafeLaborRosterMember,
+  type CafeStaffDayLog,
+} from './actions';
+import { formatPeriodMonthLabel, normalizePeriodMonth } from './period-month';
+import {
+  getMenuKitchenTrackKind,
+  reconcilePrepWithMenu,
+  removeMenuFromKitchenTrack,
+  setMenuKitchenTrack,
+  type KitchenTrackKind,
+} from './prep-menu-sync';
+import { CafePortalShell } from './CafePortalShell';
+import {
+  addIngredientStockLot,
+  assignUsePriorityForNewLot,
+  normalizeIngredient,
+  type FulfillmentMode,
+  type Ingredient,
+  type IngredientSupplier,
+  type IngredientUnit,
+} from './cafe-ingredient-utils';
+import {
+  calcIngredientBelowMinimum,
+  calcIngredientOrderQty,
+  calcIngredientVelocityBoost,
+  calcMenuIngredientDailyDemand,
+  calcMenuRollingAvg14d,
+  MENU_DEFAULT_CATS,
+  normalizeMenuItems,
+  syncMenuRecipeCosts,
+  type CafeMenuRecipeItem,
+  type RecipeLine,
+} from './cafe-menu-sync';
+import { CAFE_MENU_PATH, cafePortalHref } from './cafe-portal-nav';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -52,14 +99,26 @@ interface StaffMember {
 type TaskStatus = 'COMPLETE' | 'PENDING' | 'OVERDUE';
 type TaskFreq   = 'DAILY' | 'WEEKLY';
 
+const CAFE_TASK_ASSIGNEE_ROLES = [
+  'Morning Barista',
+  'Evening Barista',
+  'Pastry Chef',
+] as const;
+
 interface Task {
   id: string;
   name: string;
   freq: TaskFreq;
   assignedTo: string;
+  dueTime?: string;
   status: TaskStatus;
   proofUploadedAt?: string;
   purgeDate?: string;
+}
+
+function formatTaskDueTime(dueTime?: string): string | null {
+  if (!dueTime) return null;
+  return dueTime.slice(0, 5);
 }
 
 interface DailyStockItem {
@@ -97,6 +156,7 @@ interface Void {
 
 interface PrepItem {
   id: string;
+  menuItemId: string;
   name: string;
   currentStock: number;
   unit: string;
@@ -106,6 +166,7 @@ interface PrepItem {
 
 interface DisplayItem {
   id: string;
+  menuItemId: string;
   name: string;
   currentWhole: number;   // whole units in stock (e.g., whole cakes)
   currentSlices: number;  // loose slices already cut
@@ -114,37 +175,13 @@ interface DisplayItem {
   shelfLifeDays: number;  // MD-configured display shelf limit
 }
 
-// ─── Demo Data ────────────────────────────────────────────────────────────────
-
-const TODAY_STR = '2026-05-21';
-
-// Mutable in component via state
-const INITIAL_STAFF: StaffMember[] = [
-  { id: 'S1', name: 'Nirosha Silva',    role: 'Head Barista',     dailyRate: 1800, daysWorked: 20, deductionsMTD: 0    },
-  { id: 'S2', name: 'Chamari Perera',   role: 'Counter Staff',    dailyRate: 1500, daysWorked: 18, deductionsMTD: 1500 },
-  { id: 'S3', name: 'Thilina Bandara',  role: 'Kitchen Assist',   dailyRate: 1400, daysWorked: 21, deductionsMTD: 0    },
-  { id: 'S4', name: 'Ayasha Fernando',  role: 'Cashier',          dailyRate: 1600, daysWorked: 19, deductionsMTD: 0    },
-  { id: 'S5', name: 'Dinuka Weerasena', role: 'Delivery / Floor', dailyRate: 1400, daysWorked: 15, deductionsMTD: 2800 },
-];
-
-const DEMO_TASKS: Task[] = [
-  { id: 'T1',  name: 'Morning Station Prep',          freq: 'DAILY',  assignedTo: 'Nirosha',  status: 'COMPLETE', proofUploadedAt: '2026-05-21', purgeDate: '2026-06-04' },
-  { id: 'T2',  name: 'Counter & Display Wipe',        freq: 'DAILY',  assignedTo: 'Chamari',  status: 'COMPLETE', proofUploadedAt: '2026-05-21', purgeDate: '2026-06-04' },
-  { id: 'T3',  name: 'Fridge Temperature Log',        freq: 'DAILY',  assignedTo: 'Thilina',  status: 'COMPLETE', proofUploadedAt: '2026-05-21', purgeDate: '2026-06-04' },
-  { id: 'T4',  name: 'Waste Disposal & Bin Seal',     freq: 'DAILY',  assignedTo: 'Dinuka',   status: 'PENDING',  proofUploadedAt: undefined,    purgeDate: undefined    },
-  { id: 'T5',  name: 'Evening Floor Mop',             freq: 'DAILY',  assignedTo: 'Thilina',  status: 'PENDING',  proofUploadedAt: undefined,    purgeDate: undefined    },
-  { id: 'T6',  name: 'Closing Cash Seal',             freq: 'DAILY',  assignedTo: 'Ayasha',   status: 'PENDING',  proofUploadedAt: undefined,    purgeDate: undefined    },
-  { id: 'T7',  name: 'Deep Fridge & Freezer Clean',   freq: 'WEEKLY', assignedTo: 'Thilina',  status: 'COMPLETE', proofUploadedAt: '2026-05-18', purgeDate: '2026-06-01' },
-  { id: 'T8',  name: 'Hood & Exhaust Vent Degrease',  freq: 'WEEKLY', assignedTo: 'Thilina',  status: 'OVERDUE',  proofUploadedAt: undefined,    purgeDate: undefined    },
-  { id: 'T9',  name: 'Full Floor Scrub (after close)', freq: 'WEEKLY', assignedTo: 'Dinuka',  status: 'OVERDUE',  proofUploadedAt: undefined,    purgeDate: undefined    },
-  { id: 'T10', name: 'Inventory Restock Count',       freq: 'WEEKLY', assignedTo: 'Nirosha',  status: 'COMPLETE', proofUploadedAt: '2026-05-18', purgeDate: '2026-06-01' },
-];
+const TODAY_STR = new Date().toISOString().slice(0, 10);
 
 // Historical task snapshots keyed by date offset (0 = today, 1 = yesterday, etc.)
-function getTasksForOffset(offset: number): Task[] {
-  if (offset === 0) return DEMO_TASKS;
+function getTasksForOffset(offset: number, tasks: Task[]): Task[] {
+  if (offset === 0) return tasks;
   // Simulate historical data: older days have more complete tasks, some purged proofs
-  return DEMO_TASKS.map((t) => {
+  return tasks.map((t) => {
     if (offset >= 3) {
       // 3+ days ago: most things were done, some proofs still available
       const purged = offset > 10 && t.proofUploadedAt;
@@ -159,137 +196,20 @@ function getTasksForOffset(offset: number): Task[] {
   });
 }
 
-// ─── List A: Daily Stock ──────────────────────────────────────────────────────
+type MenuItem = CafeMenuRecipeItem;
 
-const DEMO_LIST_A: DailyStockItem[] = [
-  { id: 'A1', name: 'Coffee Beans (250g)',  unit: 'packs',   openingStock: 12, closingStock: 5,  posSold: 5,  loggedWastage: 0, assignedTo: 'Nirosha'  },
-  { id: 'A2', name: 'Fresh Milk (1L)',      unit: 'cartons', openingStock: 24, closingStock: 8,  posSold: 14, loggedWastage: 1, assignedTo: 'Nirosha'  },
-  { id: 'A3', name: 'Sandwich Bread',       unit: 'loaves',  openingStock: 10, closingStock: 3,  posSold: 6,  loggedWastage: 0, assignedTo: 'Thilina'  },
-  { id: 'A4', name: 'Pastries / Croissants',unit: 'pcs',     openingStock: 28, closingStock: 7,  posSold: 18, loggedWastage: 2, assignedTo: 'Chamari'  },
-  { id: 'A5', name: 'Soft Drinks (330ml)',  unit: 'cans',    openingStock: 48, closingStock: 30, posSold: 18, loggedWastage: 0, assignedTo: 'Dinuka'   },
-  { id: 'A6', name: 'Juice Bottles (350ml)',unit: 'btls',    openingStock: 30, closingStock: 17, posSold: 11, loggedWastage: 0, assignedTo: 'Dinuka'   },
-  { id: 'A7', name: 'Sugar Sachets',        unit: 'boxes',   openingStock: 8,  closingStock: 4,  posSold: 2,  loggedWastage: 0, assignedTo: 'Chamari'  },
-  { id: 'A8', name: 'Takeaway Cups (Med)',  unit: 'sleeves', openingStock: 5,  closingStock: 2,  posSold: 3,  loggedWastage: 0, assignedTo: 'Nirosha'  },
-];
-
-// ─── List B: 3-Day Bulk Stock ─────────────────────────────────────────────────
-
-const DEMO_LIST_B: BulkStockItem[] = [
-  { id: 'B1', name: 'All-Purpose Flour',   unit: 'kg',   theoreticalStock: 18.0, physicalCount: 15.2, periodDays: 3, assignedTo: 'Thilina'  },
-  { id: 'B2', name: 'Cooking Oil (5L)',    unit: 'tins', theoreticalStock: 8,    physicalCount: 7,    periodDays: 3, assignedTo: 'Thilina'  },
-  { id: 'B3', name: 'Granulated Sugar',    unit: 'kg',   theoreticalStock: 12.0, physicalCount: 9.5,  periodDays: 3, assignedTo: 'Chamari'  },
-  { id: 'B4', name: 'Coffee Syrup (1L)',   unit: 'btls', theoreticalStock: 6,    physicalCount: 5,    periodDays: 3, assignedTo: 'Nirosha'  },
-  { id: 'B5', name: 'Chicken (Frozen kg)', unit: 'kg',   theoreticalStock: 15.0, physicalCount: 14.4, periodDays: 3, assignedTo: 'Thilina'  },
-  { id: 'B6', name: 'Cheese Blocks',       unit: 'pcs',  theoreticalStock: 12,   physicalCount: 8,    periodDays: 3, assignedTo: 'Thilina'  },
-];
-
-// ─── Void Data ─────────────────────────────────────────────────────────────────
-
-const DEMO_VOIDS: Void[] = [
-  { id: 'V1', time: '09:14', item: 'Iced Latte × 2',     amount: 1600, voidedBy: 'Ayasha',  reason: 'Wrong order placed',        flagged: false },
-  { id: 'V2', time: '11:47', item: 'Club Sandwich',       amount: 1200, voidedBy: 'Ayasha',  reason: 'Customer changed mind',      flagged: false },
-  { id: 'V3', time: '14:02', item: 'Chicken Rice Bowl',   amount: 1450, voidedBy: 'Ayasha',  reason: 'No reason provided',         flagged: true  },
-  { id: 'V4', time: '15:55', item: 'Jumbo Smoothie × 3',  amount: 2700, voidedBy: 'Chamari', reason: 'Manager override — discount', flagged: true  },
-];
-
-// ─── Menu Engineering Types & Data ───────────────────────────────────────────
-
-interface MenuItem {
-  id: string;
-  name: string;
-  category: string;
-  /** Sum of raw ingredient costs from linked recipe (BOM) */
-  recipeCost: number;
-  targetMargin: number; // gross margin %
-  hasImage: boolean;
-}
-
-const MENU_DEFAULT_CATS = [
-  'Hot Beverages',
-  'Cold Beverages',
-  'Pastries & Bakery',
-  'Mains & Sandwiches',
-  'Desserts',
-];
-
-const INITIAL_MENU: MenuItem[] = [
-  { id: 'M1', name: 'Espresso (Single)',       category: 'Hot Beverages',      recipeCost: 100, targetMargin: 72, hasImage: true  },
-  { id: 'M2', name: 'Iced Caramel Latte',      category: 'Cold Beverages',     recipeCost: 154, targetMargin: 70, hasImage: true  },
-  { id: 'M3', name: 'Flat White',              category: 'Hot Beverages',      recipeCost: 117, targetMargin: 70, hasImage: true  },
-  { id: 'M4', name: 'Mango Smoothie',          category: 'Cold Beverages',     recipeCost: 125, targetMargin: 68, hasImage: false },
-  { id: 'M5', name: 'Butter Croissant',        category: 'Pastries & Bakery',  recipeCost: 79,  targetMargin: 68, hasImage: true  },
-  { id: 'M6', name: 'Club Sandwich',           category: 'Mains & Sandwiches', recipeCost: 238, targetMargin: 64, hasImage: true  },
-  { id: 'M7', name: 'Chicken Rice Bowl',       category: 'Mains & Sandwiches', recipeCost: 267, targetMargin: 63, hasImage: false },
-  { id: 'M8', name: 'Choc Fudge Cake (Slice)', category: 'Desserts',           recipeCost: 129, targetMargin: 69, hasImage: true  },
-  { id: 'M9', name: 'Cinnamon Danish',         category: 'Pastries & Bakery',  recipeCost: 73,  targetMargin: 67, hasImage: false },
-];
-
-/** Base Cost = recipe ingredient sum + global operational overhead % */
-function calcBaseCost(recipeCost: number, overheadPct: number): number {
-  return Math.round(recipeCost * (1 + overheadPct / 100));
-}
-
-/** Final selling price via gross-margin formula: price = cost / (1 − margin%) */
-function calcSellingPrice(baseCost: number, margin: number): number {
-  if (margin >= 99) return baseCost * 10;
-  return Math.round(baseCost / (1 - margin / 100));
-}
-
-// Per-category palette used by both the pricing table thumbnail and customer preview
-const CAT_PALETTE: Record<string, { gradFrom: string; gradTo: string; accent: string; light: string }> = {
-  'Hot Beverages':      { gradFrom: '#f59e0b', gradTo: '#92400e', accent: 'text-amber-600',   light: 'bg-amber-50'   },
-  'Cold Beverages':     { gradFrom: '#38bdf8', gradTo: '#0369a1', accent: 'text-sky-600',     light: 'bg-sky-50'     },
-  'Pastries & Bakery':  { gradFrom: '#fb923c', gradTo: '#9a3412', accent: 'text-orange-600',  light: 'bg-orange-50'  },
-  'Mains & Sandwiches': { gradFrom: '#34d399', gradTo: '#065f46', accent: 'text-emerald-600', light: 'bg-emerald-50' },
-  'Desserts':           { gradFrom: '#c084fc', gradTo: '#6b21a8', accent: 'text-violet-600',  light: 'bg-violet-50'  },
-};
-
-function getCatPalette(cat: string) {
-  return CAT_PALETTE[cat] ?? { gradFrom: '#94a3b8', gradTo: '#334155', accent: 'text-slate-600', light: 'bg-slate-50' };
-}
-
-function ItemThumb({ item, size }: { item: MenuItem; size: 'sm' | 'lg' }) {
-  const { gradFrom, gradTo } = getCatPalette(item.category);
-  const cls = size === 'sm'
-    ? 'h-11 w-11 rounded-xl flex-shrink-0'
-    : 'h-32 w-full rounded-2xl';
+function needsProcurement(
+  ing: Ingredient,
+  menuItems: MenuItem[],
+  ingredients: Ingredient[],
+): boolean {
   return (
-    <div
-      className={`relative overflow-hidden ${cls}`}
-      style={{ background: `linear-gradient(135deg, ${gradFrom}, ${gradTo})` }}
-    >
-      {item.hasImage ? (
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="h-5 w-5 rounded-full bg-white/20" />
-          <div className="absolute h-2.5 w-2.5 rounded-full bg-white/40" />
-        </div>
-      ) : (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-0.5 opacity-60">
-          <Upload className="h-3.5 w-3.5 text-white" />
-          <span className="text-[8px] font-black uppercase tracking-widest text-white">Upload</span>
-        </div>
-      )}
-    </div>
+    ing.currentStock < ing.minimumStock ||
+    calcIngredientOrderQty(ing, menuItems, ingredients) > 0
   );
 }
 
-// ─── Predictive Prep Demo Data ────────────────────────────────────────────────
 
-const DEMO_PREP_ITEMS: PrepItem[] = [
-  { id: 'P1', name: 'Plain Baguette',        unit: 'pcs',   currentStock: 4,   rollingAvg14d: 18, shelfLifeDays: 1 },
-  { id: 'P2', name: 'Sandwich Dough Balls',  unit: 'balls', currentStock: 10,  rollingAvg14d: 24, shelfLifeDays: 2 },
-  { id: 'P3', name: 'Quiche Pastry Cases',   unit: 'pcs',   currentStock: 3,   rollingAvg14d: 8,  shelfLifeDays: 2 },
-  { id: 'P4', name: 'Croissant Dough (raw)', unit: 'pcs',   currentStock: 6,   rollingAvg14d: 14, shelfLifeDays: 1 },
-  { id: 'P5', name: 'Bread Rolls (dinner)',  unit: 'pcs',   currentStock: 12,  rollingAvg14d: 20, shelfLifeDays: 1 },
-];
-
-const DEMO_DISPLAY_ITEMS: DisplayItem[] = [
-  { id: 'D1', name: 'Chocolate Fudge Cake',   currentWhole: 1,  currentSlices: 2,  slicesPerWhole: 10, rollingAvg14d: 7,  shelfLifeDays: 3 },
-  { id: 'D2', name: 'Caramel Cheesecake',     currentWhole: 0,  currentSlices: 4,  slicesPerWhole: 10, rollingAvg14d: 5,  shelfLifeDays: 3 },
-  { id: 'D3', name: 'Lemon Tart',             currentWhole: 2,  currentSlices: 0,  slicesPerWhole: 8,  rollingAvg14d: 6,  shelfLifeDays: 2 },
-  { id: 'D4', name: 'Cinnamon Danish Pastry', currentWhole: 0,  currentSlices: 3,  slicesPerWhole: 6,  rollingAvg14d: 9,  shelfLifeDays: 1 },
-  { id: 'D5', name: 'Blueberry Muffin (tray)',currentWhole: 1,  currentSlices: 5,  slicesPerWhole: 12, rollingAvg14d: 11, shelfLifeDays: 2 },
-];
 
 // ─── Variance helpers ─────────────────────────────────────────────────────────
 
@@ -515,6 +435,96 @@ function DisciplinaryFineModal({
   );
 }
 
+// ─── Visual Task Auditor rows ─────────────────────────────────────────────────
+
+function CafeTaskRow({
+  task,
+  canEdit,
+  onRemove,
+  onViewProof,
+  onFine,
+}: {
+  task: Task;
+  canEdit: boolean;
+  onRemove: (taskId: string) => void;
+  onViewProof: (task: Task) => void;
+  onFine: (task: Task) => void;
+}) {
+  const st = STATUS_META[task.status];
+  const dueLabel = formatTaskDueTime(task.dueTime);
+  const isFlagged = task.status === 'OVERDUE';
+
+  return (
+    <div
+      className={`flex items-center gap-3 rounded-xl border p-3 transition-all ${
+        task.status === 'COMPLETE'
+          ? 'border-emerald-200/80 bg-emerald-50/40'
+          : task.status === 'OVERDUE'
+            ? 'border-rose-200/80 bg-rose-50/40 animate-pulse'
+            : 'border-slate-200/60 bg-white/40'
+      }`}
+    >
+      <st.Icon
+        className={`h-4 w-4 flex-shrink-0 ${
+          task.status === 'COMPLETE'
+            ? 'text-emerald-600'
+            : task.status === 'OVERDUE'
+              ? 'text-rose-600'
+              : 'text-amber-500'
+        }`}
+      />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-xs font-bold text-slate-900">{task.name}</p>
+        <p className="text-[10px] text-slate-500">
+          {dueLabel ? (
+            <span className="font-mono font-bold text-slate-600">{dueLabel}</span>
+          ) : null}
+          {dueLabel ? ' · ' : ''}
+          {task.freq === 'DAILY' ? 'Daily' : 'Weekly'}
+          {' · '}
+          {task.assignedTo}
+        </p>
+      </div>
+      <div className="flex items-center gap-1.5">
+        {task.proofUploadedAt ? (
+          <button
+            type="button"
+            onClick={() => onViewProof(task)}
+            className="flex items-center gap-1 rounded-lg border border-slate-200/80 bg-white/70 px-2 py-1 text-[10px] font-bold text-slate-700 hover:bg-white/90 transition-all"
+          >
+            <Eye className="h-3 w-3" />
+            Proof
+          </button>
+        ) : task.status === 'OVERDUE' ? (
+          <span className="text-[9px] font-bold text-rose-700 animate-pulse">NO PROOF</span>
+        ) : (
+          <Camera className="h-4 w-4 text-slate-300" />
+        )}
+        {isFlagged && (
+          <button
+            type="button"
+            onClick={() => onFine(task)}
+            className="flex items-center gap-1 rounded-lg border border-rose-200/80 bg-rose-50/70 px-2 py-1 text-[9px] font-black text-rose-800 hover:bg-rose-100/80 transition-all whitespace-nowrap"
+          >
+            <Gavel className="h-3 w-3" />
+            Fine
+          </button>
+        )}
+        {canEdit && (
+          <button
+            type="button"
+            onClick={() => onRemove(task.id)}
+            className="rounded-lg border border-slate-200/80 bg-white/70 p-1.5 text-slate-400 hover:border-rose-200/80 hover:text-rose-600 transition-all"
+            title="Remove task"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Photo Proof Modal ────────────────────────────────────────────────────────
 
 function PhotoModal({ task, lookbackDate, onClose }: { task: Task | null; lookbackDate: string; onClose: () => void }) {
@@ -533,7 +543,10 @@ function PhotoModal({ task, lookbackDate, onClose }: { task: Task | null; lookba
                 Task Photo Proof · {offset === 0 ? 'Today' : lookbackDate}
               </p>
               <h3 className="mt-0.5 text-lg font-black text-slate-900">{task.name}</h3>
-              <p className="text-xs text-slate-500">Assigned to {task.assignedTo}</p>
+              <p className="text-xs text-slate-500">
+                {formatTaskDueTime(task.dueTime) ? `${formatTaskDueTime(task.dueTime)} · ` : ''}
+                {task.freq === 'DAILY' ? 'Daily' : 'Weekly'} · Assigned to {task.assignedTo}
+              </p>
             </div>
             <button type="button" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200/80 bg-white/70 text-slate-500 hover:text-slate-900 transition-colors"><X className="h-4 w-4" /></button>
           </div>
@@ -587,17 +600,23 @@ function VarianceBadge({ pct }: { pct: number }) {
 
 function StockVarianceRadar({
   staff,
+  listA,
+  listB,
+  voids,
   onIssueFine,
 }: {
   staff: StaffMember[];
+  listA: DailyStockItem[];
+  listB: BulkStockItem[];
+  voids: Void[];
   onIssueFine: (target: FineTarget) => void;
 }) {
   const [tab, setTab]              = useState<'A' | 'B'>('A');
   const [showVoids, setShowVoids]  = useState(false);
   const [showWastageLog, setShowWastageLog] = useState(false);
 
-  const flaggedA = DEMO_LIST_A.filter((i) => listAPct(i) < THEFT_THRESHOLD).length;
-  const flaggedB = DEMO_LIST_B.filter((i) => listBPct(i) < THEFT_THRESHOLD).length;
+  const flaggedA = listA.filter((i) => listAPct(i) < THEFT_THRESHOLD).length;
+  const flaggedB = listB.filter((i) => listBPct(i) < THEFT_THRESHOLD).length;
   const totalFlagged = flaggedA + flaggedB;
 
   return (
@@ -704,7 +723,7 @@ function StockVarianceRadar({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200/60">
-              {DEMO_LIST_A.map((item) => {
+              {listA.map((item) => {
                 const variance = listAVariance(item);
                 const pct = listAPct(item);
                 const isFlagged = pct < THEFT_THRESHOLD;
@@ -815,7 +834,7 @@ function StockVarianceRadar({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200/60">
-              {DEMO_LIST_B.map((item) => {
+              {listB.map((item) => {
                 const variance = listBVariance(item);
                 const pct = listBPct(item);
                 const isFlagged = pct < THEFT_THRESHOLD;
@@ -915,10 +934,10 @@ function StockVarianceRadar({
           <div className="flex items-center gap-2">
             <XCircle className="h-3.5 w-3.5 text-slate-500" />
             <span className="text-[10px] font-black uppercase tracking-widest text-slate-700">POS Void Register</span>
-            {DEMO_VOIDS.filter((v) => v.flagged).length > 0 && (
+            {voids.filter((v) => v.flagged).length > 0 && (
               <span className="flex items-center gap-1 rounded-full border border-rose-200/80 bg-rose-50/80 px-2 py-0.5 text-[9px] font-bold text-rose-800">
                 <AlertTriangle className="h-2.5 w-2.5" />
-                {DEMO_VOIDS.filter((v) => v.flagged).length} suspicious
+                {voids.filter((v) => v.flagged).length} suspicious
               </span>
             )}
           </div>
@@ -940,8 +959,8 @@ function StockVarianceRadar({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200/60">
-                {DEMO_VOIDS.map((v) => {
-                  const staffMatch = INITIAL_STAFF.find((s) => s.name.split(' ')[0] === v.voidedBy);
+                {voids.map((v) => {
+                  const staffMatch = staff.find((s) => s.name.split(' ')[0] === v.voidedBy);
                   return (
                     <tr key={v.id} className={`transition-colors ${v.flagged ? 'bg-rose-50/30 hover:bg-rose-50/50' : 'hover:bg-white/40'}`}>
                       <td className="px-5 py-3 font-mono text-xs text-slate-500">{v.time}</td>
@@ -960,7 +979,7 @@ function StockVarianceRadar({
                             type="button"
                             onClick={() => {
                               // find staff for void
-                              const sId = staffMatch?.id ?? INITIAL_STAFF.find((s) => s.name.split(' ')[0] === v.voidedBy)?.id ?? INITIAL_STAFF[0].id;
+                              const sId = staffMatch?.id ?? staff.find((s) => s.name.split(' ')[0] === v.voidedBy)?.id ?? staff[0]?.id ?? '';
                               // This is just a stub — parent onIssueFine is not accessible here
                               // We'll handle this via a different mechanism; for now show tooltip
                             }}
@@ -980,6 +999,383 @@ function StockVarianceRadar({
         )}
       </div>
     </ExecutiveGlassCard>
+  );
+}
+
+// ─── Weekly Procurement Engine ────────────────────────────────────────────────
+
+type ProcurementLine = {
+  ingredient: Ingredient;
+  orderQty: number;
+  belowMinimum: boolean;
+  velocityBoost: boolean;
+};
+
+function getMenuItemsUsingIngredient(ingredientId: string, menuItems: MenuItem[]) {
+  return menuItems
+    .map((item) => {
+      const line = item.recipe.find((l) => l.ingredientId === ingredientId);
+      return line ? { item, line } : null;
+    })
+    .filter((entry): entry is { item: MenuItem; line: RecipeLine } => entry !== null);
+}
+
+function buildProcurementLines(
+  ingredients: Ingredient[],
+  menuItems: MenuItem[],
+): ProcurementLine[] {
+  return ingredients
+    .filter((ingredient) => needsProcurement(ingredient, menuItems, ingredients))
+    .map((ingredient) => {
+      const menuDaily = calcMenuIngredientDailyDemand(ingredient.id, menuItems, ingredients);
+      return {
+        ingredient,
+        orderQty: calcIngredientOrderQty(ingredient, menuItems, ingredients),
+        belowMinimum: calcIngredientBelowMinimum(ingredient, menuDaily),
+        velocityBoost: calcIngredientVelocityBoost(ingredient, menuDaily),
+      };
+    })
+    .filter((line) => line.orderQty > 0)
+    .sort((a, b) => Number(b.belowMinimum) - Number(a.belowMinimum));
+}
+
+
+function ProcurementReceiveModal({
+  line,
+  menuItems,
+  onConfirm,
+  onClose,
+}: {
+  line: ProcurementLine | null;
+  menuItems: MenuItem[];
+  onConfirm: (ingredientId: string, packs: number, expiresOn: string) => void;
+  onClose: () => void;
+}) {
+  const suggestedPacks = line
+    ? Math.ceil(line.orderQty / Math.max(line.ingredient.purchaseAmount, 1))
+    : 1;
+  const [packs, setPacks] = useState(String(suggestedPacks));
+  const [expiresOn, setExpiresOn] = useState('');
+
+  useEffect(() => {
+    if (!line) return;
+    setPacks(String(Math.ceil(line.orderQty / Math.max(line.ingredient.purchaseAmount, 1))));
+    setExpiresOn('');
+  }, [line]);
+
+  if (!line) return null;
+
+  const { ingredient, orderQty, belowMinimum, velocityBoost } = line;
+  const menuUsage = getMenuItemsUsingIngredient(ingredient.id, menuItems);
+  const packCount = Math.max(0, parseFloat(packs) || 0);
+  const addedQty = packCount * ingredient.purchaseAmount;
+  const newStock = ingredient.currentStock + addedQty;
+  const totalCost = packCount * ingredient.packagePrice;
+  const usePriorityPreview =
+    packCount > 0 && expiresOn
+      ? assignUsePriorityForNewLot(ingredient.stockLots, expiresOn)
+      : null;
+
+  const inputCls =
+    'w-full rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-500/40 transition-all';
+  const labelCls = 'mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-600';
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="relative flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-3xl border border-white/75 bg-[#eef2f6] shadow-[0_32px_80px_-16px_rgba(15,23,42,0.35)] backdrop-blur-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div aria-hidden className="pointer-events-none absolute -top-12 right-0 h-44 w-44 rounded-full bg-sky-400/15 blur-[72px]" />
+
+        <div className="relative flex min-h-0 flex-1 flex-col p-6">
+          <div className="mb-4 flex items-start justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-sky-200/80 bg-sky-50/80">
+                <Package className="h-5 w-5 text-sky-700" />
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-sky-700">Receive Stock</p>
+                <h2 className="text-lg font-black text-slate-900">{ingredient.name}</h2>
+                <p className="text-xs text-slate-500">{ingredient.supplier.name}</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200/80 bg-white/70 text-slate-500 hover:text-slate-900 transition-colors"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="mb-4 flex flex-wrap gap-2 text-[10px]">
+            <span className="rounded-full border border-slate-200/80 bg-white/70 px-2.5 py-1 font-bold text-slate-600">
+              On hand {ingredient.currentStock.toLocaleString()} {ingredient.unit}
+            </span>
+            {belowMinimum && (
+              <span className="rounded-full border border-rose-200/80 bg-rose-50/80 px-2.5 py-1 font-bold text-rose-800">
+                Below MD min {ingredient.minimumStock.toLocaleString()}
+              </span>
+            )}
+            {velocityBoost && (
+              <span className="rounded-full border border-amber-200/80 bg-amber-50/80 px-2.5 py-1 font-bold text-amber-800">
+                14d velocity boost
+              </span>
+            )}
+            <span className="rounded-full border border-sky-200/80 bg-sky-50/80 px-2.5 py-1 font-bold text-sky-800">
+              Suggested order {orderQty.toLocaleString()} {ingredient.unit}
+            </span>
+          </div>
+
+          <ExecutiveGlassCard className="mb-4 min-h-0 flex-1 overflow-hidden">
+            <div className="border-b border-slate-200/80 bg-slate-50/60 px-4 py-2.5">
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-700">
+                Menu items using this ingredient
+              </p>
+            </div>
+            <div className="max-h-48 overflow-y-auto">
+              {menuUsage.length === 0 ? (
+                <p className="px-4 py-6 text-center text-xs text-slate-500">
+                  No menu recipes linked to this ingredient yet.
+                </p>
+              ) : (
+                <ul className="divide-y divide-slate-200/60">
+                  {menuUsage.map(({ item, line: recipeLine }) => (
+                    <li key={item.id} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-bold text-slate-900">{item.name}</p>
+                        <p className="text-[10px] text-slate-500">{item.category}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs font-black tabular-nums text-slate-800">
+                          {recipeLine.quantity.toLocaleString()} {ingredient.unit}
+                        </p>
+                        <p className="text-[9px] text-slate-500">per serving</p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </ExecutiveGlassCard>
+
+          <ExecutiveGlassCard className="mb-4 p-4 space-y-4">
+            <div>
+              <label className={labelCls}>Packs received</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={packs}
+                  onChange={(e) => setPacks(e.target.value)}
+                  className={`${inputCls} font-mono`}
+                />
+                <span className="whitespace-nowrap text-[10px] font-bold text-slate-500">
+                  × {ingredient.purchaseAmount.toLocaleString()} {ingredient.unit}
+                </span>
+              </div>
+            </div>
+            <div>
+              <label className={labelCls}>
+                Expiry date <span className="text-rose-600">*</span>
+              </label>
+              <input
+                type="date"
+                value={expiresOn}
+                min={TODAY_STR}
+                required
+                onChange={(e) => setExpiresOn(e.target.value)}
+                className={`${inputCls} ${!expiresOn ? 'border-amber-300/80 ring-1 ring-amber-200/60' : ''}`}
+              />
+              <p className="mt-1 text-[9px] font-semibold text-amber-800">
+                Required — enter the date printed on the received packages.
+              </p>
+            </div>
+            {usePriorityPreview != null ? (
+              <p className="rounded-xl border border-indigo-200/80 bg-indigo-50/80 px-4 py-3 text-center text-sm font-bold text-indigo-900">
+                Write{' '}
+                <span className="font-mono text-lg tabular-nums">{usePriorityPreview}</span> on each
+                package (lower number = use first)
+              </p>
+            ) : null}
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              <div className="rounded-xl bg-white/60 p-2 text-center">
+                <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">Adding</p>
+                <p className="mt-0.5 text-xs font-black tabular-nums text-sky-800">
+                  +{addedQty.toLocaleString()} {ingredient.unit}
+                </p>
+              </div>
+              <div className="rounded-xl bg-white/60 p-2 text-center">
+                <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">New on hand</p>
+                <p className="mt-0.5 text-xs font-black tabular-nums text-emerald-800">
+                  {newStock.toLocaleString()} {ingredient.unit}
+                </p>
+              </div>
+              <div className="rounded-xl bg-white/60 p-2 text-center">
+                <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">Cost</p>
+                <p className="mt-0.5 text-xs font-black tabular-nums text-slate-800">
+                  LKR {totalCost.toLocaleString()}
+                </p>
+              </div>
+            </div>
+          </ExecutiveGlassCard>
+
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 rounded-xl border border-slate-200 bg-white/70 py-3 text-sm font-bold text-slate-700 hover:bg-white/90 transition-all"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={packCount <= 0 || !expiresOn}
+              onClick={() => {
+                onConfirm(ingredient.id, packCount, expiresOn);
+                onClose();
+              }}
+              className="flex-[2] rounded-xl bg-sky-700 py-3 text-sm font-bold uppercase tracking-widest text-white shadow-lg shadow-sky-700/25 hover:bg-sky-600 transition-all disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Add to stock
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WeeklyProcurementPanel({
+  ingredients,
+  menuItems,
+  setIngredients,
+  setMenuItems,
+}: {
+  ingredients: Ingredient[];
+  menuItems: MenuItem[];
+  setIngredients: React.Dispatch<React.SetStateAction<Ingredient[]>>;
+  setMenuItems: React.Dispatch<React.SetStateAction<MenuItem[]>>;
+}) {
+  const [selectedLine, setSelectedLine] = useState<ProcurementLine | null>(null);
+
+  const lines = useMemo(
+    () => buildProcurementLines(ingredients, menuItems),
+    [ingredients, menuItems],
+  );
+  const driverLines = lines.filter((l) => l.ingredient.fulfillmentMode === 'bought');
+  const supplierLines = lines.filter((l) => l.ingredient.fulfillmentMode === 'delivered');
+
+  const handleReceiveStock = (ingredientId: string, packs: number, expiresOn: string) => {
+    setIngredients((prev) => {
+      const next = prev.map((ing) => {
+        if (ing.id !== ingredientId) return ing;
+        return addIngredientStockLot(ing, packs * ing.purchaseAmount, expiresOn);
+      });
+      setMenuItems((items) => syncMenuRecipeCosts(items, next));
+      return next;
+    });
+  };
+
+  const renderList = (title: string, Icon: typeof Truck, rows: ProcurementLine[], accent: string) => (
+    <div className="min-w-0 flex-1">
+      <div className="mb-3 flex items-center gap-2">
+        <Icon className={`h-4 w-4 ${accent}`} />
+        <p className="text-[10px] font-black uppercase tracking-widest text-slate-700">{title}</p>
+        <span className="rounded-full border border-slate-200/80 bg-white/70 px-2 py-0.5 text-[9px] font-bold text-slate-500">
+          {rows.length} item{rows.length !== 1 ? 's' : ''} · 14d cover
+        </span>
+      </div>
+      {rows.length === 0 ? (
+        <p className="rounded-xl border border-dashed border-slate-200/80 bg-white/40 px-4 py-6 text-center text-xs text-slate-500">
+          No orders this week — stock above minimum.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((procLine) => {
+            const { ingredient, orderQty, belowMinimum, velocityBoost } = procLine;
+            return (
+            <button
+              key={ingredient.id}
+              type="button"
+              onClick={() => setSelectedLine(procLine)}
+              className={`flex w-full flex-wrap items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-left transition-all hover:shadow-md hover:ring-1 hover:ring-slate-900/5 ${
+                belowMinimum ? 'border-rose-200/80 bg-rose-50/50 hover:bg-rose-50/70' : 'border-amber-200/70 bg-amber-50/40 hover:bg-amber-50/60'
+              }`}
+            >
+              <div className="min-w-0">
+                <p className="truncate text-xs font-bold text-slate-900">{ingredient.name}</p>
+                <p className="text-[10px] text-slate-500">
+                  {ingredient.supplier.name} · on hand {ingredient.currentStock.toLocaleString()} {ingredient.unit}
+                  {belowMinimum && (
+                    <span className="ml-1 font-bold text-rose-700">· below MD min {ingredient.minimumStock.toLocaleString()}</span>
+                  )}
+                  {velocityBoost && (
+                    <span className="ml-1 font-bold text-amber-800">· 14d velocity boost</span>
+                  )}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-sm font-black tabular-nums text-slate-900">
+                  {orderQty.toLocaleString()} {ingredient.unit}
+                </p>
+                <p className="text-[9px] text-slate-500">
+                  ≈ {Math.ceil(orderQty / Math.max(ingredient.purchaseAmount, 1))} pack
+                  {Math.ceil(orderQty / Math.max(ingredient.purchaseAmount, 1)) !== 1 ? 's' : ''} · LKR{' '}
+                  {(
+                    Math.ceil(orderQty / Math.max(ingredient.purchaseAmount, 1)) * ingredient.packagePrice
+                  ).toLocaleString()}
+                </p>
+              </div>
+            </button>
+          );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <>
+      <ProcurementReceiveModal
+        line={selectedLine}
+        menuItems={menuItems}
+        onConfirm={handleReceiveStock}
+        onClose={() => setSelectedLine(null)}
+      />
+      <ExecutiveGlassCard className="overflow-hidden">
+        <div className="border-b border-slate-200/80 bg-slate-50/80 px-5 py-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-2xl border border-sky-200/80 bg-sky-50/80">
+                <Package className="h-4 w-4 text-sky-700" />
+              </div>
+              <div>
+                <h2 className="text-xs font-black uppercase tracking-widest text-slate-800">
+                  Weekly Procurement — Auto Order List
+                </h2>
+                <p className="mt-0.5 max-w-2xl text-[10px] leading-relaxed text-slate-500">
+                  Computed once per week for 14-day cover from menu BOM, sales velocity, and MD minimums. Bought items sync to the driver webapp buy list;
+                  delivered items go to the supplier order list. Tap an item to see menu usage and receive stock.
+                </p>
+              </div>
+            </div>
+            <span className="rounded-full border border-sky-200/80 bg-sky-50/80 px-3 py-1 text-[10px] font-black text-sky-800">
+              {lines.length} to order
+            </span>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 gap-6 p-5 lg:grid-cols-2">
+          {renderList('Driver Buy List (Bought)', Truck, driverLines, 'text-emerald-600')}
+          {renderList('Supplier Order List (Delivered)', ShoppingCart, supplierLines, 'text-indigo-600')}
+        </div>
+      </ExecutiveGlassCard>
+    </>
   );
 }
 
@@ -1039,10 +1435,42 @@ function PrepActionBadge({ text, urgent }: { text: string; urgent: boolean }) {
   );
 }
 
-function PredictivePrepEngine() {
-  const [activeTab,    setActiveTab]    = useState<'PREP' | 'DISPLAY'>('PREP');
-  const [prepItems,    setPrepItems]    = useState<PrepItem[]>(DEMO_PREP_ITEMS);
-  const [displayItems, setDisplayItems] = useState<DisplayItem[]>(DEMO_DISPLAY_ITEMS);
+function PredictivePrepEngine({
+  menuItems,
+  prepItems,
+  setPrepItems,
+  displayItems,
+  setDisplayItems,
+  menuPageHref,
+}: {
+  menuItems: MenuItem[];
+  prepItems: PrepItem[];
+  setPrepItems: React.Dispatch<React.SetStateAction<PrepItem[]>>;
+  displayItems: DisplayItem[];
+  setDisplayItems: React.Dispatch<React.SetStateAction<DisplayItem[]>>;
+  menuPageHref: string;
+}) {
+  const [activeTab, setActiveTab] = useState<'PREP' | 'DISPLAY'>('PREP');
+  const [linkMenuId, setLinkMenuId] = useState('');
+
+  const unlinkedMenuItems = menuItems.filter(
+    (item) => getMenuKitchenTrackKind(item.id, prepItems, displayItems) === 'none',
+  );
+
+  const linkMenuItem = (menuId: string, track: KitchenTrackKind) => {
+    const menu = menuItems.find((item) => item.id === menuId);
+    if (!menu) return;
+    const linked = setMenuKitchenTrack(menu, track, prepItems, displayItems);
+    setPrepItems(linked.prepItems);
+    setDisplayItems(linked.displayItems);
+    setLinkMenuId('');
+  };
+
+  const unlinkMenuItem = (menuItemId: string) => {
+    const linked = removeMenuFromKitchenTrack(menuItemId, prepItems, displayItems);
+    setPrepItems(linked.prepItems);
+    setDisplayItems(linked.displayItems);
+  };
 
   const updatePrepShelf = (id: string, days: number) =>
     setPrepItems((prev) => prev.map((i) => (i.id === id ? { ...i, shelfLifeDays: Math.max(1, days) } : i)));
@@ -1051,6 +1479,8 @@ function PredictivePrepEngine() {
     setDisplayItems((prev) => prev.map((i) => (i.id === id ? { ...i, shelfLifeDays: Math.max(1, days) } : i)));
 
   const shelfInputCls = 'w-14 rounded-lg border border-violet-200/80 bg-white/90 px-1.5 py-1 text-center text-xs font-black text-violet-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-violet-400/40 transition-all';
+  const linkSelectCls =
+    'rounded-xl border border-violet-200/80 bg-white/90 px-2.5 py-1.5 text-xs font-semibold text-slate-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-violet-400/40';
 
   return (
     <ExecutiveGlassCard className="overflow-hidden">
@@ -1066,8 +1496,8 @@ function PredictivePrepEngine() {
                 Predictive Prep &amp; Wastage Control
               </h2>
               <p className="mt-0.5 max-w-xl text-[10px] leading-relaxed text-slate-500">
-                Barista morning prep lists are automatically generated by subtracting current verified stock
-                from the 14-day sales velocity, capped by the MD&apos;s spoilage limits.
+                Only menu items explicitly set to Prep or Display are tracked here. Morning prep quantities
+                subtract verified stock from MD min/day and 14-day velocity, capped by spoilage limits.
               </p>
             </div>
           </div>
@@ -1096,8 +1526,75 @@ function PredictivePrepEngine() {
         </div>
       </div>
 
-      {/* ── Prep Items Table ── */}
       {activeTab === 'PREP' && (
+        <div className="border-b border-slate-200/60 bg-violet-50/20 px-5 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={linkMenuId}
+              onChange={(e) => setLinkMenuId(e.target.value)}
+              className={linkSelectCls}
+            >
+              <option value="">Link menu item to prep…</option>
+              {unlinkedMenuItems.map((item) => (
+                <option key={item.id} value={item.id}>{item.name}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={!linkMenuId}
+              onClick={() => linkMenuItem(linkMenuId, 'prep')}
+              className="inline-flex items-center gap-1 rounded-xl border border-violet-300/80 bg-violet-700 px-3 py-1.5 text-xs font-bold text-white transition-all hover:bg-violet-600 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Plus className="h-3 w-3" />
+              Add prep item
+            </button>
+            {unlinkedMenuItems.length === 0 ? (
+              <span className="text-[10px] text-slate-500">All menu items are already linked.</span>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'DISPLAY' && (
+        <div className="border-b border-slate-200/60 bg-violet-50/20 px-5 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={linkMenuId}
+              onChange={(e) => setLinkMenuId(e.target.value)}
+              className={linkSelectCls}
+            >
+              <option value="">Link menu item to display…</option>
+              {unlinkedMenuItems.map((item) => (
+                <option key={item.id} value={item.id}>{item.name}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={!linkMenuId}
+              onClick={() => linkMenuItem(linkMenuId, 'display')}
+              className="inline-flex items-center gap-1 rounded-xl border border-violet-300/80 bg-violet-700 px-3 py-1.5 text-xs font-bold text-white transition-all hover:bg-violet-600 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Plus className="h-3 w-3" />
+              Add display item
+            </button>
+            {unlinkedMenuItems.length === 0 ? (
+              <span className="text-[10px] text-slate-500">All menu items are already linked.</span>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {/* ── Prep Items Table ── */}
+      {activeTab === 'PREP' && prepItems.length === 0 ? (
+        <p className="px-5 py-10 text-center text-sm text-slate-500">
+          No prep items linked yet — set Kitchen prep tracking to Prep in{' '}
+          <Link href={menuPageHref} className="font-bold text-violet-700 hover:text-violet-900">
+            Menu &amp; Pricing
+          </Link>{' '}
+          or link a menu item above.
+        </p>
+      ) : null}
+      {activeTab === 'PREP' && prepItems.length > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="border-b border-slate-200/80 bg-slate-50/60 text-[10px] font-bold uppercase tracking-widest text-slate-500">
@@ -1113,6 +1610,7 @@ function PredictivePrepEngine() {
                 <th className="px-5 py-3 text-center bg-violet-50/60">
                   <span className="text-violet-700">System Prep Qty</span>
                 </th>
+                <th className="px-5 py-3 w-10" />
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200/60">
@@ -1174,6 +1672,16 @@ function PredictivePrepEngine() {
                         </div>
                       )}
                     </td>
+                    <td className="px-5 py-3.5 text-center">
+                      <button
+                        type="button"
+                        onClick={() => unlinkMenuItem(item.menuItemId)}
+                        className="rounded-xl border border-slate-200/80 bg-white/60 p-1.5 text-slate-400 hover:border-rose-200/80 hover:text-rose-600"
+                        title="Remove from prep tracking"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
@@ -1183,7 +1691,16 @@ function PredictivePrepEngine() {
       )}
 
       {/* ── Display Items Table ── */}
-      {activeTab === 'DISPLAY' && (
+      {activeTab === 'DISPLAY' && displayItems.length === 0 ? (
+        <p className="px-5 py-10 text-center text-sm text-slate-500">
+          No display items linked yet — set Kitchen prep tracking to Display in{' '}
+          <Link href={menuPageHref} className="font-bold text-violet-700 hover:text-violet-900">
+            Menu &amp; Pricing
+          </Link>{' '}
+          or link a menu item above.
+        </p>
+      ) : null}
+      {activeTab === 'DISPLAY' && displayItems.length > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="border-b border-slate-200/80 bg-slate-50/60 text-[10px] font-bold uppercase tracking-widest text-slate-500">
@@ -1200,6 +1717,7 @@ function PredictivePrepEngine() {
                 <th className="px-5 py-3 bg-violet-50/60">
                   <span className="text-violet-700">Action Required</span>
                 </th>
+                <th className="px-5 py-3 w-10" />
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200/60">
@@ -1255,6 +1773,16 @@ function PredictivePrepEngine() {
                     <td className="px-5 py-3.5 bg-violet-50/40">
                       <PrepActionBadge text={action.text} urgent={action.urgent} />
                     </td>
+                    <td className="px-5 py-3.5 text-center">
+                      <button
+                        type="button"
+                        onClick={() => unlinkMenuItem(item.menuItemId)}
+                        className="rounded-xl border border-slate-200/80 bg-white/60 p-1.5 text-slate-400 hover:border-rose-200/80 hover:text-rose-600"
+                        title="Remove from display tracking"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
@@ -1276,511 +1804,406 @@ function PredictivePrepEngine() {
 
 // ─── Menu Engineering Desk ────────────────────────────────────────────────────
 
-function CustomerMenuPreview({
-  items,
-  categories,
-  logoUrl,
-  overheadPct,
-}: {
-  items: MenuItem[];
-  categories: string[];
-  logoUrl: string | null;
-  overheadPct: number;
-}) {
-  // Group items by category, preserving category order
-  const grouped = categories
-    .map((cat) => ({ cat, rows: items.filter((i) => i.category === cat) }))
-    .filter(({ rows }) => rows.length > 0);
 
-  // Any items with unknown category
-  const knownCats = new Set(categories);
-  const orphans = items.filter((i) => !knownCats.has(i.category));
-  if (orphans.length) grouped.push({ cat: 'Other', rows: orphans });
+// ─── Labor Roster ───────────────────────────────────────────────────────────
 
-  return (
-    <div className="rounded-3xl overflow-hidden border border-slate-200/90 bg-white shadow-[0_24px_64px_-16px_rgba(15,23,42,0.12)]">
-      {/* Phone chrome top bar */}
-      <div className="flex items-center justify-between border-b border-slate-200/80 bg-slate-50/90 px-5 py-3">
-        <div className="flex items-center gap-2">
-          <Smartphone className="h-3.5 w-3.5 text-slate-500" />
-          <span className="text-[9px] font-bold uppercase tracking-widest text-slate-500">Customer Menu Preview</span>
-        </div>
-        <span className="flex items-center gap-1.5 rounded-full border border-emerald-200/80 bg-emerald-50/80 px-2.5 py-0.5 text-[9px] font-black text-emerald-700">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-          Live
-        </span>
-      </div>
-
-      {/* Café logo + menu header */}
-      <div className="px-6 pt-6 pb-4 text-center">
-        <div className="mx-auto mb-4 flex h-20 w-20 items-center justify-center overflow-hidden rounded-2xl border border-dashed border-slate-200/90 bg-slate-50/80">
-          {logoUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={logoUrl} alt="Café Tasha logo" className="h-full w-full object-contain p-1.5" />
-          ) : (
-            <div className="flex flex-col items-center gap-1 px-2">
-              <Coffee className="h-6 w-6 text-slate-300" />
-              <span className="text-[8px] font-bold uppercase tracking-widest text-slate-400">Café Logo</span>
-            </div>
-          )}
-        </div>
-        <p className="text-[9px] font-bold uppercase tracking-[0.3em] text-slate-500">Café Tasha</p>
-        <h3 className="mt-1 text-xl font-black tracking-tight text-slate-900">Our Menu</h3>
-        <p className="mt-0.5 text-[10px] text-slate-500">All prices include service charge</p>
-        <div className="mx-auto mt-3 h-px w-16 bg-gradient-to-r from-transparent via-slate-300 to-transparent" />
-      </div>
-
-      {/* Category sections */}
-      <div className="space-y-5 px-4 pb-6">
-        {grouped.map(({ cat, rows }) => {
-          const palette = getCatPalette(cat);
-          return (
-            <div key={cat}>
-              {/* Category label */}
-              <div className="mb-3 flex items-center gap-3">
-                <div className="h-px flex-1 bg-slate-200" />
-                <span
-                  className="rounded-full px-3 py-0.5 text-[9px] font-black uppercase tracking-widest"
-                  style={{ background: `${palette.gradFrom}18`, color: palette.gradFrom }}
-                >
-                  {cat}
-                </span>
-                <div className="h-px flex-1 bg-slate-200" />
-              </div>
-
-              {/* Item cards grid */}
-              <div className="grid grid-cols-2 gap-2.5">
-                {rows.map((item) => {
-                  const baseCost = calcBaseCost(item.recipeCost, overheadPct);
-                  const price = calcSellingPrice(baseCost, item.targetMargin);
-                  return (
-                    <div
-                      key={item.id}
-                      className="group overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-sm transition-all hover:border-slate-300/90 hover:shadow-md"
-                    >
-                      {/* Image */}
-                      <div
-                        className="h-24 w-full"
-                        style={{ background: `linear-gradient(135deg, ${palette.gradFrom}33, ${palette.gradTo}55)` }}
-                      >
-                        {item.hasImage ? (
-                          <div className="flex h-full items-center justify-center">
-                            <div className="h-8 w-8 rounded-full bg-white/60" />
-                            <div className="absolute h-4 w-4 rounded-full bg-white/80" />
-                          </div>
-                        ) : (
-                          <div className="flex h-full items-center justify-center">
-                            <Tag className="h-6 w-6 opacity-40" style={{ color: palette.gradFrom }} />
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Info */}
-                      <div className="p-3">
-                        <p className="text-[11px] font-bold leading-tight text-slate-900">{item.name}</p>
-                        <div className="mt-2 flex items-center justify-between">
-                          <span className="text-[10px] text-slate-500">LKR</span>
-                          <span
-                            className="text-sm font-black tabular-nums"
-                            style={{ color: palette.gradFrom }}
-                          >
-                            {price.toLocaleString()}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
+function shiftPeriodMonth(periodMonth: string, delta: number): string {
+  const d = new Date(`${normalizePeriodMonth(periodMonth)}T12:00:00`);
+  d.setMonth(d.getMonth() + delta);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
 }
 
-function MenuEngineeringDesk() {
-  const [items,      setItems]     = useState<MenuItem[]>(INITIAL_MENU);
-  const [categories, setCategories] = useState<string[]>(MENU_DEFAULT_CATS);
-  const [activeTab,  setActiveTab] = useState<'TABLE' | 'PREVIEW'>('TABLE');
-  const [synced,     setSynced]    = useState(false);
-  const [cafeLogoUrl, setCafeLogoUrl] = useState<string | null>(null);
-  const [logoDragOver, setLogoDragOver] = useState(false);
-  const [globalOverhead, setGlobalOverhead] = useState(20);
-  const logoInputRef = useRef<HTMLInputElement>(null);
-  // Tracks which row is entering a new category name
-  const [newCatRow,   setNewCatRow]   = useState<string | null>(null);
-  const [newCatInput, setNewCatInput] = useState('');
+function daysInPeriodMonth(periodMonth: string): string[] {
+  const normalized = normalizePeriodMonth(periodMonth);
+  const [year, month] = normalized.split('-').map(Number);
+  const total = new Date(year, month, 0).getDate();
+  return Array.from({ length: total }, (_, i) => {
+    const day = i + 1;
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  });
+}
 
-  const handleLogoFile = (file: File | undefined) => {
-    if (!file || !file.type.startsWith('image/')) return;
-    const reader = new FileReader();
-    reader.onload = () => setCafeLogoUrl(typeof reader.result === 'string' ? reader.result : null);
-    reader.readAsDataURL(file);
-  };
+function LaborRosterPanel({
+  hubView,
+  editorName,
+  editorEmail,
+}: {
+  hubView: boolean;
+  editorName: string;
+  editorEmail: string;
+}) {
+  const [periodMonth, setPeriodMonth] = useState(normalizePeriodMonth());
+  const [panelExpanded, setPanelExpanded] = useState(true);
+  const [roster, setRoster] = useState<CafeLaborRosterMember[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [rosterError, setRosterError] = useState<string | null>(null);
+  const [selectedStaffId, setSelectedStaffId] = useState<string | null>(null);
+  const [dayLogs, setDayLogs] = useState<CafeStaffDayLog[]>([]);
+  const [dayLogsLoading, setDayLogsLoading] = useState(false);
+  const [savingDate, setSavingDate] = useState<string | null>(null);
 
-  const handleLogoDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setLogoDragOver(false);
-    handleLogoFile(e.dataTransfer.files[0]);
-  };
+  const isCurrentMonth = periodMonth === normalizePeriodMonth();
+  const monthDays = useMemo(() => daysInPeriodMonth(periodMonth), [periodMonth]);
+  const dayLogByDate = useMemo(
+    () => new Map(dayLogs.map((log) => [log.workDate, log])),
+    [dayLogs],
+  );
 
-  const updateItem = (id: string, field: keyof MenuItem, value: string | number | boolean) =>
-    setItems((prev) => prev.map((i) => (i.id === id ? { ...i, [field]: value } : i)));
+  const reloadRoster = useCallback(() => {
+    setLoading(true);
+    void getCafeLaborRoster(periodMonth).then((payload) => {
+      if (payload.error) setRosterError(payload.error);
+      else setRosterError(null);
+      setRoster(payload.staff);
+      setLoading(false);
+    });
+  }, [periodMonth]);
 
-  const addItem = () =>
-    setItems((prev) => [
-      ...prev,
-      { id: `M${Date.now()}`, name: 'New Item', category: categories[0] ?? 'Other', recipeCost: 83, targetMargin: 65, hasImage: false },
-    ]);
+  useEffect(() => {
+    reloadRoster();
+  }, [reloadRoster]);
 
-  const removeItem = (id: string) => setItems((prev) => prev.filter((i) => i.id !== id));
-
-  const handleCategoryChange = (rowId: string, value: string) => {
-    if (value === '__NEW__') {
-      setNewCatRow(rowId);
-      setNewCatInput('');
-    } else {
-      updateItem(rowId, 'category', value);
+  useEffect(() => {
+    if (!selectedStaffId) {
+      setDayLogs([]);
+      return;
     }
+    setDayLogsLoading(true);
+    void getCafeStaffDayLogs(selectedStaffId, periodMonth).then((result) => {
+      setDayLogs(result.logs);
+      setDayLogsLoading(false);
+    });
+  }, [selectedStaffId, periodMonth]);
+
+  const totalGross = roster.reduce(
+    (sum, s) => sum + s.dailyRate * s.daysWorked + s.otTotalLkr,
+    0,
+  );
+  const totalDeductions = roster.reduce((sum, s) => sum + s.deductionsMTD, 0);
+  const totalNet = totalGross - totalDeductions;
+  const colSpan = hubView ? 6 : 7;
+
+  const handleDayUpdate = async (
+    staffMember: CafeLaborRosterMember,
+    workDate: string,
+    patch: { worked: boolean; otHours: number; otLkr: number },
+  ) => {
+    setSavingDate(workDate);
+    const result = await updateCafeStaffDayLog({
+      employeeId: staffMember.id,
+      workDate,
+      worked: patch.worked,
+      otHours: patch.otHours,
+      otLkr: patch.otLkr,
+      periodMonth,
+      editorName,
+      editorEmail,
+    });
+    setSavingDate(null);
+    if (!result.ok || !result.log) return;
+
+    setDayLogs((prev) => {
+      const next = prev.filter((l) => l.workDate !== workDate);
+      return [...next, result.log!].sort((a, b) => a.workDate.localeCompare(b.workDate));
+    });
+    reloadRoster();
   };
 
-  const commitNewCategory = (rowId: string) => {
-    const name = newCatInput.trim();
-    if (name) {
-      setCategories((prev) => (prev.includes(name) ? prev : [...prev, name]));
-      updateItem(rowId, 'category', name);
-    }
-    setNewCatRow(null);
-    setNewCatInput('');
-  };
-
-  const handleSync = () => {
-    setSynced(true);
-    setTimeout(() => setSynced(false), 3000);
-  };
-
-  const inputCls = 'w-full rounded-xl border border-slate-200/80 bg-white/80 px-2.5 py-1.5 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400/40 transition-all';
+  const selectedStaff = roster.find((s) => s.id === selectedStaffId) ?? null;
 
   return (
     <ExecutiveGlassCard className="overflow-hidden">
-      {/* ── Header ── */}
-      <div className="border-b border-slate-200/80 bg-slate-50/80 px-5 py-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-2xl border border-rose-200/80 bg-rose-50/80">
-              <Tag className="h-4 w-4 text-rose-600" />
-            </div>
-            <div>
-              <h2 className="text-xs font-black uppercase tracking-widest text-slate-800">
-                Menu &amp; Pricing Engineering
-              </h2>
-              <p className="text-[10px] text-slate-500">
-                Set margins, auto-calculate selling prices, and sync to the live POS &amp; online menu.
-              </p>
-            </div>
+      <div className="border-b border-slate-200/80 bg-slate-50/80 px-5 py-3.5 flex flex-wrap items-center gap-2">
+        <User className="h-4 w-4 text-slate-500" />
+        <h2 className="text-lg font-bold text-slate-800 uppercase">Labor Roster — MTD Salary Tracker</h2>
+
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1 rounded-xl border border-slate-200/80 bg-white/70 p-0.5">
+            <button
+              type="button"
+              onClick={() => setPeriodMonth((m) => shiftPeriodMonth(m, -1))}
+              className="rounded-lg p-1.5 text-slate-600 transition-all hover:bg-slate-100"
+              aria-label="Previous month"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <span className="min-w-[9rem] px-2 text-center text-xs font-black uppercase tracking-wider text-slate-800">
+              {formatPeriodMonthLabel(periodMonth)}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                if (!isCurrentMonth) setPeriodMonth((m) => shiftPeriodMonth(m, 1));
+              }}
+              disabled={isCurrentMonth}
+              className="rounded-lg p-1.5 text-slate-600 transition-all hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-30"
+              aria-label="Next month"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
           </div>
 
-          {/* Sync button */}
+          {!isCurrentMonth ? (
+            <button
+              type="button"
+              onClick={() => setPeriodMonth(normalizePeriodMonth())}
+              className="rounded-xl border border-indigo-200/80 bg-indigo-50/70 px-2.5 py-1 text-[10px] font-bold text-indigo-800 hover:bg-indigo-100/70"
+            >
+              Current month
+            </button>
+          ) : null}
+
           <button
             type="button"
-            onClick={handleSync}
-            className={`flex items-center gap-2 rounded-2xl border px-5 py-2.5 text-xs font-black uppercase tracking-widest shadow-md transition-all ${
-              synced
-                ? 'border-emerald-300/80 bg-emerald-100/80 text-emerald-800 shadow-emerald-200/60'
-                : 'border-rose-300/80 bg-rose-600 text-white shadow-rose-600/30 hover:bg-rose-500'
-            }`}
+            onClick={() => setPanelExpanded((v) => !v)}
+            className="flex items-center gap-1 rounded-xl border border-slate-200/80 bg-white/70 px-2.5 py-1 text-[10px] font-bold text-slate-700 hover:bg-white"
           >
-            <Satellite className={`h-3.5 w-3.5 ${synced ? '' : 'animate-pulse'}`} />
-            {synced ? 'Synced to POS & Menu!' : 'Sync Prices to Live POS & Online Menu'}
+            {panelExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            {panelExpanded ? 'Collapse' : 'Expand'}
           </button>
-        </div>
-
-        {/* Sub-tabs */}
-        <div className="mt-3 flex gap-1">
-          {[
-            { key: 'TABLE'   as const, label: 'MD: Pricing Engine', Icon: Tag        },
-            { key: 'PREVIEW' as const, label: 'Customer: Live Preview', Icon: Smartphone },
-          ].map(({ key, label, Icon }) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setActiveTab(key)}
-              className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition-all ${
-                activeTab === key
-                  ? 'bg-slate-900 text-white shadow-sm'
-                  : 'text-slate-600 hover:bg-white/70'
-              }`}
-            >
-              <Icon className="h-3 w-3" />
-              {label}
-            </button>
-          ))}
         </div>
       </div>
 
-      {/* ── Pricing Table ── */}
-      {activeTab === 'TABLE' && (
-        <>
-          {/* Brand Configuration */}
-          <div className="border-b border-slate-200/80 bg-white/50 px-5 py-4 space-y-4">
-            <div className="flex flex-wrap items-start gap-4">
-              <div className="min-w-0 flex-1">
-                <p className="text-[10px] font-black uppercase tracking-widest text-slate-700">Brand Configuration</p>
-                <p className="mt-0.5 text-[10px] text-slate-500">
-                  Upload your café logo — it appears at the top of the customer-facing digital menu preview.
-                </p>
-              </div>
+      {rosterError ? (
+        <div className="border-b border-rose-200/80 bg-rose-50/50 px-5 py-2 text-xs font-semibold text-rose-800">
+          {rosterError}
+        </div>
+      ) : null}
 
-              <div className="flex flex-wrap items-center gap-3">
-                {cafeLogoUrl && (
-                  <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-sm">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={cafeLogoUrl} alt="Uploaded café logo" className="h-full w-full object-contain p-1" />
-                  </div>
-                )}
-
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => logoInputRef.current?.click()}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') logoInputRef.current?.click(); }}
-                  onDragOver={(e) => { e.preventDefault(); setLogoDragOver(true); }}
-                  onDragLeave={() => setLogoDragOver(false)}
-                  onDrop={handleLogoDrop}
-                  className={`flex cursor-pointer items-center gap-2 rounded-2xl border-2 border-dashed px-5 py-3 transition-all ${
-                    logoDragOver
-                      ? 'border-rose-400/80 bg-rose-50/80'
-                      : 'border-slate-300/80 bg-slate-50/60 hover:border-rose-300/70 hover:bg-rose-50/40'
-                  }`}
-                >
-                  <Upload className="h-4 w-4 text-rose-600" />
-                  <span className="text-xs font-black text-slate-700">+ Upload Café Logo</span>
-                </div>
-
-                <input
-                  ref={logoInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => handleLogoFile(e.target.files?.[0])}
-                />
-
-                {cafeLogoUrl && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCafeLogoUrl(null);
-                      if (logoInputRef.current) logoInputRef.current.value = '';
-                    }}
-                    className="rounded-xl border border-slate-200/80 bg-white/70 px-3 py-2 text-[10px] font-bold text-slate-600 transition-all hover:border-rose-200/80 hover:text-rose-700"
-                  >
-                    Remove Logo
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* BOM overhead */}
-            <div className="flex flex-wrap items-end gap-4 rounded-2xl border border-indigo-200/70 bg-indigo-50/40 px-4 py-3">
-              <div className="min-w-[200px]">
-                <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-indigo-800">
-                  Global Operational Overhead (%)
-                </label>
-                <div className="relative max-w-[120px]">
-                  <input
-                    type="number"
-                    min={0}
-                    max={100}
-                    step={0.5}
-                    value={globalOverhead}
-                    onChange={(e) => setGlobalOverhead(Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)))}
-                    className={`${inputCls} pr-8 text-center font-black text-indigo-900`}
-                  />
-                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-mono text-indigo-400">%</span>
-                </div>
-              </div>
-              <div className="min-w-0 flex-1 text-[10px] leading-relaxed text-indigo-900/80">
-                <strong>Strict BOM formula:</strong> Base Cost = (Sum of Raw Ingredients from Recipe) + Global Overhead&nbsp;%.
-                <span className="block mt-0.5 text-indigo-700/70">
-                  Example at {globalOverhead}%: LKR 100 recipe → LKR {calcBaseCost(100, globalOverhead)} base cost.
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <div className="overflow-x-auto">
+      {panelExpanded ? (
+        <div className="overflow-x-auto">
+          {loading ? (
+            <p className="px-5 py-10 text-center text-sm text-slate-500">Loading roster…</p>
+          ) : roster.length === 0 ? (
+            <p className="px-5 py-10 text-center text-sm text-slate-500">No active café staff on roster.</p>
+          ) : (
             <table className="w-full text-left text-sm">
-              <thead className="border-b border-slate-200/80 bg-slate-50/60 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+              <thead className="border-b border-slate-200/80 bg-slate-50/60">
                 <tr>
-                  <th className="px-4 py-3 w-14">Image</th>
-                  <th className="px-4 py-3">Item Name</th>
-                  <th className="px-4 py-3">Category</th>
-                  <th className="px-4 py-3 text-center">Base Cost (LKR)</th>
-                  <th className="px-4 py-3 text-center">Target Margin (%)</th>
-                  <th className="px-4 py-3 text-center bg-emerald-50/60">
-                    <span className="text-emerald-700">Selling Price (LKR)</span>
+                  <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider">Staff Member</th>
+                  <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider">Role</th>
+                  <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider text-center">Daily Rate</th>
+                  <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider text-center">Days Worked</th>
+                  <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider text-center">OT (Month)</th>
+                  {!hubView ? (
+                    <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider text-right">Deductions</th>
+                  ) : null}
+                  <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider text-right">
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50/80 px-2.5 py-0.5 text-[10px] font-black text-emerald-800">
+                      <Zap className="h-2.5 w-2.5" />
+                      {hubView ? 'MTD Gross' : 'MTD Net'}
+                    </span>
                   </th>
-                  <th className="px-4 py-3 w-10" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200/60">
-                {items.map((item) => {
-                  const baseCost     = calcBaseCost(item.recipeCost, globalOverhead);
-                  const sellingPrice = calcSellingPrice(baseCost, item.targetMargin);
-                  const isLowMargin  = item.targetMargin < 55;
+                {roster.map((s) => {
+                  const gross = s.dailyRate * s.daysWorked + s.otTotalLkr;
+                  const net = gross - s.deductionsMTD;
+                  const isOpen = selectedStaffId === s.id;
                   return (
-                    <tr key={item.id} className="hover:bg-white/40 transition-colors group">
-                      {/* Thumbnail */}
-                      <td className="px-4 py-3">
-                        <button
-                          type="button"
-                          onClick={() => updateItem(item.id, 'hasImage', !item.hasImage)}
-                          className="transition-transform hover:scale-105"
-                          title={item.hasImage ? 'Click to remove image' : 'Click to simulate upload'}
-                        >
-                          <ItemThumb item={item} size="sm" />
-                        </button>
-                      </td>
-
-                      {/* Name */}
-                      <td className="px-4 py-3">
-                        <input
-                          type="text"
-                          value={item.name}
-                          onChange={(e) => updateItem(item.id, 'name', e.target.value)}
-                          className={`${inputCls} font-semibold`}
-                        />
-                      </td>
-
-                      {/* Category */}
-                      <td className="px-4 py-3 min-w-[180px]">
-                        {newCatRow === item.id ? (
-                          <input
-                            type="text"
-                            autoFocus
-                            placeholder="New category name…"
-                            value={newCatInput}
-                            onChange={(e) => setNewCatInput(e.target.value)}
-                            onKeyDown={(e) => { if (e.key === 'Enter') commitNewCategory(item.id); if (e.key === 'Escape') { setNewCatRow(null); } }}
-                            onBlur={() => commitNewCategory(item.id)}
-                            className={`${inputCls} border-indigo-300/80 focus:ring-indigo-400/40`}
-                          />
-                        ) : (
-                          <select
-                            value={item.category}
-                            onChange={(e) => handleCategoryChange(item.id, e.target.value)}
-                            className={`${inputCls} appearance-none pr-6`}
-                          >
-                            {categories.map((c) => (
-                              <option key={c} value={c}>{c}</option>
-                            ))}
-                            <option value="__NEW__">+ New Category…</option>
-                          </select>
-                        )}
-                      </td>
-
-                      {/* Base Cost — auto-calculated from BOM */}
-                      <td className="px-4 py-3 text-center">
-                        <div className="flex flex-col items-center gap-0.5">
-                          <span className="rounded-xl border border-slate-200/80 bg-slate-100/80 px-3 py-1.5 font-mono text-sm font-black tabular-nums text-slate-800">
-                            {baseCost.toLocaleString()}
+                    <React.Fragment key={s.id}>
+                      <tr
+                        className={`cursor-pointer transition-colors ${isOpen ? 'bg-indigo-50/40' : 'hover:bg-white/40'}`}
+                        onClick={() => setSelectedStaffId(isOpen ? null : s.id)}
+                      >
+                        <td className="px-5 py-4 text-sm font-medium text-slate-800">
+                          <div className="flex items-center gap-2.5">
+                            <div className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200/80 bg-slate-100/80 text-xs font-black text-slate-600">
+                              {s.name.charAt(0)}
+                            </div>
+                            <div>
+                              <p className="font-bold text-slate-900">{s.name}</p>
+                              <p className="text-[10px] font-semibold text-indigo-700">
+                                {isOpen ? 'Hide daily breakdown' : 'Click for days & OT'}
+                              </p>
+                            </div>
+                            {isOpen ? (
+                              <ChevronUp className="ml-1 h-4 w-4 text-indigo-600" />
+                            ) : (
+                              <ChevronDown className="ml-1 h-4 w-4 text-slate-400" />
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-5 py-4 text-sm font-medium text-slate-800">{s.role}</td>
+                        <td className="px-5 py-4 text-center font-mono text-sm text-slate-800">{lkr(s.dailyRate)}/day</td>
+                        <td className="px-5 py-4 text-sm text-slate-800">
+                          <div className="flex flex-col items-center gap-1">
+                            <span className="font-bold text-slate-900">{s.daysWorked}</span>
+                            <div className="h-1 w-16 overflow-hidden rounded-full bg-slate-200/80">
+                              <div
+                                className="h-full rounded-full bg-emerald-500"
+                                style={{ width: `${Math.min((s.daysWorked / 26) * 100, 100)}%` }}
+                              />
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-5 py-4 text-center font-mono text-sm font-bold text-amber-800">
+                          {s.otTotalLkr > 0 ? lkr(s.otTotalLkr) : '—'}
+                        </td>
+                        {!hubView ? (
+                          <td className="px-5 py-4 text-right font-mono text-sm text-slate-800">
+                            {s.deductionsMTD > 0 ? `−${lkr(s.deductionsMTD)}` : '—'}
+                          </td>
+                        ) : null}
+                        <td className="px-5 py-4 text-right">
+                          <span className="inline-block rounded-xl border border-emerald-200/80 bg-emerald-50/70 px-3 py-1 text-sm font-black tabular-nums text-emerald-900">
+                            {lkr(hubView ? gross : net)}
                           </span>
-                          <span className="text-[9px] text-slate-500">
-                            recipe {item.recipeCost.toLocaleString()} + {globalOverhead}%
-                          </span>
-                        </div>
-                      </td>
+                        </td>
+                      </tr>
 
-                      {/* Target Margin */}
-                      <td className="px-4 py-3 text-center">
-                        <div className="flex items-center gap-1.5">
-                          <input
-                            type="number"
-                            min={1}
-                            max={98}
-                            value={item.targetMargin}
-                            onChange={(e) => updateItem(item.id, 'targetMargin', Math.max(1, Math.min(98, parseInt(e.target.value) || 50)))}
-                            className={`${inputCls} w-20 text-center font-mono ${isLowMargin ? 'border-amber-300/80 text-amber-800' : ''}`}
-                          />
-                          <span className="text-xs text-slate-400">%</span>
-                        </div>
-                        {isLowMargin && (
-                          <p className="mt-0.5 text-[9px] text-amber-700 font-semibold">Low margin</p>
-                        )}
-                      </td>
+                      {isOpen && selectedStaff ? (
+                        <tr className="bg-indigo-50/20">
+                          <td colSpan={colSpan} className="px-5 py-4">
+                            {dayLogsLoading ? (
+                              <p className="text-center text-xs text-slate-500">Loading daily log…</p>
+                            ) : (
+                              <div className="space-y-3">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-indigo-900">
+                                  Daily attendance — {selectedStaff.name} · {formatPeriodMonthLabel(periodMonth)}
+                                </p>
+                                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+                                  {monthDays.map((date) => {
+                                    const log = dayLogByDate.get(date);
+                                    const worked = log?.worked ?? false;
+                                    const otHours = log?.otHours ?? 0;
+                                    const otLkr = log?.otLkr ?? 0;
+                                    const dayNum = Number(date.slice(8, 10));
+                                    const isSaving = savingDate === date;
+                                    const wasEdited = Boolean(log?.editedAt);
 
-                      {/* Selling Price — auto-calculated */}
-                      <td className="px-4 py-3 text-center bg-emerald-50/40">
-                        <div className="flex flex-col items-center">
-                          <span className="text-base font-black tabular-nums text-emerald-800">
-                            {sellingPrice.toLocaleString()}
-                          </span>
-                          <span className="text-[9px] text-emerald-600 font-semibold">
-                            +{baseCost > 0 ? Math.round(sellingPrice - baseCost) : 0} profit
-                          </span>
-                        </div>
-                      </td>
+                                    return (
+                                      <div
+                                        key={date}
+                                        className={`rounded-xl border p-2.5 ${
+                                          worked
+                                            ? 'border-emerald-200/80 bg-emerald-50/50'
+                                            : 'border-slate-200/70 bg-white/60'
+                                        }`}
+                                      >
+                                        <div className="mb-2 flex items-center justify-between">
+                                          <span className="text-xs font-black text-slate-800">{dayNum}</span>
+                                          <label className="flex cursor-pointer items-center gap-1 text-[9px] font-bold text-slate-600">
+                                            <input
+                                              type="checkbox"
+                                              checked={worked}
+                                              disabled={isSaving}
+                                              onChange={(e) => {
+                                                e.stopPropagation();
+                                                void handleDayUpdate(selectedStaff, date, {
+                                                  worked: e.target.checked,
+                                                  otHours: e.target.checked ? otHours : 0,
+                                                  otLkr: e.target.checked ? otLkr : 0,
+                                                });
+                                              }}
+                                              onClick={(e) => e.stopPropagation()}
+                                              className="accent-emerald-600"
+                                            />
+                                            Day
+                                          </label>
+                                        </div>
 
-                      {/* Remove */}
-                      <td className="px-4 py-3 text-center">
-                        <button
-                          type="button"
-                          onClick={() => removeItem(item.id)}
-                          className="rounded-xl border border-slate-200/80 bg-white/60 p-1.5 text-slate-400 opacity-0 transition-all group-hover:opacity-100 hover:border-rose-200/80 hover:text-rose-600"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      </td>
-                    </tr>
+                                        {worked ? (
+                                          <div className="space-y-1.5" onClick={(e) => e.stopPropagation()}>
+                                            <div>
+                                              <label className="text-[8px] font-bold uppercase text-slate-500">OT hrs</label>
+                                              <input
+                                                type="number"
+                                                min={0}
+                                                step={0.5}
+                                                defaultValue={otHours || ''}
+                                                key={`${date}-hrs-${otHours}`}
+                                                disabled={isSaving}
+                                                onBlur={(e) => {
+                                                  const nextHours = Math.max(0, parseFloat(e.target.value) || 0);
+                                                  if (nextHours === otHours) return;
+                                                  const hourly = selectedStaff.dailyRate / 8;
+                                                  void handleDayUpdate(selectedStaff, date, {
+                                                    worked: true,
+                                                    otHours: nextHours,
+                                                    otLkr: nextHours > 0 ? Math.round(nextHours * hourly * 1.5) : otLkr,
+                                                  });
+                                                }}
+                                                className="w-full rounded-lg border border-slate-200/80 bg-white/90 px-1.5 py-1 text-center text-xs font-mono"
+                                              />
+                                            </div>
+                                            <div>
+                                              <label className="text-[8px] font-bold uppercase text-slate-500">OT LKR</label>
+                                              <input
+                                                type="number"
+                                                min={0}
+                                                step={1}
+                                                defaultValue={otLkr || ''}
+                                                key={`${date}-lkr-${otLkr}`}
+                                                disabled={isSaving}
+                                                onBlur={(e) => {
+                                                  const nextLkr = Math.max(0, parseFloat(e.target.value) || 0);
+                                                  if (nextLkr === otLkr) return;
+                                                  void handleDayUpdate(selectedStaff, date, {
+                                                    worked: true,
+                                                    otHours,
+                                                    otLkr: nextLkr,
+                                                  });
+                                                }}
+                                                className="w-full rounded-lg border border-slate-200/80 bg-white/90 px-1.5 py-1 text-center text-xs font-mono"
+                                              />
+                                            </div>
+                                          </div>
+                                        ) : (
+                                          <p className="text-[9px] text-slate-400">Off</p>
+                                        )}
+
+                                        {wasEdited && log ? (
+                                          <div className="mt-2 rounded-lg border border-amber-200/80 bg-amber-50/80 px-1.5 py-1 text-[8px] leading-snug text-amber-900">
+                                            <span className="font-black">Edited by {log.editedByName ?? 'staff'}</span>
+                                            <br />
+                                            Was: {log.prevWorked ? 'worked' : 'off'}
+                                            {log.prevOtHours ? ` · ${log.prevOtHours}h OT` : ''}
+                                            {log.prevOtLkr ? ` · ${lkr(log.prevOtLkr)}` : ''}
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ) : null}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
+              <tfoot className="border-t border-slate-200/80 bg-slate-50/60">
+                <tr>
+                  <td colSpan={hubView ? 4 : 4} className="px-5 py-3 text-xs font-bold text-slate-600">
+                    Total — {formatPeriodMonthLabel(periodMonth)}
+                  </td>
+                  <td className="px-5 py-3 text-center font-mono text-xs font-black text-amber-800">
+                    {roster.some((s) => s.otTotalLkr > 0)
+                      ? lkr(roster.reduce((sum, s) => sum + s.otTotalLkr, 0))
+                      : '—'}
+                  </td>
+                  {!hubView ? (
+                    <td className="px-5 py-3 text-right font-mono text-xs font-black text-rose-700">
+                      −{lkr(totalDeductions)}
+                    </td>
+                  ) : null}
+                  <td className="px-5 py-3 text-right">
+                    <span className="inline-block rounded-xl border border-emerald-200/80 bg-emerald-100/70 px-3 py-1 text-sm font-black tabular-nums text-emerald-900">
+                      {lkr(hubView ? totalGross : totalNet)}
+                    </span>
+                  </td>
+                </tr>
+              </tfoot>
             </table>
-          </div>
-
-          {/* Add item row */}
-          <div className="border-t border-slate-200/60 bg-slate-50/40 px-5 py-3">
-            <button
-              type="button"
-              onClick={addItem}
-              className="flex items-center gap-1.5 rounded-xl border border-dashed border-slate-300/80 bg-white/60 px-4 py-2 text-xs font-bold text-slate-600 transition-all hover:border-emerald-300/80 hover:bg-emerald-50/60 hover:text-emerald-700"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              Add Menu Item
-            </button>
-          </div>
-
-          {/* Summary footer */}
-          <div className="border-t border-slate-200/80 bg-slate-50/60 px-5 py-2.5">
-            <div className="flex flex-wrap gap-5 text-[10px] text-slate-500">
-              <span>{items.length} items · {[...new Set(items.map((i) => i.category))].length} categories</span>
-              <span>Avg margin: <strong className="text-slate-700">
-                {items.length ? Math.round(items.reduce((s, i) => s + i.targetMargin, 0) / items.length) : 0}%
-              </strong></span>
-              <span>Total menu value: <strong className="text-emerald-700">
-                LKR {items.reduce((s, i) => s + calcSellingPrice(calcBaseCost(i.recipeCost, globalOverhead), i.targetMargin), 0).toLocaleString()}
-              </strong> (sum of prices)</span>
-            </div>
-          </div>
-        </>
-      )}
-
-      {/* ── Customer Menu Preview ── */}
-      {activeTab === 'PREVIEW' && (
-        <div className="bg-slate-100/60 p-5">
-          <div className="mb-4 flex items-center justify-between">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
-              Simulates what customers see on their phone or table display
-            </p>
-            <span className="rounded-full border border-slate-200/80 bg-white/70 px-3 py-1 text-[10px] font-bold text-slate-600">
-              {items.length} items · {[...new Set(items.map((i) => i.category))].length} categories
-            </span>
-          </div>
-          <div className="mx-auto max-w-sm">
-            <CustomerMenuPreview items={items} categories={categories} logoUrl={cafeLogoUrl} overheadPct={globalOverhead} />
-          </div>
+          )}
+        </div>
+      ) : (
+        <div className="px-5 py-4 text-xs text-slate-500">
+          {roster.length} staff · {formatPeriodMonthLabel(periodMonth)} · click Expand to view roster
         </div>
       )}
     </ExecutiveGlassCard>
@@ -1849,86 +2272,186 @@ function LookbackDateStrip({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function CafePage() {
-  const [staff, setStaff]             = useState<StaffMember[]>(INITIAL_STAFF);
+  const searchParams = useSearchParams();
+  const fromHub = searchParams.get('hub') === '1';
+  const [sessionProfile, setSessionProfile] = useState<ExecutiveSessionProfile | null>(null);
+  const [staff, setStaff]             = useState<StaffMember[]>([]);
+  const [tasks, setTasks]             = useState<Task[]>([]);
+  const [listA, setListA]               = useState<DailyStockItem[]>([]);
+  const [listB, setListB]               = useState<BulkStockItem[]>([]);
+  const [voids, setVoids]               = useState<Void[]>([]);
+  const [menuItems, setMenuItems]       = useState<MenuItem[]>([]);
+  const [ingredients, setIngredients]   = useState<Ingredient[]>([]);
+  const [menuCategories, setMenuCategories] = useState<string[]>(MENU_DEFAULT_CATS);
+  const [prepItems, setPrepItems]       = useState<PrepItem[]>([]);
+  const [displayItems, setDisplayItems] = useState<DisplayItem[]>([]);
+  const [globalOverhead, setGlobalOverhead] = useState(20);
+  const [cafeLogoUrl, setCafeLogoUrl]   = useState<string | null>(null);
+  const [cafeCoverUrl, setCafeCoverUrl] = useState<string | null>(null);
+  const [cafeCoverTextColor, setCafeCoverTextColor] = useState('#ffffff');
+  const [customerMenuUrl, setCustomerMenuUrl] = useState<string | null>('https://tasha.lk');
+  const [dashboardReady, setDashboardReady] = useState(false);
+  const [loadError, setLoadError]       = useState<string | null>(null);
   const [photoTask, setPhotoTask]     = useState<Task | null>(null);
   const [fineTarget, setFineTarget]   = useState<FineTarget | null>(null);
   const [lookbackDate, setLookbackDate] = useState(TODAY_STR);
   const [showVoids, setShowVoids]     = useState(false);
+  const [showAddTask, setShowAddTask] = useState(false);
+  const [newTaskName, setNewTaskName] = useState('');
+  const [newTaskTime, setNewTaskTime] = useState('09:00');
+  const [newTaskFreq, setNewTaskFreq] = useState<TaskFreq>('DAILY');
+  const [newTaskAssignee, setNewTaskAssignee] = useState<string>(CAFE_TASK_ASSIGNEE_ROLES[0]);
+
+  useEffect(() => {
+    fetchExecutiveSessionProfile().then(setSessionProfile);
+  }, []);
+
+  useEffect(() => {
+    void getCafeDashboard().then((payload) => {
+      if (payload.error) setLoadError(payload.error);
+      setStaff(payload.staff);
+      setTasks(payload.tasks);
+      setListA(payload.listA);
+      setListB(payload.listB);
+      setVoids(payload.voids);
+      const loadedIngredients = (payload.ingredients ?? []).map((ing) =>
+        normalizeIngredient(ing as Partial<Ingredient> & Pick<Ingredient, 'id' | 'name' | 'supplier'>),
+      );
+      const loadedMenu = syncMenuRecipeCosts(
+        normalizeMenuItems(payload.menuItems ?? []),
+        loadedIngredients,
+      );
+      const linkedPrep = reconcilePrepWithMenu(
+        loadedMenu,
+        payload.prepItems ?? [],
+        payload.displayItems ?? [],
+      );
+      setIngredients(loadedIngredients);
+      setMenuItems(loadedMenu);
+      setPrepItems(linkedPrep.prepItems);
+      setDisplayItems(linkedPrep.displayItems);
+      setMenuCategories(payload.menuCategories.length ? payload.menuCategories : MENU_DEFAULT_CATS);
+      setGlobalOverhead(payload.globalOverhead ?? 20);
+      setCafeLogoUrl(payload.cafeLogoUrl ?? null);
+      setCafeCoverUrl(payload.cafeCoverUrl ?? null);
+      setCafeCoverTextColor(payload.cafeCoverTextColor ?? '#ffffff');
+      setCustomerMenuUrl(payload.customerMenuUrl ?? 'https://tasha.lk');
+      setDashboardReady(true);
+    });
+  }, []);
+
+  const persistDashboard = useCallback(
+    (patch: Partial<CafeDashboardPayload>) => {
+      if (!dashboardReady) return;
+      void saveCafeDashboard({
+        staff: patch.staff ?? staff,
+        tasks: patch.tasks ?? tasks,
+        listA: patch.listA ?? listA,
+        listB: patch.listB ?? listB,
+        voids: patch.voids ?? voids,
+        menuItems: patch.menuItems ?? menuItems,
+        menuCategories: patch.menuCategories ?? menuCategories,
+        ingredients: patch.ingredients ?? ingredients,
+        prepItems: patch.prepItems ?? prepItems,
+        displayItems: patch.displayItems ?? displayItems,
+        globalOverhead: patch.globalOverhead ?? globalOverhead,
+        cafeLogoUrl: patch.cafeLogoUrl ?? cafeLogoUrl,
+        cafeCoverUrl: patch.cafeCoverUrl ?? cafeCoverUrl,
+        cafeCoverTextColor: patch.cafeCoverTextColor ?? cafeCoverTextColor,
+        customerMenuUrl: patch.customerMenuUrl ?? customerMenuUrl,
+      });
+    },
+    [dashboardReady, staff, tasks, listA, listB, voids, menuItems, menuCategories, ingredients, prepItems, displayItems, globalOverhead, cafeLogoUrl, cafeCoverUrl, cafeCoverTextColor, customerMenuUrl],
+  );
+
+  const menuPrepSyncKey = useMemo(
+    () =>
+      menuItems
+        .map((item) => `${item.id}:${item.name}:${item.minReadyStock}:${item.rollingAvg14d}`)
+        .join('|'),
+    [menuItems],
+  );
+
+  useEffect(() => {
+    if (!dashboardReady) return;
+    const linked = reconcilePrepWithMenu(menuItems, prepItems, displayItems);
+    setPrepItems(linked.prepItems);
+    setDisplayItems(linked.displayItems);
+    // Only re-sync when the sellable menu changes — not when shelf-life edits update prep rows.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [menuPrepSyncKey, dashboardReady]);
+
+  useEffect(() => {
+    if (!dashboardReady) return;
+    const timer = window.setTimeout(() => {
+      persistDashboard({});
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [staff, tasks, listA, listB, voids, menuItems, menuCategories, ingredients, prepItems, displayItems, globalOverhead, cafeLogoUrl, cafeCoverUrl, cafeCoverTextColor, customerMenuUrl, dashboardReady, persistDashboard]);
 
   const lookbackOffset = dateToOffset(lookbackDate);
-  const activeTasks    = getTasksForOffset(lookbackOffset);
+  const activeTasks    = getTasksForOffset(lookbackOffset, tasks);
   const dailyTasks     = activeTasks.filter((t) => t.freq === 'DAILY');
   const weeklyTasks    = activeTasks.filter((t) => t.freq === 'WEEKLY');
   const overdue        = activeTasks.filter((t) => t.status === 'OVERDUE').length;
   const complete       = activeTasks.filter((t) => t.status === 'COMPLETE').length;
-  const compliancePct  = Math.round((complete / activeTasks.length) * 100);
+  const compliancePct  = activeTasks.length
+    ? Math.round((complete / activeTasks.length) * 100)
+    : 0;
 
   const grossPayroll    = staff.reduce((s, m) => s + m.dailyRate * m.daysWorked, 0);
   const totalDeductions = staff.reduce((s, m) => s + m.deductionsMTD, 0);
   const netPayroll      = grossPayroll - totalDeductions;
 
-  const flaggedA = DEMO_LIST_A.filter((i) => listAPct(i) < THEFT_THRESHOLD).length;
-  const flaggedB = DEMO_LIST_B.filter((i) => listBPct(i) < THEFT_THRESHOLD).length;
+  const flaggedA = listA.filter((i) => listAPct(i) < THEFT_THRESHOLD).length;
+  const flaggedB = listB.filter((i) => listBPct(i) < THEFT_THRESHOLD).length;
+  const hubView = isCafeHubView(sessionProfile?.rank, fromHub);
 
-  const handleIssueFine = (staffId: string, amount: number, _reason: string) => {
-    setStaff((prev) => prev.map((s) =>
-      s.id === staffId ? { ...s, deductionsMTD: s.deductionsMTD + amount } : s
-    ));
+  const resetAddTaskForm = () => {
+    setNewTaskName('');
+    setNewTaskTime('09:00');
+    setNewTaskFreq('DAILY');
+    setNewTaskAssignee(CAFE_TASK_ASSIGNEE_ROLES[0]);
+    setShowAddTask(false);
   };
 
-  // Render a single task row used in both daily and weekly sections
-  const TaskRow = ({ task }: { task: Task }) => {
-    const st = STATUS_META[task.status];
-    const isFlagged = task.status === 'OVERDUE';
-    return (
-      <div className={`flex items-center gap-3 rounded-xl border p-3 transition-all ${
-        task.status === 'COMPLETE' ? 'border-emerald-200/80 bg-emerald-50/40' :
-        task.status === 'OVERDUE'  ? 'border-rose-200/80   bg-rose-50/40 animate-pulse' :
-        'border-slate-200/60 bg-white/40'
-      }`}>
-        <st.Icon className={`h-4 w-4 flex-shrink-0 ${
-          task.status === 'COMPLETE' ? 'text-emerald-600' :
-          task.status === 'OVERDUE'  ? 'text-rose-600' :
-          'text-amber-500'
-        }`} />
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-xs font-bold text-slate-900">{task.name}</p>
-          <p className="text-[10px] text-slate-500">{task.assignedTo}</p>
-        </div>
-        <div className="flex items-center gap-1.5">
-          {task.proofUploadedAt ? (
-            <button
-              type="button"
-              onClick={() => setPhotoTask(task)}
-              className="flex items-center gap-1 rounded-lg border border-slate-200/80 bg-white/70 px-2 py-1 text-[10px] font-bold text-slate-700 hover:bg-white/90 transition-all"
-            >
-              <Eye className="h-3 w-3" />
-              Proof
-            </button>
-          ) : (
-            task.status === 'OVERDUE'
-              ? <span className="text-[9px] font-bold text-rose-700 animate-pulse">NO PROOF</span>
-              : <Camera className="h-4 w-4 text-slate-300" />
-          )}
-          {isFlagged && (
-            <button
-              type="button"
-              onClick={() => setFineTarget({
-                itemName: task.name,
-                suggestedAmount: 300,
-                defaultStaffId: staff.find((s) => s.name.split(' ')[0] === task.assignedTo)?.id ?? staff[0]?.id ?? '',
-                category: 'COMPLIANCE',
-              })}
-              className="flex items-center gap-1 rounded-lg border border-rose-200/80 bg-rose-50/70 px-2 py-1 text-[9px] font-black text-rose-800 hover:bg-rose-100/80 transition-all whitespace-nowrap"
-            >
-              <Gavel className="h-3 w-3" />
-              Fine
-            </button>
-          )}
-        </div>
-      </div>
-    );
+  const handleAddTask = () => {
+    const name = newTaskName.trim();
+    if (!name) return;
+    const assignedTo = newTaskAssignee || CAFE_TASK_ASSIGNEE_ROLES[0];
+    setTasks((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        name,
+        freq: newTaskFreq,
+        assignedTo,
+        dueTime: newTaskTime,
+        status: 'PENDING',
+      },
+    ]);
+    resetAddTaskForm();
   };
+
+  const handleRemoveTask = (taskId: string) => {
+    setTasks((prev) => prev.filter((task) => task.id !== taskId));
+  };
+
+  const handleIssueFine = (staffId: string, amount: number, reason: string) => {
+    void issueCafeFine({ staffId, amount, reason }).then((result) => {
+      if (result.staff) {
+        setStaff(result.staff);
+        return;
+      }
+      setStaff((prev) =>
+        prev.map((s) =>
+          s.id === staffId ? { ...s, deductionsMTD: s.deductionsMTD + amount } : s,
+        ),
+      );
+    });
+  };
+
+  const canEditTasks = lookbackOffset === 0;
 
   return (
     <>
@@ -1940,21 +2463,23 @@ export default function CafePage() {
         onClose={() => setFineTarget(null)}
       />
 
-      <div className="w-full flex-grow flex flex-col pb-12 font-sans">
-        {/* ── Header ── */}
-        <header className="sticky top-0 z-40 border-b border-white/60 bg-white/45 px-6 md:px-12 2xl:px-24 py-4 shadow-[0_8px_32px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl backdrop-saturate-150">
-          <div>
-            <h1 className="text-2xl md:text-3xl font-black text-slate-900 uppercase tracking-tight">Café Tasha Compliance Auditor</h1>
-            <p className="text-sm font-bold text-slate-500 uppercase tracking-widest mt-1">
-              Labor Roster · Task Proof Lock · Stock Variance & Theft Radar
-            </p>
-          </div>
-        </header>
-
-        <div className="px-6 md:px-12 2xl:px-24 space-y-6 pt-8">
+      <CafePortalShell
+        hubView={hubView}
+        subtitle={
+          hubView
+            ? 'Labor roster · task proof lock · procurement & menu'
+            : 'Labor roster · task proof lock · stock variance & theft radar'
+        }
+      >
+          {loadError ? (
+            <ExecutiveGlassCard className="border-rose-200/80 bg-rose-50/50 p-4">
+              <p className="text-sm font-bold text-rose-900">Could not load live café data</p>
+              <p className="mt-1 text-xs text-rose-700">{loadError}</p>
+            </ExecutiveGlassCard>
+          ) : null}
 
           {/* ── Summary Cards ── */}
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+          <div className={`grid grid-cols-2 gap-4 ${hubView ? 'md:grid-cols-2' : 'md:grid-cols-4'}`}>
             <ExecutiveGlassCard className="p-5">
               <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Staff Count</p>
               <p className="mt-2 text-4xl font-black text-slate-900">{staff.length}</p>
@@ -1967,95 +2492,58 @@ export default function CafePage() {
                 <TrendingUp className="h-5 w-5 text-emerald-600" />
                 <p className="text-2xl font-black tabular-nums text-emerald-900">{lkr(grossPayroll)}</p>
               </div>
+              {!hubView ? (
+                <p className="mt-1 text-xs font-semibold text-slate-500">
+                  Net after deductions:{' '}
+                  <span className="font-black tabular-nums text-emerald-800">{lkr(netPayroll)}</span>
+                </p>
+              ) : (
+                <p className="mt-1 text-xs font-semibold text-slate-500">month-to-date labor accrual</p>
+              )}
             </ExecutiveGlassCard>
 
-            <ExecutiveGlassCard className="p-5">
-              <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Total Deductions</p>
-              <div className="mt-2 flex items-baseline gap-1.5">
-                <TrendingDown className="h-5 w-5 text-rose-600" />
-                <p className="text-2xl font-black tabular-nums text-rose-900">{lkr(totalDeductions)}</p>
-              </div>
-            </ExecutiveGlassCard>
+            {!hubView ? (
+              <>
+                <ExecutiveGlassCard className="p-5">
+                  <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Total Deductions</p>
+                  <div className="mt-2 flex items-baseline gap-1.5">
+                    <TrendingDown className="h-5 w-5 text-rose-600" />
+                    <p className="text-2xl font-black tabular-nums text-rose-900">
+                      {totalDeductions > 0 ? `−${lkr(totalDeductions)}` : lkr(0)}
+                    </p>
+                  </div>
+                  <p className="mt-1 text-xs font-semibold text-slate-500">
+                    Summed from roster fines · deducted from gross
+                  </p>
+                </ExecutiveGlassCard>
 
-            <ExecutiveGlassCard className={`p-5 ${flaggedA + flaggedB > 0 ? 'bg-gradient-to-br from-white/70 to-rose-50/50' : 'bg-gradient-to-br from-white/70 to-slate-50/50'}`}>
-              <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Theft Radar Flags</p>
-              <div className="mt-2 flex items-baseline gap-1.5">
-                {flaggedA + flaggedB > 0
-                  ? <><ShieldAlert className="h-5 w-5 text-rose-600" /><p className="text-2xl font-black tabular-nums text-rose-900">{flaggedA + flaggedB} items</p></>
-                  : <><CheckCircle2 className="h-5 w-5 text-emerald-600" /><p className="text-2xl font-black tabular-nums text-emerald-900">Clear</p></>}
-              </div>
-              <p className="mt-1 text-xs font-semibold text-slate-500">{flaggedA} daily · {flaggedB} bulk</p>
-            </ExecutiveGlassCard>
+                <ExecutiveGlassCard className={`p-5 ${flaggedA + flaggedB > 0 ? 'bg-gradient-to-br from-white/70 to-rose-50/50' : 'bg-gradient-to-br from-white/70 to-slate-50/50'}`}>
+                  <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Theft Radar Flags</p>
+                  <div className="mt-2 flex items-baseline gap-1.5">
+                    {flaggedA + flaggedB > 0
+                      ? <><ShieldAlert className="h-5 w-5 text-rose-600" /><p className="text-2xl font-black tabular-nums text-rose-900">{flaggedA + flaggedB} items</p></>
+                      : <><CheckCircle2 className="h-5 w-5 text-emerald-600" /><p className="text-2xl font-black tabular-nums text-emerald-900">Clear</p></>}
+                  </div>
+                  <p className="mt-1 text-xs font-semibold text-slate-500">{flaggedA} daily · {flaggedB} bulk</p>
+                </ExecutiveGlassCard>
+              </>
+            ) : null}
           </div>
 
+          {/* ── Weekly Procurement — auto order lists ── */}
+          <WeeklyProcurementPanel
+            ingredients={ingredients}
+            menuItems={menuItems}
+            setIngredients={setIngredients}
+            setMenuItems={setMenuItems}
+          />
+
           {/* ── Labor Roster & MTD Salary Tracker ── */}
-          <ExecutiveGlassCard className="overflow-hidden">
-            <div className="border-b border-slate-200/80 bg-slate-50/80 px-5 py-3.5 flex items-center gap-2">
-              <User className="h-4 w-4 text-slate-500" />
-              <h2 className="text-lg font-bold text-slate-800 uppercase">Labor Roster — MTD Salary Tracker</h2>
-              <span className="ml-auto text-[10px] text-slate-500">As of {TODAY_STR}</span>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="border-b border-slate-200/80 bg-slate-50/60">
-                  <tr>
-                    <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider">Staff Member</th>
-                    <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider">Role</th>
-                    <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider text-center">Daily Rate</th>
-                    <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider text-center">Days Worked</th>
-                    <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider text-right">Deductions</th>
-                    <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider text-right">
-                      <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50/80 px-2.5 py-0.5 text-[10px] font-black text-emerald-800">
-                        <Zap className="h-2.5 w-2.5" />
-                        Live MTD Net
-                      </span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200/60">
-                  {staff.map((s) => {
-                    const gross = s.dailyRate * s.daysWorked;
-                    const net   = gross - s.deductionsMTD;
-                    return (
-                      <tr key={s.id} className="hover:bg-white/40 transition-colors">
-                        <td className="px-5 py-4 text-sm font-medium text-slate-800">
-                          <div className="flex items-center gap-2.5">
-                            <div className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200/80 bg-slate-100/80 text-xs font-black text-slate-600">{s.name.charAt(0)}</div>
-                            <p className="font-bold text-slate-900">{s.name}</p>
-                          </div>
-                        </td>
-                        <td className="px-5 py-4 text-sm font-medium text-slate-800">{s.role}</td>
-                        <td className="px-5 py-4 text-sm font-medium text-slate-800 text-center font-mono">{lkr(s.dailyRate)}/day</td>
-                        <td className="px-5 py-4 text-sm font-medium text-slate-800">
-                          <div className="flex flex-col items-center gap-1">
-                            <span className="font-bold text-slate-900">{s.daysWorked}</span>
-                            <div className="h-1 w-16 overflow-hidden rounded-full bg-slate-200/80">
-                              <div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.min((s.daysWorked / 21) * 100, 100)}%` }} />
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-5 py-4 text-sm font-medium text-slate-800 text-right font-mono">
-                          {s.deductionsMTD > 0 ? `−${lkr(s.deductionsMTD)}` : '—'}
-                        </td>
-                        <td className="px-5 py-4 text-sm font-medium text-slate-800 text-right">
-                          <span className="inline-block rounded-xl border border-emerald-200/80 bg-emerald-50/70 px-3 py-1 text-sm font-black tabular-nums text-emerald-900">{lkr(net)}</span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-                <tfoot className="border-t border-slate-200/80 bg-slate-50/60">
-                  <tr>
-                    <td colSpan={4} className="px-5 py-3 text-xs font-bold text-slate-600">Total</td>
-                    <td className="px-5 py-3 text-right font-mono text-xs font-black text-rose-700">−{lkr(totalDeductions)}</td>
-                    <td className="px-5 py-3 text-right">
-                      <span className="inline-block rounded-xl border border-emerald-200/80 bg-emerald-100/70 px-3 py-1 text-sm font-black tabular-nums text-emerald-900">{lkr(netPayroll)}</span>
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-          </ExecutiveGlassCard>
+          <LaborRosterPanel
+            hubView={hubView}
+            editorName={sessionProfile?.fullName ?? 'Executive'}
+            editorEmail={sessionProfile?.email ?? ''}
+          />
 
           {/* ── Visual Task Auditor ── */}
           <ExecutiveGlassCard className="overflow-hidden">
@@ -2072,7 +2560,92 @@ export default function CafePage() {
                 <Trash2 className="h-2.5 w-2.5" />
                 14-Day Photo Auto-Purge Active
               </div>
+              {canEditTasks && (
+                <button
+                  type="button"
+                  onClick={() => setShowAddTask((open) => !open)}
+                  className="inline-flex items-center gap-1 rounded-xl border border-slate-200/80 bg-white/80 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-white transition-all"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  {showAddTask ? 'Cancel' : 'Add task'}
+                </button>
+              )}
             </div>
+
+            {canEditTasks && showAddTask && (
+              <div className="border-b border-slate-200/60 bg-white/40 px-5 py-3">
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="min-w-[180px] flex-1">
+                    <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-600">
+                      Task name
+                    </label>
+                    <input
+                      type="text"
+                      value={newTaskName}
+                      onChange={(e) => setNewTaskName(e.target.value)}
+                      placeholder="e.g. Espresso machine purge"
+                      className="w-full rounded-xl border border-slate-200/80 bg-white/95 px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-600">
+                      Due time
+                    </label>
+                    <input
+                      type="time"
+                      value={newTaskTime}
+                      onChange={(e) => setNewTaskTime(e.target.value)}
+                      className="rounded-xl border border-slate-200/80 bg-white/95 px-3 py-2 text-sm font-mono font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-600">
+                      Frequency
+                    </label>
+                    <div className="inline-flex rounded-xl border border-slate-200/80 bg-white/70 p-0.5 text-[10px] font-black uppercase tracking-wider">
+                      {(['DAILY', 'WEEKLY'] as const).map((freq) => (
+                        <button
+                          key={freq}
+                          type="button"
+                          onClick={() => setNewTaskFreq(freq)}
+                          className={`rounded-lg px-2.5 py-1.5 transition-all ${
+                            newTaskFreq === freq
+                              ? 'bg-slate-900 text-white shadow-sm'
+                              : 'text-slate-500 hover:text-slate-700'
+                          }`}
+                        >
+                          {freq === 'DAILY' ? 'Daily' : 'Weekly'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="min-w-[160px]">
+                    <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-600">
+                      Assigned to
+                    </label>
+                    <select
+                      value={newTaskAssignee}
+                      onChange={(e) => setNewTaskAssignee(e.target.value)}
+                      className="w-full rounded-xl border border-slate-200/80 bg-white/95 px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
+                    >
+                      {CAFE_TASK_ASSIGNEE_ROLES.map((role) => (
+                        <option key={role} value={role}>
+                          {role}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleAddTask}
+                    disabled={!newTaskName.trim()}
+                    className="rounded-xl border border-emerald-300/80 bg-emerald-600 px-4 py-2 text-xs font-black uppercase tracking-widest text-white hover:bg-emerald-500 transition-all disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Save task
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* ── Lookback Date Picker ── */}
             <div className="border-b border-slate-200/60 bg-white/30 px-5 py-3">
@@ -2090,35 +2663,93 @@ export default function CafePage() {
               {/* Daily tasks */}
               <div>
                 <p className="mb-3 text-[10px] font-black uppercase tracking-widest text-slate-600">Daily Checklist — {lookbackOffset === 0 ? 'Today' : lookbackDate}</p>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {dailyTasks.map((task) => <TaskRow key={task.id} task={task} />)}
-                </div>
+                {dailyTasks.length === 0 ? (
+                  <p className="rounded-xl border border-dashed border-slate-200/80 bg-white/40 px-4 py-6 text-center text-xs text-slate-500">
+                    No daily tasks yet — use Add task above.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {dailyTasks.map((task) => (
+                      <CafeTaskRow
+                        key={task.id}
+                        task={task}
+                        canEdit={canEditTasks}
+                        onRemove={handleRemoveTask}
+                        onViewProof={setPhotoTask}
+                        onFine={(row) =>
+                          setFineTarget({
+                            itemName: row.name,
+                            suggestedAmount: 300,
+                            defaultStaffId:
+                              staff.find((s) => s.name.split(' ')[0] === row.assignedTo)?.id ??
+                              staff[0]?.id ??
+                              '',
+                            category: 'COMPLIANCE',
+                          })
+                        }
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Weekly tasks */}
               <div>
                 <p className="mb-3 text-[10px] font-black uppercase tracking-widest text-slate-600">Weekly Deep-Cleaning</p>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {weeklyTasks.map((task) => <TaskRow key={task.id} task={task} />)}
-                </div>
+                {weeklyTasks.length === 0 ? (
+                  <p className="rounded-xl border border-dashed border-slate-200/80 bg-white/40 px-4 py-6 text-center text-xs text-slate-500">
+                    No weekly tasks yet — use Add task above.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {weeklyTasks.map((task) => (
+                      <CafeTaskRow
+                        key={task.id}
+                        task={task}
+                        canEdit={canEditTasks}
+                        onRemove={handleRemoveTask}
+                        onViewProof={setPhotoTask}
+                        onFine={(row) =>
+                          setFineTarget({
+                            itemName: row.name,
+                            suggestedAmount: 300,
+                            defaultStaffId:
+                              staff.find((s) => s.name.split(' ')[0] === row.assignedTo)?.id ??
+                              staff[0]?.id ??
+                              '',
+                            category: 'COMPLIANCE',
+                          })
+                        }
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </ExecutiveGlassCard>
 
-          {/* ── Stock Variance & Theft Radar ── */}
-          <StockVarianceRadar
-            staff={staff}
-            onIssueFine={setFineTarget}
-          />
+          {/* ── Stock Variance & Theft Radar (executive vault only) ── */}
+          {!hubView ? (
+            <StockVarianceRadar
+              staff={staff}
+              listA={listA}
+              listB={listB}
+              voids={voids}
+              onIssueFine={setFineTarget}
+            />
+          ) : null}
 
           {/* ── Predictive Prep & Wastage Control ── */}
-          <PredictivePrepEngine />
+          <PredictivePrepEngine
+            menuItems={menuItems}
+            prepItems={prepItems}
+            setPrepItems={setPrepItems}
+            displayItems={displayItems}
+            setDisplayItems={setDisplayItems}
+            menuPageHref={cafePortalHref(CAFE_MENU_PATH, hubView)}
+          />
 
-          {/* ── Menu & Pricing Engineering ── */}
-          <MenuEngineeringDesk />
-
-        </div>
-      </div>
+      </CafePortalShell>
     </>
   );
 }

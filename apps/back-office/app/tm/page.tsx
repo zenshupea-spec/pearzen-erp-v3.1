@@ -1,5 +1,7 @@
 import { Suspense } from 'react';
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
+import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access';
+import { canAccessHqHub } from '../../lib/hq-hub';
 import TmCommandCenter from './TmCommandCenter';
 
 export const dynamic = 'force-dynamic';
@@ -31,7 +33,14 @@ async function TmPageInner() {
     data: { user },
   } = await supabase.auth.getUser();
 
-  return <TmCommandCenter showDemoBanner={!user} />;
+  const profile = user ? await fetchBackOfficeUserProfile(supabase, user) : null;
+
+  return (
+    <TmCommandCenter
+      showDemoBanner={!user}
+      showHqHubLink={canAccessHqHub(profile?.role)}
+    />
+  );
 }
 
 export default function TmPage() {

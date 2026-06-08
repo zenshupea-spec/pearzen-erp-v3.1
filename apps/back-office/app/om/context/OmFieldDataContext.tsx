@@ -13,6 +13,7 @@ import {
   getOmSiteAllocationData,
   saveOmSiteSlotAssignments,
 } from '../actions/allocation';
+import { COMMAND_CENTER_REFRESH_MS } from '../lib/command-center-tabs';
 import type { OmSiteAllocationPayload } from '../lib/field-operations-types';
 
 type OmFieldDataContextValue = OmSiteAllocationPayload & {
@@ -43,20 +44,24 @@ export function OmFieldDataProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [payload, setPayload] = useState<OmSiteAllocationPayload>(EMPTY);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const data = await getOmSiteAllocationData();
       setPayload(data);
     } catch {
       setPayload({ ...EMPTY, error: 'Failed to load MNR roster and sites.' });
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    refresh();
+    refresh(false);
+    const intervalId = window.setInterval(() => {
+      void refresh(true);
+    }, COMMAND_CENTER_REFRESH_MS);
+    return () => window.clearInterval(intervalId);
   }, [refresh]);
 
   const saveSiteAssignments = useCallback(

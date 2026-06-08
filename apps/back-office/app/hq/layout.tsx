@@ -20,7 +20,7 @@ export default async function HQLayout({ children }: { children: ReactNode }) {
   const role = profile.role;
   const isGodMode = role === 'MD' || role === 'OD';
 
-  if (!role || (!isGodMode && role !== 'HR' && role !== 'FM')) {
+  if (!role || (!isGodMode && role !== 'HR' && role !== 'FM' && role !== 'OM')) {
     redirect('/login/head-office?error=hq_denied');
   }
 

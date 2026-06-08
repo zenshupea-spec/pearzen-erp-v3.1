@@ -12,6 +12,10 @@ export default function ModuleProvisioningPage() {
   const router = useRouter();
 
   useEffect(() => {
+    router.replace('/forge');
+  }, [router]);
+
+  useEffect(() => {
     loadData();
   }, []);
 

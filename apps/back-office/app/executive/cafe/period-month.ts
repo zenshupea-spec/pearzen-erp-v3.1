@@ -16,3 +16,9 @@ export function formatPeriodMonthLabel(periodMonth: string): string {
   const d = new Date(`${normalizePeriodMonth(periodMonth)}T12:00:00`);
   return d.toLocaleDateString('en-LK', { month: 'long', year: 'numeric' });
 }
+
+export function shiftPeriodMonth(periodMonth: string, delta: number): string {
+  const d = new Date(`${normalizePeriodMonth(periodMonth)}T12:00:00`);
+  d.setMonth(d.getMonth() + delta);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+}

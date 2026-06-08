@@ -5,9 +5,14 @@ import { createServerClient } from "@supabase/ssr";
 import {
   TENANT_SLUG_COOKIE,
   TENANT_SLUG_HEADER,
+  defaultTenantSlugForPlatformHost,
+  isForgeOnlyPath,
   isLocalDevHost,
+  isPlatformHost,
   normalizeTenantSlug,
   parseTenantSlugFromHostname,
+  tenantSubdomainUrl,
+  tenantSubdomainsLive,
 } from "./lib/tenant-host";
 import { isPublicCustomerMenuHost } from "./lib/customer-menu-host";
 import { canAccessHqHub } from "./lib/hq-hub";
@@ -103,6 +108,7 @@ async function runAuthProxy(
   tenantSlug: string | null,
 ) {
   const { pathname } = req.nextUrl;
+  const hostname = req.headers.get("host")?.split(":")[0] ?? "";
 
   const oauthCode = req.nextUrl.searchParams.get("code");
   if (oauthCode && pathname !== "/auth/callback") {
@@ -162,7 +168,7 @@ async function runAuthProxy(
     if (returnPath.startsWith("/") && !returnPath.startsWith("//")) {
       loginUrl.searchParams.set("next", returnPath);
     }
-    if (tenantSlug) {
+    if (tenantSlug && !parseTenantSlugFromHostname(hostname)) {
       loginUrl.searchParams.set("tenant", tenantSlug);
     }
 
@@ -345,6 +351,21 @@ async function runAuthProxy(
 
 export async function middleware(req: NextRequest) {
   const hostname = req.headers.get("host")?.split(":")[0] ?? "";
+  const { pathname, search } = req.nextUrl;
+
+  // Forge / Vercel platform hosts serve SaaS Forge only — tenant portals live on {slug}.pearzen.tech.
+  if (
+    tenantSubdomainsLive() &&
+    isPlatformHost(hostname) &&
+    !isForgeOnlyPath(pathname) &&
+    !pathname.startsWith("/auth/") &&
+    !pathname.startsWith("/api/")
+  ) {
+    const slug = defaultTenantSlugForPlatformHost(
+      req.cookies.get(TENANT_SLUG_COOKIE)?.value,
+    );
+    return NextResponse.redirect(tenantSubdomainUrl(slug, pathname, search));
+  }
 
   // Public menu domain must never serve ERP / staff portals (misconfigured DNS guard).
   if (isPublicCustomerMenuHost(hostname)) {

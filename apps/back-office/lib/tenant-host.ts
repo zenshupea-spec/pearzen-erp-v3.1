@@ -1,5 +1,7 @@
 /** Hostname / URL helpers for multi-tenant Pearzen subdomains. Safe in client + server. */
 
+import { CVS_TENANT_SLUG } from "./company-ids";
+
 export const TENANT_SLUG_COOKIE = "pearzen_tenant_slug";
 export const TENANT_SLUG_HEADER = "x-pearzen-tenant-slug";
 
@@ -60,6 +62,38 @@ export function isPlatformHost(hostname: string): boolean {
   if (host.endsWith(".vercel.app")) return true;
 
   return false;
+}
+
+/** Production default when a platform host must route to the live tenant subdomain. */
+export function defaultTenantSlugForPlatformHost(
+  cookieSlug?: string | null,
+): string {
+  return (
+    normalizeTenantSlug(cookieSlug) ??
+    normalizeTenantSlug(process.env.NEXT_PUBLIC_DEV_TENANT_SLUG) ??
+    CVS_TENANT_SLUG
+  );
+}
+
+export function tenantSubdomainUrl(
+  slug: string,
+  pathname: string,
+  search = "",
+): string {
+  const normalized = normalizeTenantSlug(slug) ?? CVS_TENANT_SLUG;
+  const base = tenantBaseDomain();
+  const path = pathname.startsWith("/") ? pathname : `/${pathname}`;
+  return `https://${normalized}.${base}${path}${search}`;
+}
+
+/** Routes that must stay on forge / platform hosts (not tenant subdomains). */
+export function isForgeOnlyPath(pathname: string): boolean {
+  return (
+    pathname === "/forge" ||
+    pathname.startsWith("/forge/") ||
+    pathname === "/login/forge" ||
+    pathname.startsWith("/login/forge/")
+  );
 }
 
 /** `{slug}.pearzen.com` → slug; platform hosts → null. */

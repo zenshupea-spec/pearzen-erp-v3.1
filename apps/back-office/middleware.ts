@@ -352,9 +352,17 @@ export async function middleware(req: NextRequest) {
   const hostname = req.headers.get("host")?.split(":")[0] ?? "";
   const { pathname, search } = req.nextUrl;
 
-  // forge.pearzen.tech is SaaS Forge only — tenant portals live on cvs.pearzen.tech (etc.).
+  // forge.pearzen.tech is SaaS Forge only — tenant portals live on cvs.pearzen.tech.
+  const host = hostname.toLowerCase();
+  const isForgePlatformHost =
+    host === "forge.pearzen.tech" ||
+    host === "erp.pearzen.tech" ||
+    host === "pearzen.tech" ||
+    host === "www.pearzen.tech" ||
+    isTenantRedirectPlatformHost(hostname);
+
   if (
-    isTenantRedirectPlatformHost(hostname) &&
+    isForgePlatformHost &&
     !isForgeOnlyPath(pathname) &&
     !pathname.startsWith("/auth/") &&
     !pathname.startsWith("/api/")

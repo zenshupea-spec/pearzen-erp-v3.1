@@ -96,6 +96,28 @@ export function isForgeOnlyPath(pathname: string): boolean {
   );
 }
 
+/**
+ * Hostnames that must never serve tenant staff portals — only SaaS Forge.
+ * Tenant routes on these hosts redirect to `{slug}.pearzen.tech`.
+ */
+export function isTenantRedirectPlatformHost(hostname: string): boolean {
+  const host = hostname.split(":")[0].toLowerCase();
+  if (isLocalDevHost(host) || host.endsWith(".vercel.app")) return false;
+
+  const base = tenantBaseDomain();
+  const forgeHost = process.env.NEXT_PUBLIC_FORGE_HOST?.toLowerCase();
+  const redirectHosts = new Set(
+    [
+      `forge.${base}`,
+      forgeHost,
+      `erp.${base}`,
+      base,
+      `www.${base}`,
+    ].filter(Boolean),
+  );
+  return redirectHosts.has(host);
+}
+
 /** `{slug}.pearzen.com` → slug; platform hosts → null. */
 export function parseTenantSlugFromHostname(hostname: string): string | null {
   const host = hostname.split(":")[0].toLowerCase();

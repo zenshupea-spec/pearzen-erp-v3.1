@@ -8,11 +8,10 @@ import {
   defaultTenantSlugForPlatformHost,
   isForgeOnlyPath,
   isLocalDevHost,
-  isPlatformHost,
+  isTenantRedirectPlatformHost,
   normalizeTenantSlug,
   parseTenantSlugFromHostname,
   tenantSubdomainUrl,
-  tenantSubdomainsLive,
 } from "./lib/tenant-host";
 import { isPublicCustomerMenuHost } from "./lib/customer-menu-host";
 import { canAccessHqHub } from "./lib/hq-hub";
@@ -353,10 +352,9 @@ export async function middleware(req: NextRequest) {
   const hostname = req.headers.get("host")?.split(":")[0] ?? "";
   const { pathname, search } = req.nextUrl;
 
-  // Forge / Vercel platform hosts serve SaaS Forge only — tenant portals live on {slug}.pearzen.tech.
+  // forge.pearzen.tech is SaaS Forge only — tenant portals live on cvs.pearzen.tech (etc.).
   if (
-    tenantSubdomainsLive() &&
-    isPlatformHost(hostname) &&
+    isTenantRedirectPlatformHost(hostname) &&
     !isForgeOnlyPath(pathname) &&
     !pathname.startsWith("/auth/") &&
     !pathname.startsWith("/api/")

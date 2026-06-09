@@ -3,6 +3,7 @@
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { resolveCompanyIdForSession } from '../../lib/company-context';
+import { auditStaffAction } from '../../lib/staff-audit';
 import { getShiftSettings } from '../executive/settings/actions';
 import {
   computeShiftTiming,
@@ -286,6 +287,14 @@ export async function clearShiftTimingHold(logIds: string[]) {
       if (error) throw error;
     }
 
+    await auditStaffAction({
+      supabase,
+      portal: 'om',
+      action: 'Clear Shift Timing Hold',
+      targetEntity: `${logIds.length} attendance log(s)`,
+      details: { logIds },
+    });
+
     revalidatePath('/om');
     return { success: true };
   } catch (error: unknown) {
@@ -440,6 +449,14 @@ export async function processShiftVerification(
 
     if (error) throw error;
 
+    await auditStaffAction({
+      supabase,
+      portal: 'om',
+      action: `Shift Verification → ${newStatus}`,
+      targetEntity: `${logIds.length} attendance log(s)`,
+      details: { logIds, newStatus },
+    });
+
     revalidatePath('/om');
 
     return { success: true };
@@ -468,6 +485,14 @@ export async function processSmVisitVerification(
       .eq('id', visitId);
 
     if (error) throw error;
+
+    await auditStaffAction({
+      supabase,
+      portal: 'om',
+      action: `SM Visit Verification → ${newStatus}`,
+      targetEntity: `Visit ${visitId}`,
+      details: { visitId, newStatus },
+    });
 
     revalidatePath('/om');
 

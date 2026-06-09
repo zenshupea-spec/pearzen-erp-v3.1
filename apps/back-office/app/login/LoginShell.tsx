@@ -1,13 +1,12 @@
 'use client';
 
-import Link from 'next/link';
-import { useState } from 'react';
-import { ArrowLeft, Flame, Radio, Shield } from 'lucide-react';
+import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { Flame, Radio, Shield } from 'lucide-react';
 
 import BrandWatermarkBackground from '../../components/portal/BrandWatermarkBackground';
 import GoogleSignInButton from '../GoogleSignInButton';
 
-const HEAD_OFFICE_ROLES = ['MD', 'OD', 'HR', 'FM', 'SEC', 'AD', 'EA'];
+const HEAD_OFFICE_ROLES = ['MD', 'OD', 'HQ', 'OM', 'TM'];
 
 type Variant = 'head-office' | 'forge' | 'om' | 'tm';
 
@@ -23,9 +22,9 @@ const VARIANT_COPY: Record<
 > = {
   'head-office': {
     title: 'Pearzen ERP',
-    subtitle: 'Head Office Command Center',
-    roles: HEAD_OFFICE_ROLES,
-    signInHint: 'Sign in with your authorised Google workspace account',
+    subtitle: 'Sign in with your work Google account',
+    roles: [],
+    signInHint: 'You will be routed to your workspace automatically after sign-in',
     beam: 'rose',
   },
   forge: {
@@ -61,6 +60,57 @@ type Props = {
   signInDisabled?: boolean;
 };
 
+const BRAND_EMBLEM_SIZE = 'clamp(3.5rem, 22vw, 5rem)';
+
+function BrandCompanyName({
+  name,
+  className,
+  emblemRef,
+}: {
+  name: string;
+  className?: string;
+  emblemRef: RefObject<HTMLDivElement | null>;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLParagraphElement>(null);
+
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    const text = textRef.current;
+    if (!container || !text) return;
+
+    const fit = () => {
+      const emblemPx = emblemRef.current?.offsetWidth ?? 80;
+      const maxSize = emblemPx * 0.3;
+      const minSize = emblemPx * 0.175;
+      let size = maxSize;
+
+      text.style.fontSize = `${size}px`;
+      const limit = container.clientWidth;
+
+      while (size > minSize && text.scrollWidth > limit) {
+        size -= 0.5;
+        text.style.fontSize = `${size}px`;
+      }
+    };
+
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(container);
+    if (emblemRef.current) observer.observe(emblemRef.current);
+
+    return () => observer.disconnect();
+  }, [name, emblemRef]);
+
+  return (
+    <div ref={containerRef} className="w-full">
+      <p ref={textRef} className={`whitespace-nowrap text-center ${className ?? ''}`}>
+        {name}
+      </p>
+    </div>
+  );
+}
+
 export default function LoginShell({
   logoUrl,
   companyName,
@@ -71,6 +121,7 @@ export default function LoginShell({
   signInDisabled = false,
 }: Props) {
   const [armed, setArmed] = useState(false);
+  const emblemRef = useRef<HTMLDivElement>(null);
   const copy = VARIANT_COPY[variant];
   const isForge = variant === 'forge';
   const isFieldPortal = variant === 'om' || variant === 'tm';
@@ -100,22 +151,14 @@ export default function LoginShell({
       />
 
       <main className="relative z-10 flex min-h-[100dvh] w-full flex-col items-center justify-center px-4 py-8 sm:px-8">
-        <div className="absolute left-4 top-6 sm:left-8">
-          <Link
-            href="/login"
-            className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 transition-colors hover:text-slate-700"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            All portals
-          </Link>
-        </div>
-
         <div className="w-full max-w-md space-y-8">
           <div className="space-y-4 text-center">
             <div className="mb-2 flex justify-center">
               <div className="relative">
                 <div
-                  className={`flex h-20 w-20 items-center justify-center overflow-hidden rounded-2xl ${
+                  ref={emblemRef}
+                  style={{ width: BRAND_EMBLEM_SIZE, height: BRAND_EMBLEM_SIZE }}
+                  className={`flex items-center justify-center overflow-hidden rounded-2xl ${
                     isForge
                       ? 'border border-indigo-200 bg-indigo-950 shadow-lg shadow-indigo-900/30'
                       : logoUrl
@@ -124,7 +167,7 @@ export default function LoginShell({
                   }`}
                 >
                   {isForge ? (
-                    <Flame className="h-10 w-10 text-indigo-300" strokeWidth={1.75} />
+                    <Flame className="h-[50%] w-[50%] text-indigo-300" strokeWidth={1.75} />
                   ) : logoUrl ? (
                     /* eslint-disable-next-line @next/next/no-img-element */
                     <img
@@ -133,7 +176,7 @@ export default function LoginShell({
                       className="h-full w-full object-contain p-2"
                     />
                   ) : (
-                    <Shield className="h-10 w-10 text-slate-100" strokeWidth={1.75} />
+                    <Shield className="h-[50%] w-[50%] text-slate-100" strokeWidth={1.75} />
                   )}
                 </div>
                 <span
@@ -155,8 +198,10 @@ export default function LoginShell({
             </div>
             <div>
               {!isForge ? (
-                <p
-                  className={`font-university-roman text-xl uppercase tracking-[0.12em] transition-colors duration-500 sm:text-2xl ${
+                <BrandCompanyName
+                  name={displayCompanyName}
+                  emblemRef={emblemRef}
+                  className={`font-university-roman uppercase tracking-[0.12em] transition-colors duration-500 ${
                     armed
                       ? 'text-emerald-800'
                       : isFieldPortal
@@ -165,9 +210,7 @@ export default function LoginShell({
                           : 'text-violet-900'
                         : 'text-rose-900'
                   }`}
-                >
-                  {displayCompanyName}
-                </p>
+                />
               ) : (
                 <p className="text-[10px] font-mono font-bold uppercase tracking-[0.35em] text-indigo-500">
                   Pearzen Platform

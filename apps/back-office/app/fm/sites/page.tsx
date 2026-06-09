@@ -8,16 +8,16 @@ import {
   MAX_GEOFENCE_RADIUS_M,
   MIN_GEOFENCE_RADIUS_M,
 } from '../../../lib/site-geofence';
-import FmSubnav from '../components/FmSubnav';
-import { getGeofenceSettings } from '../../executive/settings/actions';
 import {
   activateMasterSite,
   createMasterSite,
   fetchMasterSiteDirectory,
   updateMasterSiteConfig,
   updateMasterSiteRates,
+  type InternalStaffOption,
   type MasterSite,
   type SectorManagerOption,
+  type SiteRegistrationKind,
 } from '../../actions/site-directory-actions';
 import {
   ArrowLeft,
@@ -35,7 +35,6 @@ import {
   FileText,
   DollarSign,
   Car,
-  Eye,
   CheckCircle2,
   Zap,
   Lock,
@@ -49,6 +48,8 @@ import {
   Fingerprint,
   List,
   Clock,
+  Coffee,
+  Shield,
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
 
@@ -90,6 +91,7 @@ interface RankRow {
 }
 
 interface RegisterSiteForm {
+  siteKind: SiteRegistrationKind;
   clientMode: ClientMode;
   existingClientName: string;
   newClientName: string;
@@ -103,6 +105,8 @@ interface RegisterSiteForm {
   geofenceRadiusM: string;
   requestOMGPS: boolean;
   sectorManagerEpf: string;
+  assignedStaffEpf: string;
+  assignedStaffEpfs: string[];
   perVisitCharge: string;
   minDwellTime: string;
   rankRows: RankRow[];
@@ -112,6 +116,7 @@ let _rowId = 0;
 const nextRowId = () => ++_rowId;
 
 const BLANK_REGISTER_FORM: RegisterSiteForm = {
+  siteKind: 'client',
   clientMode: 'existing',
   existingClientName: '',
   newClientName: '',
@@ -125,6 +130,8 @@ const BLANK_REGISTER_FORM: RegisterSiteForm = {
   geofenceRadiusM: String(DEFAULT_GEOFENCE_RADIUS_M),
   requestOMGPS: false,
   sectorManagerEpf: '',
+  assignedStaffEpf: '',
+  assignedStaffEpfs: [],
   perVisitCharge: '',
   minDwellTime: '',
   rankRows: [],
@@ -186,12 +193,14 @@ const STATUS_STYLES: Record<SiteStatus, string> = {
 
 // ─── Register Site & Client Modal ────────────────────────────────────────────
 
-function ContractModal({
+function RegisterSiteModal({
   open,
   onClose,
   onSave,
   parentClients,
   sectorManagers,
+  headOfficeStaff,
+  cafeStaff,
   saving,
   saveError,
 }: {
@@ -200,6 +209,8 @@ function ContractModal({
   onSave: (f: RegisterSiteForm) => void | Promise<void>;
   parentClients: string[];
   sectorManagers: SectorManagerOption[];
+  headOfficeStaff: InternalStaffOption[];
+  cafeStaff: InternalStaffOption[];
   saving: boolean;
   saveError: string | null;
 }) {
@@ -209,14 +220,6 @@ function ContractModal({
   useEffect(() => {
     if (!open) return;
     setForm(BLANK_REGISTER_FORM);
-    getGeofenceSettings()
-      .then((cfg) =>
-        setForm((prev) => ({
-          ...prev,
-          geofenceRadiusM: String(cfg.default_geofence_radius_m),
-        })),
-      )
-      .catch(() => {/* keep BLANK_REGISTER_FORM default */});
   }, [open]);
 
   useEffect(() => {
@@ -244,25 +247,60 @@ function ContractModal({
     'w-full rounded-xl border border-slate-200 bg-white/95 px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 shadow-sm transition-all';
   const labelCls = 'mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-slate-500';
 
+  const isClientSite = form.siteKind === 'client';
+  const isHeadOffice = form.siteKind === 'head_office';
+  const isCafeBranch = form.siteKind === 'cafe_branch';
   const isExisting = form.clientMode === 'existing';
 
-  const clientFilled = isExisting
-    ? form.existingClientName !== ''
-    : form.newClientName.trim() !== '';
+  const clientFilled = !isClientSite
+    ? true
+    : isExisting
+      ? form.existingClientName !== ''
+      : form.newClientName.trim() !== '';
 
-  const coreFieldsFilled =
-    clientFilled &&
+  const siteBasicsFilled =
     form.siteCode.trim() !== '' &&
     form.siteName.trim() !== '' &&
     form.locationAddress.trim() !== '' &&
-    form.contractStart !== '' &&
-    form.sectorManagerEpf !== '' &&
-    form.rankRows.length > 0 &&
-    form.perVisitCharge.trim() !== '' &&
-    form.minDwellTime.trim() !== '';
+    form.contractStart !== '';
+
+  const clientBillingFilled =
+    !isClientSite ||
+    (form.rankRows.length > 0 &&
+      form.perVisitCharge.trim() !== '' &&
+      form.minDwellTime.trim() !== '');
+
+  const staffFilled = isClientSite || form.assignedStaffEpfs.length > 0;
 
   const gpsFilled = form.gpsCoords.trim() !== '';
-  const canSubmit = coreFieldsFilled && (gpsFilled || form.requestOMGPS);
+  const canSubmit =
+    siteBasicsFilled &&
+    clientFilled &&
+    clientBillingFilled &&
+    staffFilled &&
+    (gpsFilled || (isClientSite && form.requestOMGPS));
+
+  const missingFields: string[] = [];
+  if (!clientFilled) missingFields.push(isExisting ? 'Parent client' : 'New parent client name');
+  if (!form.siteCode.trim()) missingFields.push('Site code');
+  if (!form.siteName.trim()) missingFields.push(isCafeBranch ? 'Branch name' : 'Site name');
+  if (!form.locationAddress.trim()) missingFields.push('Location / address');
+  if (!form.contractStart) missingFields.push('Contract start date');
+  if (isClientSite && form.rankRows.length === 0) missingFields.push('At least one guard rank');
+  if (isClientSite && !form.perVisitCharge.trim()) missingFields.push('Per-visit patrol charge');
+  if (isClientSite && !form.minDwellTime.trim()) missingFields.push('Minimum dwell time');
+  if (!staffFilled) {
+    missingFields.push(
+      isCafeBranch
+        ? 'At least one café staff member'
+        : 'At least one head office employee',
+    );
+  }
+  if (!gpsFilled && !(isClientSite && form.requestOMGPS)) {
+    missingFields.push(isClientSite ? 'GPS coordinates (or OM field capture)' : 'GPS coordinates');
+  }
+
+  const staffOptions = isHeadOffice ? headOfficeStaff : isCafeBranch ? cafeStaff : [];
 
   return (
     <div
@@ -270,20 +308,25 @@ function ContractModal({
       className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm"
       onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
     >
-      <div className="relative w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-3xl border border-white/75 bg-[#eef2f6] shadow-[0_32px_80px_-16px_rgba(15,23,42,0.3)] backdrop-blur-2xl">
-        {/* Ambient glow */}
+      <div
+        data-site-modal-version="v2-location-picker"
+        className="relative flex w-full max-w-2xl max-h-[92vh] flex-col overflow-hidden rounded-3xl border border-white/75 bg-[#eef2f6] shadow-[0_32px_80px_-16px_rgba(15,23,42,0.3)] backdrop-blur-2xl"
+      >
         <div aria-hidden className="pointer-events-none absolute -top-20 right-0 h-56 w-56 rounded-full bg-emerald-400/20 blur-[72px]" />
         <div aria-hidden className="pointer-events-none absolute bottom-0 left-0 h-48 w-48 rounded-full bg-indigo-400/10 blur-[64px]" />
 
-        <div className="relative p-6">
-          {/* Header */}
-          <div className="mb-7 flex items-start justify-between">
+        <div className="relative shrink-0 border-b border-slate-200/80 bg-[#eef2f6]">
+          <div className="flex items-start justify-between px-6 pt-6 pb-3">
             <div>
               <h2 className="text-xl font-black uppercase tracking-tight text-slate-900">
-                Register Site &amp; Client
+                Register Site Location
               </h2>
               <p className="mt-0.5 text-xs text-slate-500">
-                Cluster a new site under an existing or new parent client
+                {isClientSite
+                  ? 'Client guard site — cluster under an existing or new parent client'
+                  : isCafeBranch
+                    ? 'Café branch — assign café staff and GPS geofence for check-in'
+                    : 'Head office — assign HO staff and GPS geofence'}
               </p>
             </div>
             <button
@@ -294,12 +337,55 @@ function ContractModal({
               <X className="h-4 w-4" />
             </button>
           </div>
+          <div className="bg-slate-900 px-6 py-4 shadow-inner">
+            <p className="mb-3 text-[10px] font-black uppercase tracking-[0.2em] text-slate-300">
+              Step 1 — Choose location type
+            </p>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              {(
+                [
+                  { value: 'client', label: 'Client Guard Site', Icon: Shield },
+                  { value: 'head_office', label: 'Head Office', Icon: Building2 },
+                  { value: 'cafe_branch', label: 'Café Branch', Icon: Coffee },
+                ] as { value: SiteRegistrationKind; label: string; Icon: React.FC<{ className?: string }> }[]
+              ).map(({ value, label, Icon }) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() =>
+                    setForm((p) => ({
+                      ...p,
+                      siteKind: value,
+                      assignedStaffEpf: '',
+                      assignedStaffEpfs: [],
+                      sectorManagerEpf: '',
+                      requestOMGPS: value === 'client' ? p.requestOMGPS : false,
+                    }))
+                  }
+                  className={`flex items-center justify-center gap-2 rounded-xl border-2 px-3 py-3 text-xs font-black uppercase tracking-wide transition-all ${
+                    form.siteKind === value
+                      ? value === 'client'
+                        ? 'border-indigo-300 bg-indigo-500 text-white shadow-md'
+                        : value === 'head_office'
+                          ? 'border-slate-300 bg-white text-slate-900 shadow-md'
+                          : 'border-amber-300 bg-amber-500 text-white shadow-md'
+                      : 'border-slate-600 bg-slate-800 text-slate-300 hover:border-slate-400 hover:bg-slate-700 hover:text-white'
+                  }`}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
 
+        <div className="relative min-h-0 flex-1 overflow-y-auto px-6 py-5">
           <form onSubmit={handleSubmit} className="space-y-5">
-            {/* ── Client Assignment ── */}
+            {isClientSite ? (
             <ExecutiveGlassCard className="p-5">
               <p className="mb-4 text-[10px] font-bold uppercase tracking-widest text-indigo-800">
-                Client Assignment
+                Step 2 — Client Assignment
               </p>
 
               {/* Radio toggle */}
@@ -371,8 +457,8 @@ function ContractModal({
                 </div>
               )}
             </ExecutiveGlassCard>
+            ) : null}
 
-            {/* ── Site Details ── */}
             <ExecutiveGlassCard className="p-5">
               <p className="mb-4 text-[10px] font-bold uppercase tracking-widest text-emerald-800">
                 Site Details
@@ -401,7 +487,7 @@ function ContractModal({
                     </label>
                     <input
                       className={inputCls}
-                      placeholder="e.g. Blood Bank"
+                      placeholder="e.g. Outpatient Wing"
                       value={form.siteName}
                       onChange={set('siteName')}
                       required
@@ -471,62 +557,150 @@ function ContractModal({
                         onChange={set('geofenceRadiusM')}
                       />
                       <p className="mt-1 text-[10px] text-slate-500">
-                        Pre-filled from MD Settings → Operations (default {DEFAULT_GEOFENCE_RADIUS_M} m). Override per site if needed.
+                        {MAX_GEOFENCE_RADIUS_M}m max
                       </p>
                     </div>
-                    <div className="col-span-2">
-                      <label
-                        className={`flex cursor-pointer select-none items-start gap-3 rounded-xl border px-4 py-3 transition-all ${
-                          form.requestOMGPS
-                            ? 'border-amber-300/80 bg-amber-50/70'
-                            : 'border-slate-200/80 bg-white/50 hover:bg-white/80'
-                        }`}
-                      >
-                        <span className="mt-px flex-shrink-0">
-                          <input
-                            type="checkbox"
-                            checked={form.requestOMGPS}
-                            onChange={(e) =>
-                              setForm((p) => ({
-                                ...p,
-                                requestOMGPS: e.target.checked,
-                                gpsCoords: e.target.checked ? '' : p.gpsCoords,
-                              }))
-                            }
-                            className="h-4 w-4 cursor-pointer rounded border-amber-400 accent-amber-500 focus:ring-amber-400/40"
-                          />
-                        </span>
-                        <span className="flex flex-col gap-0.5">
-                          <span className={`text-xs font-bold ${form.requestOMGPS ? 'text-amber-800' : 'text-slate-700'}`}>
-                            Request OM Field GPS Capture
-                          </span>
-                          <span className={`text-[10px] leading-relaxed ${form.requestOMGPS ? 'text-amber-700' : 'text-slate-500'}`}>
-                            Dispatches a pending GPS verification task to the assigned Sector Manager. GPS coordinates will be captured on-site via the field app.
-                          </span>
-                        </span>
-                      </label>
-                    </div>
-                    <div className="col-span-2">
-                      <label className={labelCls}>Sector Manager</label>
-                      <div className="relative">
-                        <User className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                        <select
-                          value={form.sectorManagerEpf}
-                          onChange={set('sectorManagerEpf')}
-                          className="w-full appearance-none rounded-xl border border-slate-200 bg-white/95 py-2.5 pl-9 pr-8 text-sm font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/40 transition-all"
+                    {isClientSite ? (
+                      <div className="col-span-2">
+                        <label
+                          className={`flex cursor-pointer select-none items-start gap-3 rounded-xl border px-4 py-3 transition-all ${
+                            form.requestOMGPS
+                              ? 'border-amber-300/80 bg-amber-50/70'
+                              : 'border-slate-200/80 bg-white/50 hover:bg-white/80'
+                          }`}
                         >
-                          <option value="">— Assign later —</option>
-                          {sectorManagers.map((sm) => (
-                            <option key={sm.epf} value={sm.epf}>{sm.label}</option>
-                          ))}
-                        </select>
-                        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                          <span className="mt-px flex-shrink-0">
+                            <input
+                              type="checkbox"
+                              checked={form.requestOMGPS}
+                              onChange={(e) =>
+                                setForm((p) => ({
+                                  ...p,
+                                  requestOMGPS: e.target.checked,
+                                  gpsCoords: e.target.checked ? '' : p.gpsCoords,
+                                }))
+                              }
+                              className="h-4 w-4 cursor-pointer rounded border-amber-400 accent-amber-500 focus:ring-amber-400/40"
+                            />
+                          </span>
+                          <span className="flex flex-col gap-0.5">
+                            <span className={`text-xs font-bold ${form.requestOMGPS ? 'text-amber-800' : 'text-slate-700'}`}>
+                              Request OM Field GPS Capture
+                            </span>
+                            <span className={`text-[10px] leading-relaxed ${form.requestOMGPS ? 'text-amber-700' : 'text-slate-500'}`}>
+                              Dispatches a pending GPS verification task to the assigned Sector Manager. GPS coordinates will be captured on-site via the field app.
+                            </span>
+                          </span>
+                        </label>
                       </div>
+                    ) : null}
+                    <div className="col-span-2">
+                      <label className={labelCls}>
+                        {isClientSite ? 'Sector Manager' : isCafeBranch ? 'Café Staff' : 'Head Office Staff Contact'}
+                        {!isClientSite ? <span className="text-red-500 ml-0.5">*</span> : null}
+                      </label>
+                      {!isClientSite ? (
+                        <div className="space-y-2">
+                          {form.assignedStaffEpfs.length > 0 ? (
+                            <div className="flex flex-wrap gap-2">
+                              {form.assignedStaffEpfs.map((epf) => {
+                                const person = staffOptions.find((p) => p.epf === epf);
+                                return (
+                                  <button
+                                    key={epf}
+                                    type="button"
+                                    onClick={() =>
+                                      setForm((p) => ({
+                                        ...p,
+                                        assignedStaffEpfs: p.assignedStaffEpfs.filter((id) => id !== epf),
+                                      }))
+                                    }
+                                    className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-bold transition-all hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 ${
+                                      isCafeBranch
+                                        ? 'border-amber-200/80 bg-amber-50/80 text-amber-900'
+                                        : 'border-slate-200/80 bg-slate-50/80 text-slate-900'
+                                    }`}
+                                  >
+                                    {person?.label ?? epf}
+                                    <X className="h-3 w-3" />
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <p className="text-xs font-semibold text-slate-500">
+                              {isCafeBranch
+                                ? 'Select café employees for this branch…'
+                                : 'Select head office employees…'}
+                            </p>
+                          )}
+                          <div className="max-h-40 overflow-y-auto rounded-xl border border-slate-200 bg-white/95 shadow-sm">
+                            {staffOptions.length === 0 ? (
+                              <p className="px-4 py-3 text-xs font-semibold text-amber-700">
+                                {isCafeBranch
+                                  ? 'No active café employees found. Add staff in HR → MNR first.'
+                                  : 'No active head office employees found. Add staff in HR → MNR first.'}
+                              </p>
+                            ) : (
+                              staffOptions.map((person) => {
+                                const selected = form.assignedStaffEpfs.includes(person.epf);
+                                return (
+                                  <label
+                                    key={person.epf}
+                                    className={`flex cursor-pointer items-center gap-3 border-b border-slate-100 px-4 py-2.5 text-sm font-semibold transition-colors last:border-b-0 ${
+                                      selected
+                                        ? isCafeBranch
+                                          ? 'bg-amber-50/80 text-amber-900'
+                                          : 'bg-slate-100/80 text-slate-900'
+                                        : 'text-slate-800 hover:bg-slate-50'
+                                    }`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={selected}
+                                      onChange={() =>
+                                        setForm((p) => ({
+                                          ...p,
+                                          assignedStaffEpfs: selected
+                                            ? p.assignedStaffEpfs.filter((id) => id !== person.epf)
+                                            : [...p.assignedStaffEpfs, person.epf],
+                                        }))
+                                      }
+                                      className={`h-4 w-4 rounded ${
+                                        isCafeBranch
+                                          ? 'border-amber-300 accent-amber-500'
+                                          : 'border-slate-300 accent-slate-600'
+                                      }`}
+                                    />
+                                    <User className="h-4 w-4 shrink-0 text-slate-400" />
+                                    <span>{person.label}</span>
+                                  </label>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="relative">
+                          <User className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                          <select
+                            value={form.sectorManagerEpf}
+                            onChange={set('sectorManagerEpf')}
+                            className="w-full appearance-none rounded-xl border border-slate-200 bg-white/95 py-2.5 pl-9 pr-8 text-sm font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/40 transition-all"
+                          >
+                            <option value="">— Assign later —</option>
+                            {sectorManagers.map((person) => (
+                              <option key={person.epf} value={person.epf}>{person.label}</option>
+                            ))}
+                          </select>
+                          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
 
-                {/* ── Guard Rank & Billing Matrix ── */}
+                {isClientSite ? (
                 <div>
                   <div className="mb-3 flex items-center justify-between">
                     <label className={labelCls + ' mb-0'}>Guard Rank &amp; Billing Matrix</label>
@@ -731,8 +905,15 @@ function ContractModal({
                     </p>
                   </div>
                 </div>
+                ) : null}
               </div>
             </ExecutiveGlassCard>
+
+            {!canSubmit && missingFields.length > 0 && !saving ? (
+              <p className="rounded-xl border border-amber-200/80 bg-amber-50/80 px-4 py-3 text-xs font-semibold text-amber-900">
+                Complete required fields to save: {missingFields.join(' · ')}
+              </p>
+            ) : null}
 
             {saveError ? (
               <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">
@@ -781,6 +962,24 @@ function ContractModal({
 function formatAuditTs(iso: string) {
   const [datePart, timePart] = iso.split('T');
   return `${datePart} at ${(timePart ?? '').slice(0, 5)}`;
+}
+
+function resolveSectorManagerLabel(
+  site: Pick<Site, 'sectorManagerEpf' | 'sectorManager'>,
+  sectorManagers: SectorManagerOption[] = [],
+): string {
+  if (site.sectorManagerEpf) {
+    const match = sectorManagers.find((sm) => sm.epf === site.sectorManagerEpf);
+    if (match) return match.label;
+  }
+  if (
+    site.sectorManager &&
+    site.sectorManager !== 'Unassigned' &&
+    site.sectorManager !== site.sectorManagerEpf
+  ) {
+    return site.sectorManager;
+  }
+  return 'Unassigned';
 }
 
 // Weighted-blended rates from a rank matrix (for margin preview)
@@ -950,6 +1149,9 @@ function SiteRow({
     setTimeout(() => { onActivate(site.id, selectedSM); setActivating(false); }, 500);
   };
 
+  const smDisplayName = resolveSectorManagerLabel(site, sectorManagers);
+  const isClientSiteRow = site.siteKind === 'client';
+
   // Derived rank requirements label from live draft matrix
   const derivedRankReqs = (Object.entries(draftMatrix) as [RankKey, RankRateEntry][])
     .filter(([, r]) => r.qty > 0)
@@ -973,10 +1175,12 @@ function SiteRow({
             <div>
               <p className={`font-bold leading-tight ${isGrouped ? 'text-indigo-700 font-bold' : 'text-slate-900'}`}>{site.siteName}</p>
               <p className={`text-xs ${isGrouped ? 'text-indigo-500/80' : 'text-slate-500'}`}>{site.clientName}</p>
-              <div className="text-[9px] font-medium text-slate-400 flex items-center gap-1 mt-1">
-                <Clock className="w-3 h-3" />
-                Last edited by: Kasuni Perera (FM) — 26 May 2026, 15:42
-              </div>
+              {site.rateAudit && (
+                <div className="text-[9px] font-medium text-slate-400 flex items-center gap-1 mt-1">
+                  <Clock className="w-3 h-3" />
+                  Last edited by {site.rateAudit.editedBy} on {formatAuditTs(site.rateAudit.editedAt)}
+                </div>
+              )}
             </div>
           </div>
         </td>
@@ -986,13 +1190,21 @@ function SiteRow({
           </span>
         </td>
         <td className="px-5 py-4">
-          <span className="text-xs font-bold text-slate-700">{site.sector}</span>
+          {isClientSiteRow ? (
+            <span className="text-xs font-bold text-slate-700">{site.sector}</span>
+          ) : (
+            <span className="text-xs font-medium text-slate-400">—</span>
+          )}
         </td>
         <td className="px-5 py-4">
-          <div className="flex items-center gap-1.5 text-sm text-slate-700">
-            <User className="h-3.5 w-3.5 flex-shrink-0 text-slate-400" />
-            {site.sectorManager}
-          </div>
+          {isClientSiteRow ? (
+            <div className="flex items-center gap-1.5 text-sm text-slate-700">
+              <User className="h-3.5 w-3.5 flex-shrink-0 text-slate-400" />
+              {smDisplayName}
+            </div>
+          ) : (
+            <span className="text-xs font-medium text-slate-400">—</span>
+          )}
         </td>
         <td className="px-5 py-4">
           <div className="flex items-center gap-1 font-mono text-xs text-slate-500">
@@ -1001,14 +1213,18 @@ function SiteRow({
           </div>
         </td>
         <td className="px-5 py-4">
-          <div className="flex flex-col items-end gap-0.5">
-            <span className={`text-base font-black tabular-nums transition-all ${isProfitable ? 'text-emerald-900' : 'animate-pulse text-rose-600 drop-shadow-[0_0_8px_rgba(239,68,68,0.7)]'}`}>
-              {lkr(margin)}
-            </span>
-            <span className={`text-[10px] font-semibold ${isProfitable ? 'text-emerald-700' : 'text-rose-700'}`}>
-              {isProfitable ? `+${marginRate}% margin` : 'BELOW BREAK-EVEN'}
-            </span>
-          </div>
+          {isClientSiteRow ? (
+            <div className="flex flex-col items-end gap-0.5">
+              <span className={`text-base font-black tabular-nums transition-all ${isProfitable ? 'text-emerald-900' : 'animate-pulse text-rose-600 drop-shadow-[0_0_8px_rgba(239,68,68,0.7)]'}`}>
+                {lkr(margin)}
+              </span>
+              <span className={`text-[10px] font-semibold ${isProfitable ? 'text-emerald-700' : 'text-rose-700'}`}>
+                {isProfitable ? `+${marginRate}% margin` : 'BELOW BREAK-EVEN'}
+              </span>
+            </div>
+          ) : (
+            <span className="block text-right text-xs font-medium text-slate-400">—</span>
+          )}
         </td>
         <td className="px-5 py-4 text-right">
           <button type="button" className="text-slate-400 transition-colors group-hover:text-slate-700">
@@ -1312,10 +1528,6 @@ function SiteRow({
                               className="w-full rounded-xl border border-indigo-200/60 bg-white/90 py-2 pl-8 pr-3 text-xs text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-all" />
                           </div>
                         </div>
-                        <p className="flex items-center gap-1.5 text-xs text-slate-500">
-                          <Eye className="h-3.5 w-3.5 text-slate-400" />{site.visitsLogged} patrol visits logged
-                        </p>
-
                         {/* ── ISO 18788 Verification Mode ── */}
                         <div className="border-t border-indigo-100/80 pt-3">
                           <p className="mb-2 text-[9px] font-black uppercase tracking-widest text-indigo-600">
@@ -1356,10 +1568,9 @@ function SiteRow({
                       <div className="space-y-2 text-xs">
                         <div className="flex items-center gap-2 rounded-xl border border-emerald-200/60 bg-emerald-50/50 px-3 py-2">
                           <CheckCircle2 className="h-3.5 w-3.5 flex-shrink-0 text-emerald-600" />
-                          <span className="font-bold text-emerald-900">{site.sectorManager}</span>
+                          <span className="font-bold text-emerald-900">{smDisplayName}</span>
                         </div>
                         <div className="flex items-center gap-1.5 text-slate-700"><Phone className="h-3.5 w-3.5 text-slate-400" />{site.smPhone}</div>
-                        <div className="flex items-center gap-1.5 text-slate-700"><Eye className="h-3.5 w-3.5 text-slate-400" />{site.visitsLogged} patrol visits logged</div>
                         <div className="flex items-center gap-1.5 pt-1">
                           <MapPin className="h-3.5 w-3.5 text-emerald-600" />
                           <a href={`https://maps.google.com/?q=${site.lat},${site.lng}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="font-semibold text-emerald-800 hover:underline">Open in Maps</a>
@@ -1600,6 +1811,8 @@ function replaceSiteInList(sites: Site[], next: Site): Site[] {
 export default function FMSiteDirectoryPage() {
   const [sites, setSites]                 = useState<Site[]>([]);
   const [sectorManagers, setSectorManagers] = useState<SectorManagerOption[]>([]);
+  const [headOfficeStaff, setHeadOfficeStaff] = useState<InternalStaffOption[]>([]);
+  const [cafeStaff, setCafeStaff] = useState<InternalStaffOption[]>([]);
   const [loading, setLoading]             = useState(true);
   const [loadError, setLoadError]         = useState<string | null>(null);
   const [modalOpen, setModalOpen]         = useState(false);
@@ -1614,6 +1827,8 @@ export default function FMSiteDirectoryPage() {
       const data = await fetchMasterSiteDirectory();
       setSites(data.sites);
       setSectorManagers(data.sectorManagers);
+      setHeadOfficeStaff(data.headOfficeStaff);
+      setCafeStaff(data.cafeStaff);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Failed to load sites.';
       setLoadError(message);
@@ -1793,36 +2008,51 @@ export default function FMSiteDirectoryPage() {
   const handleSaveSite = async (form: RegisterSiteForm) => {
     setSavingSite(true);
     setSaveSiteError(null);
-    const result = await createMasterSite({
-      clientMode: form.clientMode,
-      existingClientName: form.existingClientName,
-      newClientName: form.newClientName,
-      newClientBillingAddress: form.newClientBillingAddress,
-      siteCode: form.siteCode,
-      siteName: form.siteName,
-      locationAddress: form.locationAddress,
-      contractStart: form.contractStart,
-      contractEnd: form.contractEnd,
-      gpsCoords: form.gpsCoords,
-      geofenceRadiusM: form.geofenceRadiusM,
-      requestOMGPS: form.requestOMGPS,
-      sectorManagerEpf: form.sectorManagerEpf,
-      perVisitCharge: form.perVisitCharge,
-      minDwellTime: form.minDwellTime,
-      rankRows: form.rankRows,
-    });
-    setSavingSite(false);
-    if (!result.success) {
-      setSaveSiteError(result.error);
-      throw new Error(result.error);
+    try {
+      const result = await createMasterSite({
+        siteKind: form.siteKind,
+        clientMode: form.clientMode,
+        existingClientName: form.existingClientName,
+        newClientName: form.newClientName,
+        newClientBillingAddress: form.newClientBillingAddress,
+        siteCode: form.siteCode,
+        siteName: form.siteName,
+        locationAddress: form.locationAddress,
+        contractStart: form.contractStart,
+        contractEnd: form.contractEnd,
+        gpsCoords: form.gpsCoords,
+        geofenceRadiusM: form.geofenceRadiusM,
+        requestOMGPS: form.requestOMGPS,
+        sectorManagerEpf: form.sectorManagerEpf,
+        assignedStaffEpf: form.assignedStaffEpf,
+        assignedStaffEpfs: form.assignedStaffEpfs,
+        perVisitCharge: form.perVisitCharge,
+        minDwellTime: form.minDwellTime,
+        rankRows: form.rankRows.map(({ rank, headcount, invoiceRate, payRate }) => ({
+          rank,
+          headcount,
+          invoiceRate,
+          payRate,
+        })),
+      });
+      if (!result.success) {
+        setSaveSiteError(result.error);
+        return;
+      }
+      setSites((prev) => [result.site, ...prev]);
+      setModalOpen(false);
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : 'Could not save this site. Try again.';
+      setSaveSiteError(message);
+    } finally {
+      setSavingSite(false);
     }
-    setSites((prev) => [result.site, ...prev]);
-    setModalOpen(false);
   };
 
   return (
     <>
-      <ContractModal
+      <RegisterSiteModal
         open={modalOpen}
         onClose={() => {
           if (!savingSite) {
@@ -1833,6 +2063,8 @@ export default function FMSiteDirectoryPage() {
         onSave={handleSaveSite}
         parentClients={parentClients}
         sectorManagers={sectorManagers}
+        headOfficeStaff={headOfficeStaff}
+        cafeStaff={cafeStaff}
         saving={savingSite}
         saveError={saveSiteError}
       />
@@ -1849,8 +2081,6 @@ export default function FMSiteDirectoryPage() {
         />
 
         <div className="relative z-10 mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-
-          <FmSubnav />
 
           {/* ── Page title bar ── */}
           <div className="mb-8 flex w-full items-center justify-between gap-4">
@@ -2058,6 +2288,7 @@ export default function FMSiteDirectoryPage() {
                         key={item.parentClient}
                         parentClient={item.parentClient}
                         sites={item.sites}
+                        sectorManagers={sectorManagers}
                         onActivate={handleActivateSite}
                         onUpdateRates={handleUpdateRates}
                         onSaveAll={handleSaveAllConfig}
@@ -2067,6 +2298,7 @@ export default function FMSiteDirectoryPage() {
                         key={item.sector}
                         sector={item.sector}
                         sites={item.sites}
+                        sectorManagers={sectorManagers}
                         onActivate={handleActivateSite}
                         onUpdateRates={handleUpdateRates}
                         onSaveAll={handleSaveAllConfig}
@@ -2075,6 +2307,7 @@ export default function FMSiteDirectoryPage() {
                       <SiteRow
                         key={item.site.id}
                         site={item.site}
+                        sectorManagers={sectorManagers}
                         onActivate={handleActivateSite}
                         onUpdateRates={handleUpdateRates}
                         onSaveAll={handleSaveAllConfig}

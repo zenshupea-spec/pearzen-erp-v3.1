@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { cookies } from 'next/headers';
 import { ArrowLeft, KeyRound } from 'lucide-react';
+import HrHubPills from '../HrHubPills';
 import { getActiveSectorManagers } from './actions';
 import SMPortalClient from './SMPortalClient';
 
@@ -28,6 +29,7 @@ export default async function SMPortalManagementPage() {
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6">
+      <HrHubPills />
       <header className="flex items-center justify-between border-b border-slate-200 pb-5">
         <div className="flex items-center gap-4">
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">

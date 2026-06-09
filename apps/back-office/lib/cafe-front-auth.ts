@@ -13,8 +13,18 @@ export type CafeEmployeeRow = {
   rank: string | null;
 };
 
+export const CAFE_FRONT_EPF_MAX_LENGTH = 10;
+/** Matches SM portal — Supabase Auth requires at least 6 characters. */
+export const CAFE_FRONT_PIN_LENGTH = 6;
+export const CAFE_FRONT_OTP_MAX_LENGTH = 6;
+
+export function cafeEmployeeEpfKey(employee: CafeEmployeeRow): string {
+  const epf = employee.epf_no ?? employee.epf_num;
+  return epf ? normalizeEpfNo(String(epf)) : '';
+}
+
 export function normalizeEpfNo(input: string): string {
-  return input.trim();
+  return input.trim().toUpperCase().slice(0, CAFE_FRONT_EPF_MAX_LENGTH);
 }
 
 export function epfAuthLocalPart(epf: string): string {
@@ -116,15 +126,38 @@ export async function resolveCafeEmployeeForUser(
   return employee;
 }
 
-export async function provisionCafeFrontAuth(
+export async function getCafePortalAuthRecord(
+  supabase: SupabaseClient,
+  epf: string,
+): Promise<{
+  needs_pin_setup: boolean;
+  is_active: boolean;
+} | null> {
+  const key = normalizeEpfNo(epf);
+  if (!key) return null;
+
+  const { data } = await supabase
+    .from('cafe_portal_auth')
+    .select('needs_pin_setup, is_active')
+    .eq('epf_number', key)
+    .maybeSingle();
+
+  if (!data) return null;
+  return {
+    needs_pin_setup: Boolean(data.needs_pin_setup),
+    is_active: Boolean(data.is_active),
+  };
+}
+
+export async function provisionCafePortalOtp(
   supabase: SupabaseClient,
   employee: CafeEmployeeRow,
+  otp: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  const epf = employee.epf_no ?? employee.epf_num;
+  const epf = cafeEmployeeEpfKey(employee);
   if (!epf) return { ok: false, error: 'Employee has no EPF number.' };
 
   const email = cafeFrontAuthEmail(epf);
-  const password = cafeFrontAuthPassword(epf);
 
   const { data: existing } = await supabase.auth.admin.listUsers();
   const found = existing?.users?.find(
@@ -133,7 +166,8 @@ export async function provisionCafeFrontAuth(
 
   if (found) {
     const { error } = await supabase.auth.admin.updateUserById(found.id, {
-      password,
+      password: otp,
+      email_confirm: true,
       user_metadata: {
         role: 'CAFE_STAFF',
         employee_id: employee.id,
@@ -141,19 +175,31 @@ export async function provisionCafeFrontAuth(
       },
     });
     if (error) return { ok: false, error: error.message };
-    return { ok: true };
+  } else {
+    const { error } = await supabase.auth.admin.createUser({
+      email,
+      password: otp,
+      email_confirm: true,
+      user_metadata: {
+        role: 'CAFE_STAFF',
+        employee_id: employee.id,
+        full_name: employee.full_name,
+      },
+    });
+    if (error) return { ok: false, error: error.message };
   }
 
-  const { error } = await supabase.auth.admin.createUser({
-    email,
-    password,
-    email_confirm: true,
-    user_metadata: {
-      role: 'CAFE_STAFF',
-      employee_id: employee.id,
-      full_name: employee.full_name,
+  const { error: dbError } = await supabase.from('cafe_portal_auth').upsert(
+    {
+      epf_number: epf,
+      current_otp: otp,
+      needs_pin_setup: true,
+      is_active: true,
+      updated_at: new Date().toISOString(),
     },
-  });
-  if (error) return { ok: false, error: error.message };
+    { onConflict: 'epf_number' },
+  );
+
+  if (dbError) return { ok: false, error: dbError.message };
   return { ok: true };
 }

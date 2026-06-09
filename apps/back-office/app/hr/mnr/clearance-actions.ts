@@ -23,6 +23,7 @@ import {
 } from '../../../lib/clearance-settlement';
 import { calculateGratuityProvision, type GratuityCalculation } from '../../../../../packages/gratuity';
 import { getGratuitySettings } from '../../executive/settings/gratuity-actions';
+import { auditStaffAction } from '../../../lib/staff-audit';
 import { getRankPayMatrix } from '../../executive/settings/rank-matrix-actions';
 import {
   assertHrPortalEditor,
@@ -479,6 +480,18 @@ export async function sendOffboardingToFm(employeeId: string) {
     );
   }
   if (error) throw new Error(error.message);
+
+  await auditStaffAction({
+    supabase,
+    portal: 'hr',
+    action: 'Send Offboarding to Finance',
+    targetEntity: `Employee ${employeeId}`,
+    details: {
+      finalPayLkr: snapshot.settlement.finalPayLkr,
+      gratuityLkr: snapshot.settlement.gratuityLkr,
+      recoveryLkr: snapshot.settlement.recoveryLkr,
+    },
+  });
 
   revalidatePath('/hr/mnr');
   revalidatePath('/fm/offboarding');

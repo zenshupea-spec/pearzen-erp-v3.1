@@ -11,7 +11,7 @@ import {
   isEmployeeActive,
   normalizeEpfNo,
   provisionGuardPortalAuth,
-} from "../../../lib/guard-auth";
+} from "../../../../lib/guard-auth";
 
 type EmpLoginBody = {
   epfNo?: string;

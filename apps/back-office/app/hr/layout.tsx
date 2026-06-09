@@ -6,7 +6,6 @@ import {
   canAccessHrPortal,
   fetchBackOfficeUserProfile,
 } from "../../lib/hr-portal-access";
-
 export default async function HRLayout({ children }: { children: ReactNode }) {
   const supabase = await createSupabaseServerClient();
   const {

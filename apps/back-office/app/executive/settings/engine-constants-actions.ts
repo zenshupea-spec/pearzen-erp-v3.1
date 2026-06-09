@@ -11,8 +11,17 @@ import {
   getMdSettingsDb,
   resolveExecutiveCompanyId,
 } from './lib/executive-md-settings-db';
+import { writeSettingsAuditLog } from './settings-audit';
 
 export type SmPayMode = 'FIXED_ONLY' | 'PER_VISIT_ONLY' | 'FIXED_AND_PER_VISIT';
+
+export type GuardMonthPreviewQty = {
+  std: number;
+  sun: number;
+  poya: number;
+  pubHol: number;
+  sat: number;
+};
 
 export type MdEngineConstants = {
   cafeOtCutoffTime: string;
@@ -30,6 +39,16 @@ export type MdEngineConstants = {
   salaryMonthRetentionThreshold: number;
   cafeOpenStart: string;
   cafeOpenEnd: string;
+  /** Live wage preview — SM visit count for calculator */
+  smPreviewVisits: number;
+  /** Live wage preview — HO salary input for calculator */
+  hoPreviewSalary: number;
+  /** Guard month simulation — day-type counts */
+  guardPreviewQty: GuardMonthPreviewQty;
+  /** Café month simulation — sample basic salary */
+  cafePreviewBasic: number;
+  /** Café month simulation — OT hours in month */
+  cafePreviewOtHours: number;
 };
 
 const DEFAULTS: MdEngineConstants = {
@@ -48,6 +67,11 @@ const DEFAULTS: MdEngineConstants = {
   salaryMonthRetentionThreshold: 10,
   cafeOpenStart: '07:00',
   cafeOpenEnd: '19:00',
+  smPreviewVisits: 70,
+  hoPreviewSalary: 180_000,
+  guardPreviewQty: { std: 20, sun: 4, poya: 1, pubHol: 0, sat: 4 },
+  cafePreviewBasic: 38_000,
+  cafePreviewOtHours: 0,
 };
 
 const SM_MODES: SmPayMode[] = ['FIXED_ONLY', 'PER_VISIT_ONLY', 'FIXED_AND_PER_VISIT'];
@@ -64,6 +88,22 @@ function clampDay(v: number, fallback: number): number {
 function timeOrDefault(v: unknown, fallback: string): string {
   const s = typeof v === 'string' ? v.trim() : '';
   return /^\d{2}:\d{2}$/.test(s) ? s : fallback;
+}
+
+function clampQty(v: unknown, fallback: number): number {
+  return Math.min(31, Math.max(0, Math.round(num(v, fallback))));
+}
+
+function sanitizeGuardPreviewQty(raw: unknown): GuardMonthPreviewQty {
+  const row = raw && typeof raw === 'object' ? (raw as Partial<GuardMonthPreviewQty>) : {};
+  const d = DEFAULTS.guardPreviewQty;
+  return {
+    std: clampQty(row.std, d.std),
+    sun: clampQty(row.sun, d.sun),
+    poya: clampQty(row.poya, d.poya),
+    pubHol: clampQty(row.pubHol, d.pubHol),
+    sat: clampQty(row.sat, d.sat),
+  };
 }
 
 function sanitize(raw: Partial<MdEngineConstants>): MdEngineConstants {
@@ -87,6 +127,11 @@ function sanitize(raw: Partial<MdEngineConstants>): MdEngineConstants {
     salaryMonthRetentionThreshold: Math.min(31, Math.max(1, Math.round(num(raw.salaryMonthRetentionThreshold, DEFAULTS.salaryMonthRetentionThreshold)))),
     cafeOpenStart: timeOrDefault(raw.cafeOpenStart, DEFAULTS.cafeOpenStart),
     cafeOpenEnd: timeOrDefault(raw.cafeOpenEnd, DEFAULTS.cafeOpenEnd),
+    smPreviewVisits: Math.min(500, Math.max(0, Math.round(num(raw.smPreviewVisits, DEFAULTS.smPreviewVisits)))),
+    hoPreviewSalary: Math.min(10_000_000, Math.max(0, Math.round(num(raw.hoPreviewSalary, DEFAULTS.hoPreviewSalary)))),
+    guardPreviewQty: sanitizeGuardPreviewQty(raw.guardPreviewQty),
+    cafePreviewBasic: Math.min(10_000_000, Math.max(0, Math.round(num(raw.cafePreviewBasic, DEFAULTS.cafePreviewBasic)))),
+    cafePreviewOtHours: Math.min(200, Math.max(0, Math.round(num(raw.cafePreviewOtHours, DEFAULTS.cafePreviewOtHours)))),
   };
 }
 
@@ -98,13 +143,15 @@ export async function getMdEngineConstants(): Promise<MdEngineConstants> {
 }
 
 export async function saveMdEngineConstants(settings: MdEngineConstants) {
-  const { db, companyId } = await getExecutiveMdSettingsContext();
+  const { session, db, companyId } = await getExecutiveMdSettingsContext();
   const sanitized = sanitize(settings);
 
   const res = await mergeSettingEnvelope(db, companyId, {
     [MD_SETTINGS_ENVELOPE_KEYS.engineConstants]: sanitized,
   });
   if (!res.success) return res;
+
+  await writeSettingsAuditLog(session, companyId, 'UPDATE_ENGINE_CONSTANTS', sanitized);
 
   revalidatePath('/executive/settings');
   revalidatePath('/fm/settings');

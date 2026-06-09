@@ -2,6 +2,8 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { revalidatePath } from 'next/cache';
+import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
+import { auditStaffAction } from '../../../lib/staff-audit';
 
 function getAdminClient() {
   return createClient(
@@ -67,6 +69,14 @@ export async function provisionSMPortalAccess(epfNumber: string) {
 
   if (dbError) return { error: `DB update failed: ${dbError.message}` };
 
+  const supabase = await createSupabaseServerClient();
+  await auditStaffAction({
+    supabase,
+    portal: 'sm',
+    action: 'Provision SM Portal Access',
+    targetEntity: `${employee.full_name ?? epf} (${epf})`,
+  });
+
   revalidatePath('/hr/sm-portal');
   revalidatePath('/hq/sm-proxy');
 
@@ -107,6 +117,14 @@ export async function deactivateSMAccess(epfNumber: string) {
     .eq('epf_number', epf);
 
   if (error) return { error: error.message };
+
+  const supabase = await createSupabaseServerClient();
+  await auditStaffAction({
+    supabase,
+    portal: 'sm',
+    action: 'Deactivate SM Portal Access',
+    targetEntity: epf,
+  });
 
   revalidatePath('/hr/sm-portal');
   revalidatePath('/hq/sm-proxy');

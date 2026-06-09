@@ -10,6 +10,9 @@ export const MD_SETTINGS_ENVELOPE_KEYS = {
   geofence: '_geofence',
   payrollStatutory: '_payrollStatutory',
   engineConstants: '_engineConstants',
+  bankExport: '_bankExport',
+  payFormulas: '_payFormulas',
+  portalRbacMatrix: '_portalRbacMatrix',
 } as const;
 
 export function isMissingColumnError(message: string | undefined): boolean {
@@ -21,21 +24,27 @@ export function isMissingColumnError(message: string | undefined): boolean {
   );
 }
 
+/** Unwrap setting_value whether stored as a jsonb object or legacy string-encoded JSON. */
 export function parseSettingEnvelope(raw: unknown): Record<string, unknown> {
-  if (!raw) return {};
-  if (typeof raw === 'object' && !Array.isArray(raw)) {
-    return { ...(raw as Record<string, unknown>) };
-  }
-  if (typeof raw === 'string') {
+  let current: unknown = raw;
+
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (current == null) return {};
+    if (typeof current === 'object' && !Array.isArray(current)) {
+      return { ...(current as Record<string, unknown>) };
+    }
+    if (typeof current !== 'string') return {};
+
+    const trimmed = current.trim();
+    if (!trimmed) return {};
+
     try {
-      const parsed = JSON.parse(raw) as unknown;
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return { ...(parsed as Record<string, unknown>) };
-      }
+      current = JSON.parse(trimmed) as unknown;
     } catch {
       return {};
     }
   }
+
   return {};
 }
 
@@ -71,7 +80,8 @@ export async function mergeSettingEnvelope(
 
   const row: Record<string, unknown> = {
     company_id: companyId,
-    setting_value: JSON.stringify(merged),
+    // Store as jsonb object — legacy rows may still be string-encoded; parseSettingEnvelope handles both.
+    setting_value: merged,
     ...scalar,
   };
 

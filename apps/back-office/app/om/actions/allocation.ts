@@ -7,6 +7,7 @@ import {
   resolveCompanyIdForSession,
   rosterCompanyId,
 } from '../../../lib/company-context';
+import { auditStaffAction } from '../../../lib/staff-audit';
 import type {
   OmAllocationSite,
   OmAssignableGuard,
@@ -394,6 +395,18 @@ export async function saveOmSiteSlotAssignments(input: {
     for (const row of toAssign) {
       await patchSite(row.empNo, siteName);
     }
+
+    await auditStaffAction({
+      supabase,
+      portal: 'om',
+      action: 'Save Site Guard Assignments',
+      targetEntity: siteName,
+      details: {
+        siteId: input.siteId,
+        assigned: toAssign.map((a) => a.empNo),
+        cleared: toClear,
+      },
+    });
 
     revalidatePath('/om');
     revalidatePath('/hr/mnr');

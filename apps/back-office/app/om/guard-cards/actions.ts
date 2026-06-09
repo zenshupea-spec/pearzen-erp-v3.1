@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import { fetchBackOfficeUserProfile } from '../../../lib/hr-portal-access';
 import { resolveCompanyIdForSession } from '../../../lib/company-context';
+import { auditStaffAction } from '../../../lib/staff-audit';
 import { getShiftSettings } from '../../executive/settings/actions';
 import {
   computeShiftTiming,
@@ -11,6 +12,7 @@ import {
 } from '../shift-verification-utils';
 import {
   computeGuardRatings,
+  ratingTier,
   type GuardRawMetrics,
 } from './lib/rating';
 import type { BlacklistedGuardEntry, GuardCardDisplay } from './types';
@@ -292,6 +294,200 @@ export async function getGuardCardLeaderboard(): Promise<{
   return { cards, companyId };
 }
 
+/** Rolling 12-month guard score for specific employees (includes resigned guards). */
+export async function getGuardRatingMapByEmployeeId(
+  targetEmployeeIds: string[],
+): Promise<Record<string, { rating: number; tier: ReturnType<typeof ratingTier> }>> {
+  if (!targetEmployeeIds.length) return {};
+
+  const supabase = await createSupabaseServerClient();
+  const companyId = await resolveCompanyIdForSession(supabase);
+  if (!companyId) return {};
+
+  const targetSet = new Set(targetEmployeeIds);
+
+  const { data: guards, error: guardError } = await supabase
+    .from('employees')
+    .select('id, emp_number, full_name, rank, status, group')
+    .eq('company_id', companyId)
+    .eq('group', 'GUARD')
+    .not('emp_number', 'is', null);
+
+  if (guardError || !guards?.length) return {};
+
+  const cohort = guards.filter((g) => g.emp_number);
+  const empNumbers = cohort.map((g) => g.emp_number as string);
+  const employeeIds = cohort.map((g) => g.id as string);
+
+  const cutoff = rollingCutoffIso();
+  const cutoffDate = cutoff.slice(0, 10);
+
+  const [penaltiesRes, deductionsRes, logsRes, rostersRes, timingSettings] = await Promise.all([
+    supabase
+      .from('sm_guard_penalties')
+      .select('guard_epf, deduction_amount, created_at')
+      .in('guard_epf', empNumbers)
+      .gte('created_at', cutoff),
+    supabase
+      .from('payroll_deductions')
+      .select('guard_id, amount, created_at')
+      .eq('company_id', companyId)
+      .in('guard_id', employeeIds)
+      .gte('created_at', cutoff),
+    supabase
+      .from('attendance_logs')
+      .select('emp_number, action_type, device_time, sync_type')
+      .eq('company_id', companyId)
+      .in('emp_number', empNumbers)
+      .gte('device_time', cutoff)
+      .order('device_time', { ascending: true }),
+    supabase
+      .from('time_rosters')
+      .select('employee_id, shift_date')
+      .eq('company_id', companyId)
+      .in('employee_id', employeeIds)
+      .eq('status', 'ACTIVE')
+      .gte('shift_date', cutoffDate),
+    getShiftSettings() as Promise<ShiftTimingSettings>,
+  ]);
+
+  const penaltyByEpf = new Map<string, { count: number; amount: number }>();
+  for (const p of penaltiesRes.data ?? []) {
+    const epf = p.guard_epf as string;
+    const cur = penaltyByEpf.get(epf) ?? { count: 0, amount: 0 };
+    cur.count += 1;
+    cur.amount += Number(p.deduction_amount) || 0;
+    penaltyByEpf.set(epf, cur);
+  }
+
+  const deductionByEmployeeId = new Map<string, number>();
+  for (const d of deductionsRes.data ?? []) {
+    const id = d.guard_id as string;
+    deductionByEmployeeId.set(
+      id,
+      (deductionByEmployeeId.get(id) ?? 0) + (Number(d.amount) || 0),
+    );
+  }
+
+  const logsByShift = new Map<
+    string,
+    { checkIn?: { device_time: string; sync_type: string | null }; checkOut?: { device_time: string } }
+  >();
+
+  for (const log of logsRes.data ?? []) {
+    const epf = log.emp_number as string;
+    const shiftDate = shiftDateFromDeviceTime(log.device_time as string);
+    const key = `${epf}:${shiftDate}`;
+    let bucket = logsByShift.get(key);
+    if (!bucket) {
+      bucket = {};
+      logsByShift.set(key, bucket);
+    }
+    if (log.action_type === 'CHECK_IN') {
+      bucket.checkIn = {
+        device_time: log.device_time as string,
+        sync_type: (log.sync_type as string | null) ?? null,
+      };
+    } else if (log.action_type === 'CHECK_OUT') {
+      bucket.checkOut = { device_time: log.device_time as string };
+    }
+  }
+
+  const lateByEpf = new Map<string, number>();
+  const attendedDatesByEpf = new Map<string, Set<string>>();
+  const shiftMonthsByEpf = new Map<string, Set<string>>();
+
+  for (const [key, bucket] of logsByShift) {
+    const [epf, shiftDate] = key.split(':');
+    if (!attendedDatesByEpf.has(epf)) attendedDatesByEpf.set(epf, new Set());
+    attendedDatesByEpf.get(epf)!.add(shiftDate);
+
+    const monthKey = shiftDate.slice(0, 7);
+    if (!shiftMonthsByEpf.has(epf)) shiftMonthsByEpf.set(epf, new Set());
+    shiftMonthsByEpf.get(epf)!.add(monthKey);
+
+    if (!bucket.checkIn) continue;
+    const timing = computeShiftTiming(
+      {
+        shiftDate,
+        checkIn: {
+          id: '',
+          emp_number: epf,
+          action_type: 'CHECK_IN',
+          device_time: bucket.checkIn.device_time,
+          latitude: null,
+          longitude: null,
+          sync_type: bucket.checkIn.sync_type,
+          photo_url: null,
+          status: null,
+        },
+        checkOut: bucket.checkOut
+          ? {
+              id: '',
+              emp_number: epf,
+              action_type: 'CHECK_OUT',
+              device_time: bucket.checkOut.device_time,
+              latitude: null,
+              longitude: null,
+              sync_type: null,
+              photo_url: null,
+              status: null,
+            }
+          : null,
+      },
+      timingSettings,
+    );
+
+    if (timing.isLateStart) {
+      lateByEpf.set(epf, (lateByEpf.get(epf) ?? 0) + 1);
+    }
+  }
+
+  const rosterDatesByEmployeeId = new Map<string, string[]>();
+  for (const r of rostersRes.data ?? []) {
+    const eid = r.employee_id as string;
+    const list = rosterDatesByEmployeeId.get(eid) ?? [];
+    list.push(r.shift_date as string);
+    rosterDatesByEmployeeId.set(eid, list);
+  }
+
+  const rawMetrics: GuardRawMetrics[] = cohort.map((g) => {
+    const epf = g.emp_number as string;
+    const eid = g.id as string;
+    const pen = penaltyByEpf.get(epf) ?? { count: 0, amount: 0 };
+    const attended = attendedDatesByEpf.get(epf) ?? new Set<string>();
+    const rosterDates = rosterDatesByEmployeeId.get(eid) ?? [];
+    const monthCount = shiftMonthsByEpf.get(epf)?.size ?? 0;
+    const shiftDays = attended.size;
+    const shiftsPerMonth = monthCount > 0 ? shiftDays / monthCount : shiftDays / ROLLING_MONTHS;
+
+    return {
+      empNumber: epf,
+      penaltyCount12m: pen.count,
+      penaltyAmount12m: pen.amount,
+      lateCheckIns12m: lateByEpf.get(epf) ?? 0,
+      shiftsPerMonth: Math.round(shiftsPerMonth * 10) / 10,
+      maxConsecutiveMissedDays: maxConsecutiveMissed(rosterDates, attended),
+      deductionTotal12m: (deductionByEmployeeId.get(eid) ?? 0) + pen.amount,
+    };
+  });
+
+  const rated = computeGuardRatings(rawMetrics);
+  const guardByEpf = new Map(cohort.map((g) => [g.emp_number as string, g]));
+  const result: Record<string, { rating: number; tier: ReturnType<typeof ratingTier> }> = {};
+
+  for (const row of rated) {
+    const guard = guardByEpf.get(row.empNumber);
+    if (!guard || !targetSet.has(guard.id as string)) continue;
+    result[guard.id as string] = {
+      rating: row.rating,
+      tier: ratingTier(row.rating),
+    };
+  }
+
+  return result;
+}
+
 export async function getBlacklistedGuards(): Promise<{
   entries: BlacklistedGuardEntry[];
   canApproveRemoval: boolean;
@@ -393,6 +589,14 @@ export async function blacklistGuard(employeeId: string, reason: string) {
     return { error: error.message };
   }
 
+  await auditStaffAction({
+    supabase,
+    portal: 'om',
+    action: 'Blacklist Guard',
+    targetEntity: `${employee.full_name ?? employee.emp_number} (${employee.emp_number})`,
+    details: { employeeId, reason: trimmedReason },
+  });
+
   revalidatePath('/om');
   revalidatePath('/tm');
   revalidatePath('/om/guard-cards');
@@ -432,6 +636,14 @@ export async function approveBlacklistRemoval(
     .eq('status', 'ACTIVE');
 
   if (error) return { error: error.message };
+
+  await auditStaffAction({
+    supabase,
+    portal: 'om',
+    action: 'Approve Blacklist Removal',
+    targetEntity: `Vault entry ${entryId}`,
+    details: { entryId, mdNotes: mdNotes?.trim() || null },
+  });
 
   revalidatePath('/om');
   revalidatePath('/tm');

@@ -39,6 +39,7 @@ const MODULE_ICONS: Record<string, LucideIcon> = {
   '/hq/deductions': Scissors,
   '/invoice-desk': FileText,
   '/hr': Users,
+  '/hr/vacancies': FileText,
   '/hr/onboarding': FileText,
   '/executive/cafe': Coffee,
   '/hq/audit': BookOpen,

@@ -33,8 +33,6 @@ const DOMAINS_TO_ADD = [
   `www.${DOMAIN}`,
   `forge.${DOMAIN}`,
   `erp.${DOMAIN}`,
-  `sm.${DOMAIN}`,
-  `field.${DOMAIN}`,
   `*.${DOMAIN}`,
   ...TENANT_SUBDOMAINS.map((sub) => `${sub}.${DOMAIN}`),
 ];

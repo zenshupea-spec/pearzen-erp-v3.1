@@ -7,6 +7,7 @@ import { getSmProxyDashboard } from '../app/hq/sm-proxy/actions';
 import { getAttendanceStream } from '../app/hq/guard-proxy/actions';
 import { GUARD_FIELD_PORTAL_ROUTE } from './master-hub-pillars';
 import { getOmSiteAllocationData } from '../app/om/actions/allocation';
+import { getGuardVacanciesDesk } from '../app/hr/vacancies/actions';
 import {
   fetchWithRosterCompanyFallback,
   resolveCompanyIdForSession,
@@ -58,13 +59,14 @@ export async function getMasterHubBadges(): Promise<MasterHubBadges> {
   const supabase = await createSupabaseServerClient();
   const companyId = await resolveCompanyIdForSession(supabase);
 
-  const [allocation, smProxy, attendance, deductionStatus, expiringClearances] =
+  const [allocation, smProxy, attendance, deductionStatus, expiringClearances, vacancies] =
     await Promise.all([
       getOmSiteAllocationData(),
       getSmProxyDashboard(),
       getAttendanceStream(80),
       getDeductionMonthLockStatus(),
       fetchWithRosterCompanyFallback(countExpiringClearances, companyId),
+      getGuardVacanciesDesk(),
     ]);
 
   const sitesShort = allocation.tacticalShorts.length;
@@ -90,6 +92,9 @@ export async function getMasterHubBadges(): Promise<MasterHubBadges> {
   }
   if (expiringClearances > 0) {
     badges['/hr'] = `${expiringClearances} Expiring Clearance${expiringClearances === 1 ? '' : 's'}`;
+  }
+  if (vacancies.totalGuardsNeeded > 0) {
+    badges['/hr/vacancies'] = `${vacancies.totalGuardsNeeded} Guard${vacancies.totalGuardsNeeded === 1 ? '' : 's'} Needed`;
   }
 
   return badges;

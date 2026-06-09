@@ -6,9 +6,9 @@ export const CAFE_FRONT_MENU_PATH = '/cafe-front/menu';
 export const CAFE_FRONT_CHECKIN_PATH = '/cafe-front/check-in';
 
 export const CAFE_FRONT_PORTAL_TABS = [
-  { href: CAFE_FRONT_COMPLIANCE_PATH, label: 'Compliance Desk' },
-  { href: CAFE_FRONT_ORDERS_PATH, label: 'Order Queue' },
-  { href: CAFE_FRONT_ROSTER_PATH, label: 'My Roster' },
-  { href: CAFE_FRONT_EXPIRY_PATH, label: 'Expiry Lots' },
-  { href: CAFE_FRONT_MENU_PATH, label: 'Menu Requests' },
+  { href: CAFE_FRONT_COMPLIANCE_PATH, label: 'Compliance Desk', shortLabel: 'Desk' },
+  { href: CAFE_FRONT_ORDERS_PATH, label: 'Order Queue', shortLabel: 'Orders' },
+  { href: CAFE_FRONT_ROSTER_PATH, label: 'My Roster', shortLabel: 'Roster' },
+  { href: CAFE_FRONT_EXPIRY_PATH, label: 'Expiry Lots', shortLabel: 'Expiry' },
+  { href: CAFE_FRONT_MENU_PATH, label: 'Menu Requests', shortLabel: 'Menu' },
 ] as const;

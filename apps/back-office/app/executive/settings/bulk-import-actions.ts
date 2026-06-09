@@ -23,7 +23,10 @@ import {
   decryptEmployeePiiRecord,
   encryptEmployeePiiRecord,
 } from '../../../lib/employee-pii';
-import { clampGeofenceRadiusM } from '../../../lib/site-geofence';
+import {
+  clampGeofenceRadiusM,
+  DEFAULT_GEOFENCE_RADIUS_M,
+} from '../../../lib/site-geofence';
 import { fetchBackOfficeUserProfile } from '../../../lib/hr-portal-access';
 import { getRankPayMatrix } from './rank-matrix-actions';
 
@@ -90,7 +93,7 @@ function mapSiteExportRow(row: Record<string, unknown>) {
     assigned_sm_epf: row.assigned_sm_epf ?? '',
     latitude: row.latitude ?? '',
     longitude: row.longitude ?? '',
-    geofence_radius_m: row.geofence_radius ?? 25,
+    geofence_radius_m: row.geofence_radius ?? DEFAULT_GEOFENCE_RADIUS_M,
     verification_mode: row.verification_mode ?? 'B',
     provides_food: row.provides_food ?? false,
     food_allowance_lkr: row.food_allowance_lkr ?? 0,
@@ -254,7 +257,9 @@ async function applyBulkImport(
     const record: Record<string, unknown> = {
       ...payload,
       company_id: companyId,
-      geofence_radius: clampGeofenceRadiusM(payload.geofence_radius ?? 25),
+      geofence_radius: clampGeofenceRadiusM(
+        payload.geofence_radius ?? DEFAULT_GEOFENCE_RADIUS_M,
+      ),
     };
 
     if (siteId) {

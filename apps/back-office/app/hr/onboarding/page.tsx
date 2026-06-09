@@ -18,15 +18,14 @@ import {
   fetchBackOfficeUserProfile,
 } from '../../../lib/hr-portal-access';
 import { getRankPayMatrix } from '../../executive/settings/rank-matrix-actions';
+import HrHubPills from '../HrHubPills';
 import InductionForm from '../InductionForm';
 import { executeRosterMerge } from '../temp-roster/actions';
+import { provisionCafePortalAccess } from '../cafe-portal/actions';
 import { provisionSMPortalAccess } from '../sm-portal/actions';
 import { uploadEmployeeHrDocumentsFromForm } from '../../../../../packages/supabase/employee-hr-documents';
 import { encryptEmployeePiiRecord } from '../../../lib/employee-pii';
-import {
-  UserPlus, ShieldCheck, FileSignature,
-  BookOpen, ClipboardList, Home, KeyRound,
-} from 'lucide-react';
+import { UserPlus, FileSignature, Home } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
 
@@ -98,7 +97,7 @@ export default async function HROnboardingPage({
       dob: formData.get('dob') as string || null,
       gender: formData.get('gender') as string || null,
       nationality: (formData.get('nationality') as string).toUpperCase(),
-      religion: (formData.get('religion') as string).toUpperCase(),
+      religion: (formData.get('religion') as string)?.trim().toUpperCase() || null,
       home_address: (formData.get('home_address') as string).toUpperCase(),
       group: corporateGroup,
       rank,
@@ -114,8 +113,8 @@ export default async function HROnboardingPage({
       branch_code: formData.get('branch_code') as string || null,
       account_number: formData.get('bank_acc') as string || null,
       epf_yn: formData.get('epf_yn') === 'YES',
-      mod_expiry: formData.get('mod_expiry') as string,
-      police_expiry: formData.get('police_expiry') as string,
+      mod_expiry: (formData.get('mod_expiry') as string)?.trim() || null,
+      police_expiry: (formData.get('police_expiry') as string)?.trim() || null,
       date_joined: new Date().toISOString().split('T')[0],
       status: 'ACTIVE',
       section_edits: {
@@ -150,6 +149,11 @@ export default async function HROnboardingPage({
 
     revalidatePath('/hr/onboarding');
     revalidatePath('/hr/mnr');
+    if (corporateGroup === 'HEAD_OFFICE') {
+      revalidatePath('/executive/settings');
+    }
+
+    const epfNo = ((formData.get('epf_no') as string) || '').trim();
 
     if (corporateGroup === 'SECTOR_MANAGER' && empNumber) {
       const provision = await provisionSMPortalAccess(empNumber);
@@ -172,6 +176,30 @@ export default async function HROnboardingPage({
       );
       redirect('/hr/sm-portal');
     }
+
+    if (corporateGroup === 'CAFE' && epfNo) {
+      const provision = await provisionCafePortalAccess(epfNo);
+      if (provision.error || !provision.success || !provision.otp) {
+        throw new Error(
+          provision.error ??
+            'Café staff was saved but front office access could not be provisioned. Use Café Front Access to generate an OTP manually.',
+        );
+      }
+
+      const jar = await cookies();
+      jar.set(
+        'cafe_portal_provision_flash',
+        JSON.stringify({
+          epf: provision.epf,
+          otp: provision.otp,
+          staffName: provision.staffName,
+        }),
+        { httpOnly: true, maxAge: 180, path: '/', sameSite: 'lax' },
+      );
+      redirect('/hr/cafe-portal');
+    }
+
+    redirect('/hr/mnr');
   }
 
   return (
@@ -197,24 +225,7 @@ export default async function HROnboardingPage({
           </Link>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5 mt-5 pt-4 border-t border-slate-200">
-          <Link href="/hr/mnr" className="inline-flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 text-slate-600 text-xs font-bold rounded-xl hover:bg-slate-50 transition-all uppercase tracking-wide">
-            <BookOpen className="w-3.5 h-3.5 text-rose-600" /> Master Nominal Roll
-          </Link>
-          <div className="w-px h-5 bg-slate-200 mx-1" />
-          <span className="inline-flex items-center gap-2 px-4 py-2.5 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-black rounded-xl uppercase tracking-wider">
-            <UserPlus className="w-3.5 h-3.5" /> Onboarding
-          </span>
-          <Link href="/hr/clearance" className="inline-flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 text-slate-600 text-xs font-bold rounded-xl hover:bg-slate-50 transition-all uppercase tracking-wide">
-            <ShieldCheck className="w-3.5 h-3.5 text-sky-600" /> Clearance Desk
-          </Link>
-          <Link href="/hr/temp-roster" className="inline-flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 text-slate-600 text-xs font-bold rounded-xl hover:bg-slate-50 transition-all uppercase tracking-wide">
-            <ClipboardList className="w-3.5 h-3.5 text-violet-600" /> Temp Roster
-          </Link>
-          <Link href="/hr/sm-portal" className="inline-flex items-center gap-2 px-4 py-2.5 bg-amber-50 border border-amber-200 text-amber-800 text-xs font-black rounded-xl hover:bg-amber-100 transition-all uppercase tracking-wider">
-            <KeyRound className="w-3.5 h-3.5" /> SM Portal
-          </Link>
-        </div>
+        <HrHubPills />
       </header>
 
       {mergeContext && (

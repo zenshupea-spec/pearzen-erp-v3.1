@@ -15,6 +15,14 @@ export {
   isExecutiveRank,
 } from "./portal-role-utils";
 
+export function canViewMnrEmployee(
+  viewerRole: string | null | undefined,
+  employeeRank: string | null | undefined,
+): boolean {
+  if (canManageExecutiveAccess(viewerRole)) return true;
+  return !isExecutiveRank(employeeRank);
+}
+
 export function canEditMnrEmployee(
   editorRole: string | null | undefined,
   employeeRank: string | null | undefined,

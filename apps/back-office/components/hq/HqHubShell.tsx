@@ -42,7 +42,7 @@ const NAV = [
     Icon: DollarSign,
   },
   {
-    href: '/hr/onboarding',
+    href: '/hr/vacancies',
     label: 'Site Recruitment',
     sub: 'Open vacancies & pipeline',
     Icon: Briefcase,

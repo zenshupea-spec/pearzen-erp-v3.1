@@ -1,12 +1,20 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { createSupabaseServerClient } from '../../../../packages/supabase/server';
 import {
+  createSupabaseServerClient,
+  createSupabaseServiceClient,
+} from '../../../../packages/supabase/server';
+import {
+  CLASSIC_VENTURE_COMPANY_ID,
   fetchWithRosterCompanyFallback,
   resolveCompanyIdForSession,
+  rosterCompanyId,
 } from '../../lib/company-context';
-import { clampGeofenceRadiusM } from '../../lib/site-geofence';
+import {
+  clampGeofenceRadiusM,
+  DEFAULT_GEOFENCE_RADIUS_M,
+} from '../../lib/site-geofence';
 
 export type SiteStatus = 'ACTIVE' | 'SUSPENDED' | 'PENDING';
 
@@ -25,6 +33,7 @@ export type RateAudit = {
 
 export type MasterSite = {
   id: string;
+  siteKind: SiteRegistrationKind;
   clientName: string;
   parentClient?: string;
   siteName: string;
@@ -56,7 +65,15 @@ export type SectorManagerOption = {
   phone: string;
 };
 
+export type InternalStaffOption = {
+  epf: string;
+  label: string;
+};
+
+export type SiteRegistrationKind = 'client' | 'head_office' | 'cafe_branch';
+
 export type RegisterSiteInput = {
+  siteKind: SiteRegistrationKind;
   clientMode: 'existing' | 'new';
   existingClientName: string;
   newClientName: string;
@@ -70,6 +87,9 @@ export type RegisterSiteInput = {
   geofenceRadiusM: string;
   requestOMGPS: boolean;
   sectorManagerEpf: string;
+  /** @deprecated Use assignedStaffEpfs for internal sites */
+  assignedStaffEpf: string;
+  assignedStaffEpfs?: string[];
   perVisitCharge: string;
   minDwellTime: string;
   rankRows: {
@@ -146,6 +166,63 @@ function isSectorManagerRow(row: { emp_number?: string | null; rank?: string | n
   return epf.startsWith('SM-') || ['SM', 'OIC', 'SSO', 'CSO'].includes(rank);
 }
 
+function employeeEpfKey(row: {
+  emp_number?: string | null;
+  epf_no?: string | null;
+  epf_num?: string | null;
+}): string {
+  const emp = row.emp_number != null ? String(row.emp_number).trim() : '';
+  if (emp) return emp.toUpperCase();
+  const epf =
+    (row.epf_no != null ? String(row.epf_no).trim() : '') ||
+    (row.epf_num != null ? String(row.epf_num).trim() : '');
+  return epf.toUpperCase();
+}
+
+function staffLabel(fullName: string | null, epf: string, rank?: string | null): string {
+  const name = fullName?.trim() || epf;
+  const r = rank?.trim();
+  return r ? `${r} ${name}` : name;
+}
+
+async function fetchStaffByGroupForCompany(
+  companyId: string | null,
+  group: 'HEAD_OFFICE' | 'CAFE',
+): Promise<InternalStaffOption[]> {
+  const supabase = await createSupabaseServerClient();
+  let query = supabase
+    .from('employees')
+    .select('emp_number, epf_no, epf_num, full_name, rank, status, group')
+    .eq('status', 'ACTIVE')
+    .eq('group', group)
+    .order('full_name', { ascending: true });
+
+  if (companyId) {
+    query = query.eq('company_id', companyId);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    console.error(`❌ SUPABASE ERROR (fetchStaffByGroup ${group}):`, error.message);
+    return [];
+  }
+
+  return (data ?? [])
+    .map((row) => {
+      const epf = employeeEpfKey(row);
+      if (!epf) return null;
+      return {
+        epf,
+        label: staffLabel(
+          row.full_name == null ? null : String(row.full_name),
+          epf,
+          row.rank == null ? null : String(row.rank),
+        ),
+      };
+    })
+    .filter((row): row is InternalStaffOption => row != null);
+}
+
 async function fetchSectorManagersForCompany(
   companyId: string | null,
 ): Promise<SectorManagerOption[]> {
@@ -194,31 +271,128 @@ async function fetchSitesForCompany(companyId: string | null): Promise<Record<st
   return (data ?? []) as Record<string, unknown>[];
 }
 
+function resolveStaffContactLabel(
+  smEpf: string | null,
+  smByEpf: Map<string, SectorManagerOption>,
+  staffByEpf: Map<string, InternalStaffOption>,
+  siteStaffEpfs: string[],
+): string {
+  if (siteStaffEpfs.length) {
+    const labels = siteStaffEpfs.map((epf) => staffByEpf.get(epf)?.label ?? epf);
+    return labels.join(', ');
+  }
+  if (!smEpf) return 'Unassigned';
+  const sm = smByEpf.get(smEpf);
+  if (sm) return sm.label;
+  const staff = staffByEpf.get(smEpf);
+  if (staff) return staff.label;
+  return smEpf;
+}
+
+type SiteStaffAssignmentRow = {
+  site_profile_id: string;
+  staff_epf: string;
+};
+
+async function fetchSiteStaffAssignmentRows(
+  companyId: string | null,
+): Promise<SiteStaffAssignmentRow[]> {
+  const supabase = await createSupabaseServerClient();
+  let query = supabase
+    .from('site_staff_assignments')
+    .select('site_profile_id, staff_epf')
+    .order('created_at', { ascending: true });
+
+  if (companyId) {
+    query = query.eq('company_id', companyId);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    console.error('❌ SUPABASE ERROR (fetchSiteStaffAssignments):', error.message);
+    return [];
+  }
+
+  return (data ?? [])
+    .map((row) => ({
+      site_profile_id: String(row.site_profile_id),
+      staff_epf: String(row.staff_epf ?? '').trim().toUpperCase(),
+    }))
+    .filter((row) => row.staff_epf.length > 0);
+}
+
+function inferSiteKindFromRow(row: Record<string, unknown>): SiteRegistrationKind {
+  const clientName = String(row.client_name ?? '').trim();
+  const siteName = String(row.site_name ?? '').trim();
+  const siteType = String(row.site_type ?? '').trim().toUpperCase();
+
+  if (
+    clientName === 'Head Office' ||
+    siteName === 'Head Office' ||
+    siteType === 'OFFICE'
+  ) {
+    return 'head_office';
+  }
+
+  if (
+    clientName.startsWith('Café') ||
+    clientName.startsWith('Cafe') ||
+    siteName.startsWith('Café') ||
+    siteName.startsWith('Cafe')
+  ) {
+    return 'cafe_branch';
+  }
+
+  return 'client';
+}
+
+function groupSiteStaffAssignments(
+  rows: SiteStaffAssignmentRow[],
+): Map<string, string[]> {
+  const bySite = new Map<string, string[]>();
+  for (const row of rows) {
+    const list = bySite.get(row.site_profile_id) ?? [];
+    list.push(row.staff_epf);
+    bySite.set(row.site_profile_id, list);
+  }
+  return bySite;
+}
+
 function mapDbRowToMasterSite(
   row: Record<string, unknown>,
   smByEpf: Map<string, SectorManagerOption>,
+  staffByEpf: Map<string, InternalStaffOption>,
+  siteStaffBySiteId: Map<string, string[]>,
 ): MasterSite {
   const rateMatrix = parseRateMatrix(row.rate_matrix);
   const { inv, pay } = blendedRates(rateMatrix);
   const smEpf =
     row.assigned_sm_epf == null || row.assigned_sm_epf === ''
       ? null
-      : String(row.assigned_sm_epf);
-  const sm = smEpf ? smByEpf.get(smEpf) : undefined;
+      : String(row.assigned_sm_epf).trim().toUpperCase();
+  const siteStaffEpfs = siteStaffBySiteId.get(String(row.id)) ?? (smEpf ? [smEpf] : []);
   const rateAuditRaw = row.rate_audit as RateAudit | null;
+
+  const siteKind = inferSiteKindFromRow(row);
 
   return {
     id: String(row.id),
+    siteKind,
     clientName: String(row.client_name ?? row.site_name ?? ''),
     parentClient: row.parent_client ? String(row.parent_client) : undefined,
     siteName: String(row.site_name ?? ''),
     address: row.address == null ? '' : String(row.address),
     lat: row.latitude == null ? 0 : Number(row.latitude),
     lng: row.longitude == null ? 0 : Number(row.longitude),
-    sector: 'Unassigned',
-    sectorManager: sm?.label ?? (smEpf ? smEpf : 'Unassigned'),
+    sector:
+      siteKind === 'head_office'
+        ? 'Head Office'
+        : siteKind === 'cafe_branch'
+          ? 'Café'
+          : 'Unassigned',
+    sectorManager: resolveStaffContactLabel(smEpf, smByEpf, staffByEpf, siteStaffEpfs),
     sectorManagerEpf: smEpf,
-    smPhone: sm?.phone ?? '—',
+    smPhone: smEpf ? (smByEpf.get(smEpf)?.phone ?? '—') : '—',
     rankRequirements: rankRequirementsFromMatrix(rateMatrix),
     shiftsCompleted: 0,
     clientInvoiceRate: inv,
@@ -232,7 +406,9 @@ function mapDbRowToMasterSite(
       : new Date().toISOString().slice(0, 10),
     contractEnd: row.contract_end ? String(row.contract_end).slice(0, 10) : '',
     geofenceRadiusM: clampGeofenceRadiusM(
-      row.geofence_radius == null ? 25 : Number(row.geofence_radius),
+      row.geofence_radius == null
+        ? DEFAULT_GEOFENCE_RADIUS_M
+        : Number(row.geofence_radius),
     ),
     rateMatrix,
     rateAudit:
@@ -261,43 +437,177 @@ function buildRateMatrixFromRows(
 }
 
 function resolveClientName(input: RegisterSiteInput): string {
+  if (input.siteKind === 'head_office') return 'Head Office';
+  if (input.siteKind === 'cafe_branch') {
+    const branch = input.siteName.trim();
+    return branch ? `Café — ${branch}` : 'Café Branch';
+  }
   return input.clientMode === 'existing'
     ? input.existingClientName.trim()
     : input.newClientName.trim();
 }
 
-function composedSiteName(clientName: string, siteName: string): string {
+function composedSiteName(
+  clientName: string,
+  siteName: string,
+  siteKind?: SiteRegistrationKind,
+): string {
   const trimmed = siteName.trim();
+  if (siteKind === 'head_office') return 'Head Office';
+  if (siteKind === 'cafe_branch') {
+    if (trimmed.includes('—') || trimmed.includes(' - ')) return trimmed;
+    return `Café — ${trimmed}`;
+  }
   if (trimmed.includes('—') || trimmed.includes(' - ')) return trimmed;
   return `${clientName} — ${trimmed}`;
 }
 
+function supabaseErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error) return error.message;
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'message' in error &&
+    typeof (error as { message: unknown }).message === 'string'
+  ) {
+    return (error as { message: string }).message;
+  }
+  return fallback;
+}
+
+/** Service-role writes — executive/FM sessions often fail site_profiles RLS. */
+function getSiteDirectoryWriteDb() {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()) {
+    throw new Error(
+      'Site directory writes are not configured (missing SUPABASE_SERVICE_ROLE_KEY).',
+    );
+  }
+  return createSupabaseServiceClient();
+}
+
 async function resolveCompanyScope() {
   const supabase = await createSupabaseServerClient();
-  const companyId = await resolveCompanyIdForSession(supabase);
+  const sessionCompanyId = await resolveCompanyIdForSession(supabase);
+  const companyId =
+    rosterCompanyId(sessionCompanyId) ?? CLASSIC_VENTURE_COMPANY_ID;
   return { supabase, companyId };
+}
+
+function buildStaffByEpf(
+  headOfficeStaff: InternalStaffOption[],
+  cafeStaff: InternalStaffOption[],
+): Map<string, InternalStaffOption> {
+  const map = new Map<string, InternalStaffOption>();
+  for (const person of [...headOfficeStaff, ...cafeStaff]) {
+    map.set(person.epf, person);
+  }
+  return map;
+}
+
+async function loadSiteMappingContext(companyId: string | null) {
+  const [sectorManagers, headOfficeStaff, cafeStaff, assignmentRows] = await Promise.all([
+    fetchWithRosterCompanyFallback(fetchSectorManagersForCompany, companyId),
+    fetchWithRosterCompanyFallback((id) => fetchStaffByGroupForCompany(id, 'HEAD_OFFICE'), companyId),
+    fetchWithRosterCompanyFallback((id) => fetchStaffByGroupForCompany(id, 'CAFE'), companyId),
+    fetchWithRosterCompanyFallback(fetchSiteStaffAssignmentRows, companyId),
+  ]);
+  return {
+    sectorManagers,
+    headOfficeStaff,
+    cafeStaff,
+    smByEpf: new Map(sectorManagers.map((m) => [m.epf, m])),
+    staffByEpf: buildStaffByEpf(headOfficeStaff, cafeStaff),
+    siteStaffBySiteId: groupSiteStaffAssignments(assignmentRows),
+  };
+}
+
+function resolveAssignedStaffEpfs(input: RegisterSiteInput): string[] {
+  const fromList = (input.assignedStaffEpfs ?? [])
+    .map((epf) => epf.trim().toUpperCase())
+    .filter(Boolean);
+  if (fromList.length) return [...new Set(fromList)];
+  const single = input.assignedStaffEpf.trim().toUpperCase();
+  return single ? [single] : [];
+}
+
+async function syncEmployeeSiteAssignments(
+  db: ReturnType<typeof createSupabaseServiceClient>,
+  companyId: string,
+  siteLabel: string,
+  staffEpfs: string[],
+) {
+  if (!staffEpfs.length) return;
+
+  for (const epf of staffEpfs) {
+    let query = db
+      .from('employees')
+      .update({ site: siteLabel })
+      .eq('status', 'ACTIVE');
+
+    if (companyId) {
+      query = query.eq('company_id', companyId);
+    }
+
+    const { error: empError } = await query.or(
+      `emp_number.ilike.${epf},epf_no.ilike.${epf},epf_num.ilike.${epf}`,
+    );
+    if (empError) {
+      console.error('❌ SUPABASE ERROR (syncEmployeeSiteAssignments):', empError.message);
+    }
+  }
+}
+
+async function insertSiteStaffAssignments(
+  db: ReturnType<typeof createSupabaseServiceClient>,
+  companyId: string,
+  siteProfileId: string,
+  staffEpfs: string[],
+) {
+  if (!staffEpfs.length) return;
+
+  const rows = staffEpfs.map((staffEpf) => ({
+    company_id: companyId,
+    site_profile_id: siteProfileId,
+    staff_epf: staffEpf,
+  }));
+
+  const { error } = await db.from('site_staff_assignments').insert(rows);
+  if (error) throw new Error(error.message);
 }
 
 export async function fetchMasterSiteDirectory(): Promise<{
   sites: MasterSite[];
   sectorManagers: SectorManagerOption[];
+  headOfficeStaff: InternalStaffOption[];
+  cafeStaff: InternalStaffOption[];
 }> {
   const { companyId } = await resolveCompanyScope();
-  const [rows, managers] = await Promise.all([
+  const [rows, mapping] = await Promise.all([
     fetchWithRosterCompanyFallback(fetchSitesForCompany, companyId),
-    fetchWithRosterCompanyFallback(fetchSectorManagersForCompany, companyId),
+    loadSiteMappingContext(companyId),
   ]);
 
-  const smByEpf = new Map(managers.map((m) => [m.epf, m]));
   return {
-    sites: rows.map((row) => mapDbRowToMasterSite(row, smByEpf)),
-    sectorManagers: managers,
+    sites: rows.map((row) =>
+      mapDbRowToMasterSite(
+        row,
+        mapping.smByEpf,
+        mapping.staffByEpf,
+        mapping.siteStaffBySiteId,
+      ),
+    ),
+    sectorManagers: mapping.sectorManagers,
+    headOfficeStaff: mapping.headOfficeStaff,
+    cafeStaff: mapping.cafeStaff,
   };
 }
 
 export async function createMasterSite(
   input: RegisterSiteInput,
 ): Promise<{ success: true; site: MasterSite } | { success: false; error: string }> {
+  const isClientSite = input.siteKind === 'client';
+  const isInternalSite = !isClientSite;
+
   const clientName = resolveClientName(input);
   if (!clientName) return { success: false, error: 'Client name is required.' };
   if (!input.siteCode.trim()) return { success: false, error: 'Site code is required.' };
@@ -305,60 +615,99 @@ export async function createMasterSite(
   if (!input.locationAddress.trim()) return { success: false, error: 'Address is required.' };
   if (!input.contractStart) return { success: false, error: 'Contract start date is required.' };
 
-  const rateMatrix = buildRateMatrixFromRows(input.rankRows);
+  const rateMatrix = isClientSite ? buildRateMatrixFromRows(input.rankRows) : {};
   const totalHeads = Object.values(rateMatrix).reduce((s, r) => s + (r?.qty ?? 0), 0);
   const gpsParts = input.gpsCoords.split(',').map((p) => p.trim());
   const lat = gpsParts[0] ? parseFloat(gpsParts[0]) : null;
   const lng = gpsParts[1] ? parseFloat(gpsParts[1]) : null;
   const hasGps = lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng);
-  const smEpf = input.sectorManagerEpf.trim() || null;
+  const requestOmGps = isClientSite && input.requestOMGPS;
+
+  if (!hasGps && !requestOmGps) {
+    return { success: false, error: 'GPS coordinates are required (or request OM field capture for client sites).' };
+  }
+
+  const assignedStaffEpfs = isInternalSite ? resolveAssignedStaffEpfs(input) : [];
+  const smEpf = isInternalSite
+    ? assignedStaffEpfs[0] ?? null
+    : input.sectorManagerEpf.trim() || null;
+
+  if (isInternalSite && !assignedStaffEpfs.length) {
+    return {
+      success: false,
+      error:
+        input.siteKind === 'cafe_branch'
+          ? 'Select at least one café staff member for this branch.'
+          : 'Select at least one head office employee for this location.',
+    };
+  }
 
   try {
-    const { supabase, companyId } = await resolveCompanyScope();
-    if (!companyId) {
-      return { success: false, error: 'Could not resolve company for this session.' };
-    }
+    const { companyId } = await resolveCompanyScope();
+
+    const siteType =
+      input.siteKind === 'head_office'
+        ? ('OFFICE' as const)
+        : input.siteKind === 'cafe_branch'
+          ? ('HOTEL' as const)
+          : ('OTHER' as const);
 
     const record = {
       company_id: companyId,
-      site_name: composedSiteName(clientName, input.siteName),
-      site_type: 'OTHER' as const,
+      site_name: composedSiteName(clientName, input.siteName, input.siteKind),
+      site_type: siteType,
       address: input.locationAddress.trim().toUpperCase(),
       site_code: input.siteCode.trim().toUpperCase(),
       client_name: clientName,
       parent_client: clientName,
-      client_billing_address: input.newClientBillingAddress.trim() || null,
+      client_billing_address: isClientSite ? input.newClientBillingAddress.trim() || null : null,
       contract_start: input.contractStart,
       contract_end: input.contractEnd || null,
       latitude: hasGps ? lat : null,
       longitude: hasGps ? lng : null,
-      geofence_radius: clampGeofenceRadiusM(parseInt(input.geofenceRadiusM, 10) || 25),
-      needs_om_gps_capture: input.requestOMGPS || !hasGps,
+      geofence_radius: clampGeofenceRadiusM(
+        parseInt(input.geofenceRadiusM, 10) || DEFAULT_GEOFENCE_RADIUS_M,
+      ),
+      needs_om_gps_capture: requestOmGps || !hasGps,
       assigned_sm_epf: smEpf,
-      per_visit_charge_lkr: parseFloat(input.perVisitCharge) || 0,
-      min_dwell_time_minutes: parseInt(input.minDwellTime, 10) || 0,
-      required_guards: totalHeads || 1,
+      per_visit_charge_lkr: isClientSite ? parseFloat(input.perVisitCharge) || 0 : 0,
+      min_dwell_time_minutes: isClientSite ? parseInt(input.minDwellTime, 10) || 0 : 0,
+      required_guards: isClientSite ? totalHeads || 1 : 0,
       rate_matrix: rateMatrix,
-      site_status: smEpf ? 'ACTIVE' : 'PENDING',
+      site_status: smEpf || hasGps ? 'ACTIVE' : 'PENDING',
       verification_mode: 'B',
     };
 
-    const { data, error } = await supabase.from('site_profiles').insert(record).select('*').single();
-    if (error) throw error;
+    const db = getSiteDirectoryWriteDb();
+    const { data, error } = await db.from('site_profiles').insert(record).select('*').single();
+    if (error) throw new Error(error.message);
 
-    const managers = await fetchWithRosterCompanyFallback(
-      fetchSectorManagersForCompany,
-      companyId,
-    );
-    const smByEpf = new Map(managers.map((m) => [m.epf, m]));
+    const siteId = String((data as Record<string, unknown>).id);
+    const siteLabel = composedSiteName(clientName, input.siteName, input.siteKind);
+
+    if (isInternalSite && assignedStaffEpfs.length) {
+      await insertSiteStaffAssignments(db, companyId, siteId, assignedStaffEpfs);
+      await syncEmployeeSiteAssignments(db, companyId, siteLabel, assignedStaffEpfs);
+    }
+
+    const { smByEpf, staffByEpf, siteStaffBySiteId } = await loadSiteMappingContext(companyId);
 
     revalidatePath('/executive/sites');
     revalidatePath('/fm/sites');
     revalidatePath('/om');
+    revalidatePath('/hr/mnr');
 
-    return { success: true, site: mapDbRowToMasterSite(data as Record<string, unknown>, smByEpf) };
+    return {
+      success: true,
+      site: mapDbRowToMasterSite(
+        data as Record<string, unknown>,
+        smByEpf,
+        staffByEpf,
+        siteStaffBySiteId,
+      ),
+    };
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Failed to save site.';
+    const message = supabaseErrorMessage(error, 'Failed to save site.');
     console.error('❌ SUPABASE ERROR (createMasterSite):', message);
     return { success: false, error: message };
   }
@@ -372,19 +721,19 @@ export async function activateMasterSite(input: {
   if (!smEpf) return { success: false, error: 'Select a Sector Manager.' };
 
   try {
-    const { supabase, companyId } = await resolveCompanyScope();
-    const { error } = await supabase
+    const { companyId } = await resolveCompanyScope();
+    const db = getSiteDirectoryWriteDb();
+    const { error } = await db
       .from('site_profiles')
       .update({ assigned_sm_epf: smEpf, site_status: 'ACTIVE' })
       .eq('id', input.siteId);
 
-    if (error) throw error;
+    if (error) throw new Error(error.message);
 
-    const [rows, managers] = await Promise.all([
+    const [rows, mapping] = await Promise.all([
       fetchWithRosterCompanyFallback(fetchSitesForCompany, companyId),
-      fetchWithRosterCompanyFallback(fetchSectorManagersForCompany, companyId),
+      loadSiteMappingContext(companyId),
     ]);
-    const smByEpf = new Map(managers.map((m) => [m.epf, m]));
     const site = rows.find((r) => String(r.id) === input.siteId);
     if (!site) return { success: false, error: 'Site not found after activation.' };
 
@@ -392,9 +741,17 @@ export async function activateMasterSite(input: {
     revalidatePath('/fm/sites');
     revalidatePath('/om');
 
-    return { success: true, site: mapDbRowToMasterSite(site, smByEpf) };
+    return {
+      success: true,
+      site: mapDbRowToMasterSite(
+        site,
+        mapping.smByEpf,
+        mapping.staffByEpf,
+        mapping.siteStaffBySiteId,
+      ),
+    };
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Failed to activate site.';
+    const message = supabaseErrorMessage(error, 'Failed to activate site.');
     console.error('❌ SUPABASE ERROR (activateMasterSite):', message);
     return { success: false, error: message };
   }
@@ -408,8 +765,9 @@ export async function updateMasterSiteRates(input: {
   const totalHeads = Object.values(input.rateMatrix).reduce((s, r) => s + (r?.qty ?? 0), 0);
 
   try {
-    const { supabase, companyId } = await resolveCompanyScope();
-    const { error } = await supabase
+    const { companyId } = await resolveCompanyScope();
+    const db = getSiteDirectoryWriteDb();
+    const { error } = await db
       .from('site_profiles')
       .update({
         rate_matrix: input.rateMatrix,
@@ -418,22 +776,29 @@ export async function updateMasterSiteRates(input: {
       })
       .eq('id', input.siteId);
 
-    if (error) throw error;
+    if (error) throw new Error(error.message);
 
-    const [rows, managers] = await Promise.all([
+    const [rows, mapping] = await Promise.all([
       fetchWithRosterCompanyFallback(fetchSitesForCompany, companyId),
-      fetchWithRosterCompanyFallback(fetchSectorManagersForCompany, companyId),
+      loadSiteMappingContext(companyId),
     ]);
-    const smByEpf = new Map(managers.map((m) => [m.epf, m]));
     const site = rows.find((r) => String(r.id) === input.siteId);
     if (!site) return { success: false, error: 'Site not found after update.' };
 
     revalidatePath('/executive/sites');
     revalidatePath('/fm/sites');
 
-    return { success: true, site: mapDbRowToMasterSite(site, smByEpf) };
+    return {
+      success: true,
+      site: mapDbRowToMasterSite(
+        site,
+        mapping.smByEpf,
+        mapping.staffByEpf,
+        mapping.siteStaffBySiteId,
+      ),
+    };
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Failed to save rates.';
+    const message = supabaseErrorMessage(error, 'Failed to save rates.');
     console.error('❌ SUPABASE ERROR (updateMasterSiteRates):', message);
     return { success: false, error: message };
   }
@@ -449,8 +814,9 @@ export async function updateMasterSiteConfig(input: {
   const rateAudit = { editedBy: 'MD', editedAt: new Date().toISOString() };
 
   try {
-    const { supabase, companyId } = await resolveCompanyScope();
-    const { error } = await supabase
+    const { companyId } = await resolveCompanyScope();
+    const db = getSiteDirectoryWriteDb();
+    const { error } = await db
       .from('site_profiles')
       .update({
         latitude: input.config.lat,
@@ -467,13 +833,12 @@ export async function updateMasterSiteConfig(input: {
       })
       .eq('id', input.siteId);
 
-    if (error) throw error;
+    if (error) throw new Error(error.message);
 
-    const [rows, managers] = await Promise.all([
+    const [rows, mapping] = await Promise.all([
       fetchWithRosterCompanyFallback(fetchSitesForCompany, companyId),
-      fetchWithRosterCompanyFallback(fetchSectorManagersForCompany, companyId),
+      loadSiteMappingContext(companyId),
     ]);
-    const smByEpf = new Map(managers.map((m) => [m.epf, m]));
     const site = rows.find((r) => String(r.id) === input.siteId);
     if (!site) return { success: false, error: 'Site not found after update.' };
 
@@ -481,9 +846,17 @@ export async function updateMasterSiteConfig(input: {
     revalidatePath('/fm/sites');
     revalidatePath('/om');
 
-    return { success: true, site: mapDbRowToMasterSite(site, smByEpf) };
+    return {
+      success: true,
+      site: mapDbRowToMasterSite(
+        site,
+        mapping.smByEpf,
+        mapping.staffByEpf,
+        mapping.siteStaffBySiteId,
+      ),
+    };
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Failed to save configuration.';
+    const message = supabaseErrorMessage(error, 'Failed to save configuration.');
     console.error('❌ SUPABASE ERROR (updateMasterSiteConfig):', message);
     return { success: false, error: message };
   }

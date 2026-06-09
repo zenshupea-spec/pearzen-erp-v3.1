@@ -7,6 +7,7 @@ import {
   type PenaltyCatalogEntry,
 } from '../../../../../packages/penalty-catalog';
 import { revalidatePath } from 'next/cache';
+import { writeSettingsAuditLog } from './settings-audit';
 
 async function resolveCompanyId(supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>) {
   const { data: { user } } = await supabase.auth.getUser();
@@ -61,6 +62,10 @@ export async function savePenaltyCatalog(catalog: PenaltyCatalogEntry[]) {
     );
 
   if (error) return { success: false, error: error.message };
+
+  await writeSettingsAuditLog(supabase, companyId, 'UPDATE_PENALTY_CATALOG', {
+    offenseCount: sanitized.length,
+  });
 
   revalidatePath('/executive/settings');
   return { success: true };

@@ -22,6 +22,8 @@ import {
   Printer,
 } from 'lucide-react';
 import { LOGO_STORAGE_KEY } from '../../../../../packages/supabase/branding-constants';
+import { BANK_EXPORT_FORMAT_LABELS } from '../../../../../packages/bank-export-settings';
+import { getBankExportSettings } from '../settings/bank-export-actions';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
 import {
   approvePayrollGroup,
@@ -180,12 +182,6 @@ const BANK_FORMATS = [
   'NSB — CSV',
   'Peoples Bank — TXT',
 ];
-
-// Simulates the MD-enforced lock set from Settings → Financial Config.
-// When true, the bank format dropdown on the payroll desk is replaced with
-// a read-only badge and cannot be changed by the FM.
-const BANK_FORMAT_LOCKED = true;
-const MD_LOCKED_FORMAT   = 'Commercial Bank — CSV';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -655,10 +651,19 @@ function MasterGuardLedger({
   onLock: (id: string) => void;
 }) {
   const [bankFormat, setBankFormat] = useState(BANK_FORMATS[0]);
+  const [bankFormatLocked, setBankFormatLocked] = useState(true);
+  const [lockedFormatLabel, setLockedFormatLabel] = useState(BANK_EXPORT_FORMAT_LABELS.commercial_csv);
   const [collapsed,  setCollapsed]  = useState(batch.status === 'APPROVED');
   const [isLocking,  setIsLocking]  = useState(false);
   const t         = batchTotals(batch);
   const isPending = batch.status === 'SUBMITTED_FOR_REVIEW';
+
+  useEffect(() => {
+    getBankExportSettings().then((cfg) => {
+      setBankFormatLocked(cfg.enforceFormatGlobally);
+      setLockedFormatLabel(BANK_EXPORT_FORMAT_LABELS[cfg.masterFormatId]);
+    });
+  }, []);
 
   const handleLockClick = () => {
     setIsLocking(true);
@@ -871,7 +876,7 @@ function MasterGuardLedger({
                   <label className="mb-1.5 block text-sm font-semibold uppercase tracking-widest text-slate-700">
                     Bank Upload Format
                   </label>
-                  {BANK_FORMAT_LOCKED ? (
+                  {bankFormatLocked ? (
                     <div className="flex items-center gap-3 rounded-2xl border border-indigo-200/80 bg-indigo-50/60 px-4 py-3 shadow-inner">
                       <Lock className="h-4 w-4 flex-shrink-0 text-indigo-700" />
                       <div className="flex-1 min-w-0">
@@ -879,7 +884,7 @@ function MasterGuardLedger({
                           Format Locked by MD
                         </p>
                         <p className="mt-0.5 text-sm font-black text-indigo-900 truncate">
-                          {MD_LOCKED_FORMAT}
+                          {lockedFormatLabel}
                         </p>
                       </div>
                       <span className="flex-shrink-0 rounded-full border border-indigo-300/80 bg-indigo-100/80 px-2.5 py-0.5 text-xs font-black uppercase tracking-wider text-indigo-800">
@@ -923,7 +928,7 @@ function MasterGuardLedger({
                 {/* Subtext */}
                 <p className="text-center text-sm leading-relaxed text-slate-600">
                   Once locked, this month&apos;s ledger becomes <strong className="text-slate-800">immutable</strong>. Any subsequent disputes must be rolled over as arrears to the following month.
-                  Format: <span className="font-bold text-slate-800">{BANK_FORMAT_LOCKED ? MD_LOCKED_FORMAT : bankFormat}</span>
+                  Format: <span className="font-bold text-slate-800">{bankFormatLocked ? lockedFormatLabel : bankFormat}</span>
                 </p>
               </div>
             ) : (

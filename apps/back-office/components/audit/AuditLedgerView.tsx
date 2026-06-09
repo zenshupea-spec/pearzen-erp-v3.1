@@ -19,6 +19,10 @@ import {
   ChevronDown,
   X,
   ArrowLeft,
+  Briefcase,
+  Shield,
+  Receipt,
+  Store,
 } from 'lucide-react';
 
 import { fetchAuditLogs, type AuditRow } from '../../app/executive/audit/actions';
@@ -83,9 +87,65 @@ const TAB_DEFS: TabDef[] = [
     badgeText: 'text-sky-800',
   },
   {
+    id: 'tm',
+    label: 'TM Command',
+    sub: 'Territory & guard cards',
+    Icon: Layers,
+    accent: 'indigo',
+    iconBg: 'bg-indigo-500/12',
+    iconText: 'text-indigo-700',
+    activeBg: 'bg-white/80',
+    activeBorder: 'border-indigo-200/80',
+    activeText: 'text-indigo-900',
+    badgeBg: 'bg-indigo-100/80',
+    badgeText: 'text-indigo-800',
+  },
+  {
+    id: 'sm',
+    label: 'SM Portal',
+    sub: 'Roster & site visits',
+    Icon: Briefcase,
+    accent: 'violet',
+    iconBg: 'bg-violet-500/12',
+    iconText: 'text-violet-700',
+    activeBg: 'bg-white/80',
+    activeBorder: 'border-violet-200/80',
+    activeText: 'text-violet-900',
+    badgeBg: 'bg-violet-100/80',
+    badgeText: 'text-violet-800',
+  },
+  {
+    id: 'checkin',
+    label: 'Check-in App',
+    sub: 'Field attendance scans',
+    Icon: Shield,
+    accent: 'emerald',
+    iconBg: 'bg-emerald-500/12',
+    iconText: 'text-emerald-700',
+    activeBg: 'bg-white/80',
+    activeBorder: 'border-emerald-200/80',
+    activeText: 'text-emerald-900',
+    badgeBg: 'bg-emerald-100/80',
+    badgeText: 'text-emerald-800',
+  },
+  {
+    id: 'invoice',
+    label: 'Invoice Desk',
+    sub: 'AR & collections',
+    Icon: Receipt,
+    accent: 'blue',
+    iconBg: 'bg-blue-500/12',
+    iconText: 'text-blue-700',
+    activeBg: 'bg-white/80',
+    activeBorder: 'border-blue-200/80',
+    activeText: 'text-blue-900',
+    badgeBg: 'bg-blue-100/80',
+    badgeText: 'text-blue-800',
+  },
+  {
     id: 'cafe',
-    label: 'Café POS',
-    sub: 'POS & menu changes',
+    label: 'Café Backoffice',
+    sub: 'Float & compliance',
     Icon: Coffee,
     accent: 'amber',
     iconBg: 'bg-amber-500/12',
@@ -95,6 +155,20 @@ const TAB_DEFS: TabDef[] = [
     activeText: 'text-amber-900',
     badgeBg: 'bg-amber-100/80',
     badgeText: 'text-amber-800',
+  },
+  {
+    id: 'cafe-front',
+    label: 'Café Front Office',
+    sub: 'Counter staff actions',
+    Icon: Store,
+    accent: 'orange',
+    iconBg: 'bg-orange-500/12',
+    iconText: 'text-orange-700',
+    activeBg: 'bg-white/80',
+    activeBorder: 'border-orange-200/80',
+    activeText: 'text-orange-900',
+    badgeBg: 'bg-orange-100/80',
+    badgeText: 'text-orange-800',
   },
 ];
 
@@ -114,7 +188,7 @@ type SortField = 'timestamp' | 'userName';
 type SortDir = 'asc' | 'desc';
 
 type Props = {
-  variant: 'executive' | 'staff';
+  variant: 'executive' | 'portal-activity';
   allowedTabs: PortalTab[];
   defaultTab: PortalTab;
 };
@@ -195,16 +269,16 @@ export default function AuditLedgerView({ variant, allowedTabs, defaultTab }: Pr
     );
   };
 
-  const isStaff = variant === 'staff';
+  const isPortalActivity = variant === 'portal-activity';
 
   return (
     <main
       className={`w-full flex-grow flex flex-col pb-12 pt-8 text-slate-900 antialiased ${
-        isStaff ? 'px-6 md:px-10' : 'px-6 md:px-12 2xl:px-24'
+        isPortalActivity ? 'px-6 md:px-10' : 'px-6 md:px-12 2xl:px-24'
       }`}
     >
       <div className="space-y-7">
-        {isStaff ? (
+        {isPortalActivity ? (
           <Link
             href="/dashboard"
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-600 shadow-sm transition hover:bg-slate-50"
@@ -217,26 +291,36 @@ export default function AuditLedgerView({ variant, allowedTabs, defaultTab }: Pr
         <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p className="text-sm font-bold uppercase tracking-widest text-slate-500">
-              {isStaff ? 'HQ Portal' : 'Executive Vault'}
+              {isPortalActivity ? 'Governance' : 'Executive Vault'}
             </p>
             <h1 className="text-2xl font-black uppercase tracking-tight text-slate-900 md:text-3xl">
-              {isStaff ? 'Portal Activity Ledger' : 'Master Audit Ledger'}
+              {isPortalActivity ? 'Portal Activity Ledger' : 'Master Audit Ledger'}
             </h1>
             <p className="mt-1 text-sm font-bold uppercase tracking-widest text-slate-500">
-              {isStaff
-                ? 'Your portal actions only — every change is recorded and append-only.'
+              {isPortalActivity
+                ? 'Immutable cross-portal activity log — every staff portal action is recorded and append-only.'
                 : 'Immutable cross-portal activity log — all privileged actions captured in real time.'}
             </p>
           </div>
           <div className="flex items-center gap-2 rounded-2xl border border-white/70 bg-white/45 px-4 py-2.5 shadow-sm backdrop-blur-xl">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.9)]" />
-            <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-700">
-              Live Stream Active
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                loading
+                  ? 'animate-pulse bg-amber-500'
+                  : liveRows.length > 0
+                    ? 'bg-emerald-500'
+                    : 'bg-slate-300'
+              }`}
+            />
+            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-600">
+              {loading
+                ? 'Loading ledger…'
+                : `${liveRows.length} entr${liveRows.length === 1 ? 'y' : 'ies'} in tab`}
             </span>
           </div>
         </div>
 
-        {visibleTabs.length > 1 ? (
+        {visibleTabs.length > 0 ? (
           <div className="overflow-hidden rounded-2xl border border-white/70 bg-white/40 p-1.5 shadow-[0_8px_32px_-8px_rgba(15,23,42,0.10)] ring-1 ring-slate-900/[0.04] backdrop-blur-2xl backdrop-saturate-[1.3]">
             <div
               className={`grid gap-1.5 ${
@@ -244,7 +328,7 @@ export default function AuditLedgerView({ variant, allowedTabs, defaultTab }: Pr
                   ? 'grid-cols-1'
                   : visibleTabs.length === 2
                     ? 'grid-cols-2'
-                    : 'grid-cols-2 sm:grid-cols-4'
+                    : 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4'
               }`}
             >
               {visibleTabs.map((tab) => {

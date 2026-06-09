@@ -1,60 +1,60 @@
 'use client';
 
-import Link from 'next/link';
 import { useTransition, useState } from 'react';
-import { ArrowLeft, Coffee, Radio } from 'lucide-react';
+import { Coffee, Eye, EyeOff, Radio } from 'lucide-react';
 
 import BrandWatermarkBackground from '../../../components/portal/BrandWatermarkBackground';
 import { authenticateCafeFrontStaff } from '../../cafe-front/actions';
+import {
+  CAFE_FRONT_EPF_MAX_LENGTH,
+  CAFE_FRONT_OTP_MAX_LENGTH,
+} from '../../../lib/cafe-front-auth';
 
 export default function CafeFrontLoginForm({
-  logoUrl,
+  cafeLogoUrl,
+  companyLogoUrl,
   authError,
 }: {
-  logoUrl: string | null;
+  cafeLogoUrl: string | null;
+  companyLogoUrl: string | null;
   authError?: string | null;
 }) {
   const [isPending, startTransition] = useTransition();
   const [errorMsg, setErrorMsg] = useState(authError ?? '');
+  const [epfNo, setEpfNo] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleLogin = (formData: FormData) => {
     setErrorMsg('');
     startTransition(async () => {
       const result = await authenticateCafeFrontStaff(formData);
       if (result?.error) setErrorMsg(result.error);
-      else if (result?.success) window.location.href = '/cafe-front';
+      else if (result?.success) {
+        window.location.href = result.needsPinSetup ? '/cafe-front/set-pin' : '/cafe-front';
+      }
     });
   };
 
   return (
-    <div className="relative min-h-[100dvh] w-full overflow-hidden bg-white text-slate-900 antialiased">
-      <BrandWatermarkBackground logoUrl={logoUrl} mode="sparse" />
+    <div className="relative min-h-[100dvh] w-full overflow-x-hidden bg-slate-300 text-slate-900 antialiased">
+      <main className="relative mx-auto flex min-h-[100dvh] w-full max-w-md flex-col overflow-hidden border-x border-slate-300/80 bg-white shadow-[0_0_60px_-12px_rgba(15,23,42,0.25)]">
+        <BrandWatermarkBackground logoUrl={companyLogoUrl} mode="portal" />
 
-      <main className="relative z-10 flex min-h-[100dvh] flex-col items-center justify-center px-4 py-10 sm:px-8">
-        <div className="absolute left-4 top-6 sm:left-8">
-          <Link
-            href="/login"
-            className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 transition-colors hover:text-slate-700"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            All portals
-          </Link>
-        </div>
-
-        <div className="mx-auto w-full max-w-sm space-y-8">
+        <div className="relative z-10 flex min-h-[100dvh] flex-col justify-center px-4 py-10 pb-[max(2.5rem,env(safe-area-inset-bottom))] pt-[max(2.5rem,env(safe-area-inset-top))]">
+          <div className="mx-auto w-full space-y-8">
           <div className="space-y-4 text-center">
             <div className="mb-2 flex justify-center">
               <div className="relative">
                 <div
                   className={`flex h-20 w-20 items-center justify-center overflow-hidden rounded-2xl ${
-                    logoUrl
+                    cafeLogoUrl
                       ? 'border border-slate-200 bg-white shadow-lg shadow-slate-900/10'
                       : 'border border-orange-200 bg-gradient-to-br from-orange-50 to-orange-100 shadow-lg shadow-orange-200/40'
                   }`}
                 >
-                  {logoUrl ? (
+                  {cafeLogoUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={logoUrl} alt="" className="h-full w-full object-contain p-2" />
+                    <img src={cafeLogoUrl} alt="" className="h-full w-full object-contain p-2" />
                   ) : (
                     <Coffee className="h-10 w-10 text-orange-700" strokeWidth={1.75} />
                   )}
@@ -88,11 +88,45 @@ export default function CafeFrontLoginForm({
               <input
                 type="text"
                 name="epfNo"
+                value={epfNo}
+                onChange={(e) =>
+                  setEpfNo(e.target.value.toUpperCase().slice(0, CAFE_FRONT_EPF_MAX_LENGTH))
+                }
                 placeholder="EPF membership number"
                 required
+                maxLength={CAFE_FRONT_EPF_MAX_LENGTH}
                 autoCapitalize="characters"
+                autoComplete="off"
+                spellCheck={false}
                 className="w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-4 py-4 text-center font-mono text-xl font-bold uppercase text-slate-900 shadow-inner transition-all placeholder:text-slate-400 focus:border-orange-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-orange-500/10"
               />
+              <p className="mt-2 text-center text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                Max {CAFE_FRONT_EPF_MAX_LENGTH} characters
+              </p>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-600">
+                Password / OTP
+              </label>
+              <div className="relative">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  name="password"
+                  placeholder="6-digit PIN or OTP"
+                  required
+                  inputMode="numeric"
+                  maxLength={CAFE_FRONT_OTP_MAX_LENGTH}
+                  className="w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-4 py-4 pr-12 text-center font-mono text-2xl font-black tracking-[0.5em] text-slate-900 shadow-inner transition-all placeholder:text-base placeholder:tracking-normal placeholder:text-slate-400 focus:border-orange-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-orange-500/10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 transition-colors hover:text-slate-700"
+                >
+                  {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                </button>
+              </div>
             </div>
 
             {errorMsg ? (
@@ -103,7 +137,7 @@ export default function CafeFrontLoginForm({
 
             <button
               type="submit"
-              disabled={isPending}
+              disabled={isPending || epfNo.trim().length === 0}
               className="mt-2 w-full rounded-xl bg-orange-600 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-md shadow-orange-600/25 transition-all hover:bg-orange-500 active:scale-[0.98] disabled:opacity-50"
             >
               {isPending ? 'Verifying…' : 'Secure access'}
@@ -112,11 +146,12 @@ export default function CafeFrontLoginForm({
 
           <div className="space-y-2 text-center">
             <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-              GPS · Selfie shift check-in required for orders
+              GPS · Selfie check-in at site · HR verifies identity
             </p>
             <p className="text-[10px] font-mono text-slate-400">
-              Activity is audited · misuse is reported to HQ
+              Forgot your PIN? Contact HR to issue a new OTP.
             </p>
+          </div>
           </div>
         </div>
       </main>

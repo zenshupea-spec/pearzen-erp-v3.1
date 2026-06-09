@@ -3,27 +3,46 @@
 import { unstable_noStore as noStore } from 'next/cache';
 import { revalidatePath } from 'next/cache';
 
+import { getCafeLogoUrl } from '../../../../packages/supabase/cafe-branding';
+import { getCompanyLogoUrl } from '../../../../packages/supabase/company-branding';
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
 import { createSupabaseServiceClient } from '../../../../packages/supabase/service';
 import {
+  cafeEmployeeEpfKey,
   cafeFrontAuthEmail,
-  cafeFrontAuthPassword,
   findCafeEmployeeByEpf,
+  getCafePortalAuthRecord,
   isCafeEmployee,
   isEmployeeActive,
+  employeeRosterKey,
   normalizeEpfNo,
-  provisionCafeFrontAuth,
   resolveCafeEmployeeForUser,
   type CafeEmployeeRow,
 } from '../../lib/cafe-front-auth';
+import {
+  formatPortalGraceEndTime,
+  isAfterCafeClose,
+  isAfterPortalGraceEnd,
+  loadCafeOpenHours,
+  resolveCafeSiteGeofence,
+  validateCafeCheckinLocation,
+  validateCafeCheckinWindow,
+} from '../../lib/cafe-front-checkin';
 import { getCafeShiftGate, type CafeShiftGate } from '../../lib/cafe-front-shift';
+import {
+  computeCafeShiftWindows,
+  type CafeShiftWindows,
+} from '../../lib/cafe-shift-hours';
 import { resolveCompanyIdForSession } from '../../lib/company-context';
+import { DEFAULT_GEOFENCE_RADIUS_M } from '../../lib/site-geofence';
 import {
   getCafeDashboard,
   type CafeDashboardPayload,
   type CafeTask,
 } from '../executive/cafe/actions';
 import { normalizePeriodMonth } from '../executive/cafe/period-month';
+import { buildRollingWindow } from '../hr/cafe-roster/utils';
+import { auditStaffAction } from '../../lib/staff-audit';
 
 export type CafeFrontSession = {
   employee: CafeEmployeeRow;
@@ -61,6 +80,30 @@ function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+async function auditCafeFrontAction(
+  session: CafeFrontSession,
+  companyId: string,
+  action: string,
+  targetEntity?: string,
+  details?: Record<string, unknown>,
+) {
+  const epf =
+    session.employee.epf_no ??
+    session.employee.epf_num ??
+    session.employee.emp_number ??
+    '';
+  await auditStaffAction({
+    portal: 'cafe-front',
+    action,
+    targetEntity,
+    details,
+    companyId,
+    profileId: session.employee.id,
+    actorName: session.employee.full_name ?? (epf || 'Café Staff'),
+    actorRole: session.employee.rank ?? 'Barista',
+  });
+}
+
 async function resolveCafeCompanyId(): Promise<string | null> {
   const supabase = await createSupabaseServerClient();
   return resolveCompanyIdForSession(supabase);
@@ -88,9 +131,104 @@ async function requireCafeSession(): Promise<CafeFrontSession | null> {
   return { employee, shiftGate };
 }
 
+async function requireCafeCheckedIn(): Promise<
+  { session: CafeFrontSession } | { session: null; error: string }
+> {
+  const session = await requireCafeSession();
+  if (!session) return { session: null, error: 'Not signed in.' };
+  if (!session.shiftGate.portalAccessible) {
+    if (session.shiftGate.activeOnShift) {
+      return {
+        session: null,
+        error: `Portal closed after ${session.shiftGate.portalGraceEnd}. Check out to end your shift.`,
+      };
+    }
+    return { session: null, error: 'Shift check-in required before using the café portal.' };
+  }
+  return { session };
+}
+
+export type CafeShiftCheckinContext = {
+  rosteredToday: boolean;
+  checkedInToday: boolean;
+  checkedOutToday: boolean;
+  activeOnShift: boolean;
+  checkinAt: string | null;
+  checkoutAt: string | null;
+  shiftType: string | null;
+  siteName: string | null;
+  siteLat: number | null;
+  siteLng: number | null;
+  geofenceRadiusM: number;
+  cafeOpenStart: string;
+  cafeOpenEnd: string;
+  withinOpenHours: boolean;
+  afterClose: boolean;
+  afterPortalGrace: boolean;
+  portalAccessible: boolean;
+  portalGraceEnd: string;
+  canCheckIn: boolean;
+  canCheckOut: boolean;
+  shiftWindows: CafeShiftWindows;
+};
+
+export async function getCafeShiftCheckinContext(): Promise<CafeShiftCheckinContext | null> {
+  noStore();
+  const session = await requireCafeSession();
+  if (!session) return null;
+
+  const companyId = await resolveCafeCompanyId();
+  if (!companyId) return null;
+
+  const supabase = createSupabaseServiceClient();
+  const [site, openHours] = await Promise.all([
+    resolveCafeSiteGeofence(supabase, companyId),
+    loadCafeOpenHours(supabase, companyId),
+  ]);
+
+  const withinOpenHours = validateCafeCheckinWindow(
+    openHours.openStart,
+    openHours.openEnd,
+  ).ok;
+  const afterClose = isAfterCafeClose(openHours.openEnd);
+  const afterPortalGrace = isAfterPortalGraceEnd(openHours.openEnd);
+  const portalGraceEnd = formatPortalGraceEndTime(openHours.openEnd);
+  const shiftWindows = computeCafeShiftWindows(openHours.openStart, openHours.openEnd);
+  const canCheckIn = !session.shiftGate.checkedInToday && withinOpenHours;
+  const canCheckOut = session.shiftGate.activeOnShift;
+  const portalAccessible = session.shiftGate.portalAccessible;
+
+  return {
+    rosteredToday: session.shiftGate.rosteredToday,
+    checkedInToday: session.shiftGate.checkedInToday,
+    checkedOutToday: session.shiftGate.checkedOutToday,
+    activeOnShift: session.shiftGate.activeOnShift,
+    checkinAt: session.shiftGate.checkinAt,
+    checkoutAt: session.shiftGate.checkoutAt,
+    shiftType: session.shiftGate.shiftType,
+    siteName: site?.siteName ?? null,
+    siteLat: site?.siteLat ?? null,
+    siteLng: site?.siteLng ?? null,
+    geofenceRadiusM: site?.geofenceRadiusM ?? DEFAULT_GEOFENCE_RADIUS_M,
+    cafeOpenStart: openHours.openStart,
+    cafeOpenEnd: openHours.openEnd,
+    withinOpenHours,
+    afterClose,
+    afterPortalGrace,
+    portalAccessible,
+    portalGraceEnd,
+    canCheckIn,
+    canCheckOut,
+    shiftWindows,
+  };
+}
+
 export async function authenticateCafeFrontStaff(formData: FormData) {
   const epfInput = normalizeEpfNo((formData.get('epfNo') as string) ?? '');
+  const password = ((formData.get('password') as string) ?? '').trim();
+
   if (!epfInput) return { success: false, error: 'EPF number is required.' };
+  if (!password) return { success: false, error: 'PIN or OTP is required.' };
 
   const service = createSupabaseServiceClient();
   const employee = await findCafeEmployeeByEpf(service, epfInput);
@@ -105,28 +243,100 @@ export async function authenticateCafeFrontStaff(formData: FormData) {
     return { success: false, error: 'This portal is for Café operations staff only.' };
   }
 
-  const provision = await provisionCafeFrontAuth(service, employee);
-  if (!provision.ok) {
-    return { success: false, error: 'Could not provision portal access. Contact HR.' };
+  const epf = cafeEmployeeEpfKey(employee) || epfInput;
+  const authRecord = await getCafePortalAuthRecord(service, epf);
+  if (!authRecord || !authRecord.is_active) {
+    return { success: false, error: 'Portal access not provisioned. Contact HR.' };
   }
 
-  const epf = employee.epf_no ?? employee.epf_num ?? epfInput;
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase.auth.signInWithPassword({
     email: cafeFrontAuthEmail(epf),
-    password: cafeFrontAuthPassword(epf),
+    password,
   });
 
   if (error) {
-    return { success: false, error: 'Invalid EPF or portal access not provisioned. Contact HR.' };
+    return { success: false, error: 'Invalid credentials.' };
   }
 
-  return { success: true };
+  await service
+    .from('cafe_portal_auth')
+    .update({ last_login_at: new Date().toISOString() })
+    .eq('epf_number', epf);
+
+  return {
+    success: true,
+    needsPinSetup: authRecord.needs_pin_setup,
+    staffName: employee.full_name ?? epf,
+  };
 }
 
 export async function getCafeFrontSession(): Promise<CafeFrontSession | null> {
   noStore();
   return requireCafeSession();
+}
+
+export async function getCafeFrontBranding(): Promise<{
+  cafeLogoUrl: string | null;
+  companyLogoUrl: string | null;
+}> {
+  noStore();
+  const session = await requireCafeSession();
+  if (!session) return { cafeLogoUrl: null, companyLogoUrl: null };
+
+  const companyId = await resolveCafeCompanyId();
+  const [cafeLogoUrl, companyLogoUrl] = await Promise.all([
+    getCafeLogoUrl(),
+    getCompanyLogoUrl(companyId),
+  ]);
+  return { cafeLogoUrl, companyLogoUrl };
+}
+
+export type CafeFrontRollingSchedule = {
+  days: string[];
+  shifts: Array<{ shift_date: string; shift_type: string }>;
+  leaveDates: string[];
+  shiftWindows: CafeShiftWindows;
+};
+
+export async function getCafeFrontRollingSchedule(): Promise<CafeFrontRollingSchedule | null> {
+  noStore();
+  const session = await requireCafeSession();
+  if (!session) return null;
+
+  const companyId = await resolveCafeCompanyId();
+  if (!companyId) return null;
+
+  const supabase = createSupabaseServiceClient();
+  const { days } = buildRollingWindow();
+  const start = days[0];
+  const end = days[days.length - 1];
+
+  const [openHours, shiftsResult, leaveResult] = await Promise.all([
+    loadCafeOpenHours(supabase, companyId),
+    supabase
+      .from('rostered_shifts')
+      .select('shift_date, shift_type')
+      .eq('company_id', companyId)
+      .eq('guard_id', session.employee.id)
+      .gte('shift_date', start)
+      .lte('shift_date', end),
+    supabase
+      .from('cafe_leave_requests')
+      .select('leave_date, status')
+      .eq('employee_id', session.employee.id)
+      .gte('leave_date', start)
+      .lte('leave_date', end),
+  ]);
+
+  return {
+    days,
+    shifts: shiftsResult.data ?? [],
+    leaveDates: (leaveResult.data ?? [])
+      .filter((row) => row.status === 'PENDING' || row.status === 'APPROVED')
+      .map((row) => row.leave_date as string),
+    shiftWindows: computeCafeShiftWindows(openHours.openStart, openHours.openEnd),
+  };
 }
 
 export async function getCafeFrontDashboard(): Promise<CafeDashboardPayload> {
@@ -138,8 +348,9 @@ export type CafeFrontTask = CafeTask & { proofUrl?: string };
 
 export async function getCafeFrontTasks(date?: string): Promise<CafeFrontTask[]> {
   noStore();
-  const session = await requireCafeSession();
-  if (!session) return [];
+  const checked = await requireCafeCheckedIn();
+  if (!checked.session) return [];
+  const session = checked.session;
 
   const payload = await getCafeDashboard();
   const targetDate = date ?? todayIso();
@@ -189,8 +400,8 @@ export async function uploadCafeTaskProof(input: {
   completionDate?: string;
 }): Promise<{ ok: boolean; error?: string; proofUrl?: string }> {
   noStore();
-  const session = await requireCafeSession();
-  if (!session) return { ok: false, error: 'Not signed in.' };
+  const checked = await requireCafeCheckedIn();
+  if (!checked.session) return { ok: false, error: checked.error };
 
   const companyId = await resolveCafeCompanyId();
   if (!companyId) return { ok: false, error: 'No company context.' };
@@ -199,6 +410,7 @@ export async function uploadCafeTaskProof(input: {
   if (!decoded) return { ok: false, error: 'Invalid photo capture.' };
 
   const service = createSupabaseServiceClient();
+  const session = checked.session;
   const objectPath = `cafe-task-proof/${session.employee.id}/${input.taskId}-${Date.now()}.${decoded.extension}`;
   const { error: uploadError } = await service.storage
     .from('attendance_selfies')
@@ -226,6 +438,11 @@ export async function uploadCafeTaskProof(input: {
 
   if (error) return { ok: false, error: error.message };
 
+  await auditCafeFrontAction(session, companyId, 'Upload Task Proof', `Task ${input.taskId}`, {
+    taskId: input.taskId,
+    completionDate,
+  });
+
   revalidatePath('/cafe-front');
   return { ok: true, proofUrl };
 }
@@ -239,17 +456,28 @@ export async function submitCafeShiftCheckin(input: {
   noStore();
   const session = await requireCafeSession();
   if (!session) return { ok: false, error: 'Not signed in.' };
-  if (!session.shiftGate.rosteredToday) {
-    return { ok: false, error: 'You are not rostered for a shift today.' };
+  if (session.shiftGate.checkedInToday) {
+    return { ok: false, error: 'You have already checked in today.' };
   }
 
   const companyId = await resolveCafeCompanyId();
   if (!companyId) return { ok: false, error: 'No company context.' };
 
+  const supabase = createSupabaseServiceClient();
+  const [site, openHours] = await Promise.all([
+    resolveCafeSiteGeofence(supabase, companyId),
+    loadCafeOpenHours(supabase, companyId),
+  ]);
+
+  const hoursCheck = validateCafeCheckinWindow(openHours.openStart, openHours.openEnd);
+  if (!hoursCheck.ok) return { ok: false, error: hoursCheck.error };
+
+  const locationCheck = validateCafeCheckinLocation(input.latitude, input.longitude, site);
+  if (!locationCheck.ok) return { ok: false, error: locationCheck.error };
+
   const decoded = decodeBase64Image(input.photoBase64);
   if (!decoded) return { ok: false, error: 'Selfie capture required.' };
 
-  const supabase = createSupabaseServiceClient();
   const objectPath = `cafe-checkin/${session.employee.id}/${Date.now()}.${decoded.extension}`;
   const { error: uploadError } = await supabase.storage
     .from('attendance_selfies')
@@ -258,22 +486,135 @@ export async function submitCafeShiftCheckin(input: {
   if (uploadError) return { ok: false, error: uploadError.message };
 
   const { data: urlData } = supabase.storage.from('attendance_selfies').getPublicUrl(objectPath);
+  const shiftType = input.shiftType ?? session.shiftGate.shiftType ?? 'MORNING';
 
-  const { error } = await supabase.from('cafe_staff_checkins').upsert(
-    {
+  const checkedInAt = new Date().toISOString();
+  const rosteredOnShift = session.shiftGate.rosteredToday;
+
+  const { error } = await supabase.from('cafe_staff_checkins').insert({
+    company_id: companyId,
+    employee_id: session.employee.id,
+    checkin_date: todayIso(),
+    shift_type: shiftType,
+    latitude: input.latitude,
+    longitude: input.longitude,
+    selfie_url: urlData.publicUrl,
+    checked_in_at: checkedInAt,
+    verification_status: 'PENDING',
+    rostered_on_shift: rosteredOnShift,
+  });
+
+  if (error) {
+    if (error.code === '23505') {
+      return { ok: false, error: 'You have already checked in today.' };
+    }
+    return { ok: false, error: error.message };
+  }
+
+  const empKey = employeeRosterKey(session.employee);
+  if (empKey) {
+    await supabase.from('attendance_logs').insert({
       company_id: companyId,
-      employee_id: session.employee.id,
-      checkin_date: todayIso(),
-      shift_type: input.shiftType ?? session.shiftGate.shiftType ?? 'CAFE',
+      emp_number: empKey,
+      action_type: 'CHECK_IN',
+      device_time: checkedInAt,
       latitude: input.latitude,
       longitude: input.longitude,
-      selfie_url: urlData.publicUrl,
-      checked_in_at: new Date().toISOString(),
-    },
-    { onConflict: 'employee_id,checkin_date,shift_type' },
-  );
+      sync_type: 'CAFE_FRONT',
+      photo_url: urlData.publicUrl,
+      status: 'PENDING',
+    });
+  }
+
+  await auditCafeFrontAction(session, companyId, 'Shift Check-in', session.employee.full_name ?? session.employee.id, {
+    shiftType,
+    latitude: input.latitude,
+    longitude: input.longitude,
+    rosteredOnShift,
+    verificationStatus: 'PENDING',
+  });
+
+  revalidatePath('/cafe-front');
+  return { ok: true };
+}
+
+export async function submitCafeShiftCheckout(input: {
+  photoBase64: string;
+  latitude: number;
+  longitude: number;
+}): Promise<{ ok: boolean; error?: string }> {
+  noStore();
+  const session = await requireCafeSession();
+  if (!session) return { ok: false, error: 'Not signed in.' };
+  if (!session.shiftGate.checkedInToday) {
+    return { ok: false, error: 'Check in before checking out.' };
+  }
+  if (session.shiftGate.checkedOutToday) {
+    return { ok: false, error: 'You have already checked out today.' };
+  }
+
+  const companyId = await resolveCafeCompanyId();
+  if (!companyId) return { ok: false, error: 'No company context.' };
+
+  const supabase = createSupabaseServiceClient();
+  const site = await resolveCafeSiteGeofence(supabase, companyId);
+
+  const locationCheck = validateCafeCheckinLocation(input.latitude, input.longitude, site);
+  if (!locationCheck.ok) return { ok: false, error: locationCheck.error };
+
+  const decoded = decodeBase64Image(input.photoBase64);
+  if (!decoded) return { ok: false, error: 'Selfie capture required to check out.' };
+
+  const objectPath = `cafe-checkout/${session.employee.id}/${Date.now()}.${decoded.extension}`;
+  const { error: uploadError } = await supabase.storage
+    .from('attendance_selfies')
+    .upload(objectPath, decoded.buffer, { contentType: decoded.contentType });
+
+  if (uploadError) return { ok: false, error: uploadError.message };
+
+  const { data: urlData } = supabase.storage.from('attendance_selfies').getPublicUrl(objectPath);
+  const checkedOutAt = new Date().toISOString();
+
+  const { error } = await supabase
+    .from('cafe_staff_checkins')
+    .update({
+      checked_out_at: checkedOutAt,
+      checkout_latitude: input.latitude,
+      checkout_longitude: input.longitude,
+      checkout_selfie_url: urlData.publicUrl,
+    })
+    .eq('company_id', companyId)
+    .eq('employee_id', session.employee.id)
+    .eq('checkin_date', todayIso());
 
   if (error) return { ok: false, error: error.message };
+
+  const empKey = employeeRosterKey(session.employee);
+  if (empKey) {
+    await supabase.from('attendance_logs').insert({
+      company_id: companyId,
+      emp_number: empKey,
+      action_type: 'CHECK_OUT',
+      device_time: checkedOutAt,
+      latitude: input.latitude,
+      longitude: input.longitude,
+      sync_type: 'CAFE_FRONT',
+      photo_url: urlData.publicUrl,
+      status: 'PENDING',
+    });
+  }
+
+  await auditCafeFrontAction(
+    session,
+    companyId,
+    'Shift Check-out',
+    session.employee.full_name ?? session.employee.id,
+    {
+      shiftType: session.shiftGate.shiftType,
+      latitude: input.latitude,
+      longitude: input.longitude,
+    },
+  );
 
   revalidatePath('/cafe-front');
   return { ok: true };
@@ -284,13 +625,14 @@ export async function requestCafeLeave(input: {
   reason: string;
 }): Promise<{ ok: boolean; error?: string }> {
   noStore();
-  const session = await requireCafeSession();
-  if (!session) return { ok: false, error: 'Not signed in.' };
+  const checked = await requireCafeCheckedIn();
+  if (!checked.session) return { ok: false, error: checked.error };
 
   const companyId = await resolveCafeCompanyId();
   if (!companyId) return { ok: false, error: 'No company context.' };
 
   const supabase = createSupabaseServiceClient();
+  const session = checked.session;
   const { error } = await supabase.from('cafe_leave_requests').upsert(
     {
       company_id: companyId,
@@ -304,6 +646,12 @@ export async function requestCafeLeave(input: {
   );
 
   if (error) return { ok: false, error: error.message };
+
+  await auditCafeFrontAction(checked.session, companyId, 'Request Leave', input.leaveDate, {
+    leaveDate: input.leaveDate,
+    reason: input.reason.trim(),
+  });
+
   revalidatePath('/cafe-front/roster');
   return { ok: true };
 }
@@ -316,13 +664,14 @@ export async function submitCafeMenuRequest(input: {
   permanent?: boolean;
 }): Promise<{ ok: boolean; error?: string }> {
   noStore();
-  const session = await requireCafeSession();
-  if (!session) return { ok: false, error: 'Not signed in.' };
+  const checked = await requireCafeCheckedIn();
+  if (!checked.session) return { ok: false, error: checked.error };
 
   const companyId = await resolveCafeCompanyId();
   if (!companyId) return { ok: false, error: 'No company context.' };
 
   const supabase = createSupabaseServiceClient();
+  const session = checked.session;
   const { error } = await supabase.from('cafe_menu_change_requests').insert({
     company_id: companyId,
     requested_by_employee_id: session.employee.id,
@@ -335,12 +684,21 @@ export async function submitCafeMenuRequest(input: {
   });
 
   if (error) return { ok: false, error: error.message };
+
+  await auditCafeFrontAction(checked.session, companyId, 'Menu Change Request', input.requestType, {
+    requestType: input.requestType,
+    menuItemId: input.menuItemId ?? null,
+  });
+
   revalidatePath('/cafe-front/menu');
   return { ok: true };
 }
 
 export async function getCafeFrontOrders(): Promise<CafeFrontOrder[]> {
   noStore();
+  const checked = await requireCafeCheckedIn();
+  if (!checked.session) return [];
+
   const companyId = await resolveCafeCompanyId();
   if (!companyId) return [];
 
@@ -405,7 +763,7 @@ export async function updateCafeOrderStatus(
   if (!session.shiftGate.canAcceptOrders) {
     return {
       ok: false,
-      error: 'Shift check-in required — rostered shift + GPS selfie check-in before accepting orders.',
+      error: 'Shift check-in required — GPS + selfie at the café site before accepting orders.',
     };
   }
 
@@ -479,6 +837,18 @@ export async function updateCafeOrderStatus(
 
   if (error) return { ok: false, error: error.message };
 
+  const actionLabels: Record<typeof action, string> = {
+    payment_received: 'Order Payment Received',
+    start_prep: 'Start Order Prep',
+    mark_ready: 'Mark Order Ready',
+    complete: 'Complete Order',
+  };
+
+  await auditCafeFrontAction(session, companyId, actionLabels[action], `Order ${orderId}`, {
+    orderId,
+    action,
+  });
+
   revalidatePath('/cafe-front/orders');
   return { ok: true };
 }
@@ -534,8 +904,9 @@ export async function getCafePrepAvgStats(): Promise<CafePrepAvgStat[]> {
 
 export async function getCafeFrontRosterDays(periodMonth?: string) {
   noStore();
-  const session = await requireCafeSession();
-  if (!session) return { shifts: [], leaveDates: [] as string[] };
+  const checked = await requireCafeCheckedIn();
+  if (!checked.session) return { shifts: [], leaveDates: [] as string[] };
+  const session = checked.session;
 
   const companyId = await resolveCafeCompanyId();
   if (!companyId) return { shifts: [], leaveDates: [] as string[] };

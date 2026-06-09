@@ -17,6 +17,8 @@ type Props = {
   canUpload?: boolean;
   /** Induction form: native file input name (no server round-trip until submit) */
   inductionMode?: boolean;
+  /** Induction form: require file before submit */
+  required?: boolean;
   onUploaded?: (url: string) => void;
 };
 
@@ -27,6 +29,7 @@ export default function EmployeeDocumentField({
   expiryDate,
   canUpload = true,
   inductionMode = false,
+  required = false,
   onUploaded,
 }: Props) {
   const meta = HR_DOCUMENT_META[docType];
@@ -68,6 +71,7 @@ export default function EmployeeDocumentField({
         <div className="min-w-0">
           <p className="text-xs font-black uppercase tracking-widest text-slate-600">
             {meta.label}
+            {required && <span className="text-rose-600"> *</span>}
           </p>
           {meta.expiryColumn && (
             <p className="text-[10px] font-bold text-slate-500 mt-0.5">
@@ -121,6 +125,7 @@ export default function EmployeeDocumentField({
               accept="image/jpeg,image/png,image/webp,application/pdf"
               className="sr-only"
               name={inductionMode ? `hr_doc_${docType}` : undefined}
+              required={inductionMode && required}
               disabled={uploading}
               onChange={(e) => {
                 const file = e.target.files?.[0];

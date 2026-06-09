@@ -7,6 +7,7 @@ import {
   resolveCompanyIdForSession,
 } from '../../../lib/company-context';
 import { resolveGeofenceRadiusM } from '../../../lib/site-geofence';
+import { auditStaffAction } from '../../../lib/staff-audit';
 import { siteNeedsGpsCapture } from '../lib/site-gps';
 
 export type OmSiteRecord = {
@@ -190,6 +191,14 @@ export async function updateSiteGpsCoordinates(input: {
 
     if (error) throw error;
 
+    await auditStaffAction({
+      supabase,
+      portal: 'om',
+      action: 'Update Site GPS',
+      targetEntity: `Site ${input.siteId}`,
+      details: { latitude: lat.value, longitude: lng.value },
+    });
+
     revalidatePath('/om/sites/location');
     revalidatePath('/om/sites/assignments');
     revalidatePath('/om');
@@ -239,6 +248,13 @@ export async function assignSiteToSectorManager(input: {
 
     if (error) throw error;
 
+    await auditStaffAction({
+      supabase,
+      portal: 'om',
+      action: 'Assign Sector Manager',
+      targetEntity: `Site ${input.siteId} → SM ${smEpf}`,
+    });
+
     revalidatePath('/om/sites/assignments');
     revalidatePath('/om');
 
@@ -261,6 +277,13 @@ export async function clearSiteSectorManager(
       .eq('id', siteId);
 
     if (error) throw error;
+
+    await auditStaffAction({
+      supabase,
+      portal: 'om',
+      action: 'Clear Sector Manager',
+      targetEntity: `Site ${siteId}`,
+    });
 
     revalidatePath('/om/sites/assignments');
     revalidatePath('/om');

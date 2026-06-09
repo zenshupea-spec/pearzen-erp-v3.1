@@ -14,13 +14,25 @@ import {
   tenantSubdomainUrl,
 } from "./lib/tenant-host";
 import { isPublicCustomerMenuHost } from "./lib/customer-menu-host";
+import { canAccessPortalActivityLedger } from "./lib/audit-portals";
 import { canAccessHqHub } from "./lib/hq-hub";
 import {
   authenticatedLandingPath,
+  canAccessPathForProfile,
   fetchBackOfficeUserProfile,
   portalPathForRole,
 } from "./lib/hr-portal-access";
-import { resolveCafeEmployeeForUser } from "./lib/cafe-front-auth";
+import {
+  cafeEmployeeEpfKey,
+  getCafePortalAuthRecord,
+  resolveCafeEmployeeForUser,
+} from "./lib/cafe-front-auth";
+import {
+  clearPortalPinSessionCookies,
+  isPortalPinExemptPath,
+  resolvePortalAccessGate,
+} from "./lib/head-office-portal-auth";
+import { createSupabaseServiceClient } from "../../packages/supabase/service";
 import { verifyOfficeLocation } from "./utils/geofence";
 
 const AUTH_MATCHER = [
@@ -93,6 +105,7 @@ function resolveTenantSlug(req: NextRequest): string | null {
 
 function buildRequestWithTenant(req: NextRequest, tenantSlug: string | null) {
   const requestHeaders = new Headers(req.headers);
+  requestHeaders.set("x-pathname", req.nextUrl.pathname);
   if (tenantSlug) {
     requestHeaders.set(TENANT_SLUG_HEADER, tenantSlug);
   } else {
@@ -187,8 +200,37 @@ async function runAuthProxy(
     return stampTenant(redirectResponse, tenantSlug);
   };
 
+  const portalGate = await resolvePortalAccessGate(req, profile, user.email);
+  if (portalGate === "revoked" || portalGate === "not_provisioned") {
+    await supabase.auth.signOut();
+    const loginUrl = new URL("/login/head-office", req.url);
+    loginUrl.searchParams.set(
+      "error",
+      portalGate === "revoked" ? "access_revoked" : "not_provisioned",
+    );
+    const denied = applyCookies(NextResponse.redirect(loginUrl));
+    clearPortalPinSessionCookies(denied);
+    return denied;
+  }
+
+  if (
+    portalGate === "verify_pin" &&
+    pathname !== "/login/verify-pin" &&
+    !isPortalPinExemptPath(pathname)
+  ) {
+    return applyCookies(
+      NextResponse.redirect(new URL("/login/verify-pin", req.url)),
+    );
+  }
+
+  if (portalGate === "set_pin" && pathname !== "/login/set-pin") {
+    return applyCookies(
+      NextResponse.redirect(new URL("/login/set-pin", req.url)),
+    );
+  }
+
   if (pathname === "/") {
-    const landing = authenticatedLandingPath(roleString);
+    const landing = authenticatedLandingPath(roleString, profile);
     const target =
       landing === "/login/head-office"
         ? "/login/head-office?error=no_portal_rank"
@@ -227,6 +269,20 @@ async function runAuthProxy(
   }
 
   if (pathname.startsWith("/hq/")) {
+    if (pathname === "/hq/audit" || pathname.startsWith("/hq/audit/")) {
+      if (!canAccessPortalActivityLedger(roleString)) {
+        const fallback =
+          expectedPortal ??
+          (authenticatedLandingPath(roleString) !== "/login/head-office"
+            ? authenticatedLandingPath(roleString)
+            : "/dashboard");
+        return applyCookies(
+          NextResponse.redirect(new URL(fallback, req.url)),
+        );
+      }
+      return stampTenant(response, tenantSlug);
+    }
+
     const hqAllowed = isGodMode || roleString === "HR" || roleString === "FM";
     if (!hqAllowed) {
       if (expectedPortal) {
@@ -250,6 +306,23 @@ async function runAuthProxy(
       deniedUrl.searchParams.set("error", "cafe_denied");
       return applyCookies(NextResponse.redirect(deniedUrl));
     }
+
+    const epf = cafeEmployeeEpfKey(cafeEmployee);
+    const authRecord = epf
+      ? await getCafePortalAuthRecord(createSupabaseServiceClient(), epf)
+      : null;
+    const needsPinSetup = authRecord?.needs_pin_setup ?? false;
+    const onSetPin = pathname === "/cafe-front/set-pin";
+
+    if (needsPinSetup && !onSetPin) {
+      return applyCookies(
+        NextResponse.redirect(new URL("/cafe-front/set-pin", req.url)),
+      );
+    }
+    if (!needsPinSetup && onSetPin) {
+      return applyCookies(NextResponse.redirect(new URL("/cafe-front", req.url)));
+    }
+
     return stampTenant(response, tenantSlug);
   }
 
@@ -287,6 +360,18 @@ async function runAuthProxy(
     pathname.startsWith("/invoice-desk/")
   ) {
     if (isGodMode) {
+      return stampTenant(response, tenantSlug);
+    }
+
+    if (profile.rbacGated) {
+      if (!canAccessPathForProfile(pathname, profile)) {
+        const landing = authenticatedLandingPath(roleString, profile);
+        const target =
+          landing === "/login/head-office"
+            ? "/login/head-office?error=no_portal_rank"
+            : landing;
+        return applyCookies(NextResponse.redirect(new URL(target, req.url)));
+      }
       return stampTenant(response, tenantSlug);
     }
 
@@ -351,6 +436,13 @@ async function runAuthProxy(
 export async function middleware(req: NextRequest) {
   const hostname = req.headers.get("host")?.split(":")[0] ?? "";
   const { pathname, search } = req.nextUrl;
+
+  // Never expose the public portal catalog — staff use direct sign-in URLs.
+  if (pathname === "/login") {
+    const redirectUrl = req.nextUrl.clone();
+    redirectUrl.pathname = "/login/head-office";
+    return NextResponse.redirect(redirectUrl);
+  }
 
   // forge.pearzen.tech is SaaS Forge only — tenant portals live on cvs.pearzen.tech.
   const host = hostname.toLowerCase();

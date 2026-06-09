@@ -55,7 +55,8 @@ export function OrderQueuePanel({ shiftGate }: { shiftGate: CafeShiftGate }) {
       <ExecutiveGlassCard className="border-amber-200/80 bg-amber-50/50 p-6 text-center">
         <p className="text-sm font-bold text-amber-900">Orders locked until shift check-in</p>
         <p className="mt-2 text-xs text-amber-800">
-          You must be rostered today and complete a GPS + selfie check-in before accepting customer orders.
+          Complete a GPS + selfie check-in at the café site before accepting customer orders. HR verifies
+          your selfie after check-in.
         </p>
         <Link
           href={CAFE_FRONT_CHECKIN_PATH}

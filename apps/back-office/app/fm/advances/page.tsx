@@ -7,7 +7,7 @@ export default async function AdvancesPage() {
   const supabase = await createSupabaseServerClient();
   const { data: { session } } = await supabase.auth.getSession();
 
-  if (!session) redirect('/login');
+  if (!session) redirect('/login/head-office');
 
   // Fetch pending advances linked to the employee profile
   const { data: pendingAdvances, error } = await supabase

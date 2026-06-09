@@ -34,6 +34,8 @@
     "db:sm-portal-sql": "node scripts/apply-sm-portal-sql.mjs",
     "setup:tenant-production": "node scripts/setup-tenant-production.mjs",
     "connect:pearzen-tech": "node scripts/connect-pearzen-tech.mjs",
+    "connect:pearzen-pwas": "node scripts/connect-pearzen-pwas.mjs",
+    "connect:customer-menu": "node scripts/connect-customer-menu.mjs",
     "setup:local-tenant-hosts": "sh scripts/local-tenant-hosts.sh",
     "setup": "npm run wire:backend && npm run check:backend"
   },

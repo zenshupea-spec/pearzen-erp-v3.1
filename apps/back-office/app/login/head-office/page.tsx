@@ -2,12 +2,15 @@ import { redirect } from "next/navigation";
 
 import { getCompanyLogoUrl } from "../../../../../packages/supabase/company-branding";
 import { createSupabaseServerClient } from "../../../../../packages/supabase/server";
-import { EXECUTIVE_DESK_PATH } from "../../../lib/hq-hub";
+import {
+  getHeadOfficePortalAuthByEmail,
+  hasValidPortalPinSessionForUser,
+  requiresHeadOfficePortalPin,
+} from "../../../lib/head-office-portal-auth";
 import {
   authenticatedLandingPath,
   fetchBackOfficeUserProfile,
 } from "../../../lib/hr-portal-access";
-import { isExecutiveRank } from "../../../lib/portal-role-utils";
 import { resolveTenantCompanyFromRequest } from "../../../lib/tenant-context";
 
 import LoginShell from "../LoginShell";
@@ -20,6 +23,10 @@ const LOGIN_ERRORS: Record<string, string> = {
   geofence_denied: "Access denied — you must be on the office network for this portal.",
   no_portal_rank:
     "Signed in, but no portal rank is set on your employee record. Ask HR to set your work email and rank.",
+  not_provisioned:
+    "Portal access is not provisioned yet. Ask your Managing Director to generate an OTP for you.",
+  access_revoked:
+    "Portal access has been revoked. Contact your Managing Director.",
   oauth_failed: "Google sign-in failed. Please try again.",
   tenant_suspended:
     "This tenant account is suspended. Contact Pearzen support or your account manager.",
@@ -45,24 +52,35 @@ export default async function HeadOfficeLoginPage({
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (user) {
+  if (user?.email) {
     const profile = await fetchBackOfficeUserProfile(supabase, user);
-    const landing = authenticatedLandingPath(profile.role);
-    if (landing !== "/login/head-office") {
-      const next = safeNextPath(params.next);
-      if (
-        isExecutiveRank(profile.role) &&
-        (next === EXECUTIVE_DESK_PATH || next.startsWith("/executive/"))
-      ) {
-        redirect(next);
+
+    if (requiresHeadOfficePortalPin(profile, user.email)) {
+      const authRecord = await getHeadOfficePortalAuthByEmail(user.email);
+      if (!authRecord || !authRecord.is_active) {
+        await supabase.auth.signOut();
+      } else {
+        const landing = authenticatedLandingPath(profile.role, profile);
+        if (landing !== "/login/head-office") {
+          if (authRecord.needs_pin_setup) {
+            redirect("/login/verify-pin");
+          }
+          if (!(await hasValidPortalPinSessionForUser(profile.employeeId!, user.email))) {
+            redirect("/login/verify-pin");
+          }
+          redirect(landing);
+        }
       }
-      redirect(landing);
+    } else {
+      const landing = authenticatedLandingPath(profile.role, profile);
+      if (landing !== "/login/head-office") {
+        redirect(landing);
+      }
     }
   }
 
   const tenant = await resolveTenantCompanyFromRequest();
   const logoUrl = await getCompanyLogoUrl(tenant?.id);
-  const resolvedAuthError = authError;
 
   const authErrorDetail =
     params.error === "executive_denied" && authErrorRole
@@ -76,7 +94,7 @@ export default async function HeadOfficeLoginPage({
       variant="head-office"
       logoUrl={logoUrl}
       companyName={tenant?.name ?? null}
-      authError={resolvedAuthError}
+      authError={authError}
       authErrorDetail={authErrorDetail}
       oauthNext={oauthNext}
       signInDisabled={false}

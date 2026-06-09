@@ -1,33 +1,41 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, useMemo } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo, useTransition } from "react";
 import Link from "next/link";
 import {
   Search, X, Users, UserCheck, UserX,
   CreditCard, User, Shield, Building2,
   Home, ArrowUpDown,
   CheckCircle2, XCircle, Clock, BadgeInfo, AlertTriangle,
-  BookOpen, ClipboardList, KeyRound, UserPlus,
+  BookOpen,
   ShieldAlert,
   FileText,
   Pencil,
+  UserPlus,
+  Loader2,
 } from "lucide-react";
 
-import { rankSortIndex, isRankInMatrix } from "../../../../../packages/rank-pay-matrix";
+import {
+  rankSortIndex,
+  isRankInMatrix,
+  findRankPayEntry,
+} from "../../../../../packages/rank-pay-matrix";
 import {
   canEditMnrEmployee,
+  canViewMnrEmployee,
   filterRanksForEditor,
   isExecutiveRank,
 } from "../../../lib/executive-rank-guard";
 import { getEmployees } from "../../actions/mnrActions";
 import { getRankPayMatrix } from "../../executive/settings/rank-matrix-actions";
-import { getMnrAccess, saveEmployeeSection } from "./actions";
+import { getMnrAccess, saveEmployeeAll } from "./actions";
+import { getMnrRejoinDeskMeta, rejoinEmployee } from "./rejoin-actions";
 import ClearanceModal from "./ClearanceModal";
+import HrHubPills from "../HrHubPills";
 import EmployeeDocumentField from "../EmployeeDocumentField";
 import EmployeeIdPhotoField from "../EmployeeIdPhotoField";
 import { HR_DOCUMENT_META, HR_DOCUMENT_TYPES } from "../../../../../packages/supabase/employee-hr-documents";
 
-const SHIFT_TRACKED_GROUPS = new Set(["GUARD", "GUARD_FIELD", "CAFE"]);
 const GUARD_GROUPS = new Set(["GUARD", "GUARD_FIELD"]);
 
 function normStatus(emp) {
@@ -36,6 +44,36 @@ function normStatus(emp) {
 
 function employeeEpfNo(emp) {
   return emp.epf_no ?? emp.epf_num ?? null;
+}
+
+function normalizeEpfNo(value) {
+  const s = String(value ?? "").trim();
+  return s ? s.toLowerCase() : "";
+}
+
+function findEpfNoOwner(epfNo, excludeEmployeeId, employees) {
+  const norm = normalizeEpfNo(epfNo);
+  if (!norm) return null;
+  return (
+    employees.find(
+      (e) => e.id !== excludeEmployeeId && normalizeEpfNo(employeeEpfNo(e)) === norm,
+    ) ?? null
+  );
+}
+
+function normalizeWorkEmail(value) {
+  const s = String(value ?? "").trim().toLowerCase();
+  return s || "";
+}
+
+function findWorkEmailOwner(email, excludeEmployeeId, employees) {
+  const norm = normalizeWorkEmail(email);
+  if (!norm) return null;
+  return (
+    employees.find(
+      (e) => e.id !== excludeEmployeeId && normalizeWorkEmail(e.email) === norm,
+    ) ?? null
+  );
 }
 
 function isHrActive(emp) {
@@ -52,30 +90,49 @@ function isResigned(emp) {
   return normStatus(emp).toLowerCase() === "resigned";
 }
 
-function isShiftTracked(emp) {
-  return SHIFT_TRACKED_GROUPS.has((emp.group || "").toUpperCase());
-}
-
 function isGuardGroup(emp) {
   return GUARD_GROUPS.has((emp.group || "").toUpperCase());
+}
+
+const FIELD_GUARD_RANK_CODES = new Set(["CSO", "OIC", "SSO", "JSO", "LSO"]);
+
+function isFieldGuardRank(matrix, rank) {
+  const code = (rank || "").trim().toUpperCase();
+  const entry = findRankPayEntry(matrix, code);
+  if (entry) {
+    return entry.operationalGroup === "GUARD_FIELD" || entry.operationalGroup === "GUARD";
+  }
+  return FIELD_GUARD_RANK_CODES.has(code);
+}
+
+function isGuardEmployee(emp, matrix = []) {
+  if (isGuardGroup(emp)) return true;
+  return isFieldGuardRank(matrix, emp.rank);
 }
 
 function isOnMaternityLeave(emp) {
   return Boolean(emp.maternity_leave) && !isGuardGroup(emp);
 }
 
-function isOperationalActive(emp) {
+function isOperationalActive(emp, matrix = []) {
   if (isResigned(emp) || !isHrActive(emp)) return false;
   if (isOnMaternityLeave(emp)) return true;
-  if (!isShiftTracked(emp)) return true;
+  if (!isGuardEmployee(emp, matrix)) return false;
   return Boolean(emp.has_recent_shift);
 }
 
-function isOperationalInactive(emp) {
+function isOperationalInactive(emp, matrix = []) {
   if (isResigned(emp) || !isHrActive(emp)) return false;
   if (isOnMaternityLeave(emp)) return false;
-  if (!isShiftTracked(emp)) return false;
+  if (!isGuardEmployee(emp, matrix)) return false;
   return !emp.has_recent_shift;
+}
+
+function mnrTableStatusLabel(emp, matrix = []) {
+  if (isOnMaternityLeave(emp) && isHrActive(emp)) return "Mat.";
+  if (isGuardEmployee(emp, matrix)) return emp.status || "ACTIVE";
+  if (normStatus(emp).toUpperCase() === "ACTIVE") return "—";
+  return emp.status || "—";
 }
 
 function daysUntilExpiry(dateStr) {
@@ -85,23 +142,67 @@ function daysUntilExpiry(dateStr) {
   return Math.ceil((new Date(dateStr).getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 }
 
+function hasHrDocument(emp, column) {
+  return Boolean(emp[column]?.trim());
+}
+
+function nicPassportVettingState(emp) {
+  if (!hasHrDocument(emp, "nic_passport_doc_url")) return "expired";
+  return null;
+}
+
+function policeClearanceVettingState(emp) {
+  if (!hasHrDocument(emp, "police_clearance_url")) return "expired";
+  const polDays = daysUntilExpiry(emp.police_expiry);
+  if (polDays === null) return "expired";
+  if (polDays < 0) return "expired";
+  if (polDays <= 45) return "expiring";
+  return null;
+}
+
 function vettingBucket(emp) {
   const states = [];
-  const modDays = daysUntilExpiry(emp.mod_expiry);
-  const polDays = daysUntilExpiry(emp.police_expiry);
-  if (modDays !== null && modDays <= 45) states.push(modDays < 0 ? "expired" : "expiring");
-  if (polDays !== null && polDays <= 45) states.push(polDays < 0 ? "expired" : "expiring");
+  const nicState = nicPassportVettingState(emp);
+  const polState = policeClearanceVettingState(emp);
+  if (nicState) states.push(nicState);
+  if (polState) states.push(polState);
   if (states.length === 0) return null;
   if (states.some((s) => s === "expired")) return "expired";
   return "expiring";
 }
 
-function isVettingExpiring(emp) {
-  return isHrActive(emp) && vettingBucket(emp) === "expiring";
+function isVettingExpiring(emp, matrix = []) {
+  return (
+    isHrActive(emp) &&
+    isGuardEmployee(emp, matrix) &&
+    vettingBucket(emp) === "expiring"
+  );
 }
 
-function isVettingExpired(emp) {
-  return isHrActive(emp) && vettingBucket(emp) === "expired";
+function isVettingExpired(emp, matrix = []) {
+  return (
+    isHrActive(emp) &&
+    isGuardEmployee(emp, matrix) &&
+    vettingBucket(emp) === "expired"
+  );
+}
+
+function guardScoreBadgeClass(tier) {
+  if (tier === "gold") return "bg-amber-50 border-amber-200 text-amber-900";
+  if (tier === "silver") return "bg-slate-100 border-slate-300 text-slate-700";
+  if (tier === "bronze") return "bg-orange-50 border-orange-200 text-orange-800";
+  if (tier === "risk") return "bg-red-50 border-red-200 text-red-700";
+  return "bg-slate-100 border-slate-300 text-slate-700";
+}
+
+function GuardScoreBadge({ rating, tier }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wide ${guardScoreBadgeClass(tier)}`}
+    >
+      Guard score {rating}
+    </span>
+  );
 }
 
 export default function MasterNominalRoll() {
@@ -118,6 +219,7 @@ export default function MasterNominalRoll() {
   const [drawerEmp, setDrawerEmp]   = useState(null);
   const [drawerTab, setDrawerTab]   = useState("personal");
   const [drawerEditing, setDrawerEditing] = useState(false);
+  const drawerEmpRef = useRef(null);
   const [canEditMnr, setCanEditMnr] = useState(false);
   const [canManageExecutive, setCanManageExecutive] = useState(false);
   const [mnrViewerRole, setMnrViewerRole] = useState(null);
@@ -125,6 +227,12 @@ export default function MasterNominalRoll() {
   const [mnrSignedIn, setMnrSignedIn] = useState(false);
   const [clearanceEmp, setClearanceEmp] = useState(null);
   const [mdRankMatrix, setMdRankMatrix] = useState([]);
+  const [rejoinMeta, setRejoinMeta] = useState({
+    blacklistedByEmployeeId: {},
+    guardRatingByEmployeeId: {},
+  });
+  const [rejoinPendingId, setRejoinPendingId] = useState(null);
+  const [isRejoinPending, startRejoinTransition] = useTransition();
 
   const requestIdRef = useRef(0);
 
@@ -151,6 +259,24 @@ export default function MasterNominalRoll() {
 
   useEffect(() => { fetchEmployees(); }, [fetchEmployees]);
 
+  const refreshRejoinMeta = useCallback(async (list) => {
+    const resignedIds = list.filter(isResigned).map((emp) => emp.id);
+    if (!resignedIds.length) {
+      setRejoinMeta({ blacklistedByEmployeeId: {}, guardRatingByEmployeeId: {} });
+      return;
+    }
+    try {
+      const meta = await getMnrRejoinDeskMeta(resignedIds);
+      setRejoinMeta(meta);
+    } catch {
+      setRejoinMeta({ blacklistedByEmployeeId: {}, guardRatingByEmployeeId: {} });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (employees.length) refreshRejoinMeta(employees);
+  }, [employees, refreshRejoinMeta]);
+
   useEffect(() => {
     getMnrAccess()
       .then(({ canEdit, role, signedIn, canManageExecutive: mdExec, viewerEmail }) => {
@@ -169,12 +295,19 @@ export default function MasterNominalRoll() {
       });
   }, []);
 
+  const canViewEmployee = useCallback(
+    (emp) => canViewMnrEmployee(mnrViewerRole, emp?.rank),
+    [mnrViewerRole],
+  );
+
   const canEditEmployee = useCallback(
     (emp) => canEditMnr && canEditMnrEmployee(mnrViewerRole, emp?.rank),
     [canEditMnr, mnrViewerRole],
   );
 
   const openSectionDrawer = (emp, tab, edit = false) => {
+    if (!canViewEmployee(emp)) return;
+    drawerEmpRef.current = emp;
     setDrawerEmp(emp);
     setDrawerTab(tab);
     setDrawerEditing(Boolean(edit && canEditEmployee(emp)));
@@ -182,8 +315,42 @@ export default function MasterNominalRoll() {
 
   const openProfileDrawer = (emp) => openSectionDrawer(emp, "personal", false);
 
-  const openEditDrawer = (emp, tab = "employment") => {
-    openSectionDrawer(emp, tab, true);
+  const openEditDrawer = (emp) => {
+    openSectionDrawer(emp, "personal", true);
+  };
+
+  const handleRejoinEmployee = (emp) => {
+    if (!canEditEmployee(emp)) return;
+    if (rejoinMeta.blacklistedByEmployeeId[emp.id]) {
+      window.alert(
+        "This guard is blacklisted and cannot be rejoined until MD or OD approves removal from the blacklist vault.",
+      );
+      return;
+    }
+
+    const score = rejoinMeta.guardRatingByEmployeeId[emp.id];
+    const scoreLine =
+      isGuardEmployee(emp, mdRankMatrix) && score
+        ? `\n\nGuard score: ${score.rating}/100 (${score.tier})`
+        : "";
+    const confirmed = window.confirm(
+      `Rejoin ${emp.full_name} to active duty?${scoreLine}\n\nTheir status will return to ACTIVE in the Master Nominal Roll.`,
+    );
+    if (!confirmed) return;
+
+    setRejoinPendingId(emp.id);
+    startRejoinTransition(async () => {
+      const result = await rejoinEmployee(emp.id);
+      if (!result.ok) {
+        setErrorMessage(result.error ?? "Failed to rejoin employee.");
+        setRejoinPendingId(null);
+        return;
+      }
+      const data = await fetchEmployees();
+      if (data) await refreshRejoinMeta(data);
+      setPersonnelFilter("ALL");
+      setRejoinPendingId(null);
+    });
   };
 
   const suggestions = useMemo(() => {
@@ -206,11 +373,15 @@ export default function MasterNominalRoll() {
   const filteredEmployees = useMemo(() => {
     let result = [...employees];
 
-    if (personnelFilter === "ACTIVE") result = result.filter(isOperationalActive);
-    if (personnelFilter === "INACTIVE") result = result.filter(isOperationalInactive);
+    if (personnelFilter === "ACTIVE") result = result.filter((e) => isOperationalActive(e, mdRankMatrix));
+    if (personnelFilter === "INACTIVE") result = result.filter((e) => isOperationalInactive(e, mdRankMatrix));
     if (personnelFilter === "RESIGNED") result = result.filter(isResigned);
-    if (personnelFilter === "VETTING_EXPIRING") result = result.filter(isVettingExpiring);
-    if (personnelFilter === "VETTING_EXPIRED") result = result.filter(isVettingExpired);
+    if (personnelFilter === "VETTING_EXPIRING") {
+      result = result.filter((e) => isVettingExpiring(e, mdRankMatrix));
+    }
+    if (personnelFilter === "VETTING_EXPIRED") {
+      result = result.filter((e) => isVettingExpired(e, mdRankMatrix));
+    }
 
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
@@ -246,17 +417,17 @@ export default function MasterNominalRoll() {
     else { setSortBy(field); setSortDir("asc"); }
   };
 
-  const activePersonnelCount = employees.filter(isOperationalActive).length;
-  const inactiveCount        = employees.filter(isOperationalInactive).length;
+  const activePersonnelCount = employees.filter((e) => isOperationalActive(e, mdRankMatrix)).length;
+  const inactiveCount        = employees.filter((e) => isOperationalInactive(e, mdRankMatrix)).length;
   const resignedCount        = employees.filter(isResigned).length;
-  const expiringCount        = employees.filter(isVettingExpiring).length;
-  const expiredCount         = employees.filter(isVettingExpired).length;
+  const expiringCount        = employees.filter((e) => isVettingExpiring(e, mdRankMatrix)).length;
+  const expiredCount         = employees.filter((e) => isVettingExpired(e, mdRankMatrix)).length;
 
   const PERSONNEL_CARDS = [
     {
       key: "ACTIVE",
       label: "Active Personnel",
-      sub: "Shift in last 14 days",
+      sub: "Shift in last 14 days · guards only",
       count: activePersonnelCount,
       Icon: Users,
       base: "bg-white border-slate-200 hover:border-emerald-300",
@@ -269,7 +440,7 @@ export default function MasterNominalRoll() {
     {
       key: "INACTIVE",
       label: "Inactive",
-      sub: "No shift 14 days · guards & café",
+      sub: "No shift 14 days · guards only",
       count: inactiveCount,
       Icon: UserX,
       base: "bg-slate-50 border-slate-200 hover:border-slate-400",
@@ -282,7 +453,7 @@ export default function MasterNominalRoll() {
     {
       key: "RESIGNED",
       label: "Resigned",
-      sub: "Offboarded",
+      sub: "Search & rejoin · offboarded",
       count: resignedCount,
       Icon: UserCheck,
       base: "bg-violet-50 border-violet-200 hover:border-violet-300",
@@ -295,7 +466,7 @@ export default function MasterNominalRoll() {
     {
       key: "VETTING_EXPIRING",
       label: "Vetting Expiring",
-      sub: "MoD / Police ≤ 45 days",
+      sub: "NIC / Passport & Police ≤ 45 days · guards only",
       count: expiringCount,
       Icon: Clock,
       base: "bg-amber-50 border-amber-200 hover:border-amber-300",
@@ -308,7 +479,7 @@ export default function MasterNominalRoll() {
     {
       key: "VETTING_EXPIRED",
       label: "Vetting Expired",
-      sub: "Clearance overdue",
+      sub: "NIC / Passport or police overdue · guards only",
       count: expiredCount,
       Icon: XCircle,
       base: "bg-red-50 border-red-200 hover:border-red-300",
@@ -386,21 +557,7 @@ export default function MasterNominalRoll() {
             </div>
           )}
 
-          <div className="flex flex-wrap items-center gap-2.5 mt-4 pt-4 border-t border-slate-100">
-            <span className="inline-flex items-center gap-2 px-4 py-2.5 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-black rounded-xl uppercase tracking-wider">
-              <BookOpen className="w-3.5 h-3.5" /> Master Nominal Roll
-            </span>
-            <div className="w-px h-5 bg-slate-200 mx-0.5" />
-            <Link href="/hr/onboarding" className="inline-flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 text-slate-600 text-xs font-bold rounded-xl hover:bg-slate-50 transition-all uppercase tracking-wide">
-              <UserPlus className="w-3.5 h-3.5 text-rose-600" /> Onboarding
-            </Link>
-            <Link href="/hr/temp-roster" className="inline-flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 text-slate-600 text-xs font-bold rounded-xl hover:bg-slate-50 transition-all uppercase tracking-wide">
-              <ClipboardList className="w-3.5 h-3.5 text-violet-600" /> Temp Roster
-            </Link>
-            <Link href="/hr/sm-portal" className="inline-flex items-center gap-2 px-4 py-2.5 bg-amber-50 border border-amber-200 text-amber-800 text-xs font-black rounded-xl hover:bg-amber-100 transition-all uppercase tracking-wider">
-              <KeyRound className="w-3.5 h-3.5" /> SM Portal
-            </Link>
-          </div>
+          <HrHubPills />
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 mt-4">
             {PERSONNEL_CARDS.map((card) => {
@@ -479,6 +636,7 @@ export default function MasterNominalRoll() {
                       onMouseDown={() => { setSearchQuery(emp.full_name); setShowSuggestions(false); }}
                       className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors text-left border-b border-slate-100 last:border-0"
                     >
+                      <EmployeeMnrPhoto photoUrl={emp.id_photo_url} name={emp.full_name} size="sm" />
                       <span className={`w-2 h-2 rounded-full shrink-0 ${isActive(emp) ? "bg-emerald-500" : "bg-slate-300"}`} />
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-black text-slate-900 truncate">{emp.full_name}</p>
@@ -489,11 +647,11 @@ export default function MasterNominalRoll() {
                         </p>
                       </div>
                       <span className={`shrink-0 text-xs font-black px-2 py-0.5 rounded-full ${
-                        isActive(emp)
+                        isOperationalActive(emp, mdRankMatrix)
                           ? "bg-emerald-50 text-emerald-700"
                           : "bg-slate-100 text-slate-600"
                       }`}>
-                        {emp.status}
+                        {mnrTableStatusLabel(emp, mdRankMatrix)}
                       </span>
                     </button>
                   ))}
@@ -537,6 +695,14 @@ export default function MasterNominalRoll() {
               ))}
             </div>
           </div>
+
+          {personnelFilter === "RESIGNED" && (
+            <div className="mt-4 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-xs font-semibold text-violet-900">
+              Search by name, NIC, EPF, or passport to find a former employee. Guards show their
+              12-month score; blacklisted guards are highlighted and cannot be rejoined until MD or
+              OD clears the blacklist vault.
+            </div>
+          )}
         </div>
       </div>
 
@@ -574,7 +740,7 @@ export default function MasterNominalRoll() {
               <div className="overflow-x-auto">
                 <table className="w-full text-xs table-fixed">
                   <colgroup>
-                    <col className="w-10" />
+                    <col className="w-16" />
                     <col className="w-[26%]" />
                     <col className="w-[11%]" />
                     <col className="w-[18%]" />
@@ -584,7 +750,7 @@ export default function MasterNominalRoll() {
                   </colgroup>
                   <thead>
                     <tr className="border-b border-slate-200 bg-slate-50">
-                      <th className="px-3 py-2 text-left text-[10px] font-black text-slate-500 uppercase tracking-widest">#</th>
+                      <th className="px-3 py-2 text-left text-[10px] font-black text-slate-500 uppercase tracking-widest">EPF No</th>
                       <th className="px-3 py-2 text-left">
                         <button onClick={() => toggleSort("name")} className="flex items-center gap-1 text-[10px] font-black text-slate-600 uppercase tracking-widest hover:text-slate-900 transition-colors">
                           Personnel {sortBy === "name" && <ArrowUpDown className="w-3 h-3" />}
@@ -634,31 +800,62 @@ export default function MasterNominalRoll() {
                         </td>
                       </tr>
                     ) : (
-                      filteredEmployees.map((emp, idx) => (
+                      filteredEmployees.map((emp) => {
+                        const execLocked = isExecutiveRank(emp.rank) && !canManageExecutive;
+                        const canView = canViewEmployee(emp);
+                        const blacklistEntry = rejoinMeta.blacklistedByEmployeeId[emp.id];
+                        const guardScore = rejoinMeta.guardRatingByEmployeeId[emp.id];
+                        const showRejoinDesk = personnelFilter === "RESIGNED" && isResigned(emp);
+                        const rejoinBusy = rejoinPendingId === emp.id && isRejoinPending;
+                        return (
                         <tr
                           key={emp.id}
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => openProfileDrawer(emp)}
-                          onKeyDown={(e) => {
+                          role={canView ? "button" : undefined}
+                          tabIndex={canView ? 0 : undefined}
+                          onClick={canView ? () => openProfileDrawer(emp) : undefined}
+                          onKeyDown={canView ? (e) => {
                             if (e.key === "Enter" || e.key === " ") {
                               e.preventDefault();
                               openProfileDrawer(emp);
                             }
-                          }}
-                          className="hover:bg-slate-50 transition-colors align-middle cursor-pointer"
+                          } : undefined}
+                          title={
+                            blacklistEntry
+                              ? `Blacklisted: ${blacklistEntry.reason || "No reason recorded"}`
+                              : execLocked
+                                ? "MD / OD records — MD or OD only"
+                                : undefined
+                          }
+                          className={`transition-colors align-middle ${
+                            blacklistEntry
+                              ? "bg-red-50/80 ring-1 ring-inset ring-red-200"
+                              : canView
+                                ? "hover:bg-slate-50 cursor-pointer"
+                                : "cursor-not-allowed opacity-75"
+                          }`}
                         >
-                          <td className="px-3 py-2 align-middle text-slate-400 font-mono text-[10px] tabular-nums">
-                            {String(idx + 1).padStart(3, "0")}
+                          <td className="px-3 py-2 align-middle text-slate-500 font-mono text-[10px] tabular-nums truncate" title={employeeEpfNo(emp) || undefined}>
+                            {employeeEpfNo(emp) || "—"}
                           </td>
                           <td className="px-3 py-2 align-middle min-w-0">
                             <div className="flex items-center gap-2 min-w-0">
+                              <EmployeeMnrPhoto photoUrl={emp.id_photo_url} name={emp.full_name} size="xs" />
                               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                                isOperationalActive(emp) ? "bg-emerald-500" : isResigned(emp) ? "bg-violet-400" : "bg-slate-300"
+                                isOperationalActive(emp, mdRankMatrix) ? "bg-emerald-500" : isResigned(emp) ? "bg-violet-400" : "bg-slate-300"
                               }`} />
                               <div className="min-w-0">
                                 <p className="font-bold text-slate-900 text-xs truncate">{emp.full_name}</p>
-                                <p className="text-[10px] text-slate-500 font-mono truncate">{emp.nic || "—"}</p>
+                                {showRejoinDesk && blacklistEntry ? (
+                                  <span className="mt-1 inline-flex items-center gap-1 rounded-md border border-red-300 bg-red-100 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wide text-red-800">
+                                    <ShieldAlert className="h-3 w-3 shrink-0" />
+                                    Blacklisted
+                                  </span>
+                                ) : null}
+                                {showRejoinDesk && isGuardEmployee(emp, mdRankMatrix) && guardScore ? (
+                                  <span className="mt-1 block">
+                                    <GuardScoreBadge rating={guardScore.rating} tier={guardScore.tier} />
+                                  </span>
+                                ) : null}
                               </div>
                             </div>
                           </td>
@@ -679,36 +876,49 @@ export default function MasterNominalRoll() {
                                 ? "bg-violet-50 text-violet-700 border border-violet-200"
                                 : isOnMaternityLeave(emp)
                                   ? "bg-pink-50 text-pink-700 border border-pink-200"
-                                  : isOperationalInactive(emp)
+                                  : isGuardEmployee(emp, mdRankMatrix) && isOperationalInactive(emp, mdRankMatrix)
                                     ? "bg-amber-50 text-amber-800 border border-amber-200"
-                                    : isOperationalActive(emp)
+                                    : isGuardEmployee(emp, mdRankMatrix) && isOperationalActive(emp, mdRankMatrix)
                                       ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
                                       : "bg-slate-100 text-slate-600 border border-slate-200"
                             }`}>
-                              {isOperationalActive(emp) ? <CheckCircle2 className="w-2.5 h-2.5 shrink-0" /> : <XCircle className="w-2.5 h-2.5 shrink-0" />}
-                              <span className="truncate max-w-[5.5rem]">{isOnMaternityLeave(emp) && isHrActive(emp) ? "Mat." : emp.status}</span>
+                              {isGuardEmployee(emp, mdRankMatrix) && !isResigned(emp) && !isOnMaternityLeave(emp) ? (
+                                isOperationalActive(emp, mdRankMatrix) ? (
+                                  <CheckCircle2 className="w-2.5 h-2.5 shrink-0" />
+                                ) : (
+                                  <XCircle className="w-2.5 h-2.5 shrink-0" />
+                                )
+                              ) : null}
+                              <span className="truncate max-w-[5.5rem]">{mnrTableStatusLabel(emp, mdRankMatrix)}</span>
                             </span>
                           </td>
                           <td className="px-3 py-2 align-middle" onClick={(e) => e.stopPropagation()}>
                             <div className="flex items-center justify-end gap-0.5 flex-nowrap">
-                              {MNR_SECTIONS.map((section) => (
-                                <SectionAction
-                                  key={section.key}
-                                  section={section}
-                                  emp={emp}
-                                  canEdit={canEditEmployee(emp)}
-                                  onOpen={() => openSectionDrawer(emp, section.key, false)}
-                                />
-                              ))}
+                              {showRejoinDesk && canEditEmployee(emp) && !blacklistEntry ? (
+                                <button
+                                  type="button"
+                                  title="Rejoin to active duty"
+                                  disabled={rejoinBusy}
+                                  onClick={() => handleRejoinEmployee(emp)}
+                                  className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-[9px] font-black uppercase tracking-wide text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+                                >
+                                  {rejoinBusy ? (
+                                    <Loader2 className="h-3 w-3 animate-spin" />
+                                  ) : (
+                                    <UserPlus className="h-3 w-3" />
+                                  )}
+                                  Rejoin
+                                </button>
+                              ) : null}
                               {canEditEmployee(emp) && (
                                 <ActionBtn
                                   icon={Pencil}
-                                  title="Edit employee (employment & status)"
+                                  title="Edit employee"
                                   color="rose"
-                                  onClick={() => openEditDrawer(emp, "employment")}
+                                  onClick={() => openEditDrawer(emp)}
                                 />
                               )}
-                              {canEditMnr && isExecutiveRank(emp.rank) && !canManageExecutive && (
+                              {execLocked && (
                                 <span
                                   title="MD / OD records — MD or OD only"
                                   className="px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wide text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-md"
@@ -716,6 +926,7 @@ export default function MasterNominalRoll() {
                                   Exec
                                 </span>
                               )}
+                              {!execLocked && (
                               <ActionBtn
                                 icon={isResigned(emp) ? FileText : ShieldAlert}
                                 title={
@@ -726,10 +937,12 @@ export default function MasterNominalRoll() {
                                 color={isResigned(emp) ? "violet" : "sky"}
                                 onClick={() => setClearanceEmp(emp)}
                               />
+                              )}
                             </div>
                           </td>
                         </tr>
-                      ))
+                        );
+                      })
                     )}
                   </tbody>
                 </table>
@@ -749,25 +962,31 @@ export default function MasterNominalRoll() {
           signedIn={mnrSignedIn}
           viewerRole={mnrViewerRole}
           viewerEmail={mnrViewerEmail}
-          onTabChange={(tab) => {
-            setDrawerTab(tab);
-            setDrawerEditing(false);
-          }}
+          onTabChange={setDrawerTab}
           onClose={() => {
+            drawerEmpRef.current = null;
             setDrawerEmp(null);
             setDrawerEditing(false);
           }}
           onToggleEdit={() => setDrawerEditing((v) => !v)}
-          onSaved={async () => {
+          onSaved={async ({ closeDrawer = false } = {}) => {
             setDrawerEditing(false);
-            const data = await fetchEmployees();
-            if (data && drawerEmp) {
-              const fresh = data.find((e) => e.id === drawerEmp.id);
-              if (fresh) setDrawerEmp(fresh);
+            if (closeDrawer) {
+              drawerEmpRef.current = null;
+              setDrawerEmp(null);
             }
+            const data = await fetchEmployees();
+            if (closeDrawer || !data) return;
+            setDrawerEmp((current) => {
+              if (!current) return null;
+              const fresh = data.find((e) => e.id === current.id);
+              if (fresh) drawerEmpRef.current = fresh;
+              return fresh ?? current;
+            });
           }}
           onOpenClearanceSummary={(employee) => setClearanceEmp(employee)}
           mdRankMatrix={mdRankMatrix}
+          allEmployees={employees}
         />
       )}
 
@@ -783,13 +1002,6 @@ export default function MasterNominalRoll() {
     </div>
   );
 }
-
-const MNR_SECTIONS = [
-  { key: "personal",   icon: User,       title: "Personal Details",      color: "violet" },
-  { key: "employment", icon: Building2,  title: "Employment Details",    color: "amber" },
-  { key: "bank",       icon: CreditCard, title: "Bank Details",          color: "emerald" },
-  { key: "vetting",    icon: Shield,     title: "Vetting & Clearance",   color: "sky" },
-];
 
 function formatSectionEdited(iso, short = false) {
   if (!iso) return null;
@@ -818,31 +1030,6 @@ function sectionEditMeta(emp, key) {
   const meta = edits[key];
   if (!meta?.at) return null;
   return meta;
-}
-
-function SectionAction({ section, emp, canEdit, onOpen }) {
-  const meta = sectionEditMeta(emp, section.key);
-  const whenShort = formatSectionEdited(meta?.at, true);
-  const whenFull = formatSectionEdited(meta?.at);
-  const tooltip = meta
-    ? `${section.title}\nLast edited by ${meta.by}${whenFull ? ` — ${whenFull}` : ""}`
-    : `${section.title}\nNot edited yet${canEdit ? " (editable)" : " (view only)"}`;
-
-  return (
-    <div className="flex flex-col items-center shrink-0 w-[2.125rem]" title={tooltip}>
-      <ActionBtn
-        icon={section.icon}
-        title={tooltip}
-        color={section.color}
-        onClick={onOpen}
-      />
-      {meta && (
-        <span className="mt-0.5 w-full text-center text-[7px] leading-none font-medium text-slate-400 truncate px-0.5" aria-hidden>
-          {whenShort}
-        </span>
-      )}
-    </div>
-  );
 }
 
 const COLOR_MAP = {
@@ -882,6 +1069,45 @@ const SALARY_TYPE_OPTIONS = [
   { value: "CASH", label: "Cash Allocation" },
 ];
 
+const GENDER_OPTIONS = [
+  { value: "MALE", label: "Male" },
+  { value: "FEMALE", label: "Female" },
+];
+
+const NATIONALITY_OPTIONS = [
+  { value: "SRI LANKAN", label: "Sri Lankan" },
+  { value: "INDIAN", label: "Indian" },
+  { value: "PAKISTANI", label: "Pakistani" },
+  { value: "BANGLADESHI", label: "Bangladeshi" },
+  { value: "NEPALESE", label: "Nepalese" },
+  { value: "FILIPINO", label: "Filipino" },
+  { value: "OTHER", label: "Other" },
+];
+
+const RELIGION_OPTIONS = [
+  { value: "BUDDHIST", label: "Buddhist" },
+  { value: "CHRISTIAN", label: "Christian" },
+  { value: "ROMAN CATHOLIC", label: "Roman Catholic" },
+  { value: "MUSLIM", label: "Muslim" },
+  { value: "HINDU", label: "Hindu" },
+  { value: "ATHEIST", label: "Atheist" },
+  { value: "OTHER", label: "Other" },
+];
+
+const SITE_OPTIONS = [
+  "Unassigned (Bench)",
+  "Lanka Hospitals",
+  "Commercial Bank HQ",
+  "Cargills HQ",
+  "BOC Main Branch",
+  "Hemas Holdings",
+];
+
+function defaultSiteForRank(matrix, rank, currentSite) {
+  if (currentSite) return currentSite;
+  return isFieldGuardRank(matrix, rank) ? "Unassigned (Bench)" : "";
+}
+
 function corporateGroupLabel(value) {
   if (!value) return null;
   const normalized = normalizeCorporateGroup(value);
@@ -895,6 +1121,28 @@ function salaryTypeLabel(value) {
     (o) => o.value === String(value).trim().toUpperCase(),
   );
   return hit?.label ?? value;
+}
+
+function EmployeeMnrPhoto({ photoUrl, name, size = "sm" }) {
+  const dim =
+    size === "xs" ? "h-7 w-7" : size === "md" ? "h-10 w-10" : "h-8 w-8";
+  const url = typeof photoUrl === "string" ? photoUrl.trim() : "";
+  if (url) {
+    return (
+      <img
+        src={url}
+        alt={name ? `${name} ID photo` : "Employee ID photo"}
+        className={`${dim} shrink-0 rounded-md object-cover border border-slate-200 bg-slate-100`}
+      />
+    );
+  }
+  return (
+    <div
+      className={`${dim} shrink-0 rounded-md bg-black border border-slate-900`}
+      role="img"
+      aria-label={name ? `${name} — no ID photo` : "No ID photo"}
+    />
+  );
 }
 
 function ActionBtn({ icon: Icon, title, color, onClick }) {
@@ -932,37 +1180,83 @@ function EmployeeDrawer({
   onSaved,
   onOpenClearanceSummary,
   mdRankMatrix,
+  allEmployees,
 }) {
+  const formRef = useRef(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [epfDuplicate, setEpfDuplicate] = useState(null);
+  const [emailDuplicate, setEmailDuplicate] = useState(null);
+  const [dirty, setDirty] = useState(false);
+  const [pendingNav, setPendingNav] = useState(null);
+  const pendingNavRef = useRef(null);
+  const [formKey, setFormKey] = useState(0);
+  const [editRank, setEditRank] = useState("");
+  const [editSite, setEditSite] = useState("");
   const today   = new Date();
   const daysDiff = (dateStr) => {
     if (!dateStr) return null;
     return Math.ceil((new Date(dateStr).getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
   };
 
+  useEffect(() => {
+    setDirty(false);
+    pendingNavRef.current = null;
+    setPendingNav(null);
+    setSaveError("");
+    setEpfDuplicate(null);
+    setEmailDuplicate(null);
+  }, [emp.id]);
+
+  useEffect(() => {
+    const rank = (emp.rank || "").trim().toUpperCase();
+    setEditRank(rank);
+    setEditSite(defaultSiteForRank(mdRankMatrix, rank, emp.site || ""));
+  }, [emp.id, emp.rank, emp.site, formKey, mdRankMatrix]);
+
+  const siteApplicable = isFieldGuardRank(mdRankMatrix, editRank);
+
+  const handleEditRankChange = (e) => {
+    const newRank = e.target.value;
+    setEditRank(newRank);
+    if (isFieldGuardRank(mdRankMatrix, newRank)) {
+      setEditSite((prev) => prev || "Unassigned (Bench)");
+    } else {
+      setEditSite("");
+    }
+    setDirty(true);
+  };
+
   const activeMeta = sectionEditMeta(emp, activeTab);
   const activeEdited = formatSectionEdited(activeMeta?.at);
 
-  const handleSectionSave = async (e) => {
-    e.preventDefault();
-    if (!canEdit || !editing) return;
-    setSaving(true);
-    setSaveError("");
-    const fd = new FormData(e.target);
-    const payload = Object.fromEntries(fd.entries());
-    try {
-      await saveEmployeeSection(activeTab, emp.id, payload);
-      onSaved();
-    } catch (err) {
-      setSaveError(err?.message || "Failed to save.");
-    } finally {
-      setSaving(false);
-    }
+  const tabPanelClass = (key) => (activeTab === key ? "space-y-4" : "hidden");
+
+  const dismissUnsavedDialog = ({ resetForm = false, exitEdit = false } = {}) => {
+    if (resetForm) setFormKey((k) => k + 1);
+    setDirty(false);
+    pendingNavRef.current = null;
+    setPendingNav(null);
+    if (exitEdit && editing) onToggleEdit();
   };
 
-  const inputClass =
-    "w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold text-slate-900 focus:ring-2 focus:ring-rose-500 outline-none";
+  const completePendingNav = (nav) => {
+    if (!nav) return;
+    if (nav.type === "close") onClose();
+    else if (nav.type === "tab") onTabChange(nav.key);
+    else if (nav.type === "view") onToggleEdit();
+  };
+
+  const requestNav = (action) => {
+    if (editing && dirty && action.type === "close") {
+      pendingNavRef.current = action;
+      setPendingNav(action);
+      return;
+    }
+    if (action.type === "close") onClose();
+    else if (action.type === "tab") onTabChange(action.key);
+    else if (action.type === "view") onToggleEdit();
+  };
 
   const isOwnRecord =
     viewerEmail &&
@@ -973,14 +1267,84 @@ function EmployeeDrawer({
     isHeadOfficeGroup(emp) &&
     (!isExecutiveRank(emp.rank) || canManageExecutive);
 
+  const submitSave = async () => {
+    const form = formRef.current;
+    if (!canEdit || !editing || !form) return false;
+    const fd = new FormData(form);
+    const payload = Object.fromEntries(fd.entries());
+    const missing = [];
+    if (!String(payload.full_name ?? "").trim()) missing.push("Full name");
+    if (!String(payload.nic ?? "").trim()) missing.push("NIC");
+    if (!String(payload.phone ?? "").trim()) missing.push("Phone");
+    if (canEditWorkEmail && !String(payload.email ?? "").trim()) missing.push("Work email");
+    if (missing.length) {
+      setSaveError(`Required: ${missing.join(", ")}.`);
+      return false;
+    }
+    const epfOwner = findEpfNoOwner(payload.epf_no, emp.id, allEmployees);
+    if (epfOwner) {
+      setEpfDuplicate(epfOwner);
+      setSaveError(`EPF number is already in use by ${epfOwner.full_name}.`);
+      return false;
+    }
+    if (canEditWorkEmail) {
+      const emailOwner = findWorkEmailOwner(payload.email, emp.id, allEmployees);
+      if (emailOwner) {
+        setEmailDuplicate(emailOwner);
+        setSaveError(`Work email is already in use by ${emailOwner.full_name}.`);
+        return false;
+      }
+    }
+    setSaving(true);
+    setSaveError("");
+    try {
+      await saveEmployeeAll(emp.id, payload);
+      setDirty(false);
+      return true;
+    } catch (err) {
+      setSaveError(err?.message || "Failed to save.");
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSaveAll = async (e) => {
+    e?.preventDefault?.();
+    const ok = await submitSave();
+    if (ok) onSaved();
+  };
+
+  const handleSaveFromDialog = async () => {
+    const nav = pendingNavRef.current ?? pendingNav;
+    const closing = nav?.type === "close";
+    const ok = await submitSave();
+    if (!ok) return;
+    dismissUnsavedDialog();
+    if (closing) onClose();
+    else completePendingNav(nav);
+    onSaved({ closeDrawer: closing });
+  };
+
+  const handleDiscardFromDialog = () => {
+    const nav = pendingNavRef.current ?? pendingNav;
+    dismissUnsavedDialog({ resetForm: true, exitEdit: true });
+    if (nav?.type === "close") onClose();
+    else completePendingNav(nav);
+  };
+
+  const inputClass =
+    "w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold text-slate-900 focus:ring-2 focus:ring-rose-500 outline-none";
+
   return (
     <div className="fixed inset-0 z-50 flex">
-      <div className="absolute inset-0 bg-slate-900/30 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-slate-900/30 backdrop-blur-sm" onClick={() => requestNav({ type: "close" })} />
 
       <aside className="relative ml-auto w-full max-w-lg h-full bg-white border-l border-slate-200 shadow-2xl flex flex-col overflow-hidden">
 
         <div className="flex items-center justify-between px-6 py-5 border-b border-slate-200 bg-gradient-to-r from-white to-rose-50/40 shrink-0">
           <div className="flex items-center gap-3 min-w-0">
+            <EmployeeMnrPhoto photoUrl={emp.id_photo_url} name={emp.full_name} size="md" />
             <span className={`w-3 h-3 rounded-full shrink-0 ${isActive(emp) ? "bg-emerald-500 animate-pulse" : "bg-slate-300"}`} />
             <div className="min-w-0">
               <p className="font-black text-slate-900 uppercase tracking-wider text-sm truncate">{emp.full_name}</p>
@@ -991,12 +1355,22 @@ function EmployeeDrawer({
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0 ml-3">
+            {editing && canEdit && (
+              <button
+                type="button"
+                disabled={saving || Boolean(epfDuplicate) || Boolean(emailDuplicate)}
+                onClick={() => void handleSaveAll()}
+                className="px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-black uppercase tracking-widest disabled:opacity-50 shrink-0"
+              >
+                {saving ? "Saving…" : "Save"}
+              </button>
+            )}
             {canEdit ? (
               <button
                 type="button"
-                onClick={onToggleEdit}
-                title={editing ? "Switch to view mode" : "Edit this section"}
-                aria-label={editing ? "Switch to view mode" : "Edit this section"}
+                onClick={() => requestNav({ type: "view" })}
+                title={editing ? "Switch to view mode" : "Edit employee"}
+                aria-label={editing ? "Switch to view mode" : "Edit employee"}
                 className={`p-2 rounded-xl border transition-all shrink-0 ${
                   editing
                     ? "bg-violet-50 border-violet-200 text-violet-800"
@@ -1021,7 +1395,8 @@ function EmployeeDrawer({
               </span>
             )}
             <button
-              onClick={onClose}
+              type="button"
+              onClick={() => requestNav({ type: "close" })}
               className="p-2 rounded-xl border border-slate-200 text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-all"
             >
               <X className="w-4 h-4" />
@@ -1058,7 +1433,8 @@ function EmployeeDrawer({
           {TABS.map(tab => (
             <button
               key={tab.key}
-              onClick={() => onTabChange(tab.key)}
+              type="button"
+              onClick={() => requestNav({ type: "tab", key: tab.key })}
               className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-black uppercase tracking-wide border-b-2 -mb-px whitespace-nowrap transition-all ${
                 activeTab === tab.key
                   ? "border-rose-500 text-rose-700"
@@ -1079,149 +1455,168 @@ function EmployeeDrawer({
           )}
 
           {editing && canEdit ? (
-            <form onSubmit={handleSectionSave} className="space-y-4">
-              {activeTab === "personal" && (
-                <>
-                  <EmployeeIdPhotoField
+            <form
+              key={formKey}
+              ref={formRef}
+              noValidate
+              onSubmit={handleSaveAll}
+              onInput={() => setDirty(true)}
+              onChange={() => setDirty(true)}
+              className="space-y-4"
+            >
+              <div className={tabPanelClass("personal")}>
+                <EmployeeIdPhotoField
+                  employeeId={emp.id}
+                  photoUrl={emp.id_photo_url}
+                  canUpload={canUploadIdPhoto}
+                  onUploaded={onSaved}
+                />
+                <EditField label="Full Name" name="full_name" defaultValue={emp.full_name} required inputClass={inputClass} />
+                <div className="flex flex-col gap-1 py-2 border-b border-slate-100 last:border-0">
+                  <WorkEmailEditField
+                    name="email"
+                    defaultValue={emp.email}
                     employeeId={emp.id}
-                    photoUrl={emp.id_photo_url}
-                    canUpload={canUploadIdPhoto}
+                    allEmployees={allEmployees}
+                    inputClass={inputClass}
+                    readOnly={!canEditWorkEmail}
+                    required={canEditWorkEmail}
+                    onDuplicateChange={setEmailDuplicate}
+                  />
+                  {!isHeadOfficeGroup(emp) && (
+                    <p className="text-[10px] text-slate-500 font-bold">
+                      Work email is only for Head Office staff (back-office portal login). Set corporate group to Head Office on the Employment tab first.
+                    </p>
+                  )}
+                  {isHeadOfficeGroup(emp) && isExecutiveRank(emp.rank) && !canManageExecutive && (
+                    <p className="text-[10px] text-amber-800 font-bold">
+                      MD / OD work email can only be changed by MD or OD.
+                    </p>
+                  )}
+                </div>
+                <EditField label="NIC" name="nic" defaultValue={emp.nic} required mono inputClass={inputClass} />
+                <EditField label="Passport No" name="passport_no" defaultValue={emp.passport_no} mono inputClass={inputClass} />
+                <EpfNoEditField
+                  name="epf_no"
+                  defaultValue={employeeEpfNo(emp)}
+                  employeeId={emp.id}
+                  allEmployees={allEmployees}
+                  inputClass={inputClass}
+                  onDuplicateChange={setEpfDuplicate}
+                />
+                <EditField label="Date of Birth" name="dob" type="date" defaultValue={emp.dob} inputClass={inputClass} />
+                <EnumSelectField
+                  label="Gender"
+                  name="gender"
+                  defaultValue={emp.gender}
+                  options={GENDER_OPTIONS}
+                  placeholder="Select gender…"
+                  inputClass={inputClass}
+                />
+                <EnumSelectField
+                  label="Nationality"
+                  name="nationality"
+                  defaultValue={emp.nationality || "SRI LANKAN"}
+                  options={NATIONALITY_OPTIONS}
+                  placeholder="Select nationality…"
+                  inputClass={inputClass}
+                />
+                <EnumSelectField
+                  label="Religion"
+                  name="religion"
+                  defaultValue={emp.religion}
+                  options={RELIGION_OPTIONS}
+                  placeholder="Select religion…"
+                  inputClass={inputClass}
+                />
+                <EditField label="Phone" name="phone" defaultValue={emp.phone} required mono inputClass={inputClass} />
+                <EditField label="Home Address" name="home_address" defaultValue={emp.home_address} multiline inputClass={inputClass} />
+              </div>
+
+              <div className={tabPanelClass("employment")}>
+                <RankSelectField
+                  label="Rank"
+                  name="rank"
+                  value={editRank}
+                  onChange={handleEditRankChange}
+                  mdRankMatrix={mdRankMatrix}
+                  viewerRole={viewerRole}
+                  canManageExecutive={canManageExecutive}
+                  inputClass={inputClass}
+                />
+                <CorporateGroupSelectField
+                  label="Corporate Group"
+                  name="group"
+                  defaultValue={emp.group}
+                  inputClass={inputClass}
+                />
+                <SiteSelectField
+                  label="Assigned Site"
+                  name="site"
+                  value={editSite}
+                  onChange={(e) => {
+                    setEditSite(e.target.value);
+                    setDirty(true);
+                  }}
+                  applicable={siteApplicable}
+                  inputClass={inputClass}
+                />
+                <EditField label="Date Joined" name="date_joined" type="date" defaultValue={emp.date_joined} inputClass={inputClass} />
+                <GuardStatusSelectField
+                  emp={emp}
+                  mdRankMatrix={mdRankMatrix}
+                  inputClass={inputClass}
+                />
+                <EditField label="Base Salary (LKR)" name="base_salary" type="number" defaultValue={emp.base_salary} inputClass={inputClass} />
+                <SalaryTypeSelectField
+                  label="Salary Type"
+                  name="salary_type"
+                  defaultValue={emp.salary_type}
+                  inputClass={inputClass}
+                />
+                <div className="flex flex-col gap-1 py-2">
+                  <label className="text-xs font-black text-slate-500 uppercase tracking-widest">EPF Enrolled</label>
+                  <select
+                    name="epf_yn"
+                    defaultValue={emp.epf_yn ? "true" : "false"}
+                    className={inputClass}
+                  >
+                    <option value="true">Yes</option>
+                    <option value="false">No</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className={tabPanelClass("bank")}>
+                <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 mb-2">
+                  <p className="text-xs font-black text-emerald-700 uppercase tracking-widest mb-0.5">Salary Account</p>
+                  <p className="text-slate-500 text-xs font-bold">Confidential — HR portal editors only</p>
+                </div>
+                <EditField label="Bank Code" name="bank_code" defaultValue={emp.bank_code} mono inputClass={inputClass} />
+                <EditField label="Branch Code" name="branch_code" defaultValue={emp.branch_code} mono inputClass={inputClass} />
+                <EditField label="Account Number" name="account_number" defaultValue={emp.account_number} mono inputClass={inputClass} />
+              </div>
+
+              <div className={tabPanelClass("vetting")}>
+                <EditField label="MoD Expiry" name="mod_expiry" type="date" defaultValue={emp.mod_expiry} inputClass={inputClass} />
+                <EditField label="Police Clearance Expiry" name="police_expiry" type="date" defaultValue={emp.police_expiry} inputClass={inputClass} />
+                <p className="text-xs font-black text-slate-500 uppercase tracking-widest pt-2">Document uploads</p>
+                {HR_DOCUMENT_TYPES.map((docType) => (
+                  <EmployeeDocumentField
+                    key={docType}
+                    employeeId={emp.id}
+                    docType={docType}
+                    documentUrl={emp[HR_DOCUMENT_META[docType].column]}
+                    expiryDate={
+                      HR_DOCUMENT_META[docType].expiryColumn
+                        ? emp[HR_DOCUMENT_META[docType].expiryColumn]
+                        : null
+                    }
+                    canUpload={canEdit}
                     onUploaded={onSaved}
                   />
-                  <EditField label="Full Name" name="full_name" defaultValue={emp.full_name} required inputClass={inputClass} />
-                  <div className="flex flex-col gap-1 py-2 border-b border-slate-100 last:border-0">
-                    <EditField
-                      label="Work Email (portal login)"
-                      name="email"
-                      type="email"
-                      defaultValue={emp.email}
-                      required={canEditWorkEmail}
-                      readOnly={!canEditWorkEmail}
-                      inputClass={inputClass}
-                      bare
-                    />
-                    {!isHeadOfficeGroup(emp) && (
-                      <p className="text-[10px] text-slate-500 font-bold">
-                        Work email is only for Head Office staff (back-office portal login). Set corporate group to Head Office on the Employment tab first.
-                      </p>
-                    )}
-                    {isHeadOfficeGroup(emp) && isExecutiveRank(emp.rank) && !canManageExecutive && (
-                      <p className="text-[10px] text-amber-800 font-bold">
-                        MD / OD work email can only be changed by MD or OD.
-                      </p>
-                    )}
-                  </div>
-                  <EditField label="NIC" name="nic" defaultValue={emp.nic} required mono inputClass={inputClass} />
-                  <EditField label="Passport No" name="passport_no" defaultValue={emp.passport_no} mono inputClass={inputClass} />
-                  <EditField label="EPF No" name="epf_no" defaultValue={employeeEpfNo(emp)} mono inputClass={inputClass} />
-                  <EditField label="Date of Birth" name="dob" type="date" defaultValue={emp.dob} inputClass={inputClass} />
-                  <EditField label="Gender" name="gender" defaultValue={emp.gender} inputClass={inputClass} />
-                  <EditField label="Nationality" name="nationality" defaultValue={emp.nationality} inputClass={inputClass} />
-                  <EditField label="Religion" name="religion" defaultValue={emp.religion} inputClass={inputClass} />
-                  <EditField label="Phone" name="phone" defaultValue={emp.phone} required mono inputClass={inputClass} />
-                  <EditField label="Home Address" name="home_address" defaultValue={emp.home_address} multiline inputClass={inputClass} />
-                </>
-              )}
-
-              {activeTab === "employment" && (
-                <>
-                  <RankSelectField
-                    label="Rank"
-                    name="rank"
-                    defaultValue={emp.rank}
-                    mdRankMatrix={mdRankMatrix}
-                    canManageExecutive={canManageExecutive}
-                    inputClass={inputClass}
-                  />
-                  <CorporateGroupSelectField
-                    label="Corporate Group"
-                    name="group"
-                    defaultValue={emp.group}
-                    inputClass={inputClass}
-                  />
-                  <EditField label="Assigned Site" name="site" defaultValue={emp.site} inputClass={inputClass} />
-                  <EditField label="Date Joined" name="date_joined" type="date" defaultValue={emp.date_joined} inputClass={inputClass} />
-                  <div className="flex flex-col gap-1 py-2">
-                    <label className="text-xs font-black text-slate-500 uppercase tracking-widest">Status</label>
-                    <select
-                      name="status"
-                      defaultValue={emp.status || "ACTIVE"}
-                      className={inputClass}
-                    >
-                      {HR_STATUS_OPTIONS.map((s) => (
-                        <option key={s} value={s}>{s}</option>
-                      ))}
-                      {emp.status && !HR_STATUS_OPTIONS.includes(emp.status) && (
-                        <option value={emp.status}>{emp.status}</option>
-                      )}
-                    </select>
-                    <p className="text-[10px] text-slate-500 font-bold">
-                      ACTIVE guards flow to OM site assignment, SM shifts, and TM verification.
-                    </p>
-                  </div>
-                  <EditField label="Base Salary (LKR)" name="base_salary" type="number" defaultValue={emp.base_salary} inputClass={inputClass} />
-                  <SalaryTypeSelectField
-                    label="Salary Type"
-                    name="salary_type"
-                    defaultValue={emp.salary_type}
-                    inputClass={inputClass}
-                  />
-                  <div className="flex flex-col gap-1 py-2">
-                    <label className="text-xs font-black text-slate-500 uppercase tracking-widest">EPF Enrolled</label>
-                    <select
-                      name="epf_yn"
-                      defaultValue={emp.epf_yn ? "true" : "false"}
-                      className={inputClass}
-                    >
-                      <option value="true">Yes</option>
-                      <option value="false">No</option>
-                    </select>
-                  </div>
-                </>
-              )}
-
-              {activeTab === "bank" && (
-                <>
-                  <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 mb-2">
-                    <p className="text-xs font-black text-emerald-700 uppercase tracking-widest mb-0.5">Salary Account</p>
-                    <p className="text-slate-500 text-xs font-bold">Confidential — HR portal editors only</p>
-                  </div>
-                  <EditField label="Bank Code" name="bank_code" defaultValue={emp.bank_code} mono inputClass={inputClass} />
-                  <EditField label="Branch Code" name="branch_code" defaultValue={emp.branch_code} mono inputClass={inputClass} />
-                  <EditField label="Account Number" name="account_number" defaultValue={emp.account_number} mono inputClass={inputClass} />
-                </>
-              )}
-
-              {activeTab === "vetting" && (
-                <>
-                  <EditField label="MoD Expiry" name="mod_expiry" type="date" defaultValue={emp.mod_expiry} inputClass={inputClass} />
-                  <EditField label="Police Clearance Expiry" name="police_expiry" type="date" defaultValue={emp.police_expiry} inputClass={inputClass} />
-                  <p className="text-xs font-black text-slate-500 uppercase tracking-widest pt-2">Document uploads</p>
-                  {HR_DOCUMENT_TYPES.map((docType) => (
-                    <EmployeeDocumentField
-                      key={docType}
-                      employeeId={emp.id}
-                      docType={docType}
-                      documentUrl={emp[HR_DOCUMENT_META[docType].column]}
-                      expiryDate={
-                        HR_DOCUMENT_META[docType].expiryColumn
-                          ? emp[HR_DOCUMENT_META[docType].expiryColumn]
-                          : null
-                      }
-                      canUpload={canEdit}
-                      onUploaded={onSaved}
-                    />
-                  ))}
-                </>
-              )}
-
-              <button
-                type="submit"
-                disabled={saving}
-                className="w-full py-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-black uppercase tracking-widest disabled:opacity-50"
-              >
-                {saving ? "Saving…" : "Save Section"}
-              </button>
+                ))}
+              </div>
             </form>
           ) : (
             <>
@@ -1234,7 +1629,7 @@ function EmployeeDrawer({
                     onUploaded={onSaved}
                   />
                   <DetailRow label="Full Name"    value={emp.full_name} />
-                  <DetailRow label="Work Email"   value={emp.email} />
+                  <DetailRow label="Work Email"   value={emp.email} preserveCase />
                   <DetailRow label="NIC"          value={emp.nic}         mono />
                   <DetailRow label="Passport No"  value={emp.passport_no} mono />
                   <DetailRow label="EPF No"       value={employeeEpfNo(emp) || (emp.epf_yn ? "EPF Member (no number recorded)" : "Non-EPF")} />
@@ -1256,13 +1651,29 @@ function EmployeeDrawer({
                   <DetailRow label="Corporate Group" value={corporateGroupLabel(emp.group)} />
                   <DetailRow label="Assigned Site"   value={emp.site} />
                   <DetailRow label="Date Joined"     value={emp.date_joined} />
-                  <DetailRow label="Status"          value={emp.status} badge={isActive(emp) ? "active" : "inactive"} />
+                  <DetailRow
+                    label="Status"
+                    value={
+                      isGuardEmployee(emp, mdRankMatrix)
+                        ? emp.status
+                        : normStatus(emp).toUpperCase() === "ACTIVE"
+                          ? null
+                          : emp.status
+                    }
+                    badge={
+                      isGuardEmployee(emp, mdRankMatrix) && isHrActive(emp)
+                        ? "active"
+                        : isGuardEmployee(emp, mdRankMatrix)
+                          ? "inactive"
+                          : undefined
+                    }
+                  />
                   <DetailRow
                     label="Last 14 Days"
                     value={
-                      isShiftTracked(emp)
+                      isGuardEmployee(emp, mdRankMatrix)
                         ? (emp.has_recent_shift ? "Shift recorded" : "No shift recorded")
-                        : "Not shift-tracked"
+                        : "Guards only"
                     }
                   />
                   {isResigned(emp) && onOpenClearanceSummary && (
@@ -1301,11 +1712,13 @@ function EmployeeDrawer({
                     label="MoD Clearance"
                     expiryDate={emp.mod_expiry}
                     days={daysDiff(emp.mod_expiry)}
+                    documentUrl={emp.mod_clearance_url}
                   />
                   <VettingCard
                     label="Police Clearance"
                     expiryDate={emp.police_expiry}
                     days={daysDiff(emp.police_expiry)}
+                    documentUrl={emp.police_clearance_url}
                   />
                   <p className="text-xs font-black text-slate-500 uppercase tracking-widest pt-2">Compliance documents</p>
                   {HR_DOCUMENT_TYPES.map((docType) => (
@@ -1328,6 +1741,59 @@ function EmployeeDrawer({
             </>
           )}
         </div>
+
+        {pendingNav && (
+          <div className="absolute inset-0 z-10 flex items-end sm:items-center justify-center p-4 bg-slate-900/20">
+            <div
+              role="dialog"
+              aria-labelledby="unsaved-changes-title"
+              className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl space-y-4"
+            >
+              <div>
+                <p id="unsaved-changes-title" className="text-sm font-black text-slate-900 uppercase tracking-wide">
+                  Unsaved changes
+                </p>
+                <p className="text-xs text-slate-500 font-bold mt-1">
+                  Save your changes, discard them, or keep editing this profile.
+                </p>
+              </div>
+              {saveError && (
+                <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs font-bold">
+                  {saveError}
+                </div>
+              )}
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  disabled={saving || Boolean(epfDuplicate) || Boolean(emailDuplicate)}
+                  onClick={() => void handleSaveFromDialog()}
+                  className="w-full py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-black uppercase tracking-widest disabled:opacity-50"
+                >
+                  {saving ? "Saving…" : "Save"}
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={handleDiscardFromDialog}
+                  className="w-full py-2.5 rounded-xl border border-slate-200 text-slate-700 text-xs font-black uppercase tracking-widest hover:bg-slate-50 disabled:opacity-50"
+                >
+                  Discard
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => {
+                    pendingNavRef.current = null;
+                    setPendingNav(null);
+                  }}
+                  className="w-full py-2 text-slate-500 text-xs font-bold hover:text-slate-800 disabled:opacity-50"
+                >
+                  Keep editing
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </aside>
     </div>
   );
@@ -1356,6 +1822,126 @@ function RankBadge({ rank, mdRankMatrix }) {
     >
       {rank}
     </span>
+  );
+}
+
+function EnumSelectField({
+  label,
+  name,
+  defaultValue,
+  options,
+  placeholder,
+  inputClass,
+  allowLegacy = true,
+}) {
+  const normalized = (defaultValue || "").trim().toUpperCase();
+  const knownValues = options.map((o) => o.value);
+  const inList = knownValues.includes(normalized);
+  const legacy = allowLegacy && normalized && !inList ? normalized : "";
+
+  return (
+    <div className="flex flex-col gap-1 py-2 border-b border-slate-100 last:border-0">
+      <label className="text-xs font-black text-slate-500 uppercase tracking-widest">{label}</label>
+      {legacy && (
+        <p className="text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+          Current value &ldquo;{legacy}&rdquo; is non-standard. Select a valid option below.
+        </p>
+      )}
+      <select
+        name={name}
+        defaultValue={inList ? normalized : legacy || ""}
+        className={inputClass}
+      >
+        <option value="">{placeholder}</option>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+        {legacy && <option value={legacy}>{legacy}</option>}
+      </select>
+    </div>
+  );
+}
+
+function GuardStatusSelectField({ emp, mdRankMatrix, inputClass }) {
+  const applicable = isGuardEmployee(emp, mdRankMatrix);
+  const current = (emp.status || "").trim();
+
+  return (
+    <div className="flex flex-col gap-1 py-2 border-b border-slate-100 last:border-0">
+      <label className="text-xs font-black text-slate-500 uppercase tracking-widest">Status</label>
+      {applicable ? (
+        <>
+          <select
+            name="status"
+            defaultValue={current || "ACTIVE"}
+            className={inputClass}
+          >
+            {HR_STATUS_OPTIONS.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+            {current && !HR_STATUS_OPTIONS.includes(current) && (
+              <option value={current}>{current}</option>
+            )}
+          </select>
+          <p className="text-[10px] text-slate-500 font-bold">
+            ACTIVE guards flow to OM site assignment, SM shifts, and TM verification.
+          </p>
+        </>
+      ) : (
+        <>
+          <input type="hidden" name="status" value={current} />
+          <div className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-400">
+            ACTIVE status applies to field guards only
+          </div>
+          {current && normStatus(emp).toUpperCase() !== "ACTIVE" && (
+            <p className="text-[10px] text-slate-500 font-bold">Current HR status: {current}</p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function SiteSelectField({ label, name, value, onChange, applicable, inputClass }) {
+  const normalized = (value || "").trim();
+  const inList = SITE_OPTIONS.includes(normalized);
+  const legacy = normalized && !inList ? normalized : "";
+
+  return (
+    <div className="flex flex-col gap-1 py-2 border-b border-slate-100 last:border-0">
+      <label className="text-xs font-black text-slate-500 uppercase tracking-widest">{label}</label>
+      {applicable ? (
+        <>
+          {legacy && (
+            <p className="text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+              Current site &ldquo;{legacy}&rdquo; is not in the standard list. Pick a site below or keep the legacy value.
+            </p>
+          )}
+          <select
+            name={name}
+            value={normalized || "Unassigned (Bench)"}
+            onChange={onChange}
+            className={inputClass}
+          >
+            {SITE_OPTIONS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+            {legacy && <option value={legacy}>{legacy}</option>}
+          </select>
+        </>
+      ) : (
+        <>
+          <input type="hidden" name={name} value="" />
+          <div className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-400">
+            Site assignment applies to field guards only
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1408,8 +1994,9 @@ function CorporateGroupSelectField({ label, name, defaultValue, inputClass }) {
       )}
       <select
         name={name}
-        defaultValue={knownValues.includes(normalized) ? normalized : ""}
-        required
+        defaultValue={
+          knownValues.includes(normalized) ? normalized : legacy || normalized || ""
+        }
         className={inputClass}
       >
         <option value="" disabled>
@@ -1429,14 +2016,22 @@ function CorporateGroupSelectField({ label, name, defaultValue, inputClass }) {
   );
 }
 
-function RankSelectField({ label, name, defaultValue, mdRankMatrix, canManageExecutive, inputClass }) {
-  const normalized = (defaultValue || "").trim().toUpperCase();
-  const selectableMatrix = filterRanksForEditor(
-    mdRankMatrix,
-    canManageExecutive ? "MD" : "HR",
-  );
-  const inMatrix = isRankInMatrix(selectableMatrix, normalized);
-  const legacy = normalized && !inMatrix ? normalized : "";
+function RankSelectField({
+  label,
+  name,
+  defaultValue,
+  value,
+  onChange,
+  mdRankMatrix,
+  viewerRole,
+  canManageExecutive,
+  inputClass,
+}) {
+  const current = (value ?? defaultValue ?? "").trim().toUpperCase();
+  const selectableMatrix = filterRanksForEditor(mdRankMatrix, viewerRole);
+  const inMatrix = isRankInMatrix(selectableMatrix, current);
+  const legacy = current && !inMatrix ? current : "";
+  const controlled = value !== undefined;
 
   return (
     <div className="flex flex-col gap-1 py-2 border-b border-slate-100 last:border-0">
@@ -1450,9 +2045,11 @@ function RankSelectField({ label, name, defaultValue, mdRankMatrix, canManageExe
       )}
       <select
         name={name}
-        defaultValue={inMatrix ? normalized : ""}
+        {...(controlled
+          ? { value: inMatrix ? current : legacy || current || "" }
+          : { defaultValue: inMatrix ? current : legacy || current || "" })}
+        onChange={onChange}
         className={inputClass}
-        required
       >
         <option value="" disabled>
           Select rank…
@@ -1477,7 +2074,92 @@ function RankSelectField({ label, name, defaultValue, mdRankMatrix, canManageExe
   );
 }
 
+function WorkEmailEditField({
+  name,
+  defaultValue,
+  employeeId,
+  allEmployees,
+  inputClass,
+  readOnly = false,
+  required = false,
+  onDuplicateChange,
+}) {
+  const [value, setValue] = useState(defaultValue ?? "");
+  const duplicate = readOnly ? null : findWorkEmailOwner(value, employeeId, allEmployees);
+
+  useEffect(() => {
+    setValue(defaultValue ?? "");
+  }, [defaultValue, employeeId]);
+
+  useEffect(() => {
+    onDuplicateChange?.(duplicate);
+  }, [duplicate, onDuplicateChange]);
+
+  return (
+    <>
+      <label className="text-xs font-black text-slate-500 uppercase tracking-widest">
+        Work Email (portal login)
+      </label>
+      <input
+        type="email"
+        name={name}
+        value={value}
+        readOnly={readOnly}
+        required={required}
+        onChange={(e) => setValue(e.target.value)}
+        className={`${inputClass} ${duplicate ? "text-red-600 border-red-300 focus:ring-red-400" : ""}`}
+      />
+      {duplicate && (
+        <p className="text-[10px] font-bold text-red-600">
+          Work email already in use by {duplicate.full_name}
+        </p>
+      )}
+    </>
+  );
+}
+
+function EpfNoEditField({
+  name,
+  defaultValue,
+  employeeId,
+  allEmployees,
+  inputClass,
+  onDuplicateChange,
+}) {
+  const [value, setValue] = useState(defaultValue ?? "");
+  const duplicate = findEpfNoOwner(value, employeeId, allEmployees);
+
+  useEffect(() => {
+    setValue(defaultValue ?? "");
+  }, [defaultValue, employeeId]);
+
+  useEffect(() => {
+    onDuplicateChange?.(duplicate);
+  }, [duplicate, onDuplicateChange]);
+
+  return (
+    <div className="flex flex-col gap-1 py-2 border-b border-slate-100 last:border-0">
+      <label className="text-xs font-black text-slate-500 uppercase tracking-widest">EPF No</label>
+      <input
+        type="text"
+        name={name}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        className={`${inputClass} font-mono tracking-wider ${
+          duplicate ? "text-red-600 border-red-300 focus:ring-red-400" : ""
+        }`}
+      />
+      {duplicate && (
+        <p className="text-[10px] font-bold text-red-600">
+          EPF number already in use by {duplicate.full_name}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function EditField({ label, name, defaultValue, type = "text", required, mono, multiline, readOnly, inputClass, bare }) {
+  const isEmail = type === "email";
   const inner = (
     <>
       <label className="text-xs font-black text-slate-500 uppercase tracking-widest">{label}</label>
@@ -1496,7 +2178,10 @@ function EditField({ label, name, defaultValue, type = "text", required, mono, m
           defaultValue={defaultValue ?? ""}
           required={required}
           readOnly={readOnly}
-          className={`${inputClass} ${mono ? "font-mono tracking-wider" : ""} ${readOnly ? "bg-slate-100 text-slate-500 cursor-not-allowed" : ""}`}
+          autoCapitalize={isEmail ? "none" : undefined}
+          autoCorrect={isEmail ? "off" : undefined}
+          spellCheck={isEmail ? false : undefined}
+          className={`${inputClass} ${mono ? "font-mono tracking-wider" : ""} ${isEmail ? "normal-case" : ""} ${readOnly ? "bg-slate-100 text-slate-500 cursor-not-allowed" : ""}`}
         />
       )}
     </>
@@ -1511,7 +2196,16 @@ function EditField({ label, name, defaultValue, type = "text", required, mono, m
   );
 }
 
-function DetailRow({ label, value, mono, multiline, badge }) {
+function formatDetailValue(value) {
+  if (value == null || value === "") return null;
+  return String(value).toUpperCase();
+}
+
+function DetailRow({ label, value, mono, multiline, badge, preserveCase }) {
+  const displayValue = preserveCase
+    ? (value == null || value === "" ? null : String(value))
+    : formatDetailValue(value);
+
   return (
     <div className="flex flex-col gap-1 py-2 border-b border-slate-100 last:border-0">
       <p className="text-xs font-black text-slate-500 uppercase tracking-widest">{label}</p>
@@ -1522,21 +2216,24 @@ function DetailRow({ label, value, mono, multiline, badge }) {
             : "bg-slate-100 text-slate-600 border border-slate-200"
         }`}>
           {badge === "active" ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
-          {value}
+          {displayValue}
         </span>
       ) : (
-        <p className={`text-sm text-slate-900 font-bold ${mono ? "font-mono tracking-wider" : ""} ${multiline ? "leading-relaxed" : ""}`}>
-          {value || <span className="text-slate-400">—</span>}
+        <p className={`text-sm text-slate-900 font-bold ${preserveCase ? "normal-case" : "uppercase"} ${mono ? "font-mono tracking-wider" : ""} ${multiline ? "leading-relaxed" : ""}`}>
+          {displayValue || <span className="text-slate-400">—</span>}
         </p>
       )}
     </div>
   );
 }
 
-function VettingCard({ label, expiryDate, days }) {
+function VettingCard({ label, expiryDate, days, documentUrl }) {
+  const hasDoc = Boolean(documentUrl?.trim());
+
   let state = "ok";
-  if (days === null || days === undefined) state = "unknown";
-  else if (days < 0)   state = "expired";
+  if (!hasDoc) state = "missing";
+  else if (days === null || days === undefined) state = "unknown";
+  else if (days < 0) state = "expired";
   else if (days <= 45) state = "expiring";
 
   const C = {
@@ -1544,7 +2241,12 @@ function VettingCard({ label, expiryDate, days }) {
     expiring: { bg: "bg-amber-50",   border: "border-amber-200",   text: "text-amber-800",   Icon: Clock },
     expired:  { bg: "bg-red-50",     border: "border-red-200",     text: "text-red-700",     Icon: XCircle },
     unknown:  { bg: "bg-slate-50",   border: "border-slate-200",   text: "text-slate-600",   Icon: BadgeInfo },
+    missing:  { bg: "bg-slate-50",   border: "border-slate-200",   text: "text-slate-500",   Icon: BadgeInfo },
   }[state];
+
+  const headline = !hasDoc
+    ? "Not uploaded"
+    : expiryDate || "On file — expiry not recorded";
 
   return (
     <div className={`p-5 rounded-xl ${C.bg} border ${C.border}`}>
@@ -1552,9 +2254,9 @@ function VettingCard({ label, expiryDate, days }) {
         <p className={`text-xs font-black uppercase tracking-widest ${C.text}`}>{label}</p>
         <C.Icon className={`w-5 h-5 ${C.text}`} />
       </div>
-      <p className="text-slate-900 font-black text-lg">{expiryDate || "Not Recorded"}</p>
-      {days !== null && days !== undefined && (
-        <p className={`text-xs font-bold mt-1.5 ${C.text}`}>
+      <p className="text-slate-900 font-black text-lg uppercase">{headline}</p>
+      {hasDoc && days !== null && days !== undefined && (
+        <p className={`text-xs font-bold mt-1.5 uppercase ${C.text}`}>
           {days < 0
             ? `Expired ${Math.abs(days)} day${Math.abs(days) !== 1 ? "s" : ""} ago`
             : days === 0

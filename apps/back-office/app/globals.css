@@ -49,18 +49,21 @@
     height: 1px;
   }
 
-  /* Enforce ALL CAPS on text inputs (matches DB trigger expectations). */
+  /* Enforce ALL CAPS on text inputs (matches DB trigger expectations). Email excluded — preserve typed case. */
   .all-caps-input {
     text-transform: uppercase;
   }
 
   input[type="text"],
-  input[type="email"],
   input[type="tel"],
   input[type="password"],
   input:not([type]),
   textarea {
     text-transform: uppercase;
+  }
+
+  input[type="email"] {
+    text-transform: none;
   }
 }
 

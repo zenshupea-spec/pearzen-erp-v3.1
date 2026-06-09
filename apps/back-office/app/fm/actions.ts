@@ -6,6 +6,7 @@ import { calculateStandardDay } from '../../lib/compensation-engine';
 import { completedYearsOfService } from '../../../../packages/gratuity';
 import { adjustedMonthlyBasicFromRank } from '../../../../packages/rank-pay-matrix';
 import { getRankPayMatrix } from '../executive/settings/rank-matrix-actions';
+import { auditStaffAction } from '../../lib/staff-audit';
 
 function calculateStatutory(grossPay: number) {
   return {
@@ -96,6 +97,14 @@ export async function generateMonthEndPayroll(formData: FormData) {
       processedCount++;
     }
   }
+
+  await auditStaffAction({
+    supabase,
+    portal: 'fm',
+    action: 'Generate Month-End Payroll',
+    targetEntity: `${year}-${String(month).padStart(2, '0')}`,
+    details: { month, year, processedCount },
+  });
 
   revalidatePath('/fm');
   revalidatePath('/fm/batch');

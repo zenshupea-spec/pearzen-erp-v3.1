@@ -1,8 +1,14 @@
 import { redirect } from 'next/navigation';
 
+import { getCafeLogoUrl } from '../../../../../packages/supabase/cafe-branding';
 import { getCompanyLogoUrl } from '../../../../../packages/supabase/company-branding';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
-import { resolveCafeEmployeeForUser } from '../../../lib/cafe-front-auth';
+import {
+  cafeEmployeeEpfKey,
+  getCafePortalAuthRecord,
+  resolveCafeEmployeeForUser,
+} from '../../../lib/cafe-front-auth';
+import { createSupabaseServiceClient } from '../../../../../packages/supabase/service';
 
 import CafeFrontLoginForm from './CafeFrontLoginForm';
 
@@ -25,10 +31,24 @@ export default async function CafeFrontLoginPage({
 
   if (user) {
     const employee = await resolveCafeEmployeeForUser(user);
-    if (employee) redirect('/cafe-front');
+    if (employee) {
+      const epf = cafeEmployeeEpfKey(employee);
+      const service = createSupabaseServiceClient();
+      const authRecord = epf ? await getCafePortalAuthRecord(service, epf) : null;
+      redirect(authRecord?.needs_pin_setup ? '/cafe-front/set-pin' : '/cafe-front');
+    }
   }
 
-  const logoUrl = await getCompanyLogoUrl();
+  const [cafeLogoUrl, companyLogoUrl] = await Promise.all([
+    getCafeLogoUrl(),
+    getCompanyLogoUrl(),
+  ]);
 
-  return <CafeFrontLoginForm logoUrl={logoUrl} authError={authError} />;
+  return (
+    <CafeFrontLoginForm
+      cafeLogoUrl={cafeLogoUrl}
+      companyLogoUrl={companyLogoUrl}
+      authError={authError}
+    />
+  );
 }

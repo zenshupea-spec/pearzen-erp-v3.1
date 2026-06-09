@@ -1,12 +1,12 @@
 'use client';
 
 import { CafeFrontSessionGate } from '../../../components/cafe-front/CafeFrontSessionGate';
-import { ShiftCheckinPanel } from '../../../components/cafe-front/ShiftCheckinPanel';
 
+/** Check-in is handled by the portal shell gate — this route keeps a stable URL for bookmarks. */
 export default function CafeFrontCheckinPage() {
   return (
-    <CafeFrontSessionGate subtitle="GPS + selfie shift check-in">
-      {(session) => <ShiftCheckinPanel shiftGate={session.shiftGate} />}
+    <CafeFrontSessionGate>
+      {() => null}
     </CafeFrontSessionGate>
   );
 }

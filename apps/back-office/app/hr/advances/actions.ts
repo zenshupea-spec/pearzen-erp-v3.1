@@ -2,6 +2,7 @@
 
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import { revalidatePath } from 'next/cache';
+import { auditStaffAction } from '../../../lib/staff-audit';
 
 export async function processAdvanceApproval(
   advanceId: string,
@@ -18,6 +19,14 @@ export async function processAdvanceApproval(
       .eq('id', advanceId);
 
     if (error) throw new Error(error.message);
+
+    await auditStaffAction({
+      supabase,
+      portal: 'hr',
+      action: `Salary Advance ${newStatus}`,
+      targetEntity: `Advance ${advanceId}`,
+      details: { advanceId, newStatus },
+    });
 
     // Force Next.js to purge the cache so the MD/HR dashboards update instantly
     revalidatePath('/hr/advances');

@@ -19,6 +19,13 @@ import {
   DEFAULT_GEOFENCE_RADIUS_M,
   resolveGeofenceRadiusM,
 } from '../../../lib/site-geofence';
+import {
+  DEFAULT_APIT_SLABS,
+  DEFAULT_STAMP_DUTY_LKR,
+  parseApitSlabs,
+  parseStampDutyLkr,
+  type ApitSlab,
+} from '../../../../../packages/payroll-deductions';
 
 // Strict error logging for the Audit Ledger
 async function writeAuditLog(supabase: any, companyId: string, actionType: string, entity: string, details: any) {
@@ -129,21 +136,17 @@ function parseInvoiceLetterhead(row: Record<string, unknown> | null): InvoiceLet
     supplierAddress: row.supplier_address as string | undefined,
     tradingName: row.trading_name as string | undefined,
   };
-  if (row.setting_value) {
-    try {
-      const raw = row.setting_value;
-      const parsed =
-        typeof raw === 'string'
-          ? (JSON.parse(raw) as InvoiceLetterheadJson)
-          : (raw as InvoiceLetterheadJson);
-      if (parsed.headOffice || parsed.telephone || parsed.email) {
-        return { ...direct, ...parsed };
-      }
-    } catch {
-      // ignore corrupt JSON
-    }
-  }
-  return direct;
+  const envelope = parseSettingEnvelope(row.setting_value);
+  const fromEnvelope: InvoiceLetterheadJson = {
+    headOffice: envelope.headOffice as string | undefined,
+    telephone: envelope.telephone as string | undefined,
+    email: envelope.email as string | undefined,
+    pvNumber: envelope.pvNumber as string | undefined,
+    supplierTin: envelope.supplierTin as string | undefined,
+    supplierAddress: envelope.supplierAddress as string | undefined,
+    tradingName: envelope.tradingName as string | undefined,
+  };
+  return { ...direct, ...fromEnvelope };
 }
 
 /** VAT, SSCL, and tax-invoice letterhead from md_settings (Invoice Desk reads this). */
@@ -202,39 +205,34 @@ export async function saveMdInvoiceConfig(payload: {
   if (payload.supplierTin !== undefined) letterhead.supplierTin = payload.supplierTin;
   if (payload.supplierAddress !== undefined) letterhead.supplierAddress = payload.supplierAddress;
 
-  const envelope = await loadSettingEnvelope(db, companyId);
-  const setting_value = JSON.stringify({ ...envelope, ...letterhead });
-
-  const row: Record<string, unknown> = {
-    company_id: companyId,
+  const scalar: Record<string, unknown> = {
     vat_rate: payload.vatRate,
     sscl_rate: payload.ssclRate,
-    setting_value,
   };
 
-  // Prefer dedicated letterhead columns when deployed; always persist JSON in setting_value.
-  if (payload.headOffice !== undefined) row.invoice_head_office = payload.headOffice;
-  if (payload.telephone !== undefined) row.invoice_telephone = payload.telephone;
-  if (payload.email !== undefined) row.invoice_email = payload.email;
-  if (payload.pvNumber !== undefined) row.invoice_pv_no = payload.pvNumber;
-  if (payload.supplierTin !== undefined) row.supplier_tin = payload.supplierTin;
-  if (payload.supplierAddress !== undefined) row.supplier_address = payload.supplierAddress;
+  // Prefer dedicated letterhead columns when deployed; always persist letterhead in setting_value too.
+  if (payload.headOffice !== undefined) scalar.invoice_head_office = payload.headOffice;
+  if (payload.telephone !== undefined) scalar.invoice_telephone = payload.telephone;
+  if (payload.email !== undefined) scalar.invoice_email = payload.email;
+  if (payload.pvNumber !== undefined) scalar.invoice_pv_no = payload.pvNumber;
+  if (payload.supplierTin !== undefined) scalar.supplier_tin = payload.supplierTin;
+  if (payload.supplierAddress !== undefined) scalar.supplier_address = payload.supplierAddress;
 
-  let { error } = await db.from('md_settings').upsert(row, { onConflict: 'company_id' });
+  let res = await mergeSettingEnvelope(db, companyId, letterhead, scalar);
 
-  if (error && isMissingColumnError(error.message)) {
-    const fallback: Record<string, unknown> = {
-      company_id: companyId,
+  if (!res.success && isMissingColumnError(res.error)) {
+    res = await mergeSettingEnvelope(db, companyId, letterhead, {
       vat_rate: payload.vatRate,
       sscl_rate: payload.ssclRate,
-      setting_value,
-    };
-    ({ error } = await db.from('md_settings').upsert(fallback, { onConflict: 'company_id' }));
+    });
   }
 
-  if (error) return { success: false, error: error.message };
+  if (!res.success) return res;
 
-  await writeAuditLog(session, companyId, 'UPDATE_INVOICE_SETTINGS', 'MD_SETTINGS', row);
+  await writeAuditLog(session, companyId, 'UPDATE_INVOICE_SETTINGS', 'MD_SETTINGS', {
+    ...scalar,
+    ...letterhead,
+  });
 
   revalidatePath('/executive/settings');
   revalidatePath('/invoice-desk');
@@ -509,7 +507,7 @@ export async function getDivisionNames(): Promise<DivisionNames> {
 }
 
 export async function saveDivisionNames(names: DivisionNames) {
-  const { db, companyId } = await getExecutiveMdSettingsContext();
+  const { session, db, companyId } = await getExecutiveMdSettingsContext();
 
   const sanitized: DivisionNames = {
     security: names.security.trim() || DEFAULT_DIVISION_NAMES.security,
@@ -522,6 +520,8 @@ export async function saveDivisionNames(names: DivisionNames) {
   });
   if (!res.success) return res;
 
+  await writeAuditLog(session, companyId, 'UPDATE_DIVISION_NAMES', 'MD_SETTINGS', sanitized);
+
   revalidatePath('/executive/settings');
   return { success: true };
 }
@@ -533,6 +533,8 @@ export type PayrollStatutorySettings = {
   payrollEpfEmployer: number;
   payrollEtfEmployer: number;
   monthlyDaysDivisor: number;
+  apitSlabs: ApitSlab[];
+  stampDutyLkr: number;
 };
 
 const DEFAULT_PAYROLL_STATUTORY: PayrollStatutorySettings = {
@@ -542,6 +544,8 @@ const DEFAULT_PAYROLL_STATUTORY: PayrollStatutorySettings = {
   payrollEpfEmployer: 12,
   payrollEtfEmployer: 3,
   monthlyDaysDivisor: 26,
+  apitSlabs: DEFAULT_APIT_SLABS,
+  stampDutyLkr: DEFAULT_STAMP_DUTY_LKR,
 };
 
 export async function getPayrollStatutorySettings(): Promise<PayrollStatutorySettings> {
@@ -555,11 +559,15 @@ export async function getPayrollStatutorySettings(): Promise<PayrollStatutorySet
     payrollEpfEmployer: num(raw?.payrollEpfEmployer, DEFAULT_PAYROLL_STATUTORY.payrollEpfEmployer),
     payrollEtfEmployer: num(raw?.payrollEtfEmployer, DEFAULT_PAYROLL_STATUTORY.payrollEtfEmployer),
     monthlyDaysDivisor: num(raw?.monthlyDaysDivisor, DEFAULT_PAYROLL_STATUTORY.monthlyDaysDivisor),
+    apitSlabs: parseApitSlabs(raw?.apitSlabs),
+    stampDutyLkr: parseStampDutyLkr(
+      raw?.stampDutyLkr ?? (raw as { stampDutyAmount?: unknown } | undefined)?.stampDutyAmount,
+    ),
   };
 }
 
 export async function savePayrollStatutorySettings(settings: PayrollStatutorySettings) {
-  const { db, companyId } = await getExecutiveMdSettingsContext();
+  const { session, db, companyId } = await getExecutiveMdSettingsContext();
 
   const sanitized: PayrollStatutorySettings = {
     epfEmployeeRate: num(settings.epfEmployeeRate, DEFAULT_PAYROLL_STATUTORY.epfEmployeeRate),
@@ -568,12 +576,16 @@ export async function savePayrollStatutorySettings(settings: PayrollStatutorySet
     payrollEpfEmployer: num(settings.payrollEpfEmployer, DEFAULT_PAYROLL_STATUTORY.payrollEpfEmployer),
     payrollEtfEmployer: num(settings.payrollEtfEmployer, DEFAULT_PAYROLL_STATUTORY.payrollEtfEmployer),
     monthlyDaysDivisor: Math.min(31, Math.max(20, Math.round(num(settings.monthlyDaysDivisor, 26)))),
+    apitSlabs: parseApitSlabs(settings.apitSlabs),
+    stampDutyLkr: parseStampDutyLkr(settings.stampDutyLkr),
   };
 
   const res = await mergeSettingEnvelope(db, companyId, {
     [MD_SETTINGS_ENVELOPE_KEYS.payrollStatutory]: sanitized,
   });
   if (!res.success) return res;
+
+  await writeAuditLog(session, companyId, 'UPDATE_PAYROLL_STATUTORY_SETTINGS', 'MD_SETTINGS', sanitized);
 
   revalidatePath('/executive/settings');
   return { success: true };

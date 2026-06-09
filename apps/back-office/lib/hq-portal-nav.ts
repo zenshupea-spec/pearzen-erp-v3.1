@@ -89,7 +89,8 @@ export const HQ_PORTAL_NAV: readonly HqPortalNavEntry[] = [
   {
     href: '/hq/audit',
     label: 'Portal Activity Ledger',
-    sub: 'Your portal changes only',
+    sub: 'Cross-portal immutable activity log',
+    roles: 'MD · OD · FM · EA',
     Icon: FileText,
     accent: 'slate',
   },

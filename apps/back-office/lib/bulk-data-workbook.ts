@@ -101,7 +101,7 @@ const EXAMPLE_SITE: Record<string, string | number | boolean> = {
   assigned_sm_epf: 'SM-001',
   latitude: 6.9105,
   longitude: 79.8648,
-  geofence_radius_m: 25,
+  geofence_radius_m: 10,
   verification_mode: 'B',
   provides_food: false,
   food_allowance_lkr: 0,

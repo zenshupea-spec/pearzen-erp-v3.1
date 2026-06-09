@@ -13,6 +13,11 @@ import {
 } from './actions';
 import { fetchCompanyLogo } from './settings/logo-actions';
 import {
+  ExecutiveNavGuardProvider,
+  tryExecutiveNavGuard,
+  useExecutiveNavGuardRef,
+} from './executive-nav-guard';
+import {
   Activity,
   DollarSign,
   Receipt,
@@ -138,6 +143,7 @@ function ProfileAvatar({
 function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const pathname = usePathname();
   const router = useRouter();
+  const navGuardRef = useExecutiveNavGuardRef();
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const [logoUrl, setLogoUrl] = useState<string>('');
   const [sessionProfile, setSessionProfile] = useState<ExecutiveSessionProfile | null>(null);
@@ -184,10 +190,12 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
           <div className={`flex items-center ${collapsed ? 'justify-center' : 'gap-3'}`}>
             {!collapsed && (
               <>
-                <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl border border-indigo-200 bg-indigo-50 shadow-sm">
+                <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center overflow-hidden">
                   {logoUrl
-                    ? <img src={logoUrl} alt="Company logo" className="h-full w-full object-contain p-0.5" />
-                    : <Gem className="h-[18px] w-[18px] text-indigo-700" />}
+                    ? <img src={logoUrl} alt="Company logo" className="h-full w-full object-contain" />
+                    : <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-indigo-200 bg-indigo-50 shadow-sm">
+                        <Gem className="h-[18px] w-[18px] text-indigo-700" />
+                      </div>}
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-black uppercase tracking-tight text-slate-900">Executive</p>
@@ -199,10 +207,12 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
               </>
             )}
             {collapsed && (
-              <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-xl border border-indigo-200 bg-indigo-50 shadow-sm">
+              <div className="flex h-9 w-9 items-center justify-center overflow-hidden">
                 {logoUrl
-                  ? <img src={logoUrl} alt="Company logo" className="h-full w-full object-contain p-0.5" />
-                  : <Gem className="h-[18px] w-[18px] text-indigo-700" />}
+                  ? <img src={logoUrl} alt="Company logo" className="h-full w-full object-contain" />
+                  : <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-indigo-200 bg-indigo-50 shadow-sm">
+                      <Gem className="h-[18px] w-[18px] text-indigo-700" />
+                    </div>}
               </div>
             )}
           </div>
@@ -233,6 +243,11 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
                   <Link
                     href={href}
                     title={collapsed ? label : undefined}
+                    onNavigate={(event) => {
+                      if (!tryExecutiveNavGuard(navGuardRef, href)) {
+                        event.preventDefault();
+                      }
+                    }}
                     className={`group flex items-center gap-3 rounded-xl px-2 py-2.5 transition-all ${
                       collapsed ? 'justify-center' : ''
                     } ${
@@ -287,6 +302,11 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
           <Link
             href={HQ_HUB_PATH}
             title="HQ Hub"
+            onNavigate={(event) => {
+              if (!tryExecutiveNavGuard(navGuardRef, HQ_HUB_PATH)) {
+                event.preventDefault();
+              }
+            }}
             className={`group flex items-center gap-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2.5 transition-all hover:bg-blue-100 hover:border-blue-200 ${collapsed ? 'justify-center' : ''}`}
           >
             <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg border border-blue-200 bg-blue-100 shadow-sm">
@@ -379,23 +399,27 @@ export default function ExecutiveLayout({ children }: { children: ReactNode }) {
 
   if (operationsOnly || cafeHubView) {
     return (
-      <div className="min-h-screen w-full overflow-x-hidden bg-slate-50 text-slate-900 antialiased">
-        <main className="min-h-screen">{children}</main>
-      </div>
+      <ExecutiveNavGuardProvider>
+        <div className="min-h-screen w-full overflow-x-hidden bg-slate-50 text-slate-900 antialiased">
+          <main className="min-h-screen">{children}</main>
+        </div>
+      </ExecutiveNavGuardProvider>
     );
   }
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-slate-50 text-slate-900 antialiased">
+    <ExecutiveNavGuardProvider>
+      <div className="flex h-screen w-full overflow-hidden bg-slate-50 text-slate-900 antialiased">
 
-      {/* Sidebar */}
-      <div className="hidden md:flex">
-        <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((v) => !v)} />
+        {/* Sidebar */}
+        <div className="hidden md:flex">
+          <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((v) => !v)} />
+        </div>
+
+        {/* Main content */}
+        <main className="flex-1 overflow-y-auto">{children}</main>
+
       </div>
-
-      {/* Main content */}
-      <main className="flex-1 overflow-y-auto">{children}</main>
-
-    </div>
+    </ExecutiveNavGuardProvider>
   );
 }

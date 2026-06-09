@@ -1,7 +1,9 @@
 import type { ReactNode } from 'react';
+import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 
-import HqHubShell from '../../components/hq/HqHubShell';
+import HqLayoutShell from '../../components/hq/HqLayoutShell';
+import { canAccessPortalActivityLedger } from '../../lib/audit-portals';
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
 import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access';
 
@@ -19,8 +21,19 @@ export default async function HQLayout({ children }: { children: ReactNode }) {
   const profile = await fetchBackOfficeUserProfile(supabase, user);
   const role = profile.role;
   const isGodMode = role === 'MD' || role === 'OD';
+  const pathname = (await headers()).get('x-pathname') ?? '';
+  const isPortalActivityLedger =
+    pathname === '/hq/audit' || pathname.startsWith('/hq/audit/');
 
-  if (!role || (!isGodMode && role !== 'HR' && role !== 'FM' && role !== 'OM')) {
+  if (!role) {
+    redirect('/login/head-office?error=no_portal_rank');
+  }
+
+  if (isPortalActivityLedger) {
+    if (!canAccessPortalActivityLedger(role)) {
+      redirect('/dashboard');
+    }
+  } else if (!isGodMode && role !== 'HR' && role !== 'FM' && role !== 'OM') {
     redirect('/login/head-office?error=hq_denied');
   }
 
@@ -28,8 +41,8 @@ export default async function HQLayout({ children }: { children: ReactNode }) {
     profile.full_name?.trim() || user.email?.split('@')[0] || 'User';
 
   return (
-    <HqHubShell profileName={profileName} profileRank={role}>
+    <HqLayoutShell profileName={profileName} profileRank={role}>
       {children}
-    </HqHubShell>
+    </HqLayoutShell>
   );
 }

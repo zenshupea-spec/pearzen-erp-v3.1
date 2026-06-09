@@ -6,7 +6,7 @@ import {
   fetchBackOfficeUserProfile,
 } from "../lib/hr-portal-access";
 
-/** Root is not a public hub — unauthenticated users go to login; signed-in users go to their portal. */
+/** Root is not a public hub — unauthenticated users sign in; signed-in users go to their portal. */
 export default async function RootPage() {
   const supabase = await createSupabaseServerClient();
   const {
@@ -14,11 +14,11 @@ export default async function RootPage() {
   } = await supabase.auth.getUser();
 
   if (!user) {
-    redirect("/login");
+    redirect("/login/head-office");
   }
 
   const profile = await fetchBackOfficeUserProfile(supabase, user);
-  const landing = authenticatedLandingPath(profile.role);
+  const landing = authenticatedLandingPath(profile.role, profile);
 
   if (landing === "/login/head-office") {
     redirect("/login/head-office?error=no_portal_rank");

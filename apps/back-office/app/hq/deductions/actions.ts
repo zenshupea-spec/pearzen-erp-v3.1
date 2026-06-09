@@ -7,6 +7,7 @@ import {
 } from '../../../../../packages/supabase/server';
 import { isMissingUniformVoStockTable } from '../../../../../packages/uniform-vo-stock';
 import { resolveCompanyIdForSession } from '../../../lib/company-context';
+import { auditStaffAction } from '../../../lib/staff-audit';
 import {
   MEALS_DEDUCTIONS_LEDGER,
   UNIFORM_DEDUCTIONS_LEDGER,
@@ -161,6 +162,13 @@ export async function lockDeductionMonthForFm(
     }
     return { success: false, error: error.message };
   }
+
+  await auditStaffAction({
+    supabase,
+    portal: 'fm',
+    action: 'Lock Deduction Month',
+    targetEntity: payrollMonth,
+  });
 
   revalidateDeductions();
   return { success: true };
@@ -792,6 +800,17 @@ export async function saveEmployeeDeductionEntry(input: {
     return { success: false, error: error.message };
   }
 
+  await auditStaffAction({
+    supabase,
+    portal: 'hq',
+    action: 'Save Deduction Entry',
+    targetEntity: `Employee ${input.employeeId} · ${payrollMonth}`,
+    details: {
+      mealsAmountLkr: input.mealsAmountLkr,
+      uniformAmountLkr,
+    },
+  });
+
   revalidateDeductions();
   return { success: true };
 }
@@ -875,6 +894,14 @@ export async function approveEmployeeDeductionEntry(
       console.error('❌ payroll_deductions insert:', insError.message);
     }
   }
+
+  await auditStaffAction({
+    supabase,
+    portal: 'fm',
+    action: 'Approve Deduction Entry',
+    targetEntity: `Entry ${entryId} · ${payrollMonthLabel(month)}`,
+    details: { entryId, uniform, meals },
+  });
 
   revalidateDeductions();
   return { success: true };

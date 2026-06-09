@@ -11,7 +11,7 @@ export function canAccessExecutiveDesk(role: string | null | undefined): boolean
 }
 
 /** Ranks that may open the HQ Hub nexus (/dashboard). OM and TM use their own portals only. */
-export const HQ_HUB_ACCESS_ROLES = ['MD', 'OD', 'HR', 'FM'] as const;
+export const HQ_HUB_ACCESS_ROLES = ['MD', 'OD', 'HR', 'FM', 'EA'] as const;
 
 export function canAccessHqHub(role: string | null | undefined): boolean {
   const normalized = normalizePortalRole(role);

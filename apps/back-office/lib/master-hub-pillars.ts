@@ -94,8 +94,8 @@ export const MASTER_HUB_PILLARS: MasterHubPillar[] = [
       {
         label: 'Open Vacancies & Ads',
         description:
-          'Manage active job postings, candidate pipeline, and recruitment workflows.',
-        route: '/hr/onboarding',
+          'Sites understaffed by rank — JSO, OIC, and other guard slots with addresses for recruitment.',
+        route: '/hr/vacancies',
       },
     ],
   },
@@ -111,7 +111,7 @@ export const MASTER_HUB_PILLARS: MasterHubPillar[] = [
       {
         label: 'Portal Activity Ledger',
         description:
-          'Immutable log of your portal actions — every change is recorded.',
+          'Immutable cross-portal activity log — every staff portal change is recorded.',
         route: '/hq/audit',
       },
     ],

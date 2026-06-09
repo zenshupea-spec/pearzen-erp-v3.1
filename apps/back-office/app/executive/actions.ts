@@ -8,7 +8,7 @@ const EXECUTIVE_RANK_META: Record<
   { label: string; accentClass: string }
 > = {
   MD: { label: 'Managing Director', accentClass: 'bg-indigo-600' },
-  OD: { label: 'Operations Director', accentClass: 'bg-violet-600' },
+  OD: { label: 'Operations Developer', accentClass: 'bg-violet-600' },
 };
 
 export type ExecutiveSessionProfile = {

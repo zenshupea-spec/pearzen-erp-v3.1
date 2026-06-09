@@ -14,9 +14,11 @@ import {
   mergeSettingEnvelope,
 } from '../../../../../packages/supabase/md-settings-envelope';
 import {
+  getExecutiveMdSettingsContext,
   getMdSettingsDb,
   resolveExecutiveCompanyId,
 } from './lib/executive-md-settings-db';
+import { writeSettingsAuditLog } from './settings-audit';
 
 export async function getWelfareFundSettings(): Promise<WelfareFundSettings> {
   const companyId = await resolveExecutiveCompanyId();
@@ -64,6 +66,9 @@ export async function saveWelfareFundSettings(settings: WelfareFundSettings) {
   }
 
   if (error) return { success: false, error: error.message };
+
+  const { session, companyId: auditCompanyId } = await getExecutiveMdSettingsContext();
+  await writeSettingsAuditLog(session, auditCompanyId, 'UPDATE_WELFARE_FUND_SETTINGS', sanitized);
 
   revalidatePath('/executive/settings');
   revalidatePath('/fm/settings');

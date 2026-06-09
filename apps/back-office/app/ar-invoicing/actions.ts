@@ -22,6 +22,7 @@ import {
   getCurrentMonthKey,
 } from '../../lib/ar-invoicing/month-window';
 import type { InvoiceBillingClient } from '../../lib/invoice-desk/types';
+import { auditStaffAction } from '../../lib/staff-audit';
 
 export type { ArLedgerClientRecord };
 
@@ -289,6 +290,18 @@ export async function saveArLedger(payload: {
   if (payload.billingClients?.length) {
     await upsertBillingClients(companyId, payload.billingClients);
   }
+
+  const authSupabase = await createSupabaseServerClient();
+  await auditStaffAction({
+    supabase: authSupabase,
+    portal: 'invoice',
+    action: 'Save AR Ledger',
+    targetEntity: `${payload.clients.length} client(s)`,
+    details: {
+      clientCount: payload.clients.length,
+      dispatchedCount: payload.dispatched.length,
+    },
+  });
 
   return { ok: true };
 }

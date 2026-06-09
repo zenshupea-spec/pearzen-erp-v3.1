@@ -10,6 +10,11 @@ import {
   normalizePeriodMonth,
   shiftPeriodMonth,
 } from '../../app/executive/cafe/period-month';
+import {
+  cafeShiftShortLabel,
+  normalizeCafeShiftType,
+  type CafeShiftType,
+} from '../../app/hr/cafe-roster/utils';
 
 export function RosterLeavePanel() {
   const [periodMonth, setPeriodMonth] = useState(normalizePeriodMonth());
@@ -42,7 +47,11 @@ export function RosterLeavePanel() {
     reload();
   }, [periodMonth]);
 
-  const shiftDates = new Set(shifts.map((s) => s.shift_date));
+  const shiftByDate = new Map<string, CafeShiftType>();
+  for (const shift of shifts) {
+    const normalized = normalizeCafeShiftType(shift.shift_type);
+    if (normalized) shiftByDate.set(shift.shift_date, normalized);
+  }
   const leaveSet = new Set(leaveDates);
 
   const submitLeave = () => {
@@ -94,7 +103,8 @@ export function RosterLeavePanel() {
           <div className="grid grid-cols-7 gap-2">
             {monthDays.map((date) => {
               const dayNum = Number(date.slice(-2));
-              const rostered = shiftDates.has(date);
+              const shiftType = shiftByDate.get(date) ?? null;
+              const rostered = Boolean(shiftType);
               const onLeave = leaveSet.has(date);
               const selected = selectedDate === date;
               return (
@@ -108,13 +118,21 @@ export function RosterLeavePanel() {
                       ? 'border-indigo-400 bg-indigo-50 text-indigo-900'
                       : onLeave
                         ? 'border-rose-200 bg-rose-50 text-rose-800'
-                        : rostered
-                          ? 'border-emerald-200 bg-emerald-50/80 text-emerald-900 hover:bg-emerald-100/80'
-                          : 'border-slate-100 bg-slate-50/50 text-slate-300'
+                        : shiftType === 'MORNING'
+                          ? 'border-sky-200 bg-sky-50/80 text-sky-900 hover:bg-sky-100/80'
+                          : shiftType === 'EVENING'
+                            ? 'border-violet-200 bg-violet-50/80 text-violet-900 hover:bg-violet-100/80'
+                            : 'border-slate-100 bg-slate-50/50 text-slate-300'
                   }`}
                 >
                   {dayNum}
-                  {onLeave ? <span className="mt-1 block text-[8px] uppercase">Leave</span> : null}
+                  {onLeave ? (
+                    <span className="mt-1 block text-[8px] uppercase">Leave</span>
+                  ) : shiftType ? (
+                    <span className="mt-1 block text-[8px] uppercase">
+                      {cafeShiftShortLabel(shiftType)}
+                    </span>
+                  ) : null}
                 </button>
               );
             })}

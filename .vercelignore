@@ -1,0 +1,8 @@
+node_modules
+.git
+.turbo
+**/.next
+**/.turbo
+**/node_modules
+apps/field-pwa
+apps/sm-pwa

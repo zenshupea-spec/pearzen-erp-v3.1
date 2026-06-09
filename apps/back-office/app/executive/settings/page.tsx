@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   Settings,
   Clock,
@@ -58,6 +59,8 @@ import {
   UserPlus,
   Upload,
   ImageIcon,
+  RefreshCw,
+  Copy,
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
 import {
@@ -83,11 +86,51 @@ import { fetchCompanyLogo, persistCompanyLogo, clearCompanyLogo } from './logo-a
 import { getRankPayMatrix, saveRankPayMatrix } from './rank-matrix-actions';
 import { getGratuitySettings, saveGratuitySettings } from './gratuity-actions';
 import { getWelfareFundSettings, saveWelfareFundSettings } from './welfare-fund-actions';
-import { getMdEngineConstants, saveMdEngineConstants } from './engine-constants-actions';
+import { getMdEngineConstants, saveMdEngineConstants, type GuardMonthPreviewQty } from './engine-constants-actions';
+import { getBankExportSettings, saveBankExportSettings } from './bank-export-actions';
+import { getPayFormulasSettings, savePayFormulasSettings } from './pay-formulas-actions';
+import { getRbacMatrixPayload, savePortalRbacMatrix } from './rbac-actions';
+import {
+  provisionHeadOfficePortalOtpAction,
+  resetHeadOfficePortalAccessAction,
+} from './portal-auth-actions';
+import {
+  isSystemLockedRank,
+  makeBlankPortalRbacRow,
+  PORTAL_RBAC_PORTALS,
+  type HeadOfficeRbacStaffRow,
+  type PortalAccessLevel,
+  type PortalRbacMatrix,
+} from '../../../../../packages/portal-rbac';
 import type { GratuitySettings } from '../../../../../packages/gratuity';
 import type { WelfareFundSettings } from '../../../../../packages/welfare-fund';
+import {
+  BANK_EXPORT_FORMAT_LABELS,
+  type BankExportFormatId,
+} from '../../../../../packages/bank-export-settings';
+import {
+  calcApit,
+  DEFAULT_APIT_SLABS,
+  DEFAULT_STAMP_DUTY_LKR,
+} from '../../../../../packages/payroll-deductions';
+import {
+  DEFAULT_CAFE_PAY_FORMULAS,
+  DEFAULT_GUARD_PAY_FORMULAS,
+  type CafeFormulaKey,
+  type CafePayFormulas,
+  type GuardFormulaKey,
+  type GuardPayFormulas,
+} from '../../../../../packages/pay-formulas';
 import { LOGO_STORAGE_KEY } from '../../../../../packages/supabase/branding-constants';
 import BulkDataImportPanel from './BulkDataImportPanel';
+import { useExecutiveNavGuardRef } from '../executive-nav-guard';
+import { getSettingsAuditTrail, type SettingsSectionAudit } from './settings-traceability-actions';
+import type { SettingsSectionId } from './settings-section-types';
+import {
+  SectionSaveButton,
+  SettingsCardHeader,
+  SettingsTraceability,
+} from './settings-section-ui';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -169,11 +212,11 @@ const INITIAL: SettingsState = {
   collectionWarningDay: 6,
 
   rankPay: [
-    { id: 'rp-1', rankCode: 'CSO', fullTitle: 'Chief Security Officer',  basicPay: 35000, annualIncrement: 2000, salaryType: 'BANK', operationalGroup: 'GUARD_FIELD' },
-    { id: 'rp-2', rankCode: 'OIC', fullTitle: 'Officer In Charge',        basicPay: 33000, annualIncrement: 1800, salaryType: 'BANK', operationalGroup: 'GUARD_FIELD' },
-    { id: 'rp-3', rankCode: 'SSO', fullTitle: 'Senior Security Officer',  basicPay: 32000, annualIncrement: 1500, salaryType: 'BANK', operationalGroup: 'GUARD_FIELD' },
-    { id: 'rp-4', rankCode: 'JSO', fullTitle: 'Junior Security Officer',  basicPay: 30000, annualIncrement: 1200, salaryType: 'BANK', operationalGroup: 'GUARD_FIELD' },
-    { id: 'rp-5', rankCode: 'LSO', fullTitle: 'Lady Security Officer', basicPay: 30000, annualIncrement: 1200, salaryType: 'BANK', operationalGroup: 'GUARD_FIELD' },
+    { id: 'rp-1', rankCode: 'CSO', fullTitle: 'CHIEF SECURITY OFFICER',  basicPay: 35000, annualIncrement: 2000, salaryType: 'BANK', operationalGroup: 'GUARD_FIELD' },
+    { id: 'rp-2', rankCode: 'OIC', fullTitle: 'OFFICER IN CHARGE',        basicPay: 33000, annualIncrement: 1800, salaryType: 'BANK', operationalGroup: 'GUARD_FIELD' },
+    { id: 'rp-3', rankCode: 'SSO', fullTitle: 'SENIOR SECURITY OFFICER',  basicPay: 32000, annualIncrement: 1500, salaryType: 'BANK', operationalGroup: 'GUARD_FIELD' },
+    { id: 'rp-4', rankCode: 'JSO', fullTitle: 'JUNIOR SECURITY OFFICER',  basicPay: 30000, annualIncrement: 1200, salaryType: 'BANK', operationalGroup: 'GUARD_FIELD' },
+    { id: 'rp-5', rankCode: 'LSO', fullTitle: 'LADY SECURITY OFFICER', basicPay: 30000, annualIncrement: 1200, salaryType: 'BANK', operationalGroup: 'GUARD_FIELD' },
   ],
 
   smPayMode: 'FIXED_AND_PER_VISIT',
@@ -208,49 +251,43 @@ function lkr(n: number) {
   return `LKR ${n.toLocaleString()}`;
 }
 
-/** Progressive APIT using configured IRD slabs */
-function calcApit(gross: number, slabs: Array<{ id: number; min: number; max: number | null; rate: number }>) {
-  if (slabs.length === 0 || gross <= 0) return 0;
-  const sorted = [...slabs].sort((a, b) => a.min - b.min);
-  let tax = 0;
-  for (const slab of sorted) {
-    if (gross <= slab.min) break;
-    const slabTop = slab.max !== null ? slab.max : Infinity;
-    const taxable = Math.min(gross, slabTop) - slab.min;
-    if (taxable > 0 && slab.rate > 0) {
-      tax += taxable * slab.rate / 100;
-    }
-  }
-  return Math.round(tax);
-}
-
 const inputCls = 'w-full rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 transition-all';
 const labelCls = 'mb-1 block text-sm font-bold uppercase tracking-wide text-slate-700';
 
-// ─── Shared Edit Traceability ─────────────────────────────────────────────────
-
-function TraceabilityBlock() {
-  return (
-    <p className="text-[10px] font-medium text-slate-400 flex items-center gap-1 mt-1">
-      <Clock className="h-3 w-3 flex-shrink-0" />
-      Last edited by: Kasuni Perera (FM) — 26 May 2026, 16:45
-    </p>
-  );
-}
-
 // ─── Section Header ───────────────────────────────────────────────────────────
 
-function SectionHeader({ Icon, title, sub, accent = 'text-emerald-800' }: { Icon: React.ElementType; title: string; sub: string; accent?: string }) {
+function SectionHeader({
+  Icon,
+  title,
+  sub,
+  accent = 'text-emerald-800',
+  audit,
+  onSave,
+  saving,
+  saved,
+}: {
+  Icon: React.ElementType;
+  title: string;
+  sub: string;
+  accent?: string;
+  audit?: SettingsSectionAudit;
+  onSave?: () => void;
+  saving?: boolean;
+  saved?: boolean;
+}) {
   return (
-    <div className="mb-5 flex items-center gap-3">
-      <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-emerald-200/80 bg-emerald-50/80">
-        <Icon className={`h-5 w-5 ${accent}`} />
+    <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+      <div className="flex items-center gap-3 min-w-0 flex-1">
+        <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-emerald-200/80 bg-emerald-50/80">
+          <Icon className={`h-5 w-5 ${accent}`} />
+        </div>
+        <div className="min-w-0">
+          <h3 className="text-lg font-bold text-slate-800">{title}</h3>
+          <p className="text-sm font-medium text-slate-700">{sub}</p>
+          <SettingsTraceability audit={audit} />
+        </div>
       </div>
-      <div>
-        <h3 className="text-lg font-bold text-slate-800">{title}</h3>
-        <p className="text-sm font-medium text-slate-700">{sub}</p>
-        <TraceabilityBlock />
-      </div>
+      {onSave ? <SectionSaveButton saving={saving} saved={saved} onClick={onSave} /> : null}
     </div>
   );
 }
@@ -449,7 +486,7 @@ function SecuritySessionsPanel() {
                 <p className="text-sm font-medium text-slate-600">
                   Monitor executive portal logins and revoke unauthorized or stale access in real time.
                 </p>
-                <TraceabilityBlock />
+                <SettingsTraceability />
               </div>
           </div>
 
@@ -659,7 +696,7 @@ function VaultPinConfigPanel() {
             <p className="text-sm font-medium text-slate-600">
               Control idle auto-lock behaviour and update the master vault PIN with MFA verification
             </p>
-            <TraceabilityBlock />
+            <SettingsTraceability />
           </div>
         </div>
       </div>
@@ -1090,7 +1127,7 @@ function MfaEnrollmentPanel() {
             <p className="text-sm font-medium text-slate-600">
               Bind Google Authenticator to each executive vault account — MD and OD each have an independent MFA slot.
             </p>
-            <TraceabilityBlock />
+            <SettingsTraceability />
           </div>
           <span className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-indigo-200/80 bg-indigo-50/80 px-3 py-1 text-xs font-black uppercase tracking-wider text-indigo-800">
             <Users className="h-3 w-3" />
@@ -1118,42 +1155,15 @@ function MfaEnrollmentPanel() {
 
 // ─── RBAC Matrix Panel ────────────────────────────────────────────────────────
 
-type AccessLevel = 'FULL' | 'READ' | 'NONE';
-
-interface RbacRole {
+interface RbacStaffRow {
   id: string;
   label: string;
   sub: string;
-  isLocked?: boolean;
-  lockedMap?: Record<string, AccessLevel>;
-  isCustom?: boolean;
+  email: string | null;
+  isLocked: boolean;
 }
 
-interface RbacPortalDef {
-  id: string;
-  label: string;
-  sub: string;
-  section: string;
-}
-
-interface RbacState {
-  [role: string]: { [portal: string]: AccessLevel };
-}
-
-const RBAC_PORTALS: RbacPortalDef[] = [
-  { id: 'om_command',    label: 'OM Command Center',   sub: 'Field & Scheduling',  section: 'Field Operations'       },
-  { id: 'tm_command',    label: 'TM Command Center',   sub: 'Territory Oversight', section: 'Field Operations'       },
-  { id: 'sm_portal',     label: 'SM Portal',            sub: 'Sector Management',   section: 'Field Operations'       },
-  { id: 'checkin_app',   label: 'Check-in App',         sub: 'Attendance Stream',   section: 'Field Operations'       },
-  { id: 'finance',       label: 'Finance & Payroll',    sub: 'Payroll Processing',  section: 'Finance & Billing'      },
-  { id: 'deductions',    label: 'Deductions Admin',     sub: 'Payroll Lock',        section: 'Finance & Billing'      },
-  { id: 'invoice_desk',  label: 'Invoice Desk',         sub: 'Invoices / Payables', section: 'Finance & Billing'      },
-  { id: 'hr_desk',       label: 'HR Operations Desk',   sub: 'Staff & Payroll',     section: 'HR & Workforce'         },
-  { id: 'vacancies',     label: 'Open Vacancies & Ads', sub: 'Recruitment',         section: 'HR & Workforce'         },
-  { id: 'client_portal', label: 'Client Portal',        sub: 'Client-facing View',  section: 'Auxiliary & Governance' },
-  { id: 'cafe',          label: 'Café Backoffice',      sub: 'Hospitality Portal',  section: 'Auxiliary & Governance' },
-  { id: 'audit_ledger',  label: 'Master Audit Ledger',  sub: 'Audit Trail',         section: 'Auxiliary & Governance' },
-];
+const RBAC_PORTALS = PORTAL_RBAC_PORTALS;
 
 const PORTAL_SECTION_SPANS = (() => {
   const order: string[] = [];
@@ -1165,33 +1175,17 @@ const PORTAL_SECTION_SPANS = (() => {
   return order.map((s) => ({ label: s, count: counts[s] }));
 })();
 
-function makeBlankRow(): Record<string, AccessLevel> {
-  return Object.fromEntries(RBAC_PORTALS.map((p) => [p.id, 'NONE'])) as Record<string, AccessLevel>;
+function staffRowsFromPayload(staff: HeadOfficeRbacStaffRow[]): RbacStaffRow[] {
+  return staff.map((person) => ({
+    id: person.id,
+    label: person.fullName,
+    sub: person.rank ? `${person.rank} · Head Office` : 'Head Office · No rank set',
+    email: person.email,
+    isLocked: isSystemLockedRank(person.rank),
+  }));
 }
 
-const DEFAULT_RBAC_ROLES: RbacRole[] = [
-  { id: 'fm',        label: 'FM',        sub: 'Finance Manager'   },
-  { id: 'hr',        label: 'HR',        sub: 'HR'                },
-  { id: 'sa',        label: 'SA',        sub: 'Senior Admin'      },
-  { id: 'ja',        label: 'JA',        sub: 'Junior Admin'      },
-  { id: 'secretary', label: 'Secretary', sub: 'Secretary'         },
-  {
-    id: 'om', label: 'OM', sub: 'Operating Manager',
-    isLocked: true,
-    lockedMap: { om_command: 'FULL' },
-  },
-];
-
-const INITIAL_RBAC: RbacState = {
-  fm:        { ...makeBlankRow(), finance: 'FULL', deductions: 'FULL', invoice_desk: 'FULL', hr_desk: 'READ'  },
-  hr:        { ...makeBlankRow(), finance: 'READ', deductions: 'READ', hr_desk: 'FULL', vacancies: 'FULL'     },
-  sa:        { om_command: 'FULL', tm_command: 'FULL', sm_portal: 'FULL', checkin_app: 'FULL', finance: 'FULL', deductions: 'FULL', invoice_desk: 'FULL', hr_desk: 'FULL', vacancies: 'FULL', client_portal: 'FULL', cafe: 'FULL', audit_ledger: 'READ' },
-  ja:        { om_command: 'READ', tm_command: 'READ', sm_portal: 'READ', checkin_app: 'READ', finance: 'READ', deductions: 'READ', invoice_desk: 'READ', hr_desk: 'READ', vacancies: 'READ', client_portal: 'READ', cafe: 'NONE', audit_ledger: 'NONE' },
-  secretary: { ...makeBlankRow(), finance: 'READ', invoice_desk: 'READ', hr_desk: 'READ', client_portal: 'READ' },
-  om:        { ...makeBlankRow(), om_command: 'FULL' },
-};
-
-const ACCESS_META: Record<AccessLevel, { label: string; cls: string; dotCls: string; selectCls: string }> = {
+const ACCESS_META: Record<PortalAccessLevel, { label: string; cls: string; dotCls: string; selectCls: string }> = {
   FULL: {
     label:     'Full Access',
     cls:       'border-emerald-200/80 bg-emerald-50/80 text-emerald-900',
@@ -1212,48 +1206,108 @@ const ACCESS_META: Record<AccessLevel, { label: string; cls: string; dotCls: str
   },
 };
 
-function RbacMatrixPanel() {
-  const [roles,  setRoles]  = useState<RbacRole[]>(DEFAULT_RBAC_ROLES);
-  const [matrix, setMatrix] = useState<RbacState>(INITIAL_RBAC);
-  const [saved,  setSaved]  = useState(false);
-  const [showAddRole,   setShowAddRole]   = useState(false);
-  const [newRoleLabel,  setNewRoleLabel]  = useState('');
-  const [newRoleSub,    setNewRoleSub]    = useState('');
+function RbacMatrixPanel({
+  audit,
+}: {
+  audit?: SettingsSectionAudit;
+}) {
+  const [staffRows, setStaffRows] = useState<RbacStaffRow[]>([]);
+  const [matrix, setMatrix] = useState<PortalRbacMatrix>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [generatingId, setGeneratingId] = useState<string | null>(null);
+  const [resettingId, setResettingId] = useState<string | null>(null);
+  const [generatedOtp, setGeneratedOtp] = useState<{
+    otp: string;
+    staffName: string;
+    email: string;
+  } | null>(null);
+  const [otpCopied, setOtpCopied] = useState(false);
 
-  const getCell = (roleId: string, portalId: string): AccessLevel =>
-    matrix[roleId]?.[portalId] ?? 'NONE';
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const payload = await getRbacMatrixPayload();
+        if (cancelled) return;
+        setStaffRows(staffRowsFromPayload(payload.staff));
+        setMatrix(payload.matrix);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to load staff permissions');
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  const setCell = (roleId: string, portalId: string, val: AccessLevel) =>
+  const getCell = (employeeId: string, portalId: string): PortalAccessLevel =>
+    matrix[employeeId]?.[portalId] ?? 'NONE';
+
+  const setCell = (employeeId: string, portalId: string, val: PortalAccessLevel) =>
     setMatrix((prev) => ({
       ...prev,
-      [roleId]: { ...(prev[roleId] ?? makeBlankRow()), [portalId]: val },
+      [employeeId]: { ...(prev[employeeId] ?? makeBlankPortalRbacRow()), [portalId]: val },
     }));
 
-  const handleSave = () => {
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    const result = await savePortalRbacMatrix(matrix);
+    setSaving(false);
+    if (!result.success) {
+      setError(result.error ?? 'Failed to save permissions');
+      return;
+    }
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
   };
 
-  const handleAddRole = () => {
-    if (!newRoleLabel.trim()) return;
-    const id = `custom_${Date.now()}`;
-    setRoles((prev) => [
-      ...prev,
-      { id, label: newRoleLabel.trim(), sub: newRoleSub.trim() || newRoleLabel.trim(), isCustom: true },
-    ]);
-    setMatrix((prev) => ({ ...prev, [id]: makeBlankRow() }));
-    setNewRoleLabel('');
-    setNewRoleSub('');
-    setShowAddRole(false);
+  const handleGenerateOtp = async (person: RbacStaffRow) => {
+    setAuthError(null);
+    setGeneratedOtp(null);
+    setGeneratingId(person.id);
+    const result = await provisionHeadOfficePortalOtpAction(person.id);
+    setGeneratingId(null);
+    if (result.error) {
+      setAuthError(result.error);
+      return;
+    }
+    if (result.success && result.otp) {
+      setGeneratedOtp({
+        otp: result.otp,
+        staffName: result.staffName ?? person.label,
+        email: result.email ?? person.email ?? '—',
+      });
+    }
   };
 
-  const handleRemoveRole = (roleId: string) => {
-    setRoles((prev) => prev.filter((r) => r.id !== roleId));
-    setMatrix((prev) => {
-      const next = { ...prev };
-      delete next[roleId];
-      return next;
-    });
+  const handleResetAccess = async (person: RbacStaffRow) => {
+    setAuthError(null);
+    setResettingId(person.id);
+    const result = await resetHeadOfficePortalAccessAction(person.id);
+    setResettingId(null);
+    if (result.error) {
+      setAuthError(result.error);
+      return;
+    }
+    setGeneratedOtp(null);
+  };
+
+  const copyGeneratedOtp = () => {
+    if (!generatedOtp) return;
+    navigator.clipboard.writeText(generatedOtp.otp);
+    setOtpCopied(true);
+    setTimeout(() => setOtpCopied(false), 2000);
   };
 
   return (
@@ -1272,18 +1326,25 @@ function RbacMatrixPanel() {
                   Role-Based Access Control Matrix
                 </h3>
                 <p className="text-sm font-medium text-slate-600">
-                  Define the permission level each internal role holds across every system portal. Changes are enforced on the next session.
+                  Head Office staff added in HR → MNR appear here automatically. Generate a one-time password for Google sign-in, then staff set a 6-digit PIN. Reset access immediately revokes login and PIN.
                 </p>
-                <TraceabilityBlock />
+                <SettingsTraceability sectionId="portalRbac" audit={audit} />
               </div>
             </div>
 
-            {saved && (
-              <span className="flex items-center gap-1.5 rounded-xl border border-emerald-200/80 bg-emerald-50/80 px-3 py-1.5 text-sm font-bold text-emerald-800">
-                <CheckCircle2 className="h-3.5 w-3.5" />
-                Permissions saved
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              {error && (
+                <span className="rounded-xl border border-rose-200/80 bg-rose-50/80 px-3 py-1.5 text-sm font-bold text-rose-800">
+                  {error}
+                </span>
+              )}
+              {saved && (
+                <span className="flex items-center gap-1.5 rounded-xl border border-emerald-200/80 bg-emerald-50/80 px-3 py-1.5 text-sm font-bold text-emerald-800">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Permissions saved
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1291,7 +1352,7 @@ function RbacMatrixPanel() {
         <div className="border-b border-slate-200/60 bg-white/30 px-6 py-3">
           <div className="flex flex-wrap items-center gap-4">
             <span className="text-sm font-bold uppercase tracking-widest text-slate-600">Access Levels:</span>
-            {(Object.entries(ACCESS_META) as [AccessLevel, typeof ACCESS_META[AccessLevel]][]).map(([key, meta]) => (
+            {(Object.entries(ACCESS_META) as [PortalAccessLevel, typeof ACCESS_META[PortalAccessLevel]][]).map(([key, meta]) => (
               <span
                 key={key}
                 className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-sm font-black uppercase tracking-wider ${meta.cls}`}
@@ -1302,6 +1363,41 @@ function RbacMatrixPanel() {
             ))}
           </div>
         </div>
+
+        {authError ? (
+          <div className="border-b border-rose-100 bg-rose-50 px-6 py-3 text-sm font-semibold text-rose-800">
+            {authError}
+          </div>
+        ) : null}
+
+        {generatedOtp ? (
+          <div className="border-b border-violet-100 bg-violet-50 px-6 py-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <CheckCircle2 className="h-5 w-5 shrink-0 text-violet-700" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-bold text-violet-900">
+                  OTP for {generatedOtp.staffName} ({generatedOtp.email})
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-3">
+                  <span className="font-mono text-3xl font-black tracking-[0.25em] text-violet-700">
+                    {generatedOtp.otp}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={copyGeneratedOtp}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-violet-300 bg-white px-3 py-2 text-xs font-bold text-violet-900"
+                  >
+                    {otpCopied ? <CheckCircle2 className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                    {otpCopied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+                <p className="mt-2 text-xs font-semibold text-violet-800">
+                  Share once. Staff use it after Google sign-in to set their PIN. Reset access blocks their email before the code screen.
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {/* Matrix Table */}
         <div className="overflow-x-auto">
@@ -1319,12 +1415,14 @@ function RbacMatrixPanel() {
                     {label}
                   </th>
                 ))}
-                <th className="w-8 px-2 py-2" />
+                <th className="w-36 px-2 py-2 text-center text-[9px] font-black uppercase tracking-widest text-slate-400 border-l border-slate-200/60">
+                  Login
+                </th>
               </tr>
               {/* Portal column headers */}
               <tr>
                 <th className="w-52 px-6 py-3 text-left text-[11px] font-bold uppercase tracking-widest text-slate-500">
-                  Role
+                  Staff Member
                 </th>
                 {RBAC_PORTALS.map((portal) => (
                   <th
@@ -1337,125 +1435,103 @@ function RbacMatrixPanel() {
                     </div>
                   </th>
                 ))}
-                <th className="w-8 px-2 py-3" />
+                <th className="w-36 px-2 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-slate-500 border-l border-slate-200/40">
+                  Portal OTP
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200/60">
-              {roles.map((role, ri) => (
-                <tr
-                  key={role.id}
-                  className={`transition-colors hover:bg-white/40 ${ri % 2 === 0 ? 'bg-white/20' : ''}`}
-                >
-                  {/* Role label */}
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-3">
-                      <div className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl border ${role.isLocked ? 'border-rose-200/80 bg-rose-50/80' : 'border-violet-200/80 bg-violet-50/80'}`}>
-                        {role.isLocked
-                          ? <Lock className="h-3.5 w-3.5 text-rose-600" />
-                          : <User className="h-3.5 w-3.5 text-violet-700" />
-                        }
-                      </div>
-                      <div>
-                        <p className="text-sm font-black text-slate-900">{role.label}</p>
-                        <p className="text-[11px] text-slate-500">{role.sub}</p>
-                        {role.isLocked && (
-                          <span className="mt-0.5 inline-block rounded-full bg-rose-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-rose-600 border border-rose-200/60">
-                            Immutable
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </td>
-
-                  {/* Portal cells */}
-                  {RBAC_PORTALS.map((portal) => {
-                    const lockedVal = role.isLocked
-                      ? (role.lockedMap?.[portal.id] ?? 'NONE' as AccessLevel)
-                      : undefined;
-                    const level = lockedVal ?? getCell(role.id, portal.id);
-                    const meta  = ACCESS_META[level];
-                    return (
-                      <td key={portal.id} className="px-3 py-3 text-center border-l border-slate-200/40">
-                        {role.isLocked ? (
-                          <span className={`inline-flex items-center gap-1 rounded-xl border px-2 py-1 text-[10px] font-black uppercase tracking-wider opacity-70 ${meta.cls}`}>
-                            <span className={`h-1.5 w-1.5 rounded-full ${meta.dotCls}`} />
-                            {level === 'FULL' ? 'Full' : level === 'READ' ? 'Read' : 'None'}
-                          </span>
-                        ) : (
-                          <div className="relative inline-block">
-                            <select
-                              value={level}
-                              onChange={(e) => setCell(role.id, portal.id, e.target.value as AccessLevel)}
-                              className={`appearance-none rounded-xl border py-1.5 pl-2.5 pr-6 text-[11px] font-black uppercase tracking-wider shadow-sm focus:outline-none focus:ring-2 transition-all cursor-pointer ${meta.selectCls}`}
-                            >
-                              <option value="FULL">Full Access</option>
-                              <option value="READ">Read Only</option>
-                              <option value="NONE">No Access</option>
-                            </select>
-                            <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 opacity-60" />
-                          </div>
-                        )}
-                      </td>
-                    );
-                  })}
-
-                  {/* Remove button for custom roles */}
-                  <td className="px-2 py-3 text-center">
-                    {role.isCustom && (
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveRole(role.id)}
-                        className="flex h-7 w-7 items-center justify-center rounded-lg border border-rose-200/80 bg-rose-50/80 text-rose-500 hover:bg-rose-100 transition-colors"
-                        title="Remove role"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    )}
+              {loading ? (
+                <tr>
+                  <td colSpan={RBAC_PORTALS.length + 2} className="px-6 py-10 text-center text-sm font-medium text-slate-500">
+                    Loading Head Office staff from MNR…
                   </td>
                 </tr>
-              ))}
-
-              {/* Add Role inline form */}
-              {showAddRole && (
-                <tr className="bg-violet-50/50">
-                  <td className="px-6 py-3" colSpan={RBAC_PORTALS.length + 2}>
-                    <div className="flex flex-wrap items-center gap-3">
-                      <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl border border-violet-300/80 bg-violet-100/80">
-                        <UserPlus className="h-3.5 w-3.5 text-violet-700" />
-                      </div>
-                      <input
-                        type="text"
-                        placeholder="Role code (e.g. JA)"
-                        value={newRoleLabel}
-                        onChange={(e) => setNewRoleLabel(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleAddRole()}
-                        className="rounded-lg border border-violet-200 bg-white px-3 py-1.5 text-sm font-bold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-violet-400/40 w-32"
-                      />
-                      <input
-                        type="text"
-                        placeholder="Role title (e.g. Junior Admin)"
-                        value={newRoleSub}
-                        onChange={(e) => setNewRoleSub(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleAddRole()}
-                        className="rounded-lg border border-violet-200 bg-white px-3 py-1.5 text-sm text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-violet-400/40 w-52"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleAddRole}
-                        className="rounded-lg bg-violet-600 px-4 py-1.5 text-sm font-bold uppercase tracking-wider text-white hover:bg-violet-500 transition-colors"
-                      >
-                        Add Role
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { setShowAddRole(false); setNewRoleLabel(''); setNewRoleSub(''); }}
-                        className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-50 transition-colors"
-                      >
-                        Cancel
-                      </button>
-                    </div>
+              ) : staffRows.length === 0 ? (
+                <tr>
+                  <td colSpan={RBAC_PORTALS.length + 2} className="px-6 py-10 text-center text-sm text-slate-600">
+                    <p className="font-bold text-slate-800">No Head Office staff yet</p>
+                    <p className="mt-1">Add employees in HR → MNR and set their corporate group to Head Office. They will appear here automatically.</p>
                   </td>
                 </tr>
+              ) : (
+                staffRows.map((person, ri) => (
+                  <tr
+                    key={person.id}
+                    className={`transition-colors hover:bg-white/40 ${ri % 2 === 0 ? 'bg-white/20' : ''}`}
+                  >
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl border ${person.isLocked ? 'border-rose-200/80 bg-rose-50/80' : 'border-violet-200/80 bg-violet-50/80'}`}>
+                          {person.isLocked
+                            ? <Lock className="h-3.5 w-3.5 text-rose-600" />
+                            : <User className="h-3.5 w-3.5 text-violet-700" />
+                          }
+                        </div>
+                        <div>
+                          <p className="text-sm font-black text-slate-900">{person.label}</p>
+                          <p className="text-[11px] text-slate-500">{person.sub}</p>
+                          {person.isLocked && (
+                            <span className="mt-0.5 inline-block rounded-full bg-rose-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-rose-600 border border-rose-200/60">
+                              System locked
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+
+                    {RBAC_PORTALS.map((portal) => {
+                      const level = getCell(person.id, portal.id);
+                      const meta = ACCESS_META[level];
+                      return (
+                        <td key={portal.id} className="px-3 py-3 text-center border-l border-slate-200/40">
+                          {person.isLocked ? (
+                            <span className={`inline-flex items-center gap-1 rounded-xl border px-2 py-1 text-[10px] font-black uppercase tracking-wider opacity-70 ${meta.cls}`}>
+                              <span className={`h-1.5 w-1.5 rounded-full ${meta.dotCls}`} />
+                              {level === 'FULL' ? 'Full' : level === 'READ' ? 'Read' : 'None'}
+                            </span>
+                          ) : (
+                            <div className="relative inline-block">
+                              <select
+                                value={level}
+                                onChange={(e) => setCell(person.id, portal.id, e.target.value as PortalAccessLevel)}
+                                className={`appearance-none rounded-xl border py-1.5 pl-2.5 pr-6 text-[11px] font-black uppercase tracking-wider shadow-sm focus:outline-none focus:ring-2 transition-all cursor-pointer ${meta.selectCls}`}
+                              >
+                                <option value="FULL">Full Access</option>
+                                <option value="READ">Read Only</option>
+                                <option value="NONE">No Access</option>
+                              </select>
+                              <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 opacity-60" />
+                            </div>
+                          )}
+                        </td>
+                      );
+                    })}
+
+                    <td className="px-2 py-3 border-l border-slate-200/40">
+                      <div className="flex flex-col gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleGenerateOtp(person)}
+                          disabled={!person.email || generatingId === person.id || resettingId === person.id}
+                          className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-violet-600 px-2.5 py-2 text-[10px] font-black uppercase tracking-wider text-white hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <RefreshCw className={`h-3 w-3 ${generatingId === person.id ? 'animate-spin' : ''}`} />
+                          {generatingId === person.id ? '…' : 'Generate OTP'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleResetAccess(person)}
+                          disabled={!person.email || generatingId === person.id || resettingId === person.id}
+                          className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-2 text-[10px] font-black uppercase tracking-wider text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <KeyRound className="h-3 w-3" />
+                          {resettingId === person.id ? '…' : 'Reset access'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
               )}
             </tbody>
           </table>
@@ -1467,27 +1543,19 @@ function RbacMatrixPanel() {
             <div className="flex items-start gap-2 text-sm text-slate-600 max-w-xl">
               <Lock className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-violet-500" />
               <span>
-                Permission changes are logged to the executive audit trail and propagated to all active sessions on the next heartbeat.
-                The MD and OD roles are immutable — contact system engineering to modify root-level access.
-                Operating Manager permissions are system-locked and cannot be modified.
+                Staff are sourced from MNR Head Office records. Permission changes are logged to the executive audit trail and enforced on the next sign-in.
+                MD and OD access is system-locked. Operating Managers are locked to OM Command Center only. Territory Managers are locked to TM Command Center only.
               </span>
             </div>
             <div className="flex items-center gap-3">
               <button
                 type="button"
-                onClick={() => setShowAddRole((v) => !v)}
-                className="flex items-center gap-2 rounded-2xl border border-violet-200/80 bg-violet-50/80 px-4 py-2.5 text-sm font-black uppercase tracking-widest text-violet-700 hover:bg-violet-100/80 transition-all"
-              >
-                <UserPlus className="h-4 w-4" />
-                Add Role
-              </button>
-              <button
-                type="button"
                 onClick={handleSave}
-                className="flex flex-shrink-0 items-center gap-2 rounded-2xl bg-violet-700 px-6 py-2.5 text-sm font-black uppercase tracking-widest text-white shadow-lg shadow-violet-700/25 hover:bg-violet-600 transition-all"
+                disabled={saving || loading || staffRows.length === 0}
+                className="flex flex-shrink-0 items-center gap-2 rounded-2xl bg-violet-700 px-6 py-2.5 text-sm font-black uppercase tracking-widest text-white shadow-lg shadow-violet-700/25 hover:bg-violet-600 transition-all disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Save className="h-4 w-4" />
-                Commit Permissions
+                {saving ? 'Saving…' : 'Commit Permissions'}
               </button>
             </div>
           </div>
@@ -1497,9 +1565,36 @@ function RbacMatrixPanel() {
   );
 }
 
-const MASTER_BANK_FORMATS = [
-  { id: 'commercial_csv', label: 'Commercial Bank — CSV' },
-  { id: 'commercial_txt', label: 'Commercial Bank — TXT' },
+const MASTER_BANK_FORMATS = (Object.entries(BANK_EXPORT_FORMAT_LABELS) as [BankExportFormatId, string][]).map(
+  ([id, label]) => ({ id, label }),
+);
+
+const GUARD_FORMULA_ROWS: {
+  key: GuardFormulaKey;
+  title: string;
+  icon: React.ElementType;
+}[] = [
+  { key: 'standardWorkingDay', title: 'STANDARD WORKING DAY', icon: Sun },
+  { key: 'otRatePerHour', title: 'OT RATE (PER HOUR)', icon: Clock },
+  { key: 'poyaDay', title: 'POYA DAY', icon: Star },
+  { key: 'publicHoliday', title: 'PUBLIC HOLIDAY', icon: Flag },
+  { key: 'statutory', title: 'STATUTORY', icon: Scale },
+  { key: 'weeklyHolidaySunday', title: 'WEEKLY HOLIDAY (SUNDAY)', icon: Moon },
+  { key: 'saturdayHalfDay', title: 'SATURDAY (HALF-DAY BASELINE)', icon: Calendar },
+];
+
+const CAFE_FORMULA_ROWS: {
+  key: CafeFormulaKey;
+  title: string;
+  icon: React.ElementType;
+}[] = [
+  { key: 'standardShift', title: 'STANDARD SHIFT / OTHER DAYS', icon: Sun },
+  { key: 'otRatePerHour', title: 'OT RATE (PER HOUR)', icon: Clock },
+  { key: 'poyaDay', title: 'POYA DAY', icon: Star },
+  { key: 'publicHoliday', title: 'PUBLIC HOLIDAY', icon: Flag },
+  { key: 'statutoryHoliday', title: 'STATUTORY HOLIDAY', icon: Scale },
+  { key: 'weeklyHolidaySunday', title: 'WEEKLY HOLIDAY (SUNDAY)', icon: Moon },
+  { key: 'saturdayShift', title: 'SATURDAY SHIFT', icon: Calendar },
 ];
 
 type SettingsTab = 'GENERAL' | 'SECURITY' | 'CATALOGS' | 'RBAC' | 'OPERATIONS';
@@ -1511,6 +1606,68 @@ const SETTINGS_TABS: { id: SettingsTab; label: string; Icon: React.ElementType }
   { id: 'RBAC',       label: 'Staff Permissions & Roles', Icon: Users       },
   { id: 'OPERATIONS', label: 'Operations & Compliance',   Icon: UserCheck   },
 ];
+
+type SettingsDirtySnapshot = {
+  settings: SettingsState;
+  entities: EntityNames;
+  apitSlabs: typeof DEFAULT_APIT_SLABS;
+  stampDutyAmount: number;
+  masterBankFormat: BankExportFormatId;
+  enforceBankFormat: boolean;
+  isolateExternalBank: boolean;
+  prevMonthThreshold: number;
+  salaryMonthThreshold: number;
+  enforceFlatSiteRate: boolean;
+  allowPoyaOnFlatRate: boolean;
+  smVisits: number;
+  hoSalary: number;
+  guardPreviewQty: GuardMonthPreviewQty;
+  cafePreviewBasic: number;
+  cafePreviewOtHours: number;
+  takeHomeFloor: number;
+  maxDeductionPct: number;
+  dayShiftStart: string;
+  dayShiftEnd: string;
+  nightShiftStart: string;
+  nightShiftEnd: string;
+  defaultGeofenceRadiusM: string;
+  cafeOpenStart: string;
+  cafeOpenEnd: string;
+  guardFormulas: GuardPayFormulas;
+  cafeFormulas: CafePayFormulas;
+  gratuitySettings: GratuitySettings;
+  welfareFundSettings: WelfareFundSettings;
+  companyLogo: string;
+  rankPay: RankPay[];
+  rankAddDraft: Omit<RankPay, 'id'> | null;
+};
+
+function serializeSettingsDirtySnapshot(snap: SettingsDirtySnapshot): string {
+  return JSON.stringify(snap);
+}
+
+function hasRankAddDraft(draft: Omit<RankPay, 'id'>): boolean {
+  return Boolean(
+    draft.rankCode.trim() ||
+      draft.fullTitle.trim() ||
+      draft.basicPay > 0 ||
+      draft.annualIncrement > 0,
+  );
+}
+
+function isInternalSettingsHref(href: string): boolean {
+  if (!href || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:')) {
+    return true;
+  }
+  try {
+    const path = href.startsWith('http')
+      ? new URL(href).pathname
+      : href.split('?')[0] ?? href;
+    return path === '/executive/settings';
+  } catch {
+    return false;
+  }
+}
 
 // ─── Catalog Types & Initial Data ─────────────────────────────────────────────
 
@@ -1602,14 +1759,15 @@ function AssetCatalogsPanel() {
             <div>
               <h3 className="text-lg font-bold text-slate-800">Security Penalty Matrix</h3>
               <p className="text-sm font-medium text-slate-600">Standard deduction amounts applied to guard wages per disciplinary offense</p>
-              <TraceabilityBlock />
+              <SettingsTraceability />
             </div>
           </div>
-          {catalogSaved && (
-            <span className="flex items-center gap-1.5 rounded-xl border border-emerald-200/80 bg-emerald-50/80 px-3 py-1.5 text-sm font-bold text-emerald-800">
-              <CheckCircle2 className="h-3.5 w-3.5" />Catalogs saved
-            </span>
-          )}
+          <SectionSaveButton
+            saving={catalogSaving}
+            saved={catalogSaved}
+            onClick={() => void handleSaveCatalogs()}
+            label="Save Penalties"
+          />
         </div>
 
         <div className="overflow-x-auto">
@@ -1682,7 +1840,7 @@ function AssetCatalogsPanel() {
           <div>
             <h3 className="text-lg font-bold text-slate-800">Shalom Replacement Costs</h3>
             <p className="text-sm font-medium text-slate-600">Standard asset replacement values used to bill tenants or guests for damaged / missing items</p>
-            <TraceabilityBlock />
+            <SettingsTraceability />
           </div>
         </div>
 
@@ -1747,27 +1905,9 @@ function AssetCatalogsPanel() {
         </div>
       </ExecutiveGlassCard>
 
-      {/* ── Save bar ── */}
-      <div className="flex items-center justify-between rounded-2xl border border-white/70 bg-white/40 px-5 py-3.5 backdrop-blur-md">
-        <div className="flex items-start gap-2 text-sm text-slate-600">
-          <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-indigo-500" />
-          <span>These catalogs are referenced during payroll processing and tenant billing. Changes take effect on the next deduction cycle.</span>
-        </div>
-        <div className="ml-4 flex flex-col items-end gap-2">
-          {catalogError && (
-            <p className="text-xs font-bold text-rose-600">{catalogError}</p>
-          )}
-          <button
-            type="button"
-            onClick={handleSaveCatalogs}
-            disabled={catalogSaving}
-            className="flex flex-shrink-0 items-center gap-2 rounded-2xl bg-slate-900 px-6 py-2.5 text-sm font-black uppercase tracking-widest text-white shadow-lg shadow-slate-900/20 hover:bg-slate-700 transition-all disabled:opacity-50"
-          >
-            <Save className="h-4 w-4" />
-            {catalogSaving ? 'Saving...' : 'Save Catalogs'}
-          </button>
-        </div>
-      </div>
+      {catalogError && (
+        <p className="text-xs font-bold text-rose-600">{catalogError}</p>
+      )}
 
     </div>
   );
@@ -1814,9 +1954,14 @@ const fmtSimLKR = (n: number) =>
 
 // ── Month Simulation Panel — Guard (B = LKR 30,000) ──────────────────────────
 
-const MonthSimulator = () => {
+const MonthSimulator = ({
+  qty,
+  onQtyChange,
+}: {
+  qty: GuardMonthPreviewQty;
+  onQtyChange: (qty: GuardMonthPreviewQty) => void;
+}) => {
   const B = 30_000;
-  const [qty, setQty] = React.useState({ std: 20, sun: 4, poya: 1, pubHol: 0, sat: 4 });
 
   const rates = {
     std:    B / 26 + (B / 26) * (14 / 12) * (1 / 26) + (B / 200) * 1.5 * 3,
@@ -1837,8 +1982,8 @@ const MonthSimulator = () => {
   const apit     = simApit(gross);
   const net      = gross - epfEmp - apit - SIM_STAMP;
 
-  const bump = (key: keyof typeof qty, delta: number) =>
-    setQty((p) => ({ ...p, [key]: Math.max(0, Math.min(31, p[key] + delta)) }));
+  const bump = (key: keyof GuardMonthPreviewQty, delta: number) =>
+    onQtyChange({ ...qty, [key]: Math.max(0, Math.min(31, qty[key] + delta)) });
 
   const SimRow = ({
     label,
@@ -1846,7 +1991,7 @@ const MonthSimulator = () => {
     rate,
   }: {
     label: string;
-    k: keyof typeof qty;
+    k: keyof GuardMonthPreviewQty;
     rate: number;
   }) => (
     <div className="flex items-center justify-between gap-2">
@@ -1938,10 +2083,18 @@ const MonthSimulator = () => {
 
 // ── Month Simulation Panel — Café Staff ───────────────────────────────────────
 
-const CafeMonthSimulator = () => {
-  const [cafeB,   setCafeB]   = React.useState(38_000);
-  const [otHours, setOtHours] = React.useState(0);
-
+const CafeMonthSimulator = ({
+  basic,
+  otHours,
+  onBasicChange,
+  onOtHoursChange,
+}: {
+  basic: number;
+  otHours: number;
+  onBasicChange: (value: number) => void;
+  onOtHoursChange: (value: number) => void;
+}) => {
+  const cafeB = basic;
   const dailyRate = cafeB / 26;
   const otRate    = (dailyRate / 9) * 1.5;
   const otPay     = Math.round(otRate * otHours);
@@ -1951,7 +2104,7 @@ const CafeMonthSimulator = () => {
   const net       = gross - epfEmp - apit - SIM_STAMP;
 
   const bumpOt = (delta: number) =>
-    setOtHours((p) => Math.max(0, Math.min(200, p + delta)));
+    onOtHoursChange(Math.max(0, Math.min(200, otHours + delta)));
 
   return (
     <div className="rounded-xl border border-amber-300/80 bg-amber-50/95 px-4 py-3 shadow-sm ring-1 ring-amber-200/60 min-w-[300px]">
@@ -1965,7 +2118,7 @@ const CafeMonthSimulator = () => {
           <input
             type="number"
             value={cafeB}
-            onChange={(e) => setCafeB(parseInt(e.target.value, 10) || 0)}
+            onChange={(e) => onBasicChange(parseInt(e.target.value, 10) || 0)}
             className="w-20 rounded border border-amber-300 bg-white px-1.5 py-0.5 text-center text-xs font-bold text-amber-900"
           />
         </div>
@@ -2046,53 +2199,60 @@ const CafeMonthSimulator = () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-const FormulaRow = ({ title, icon: Icon, defaultFormula }: { title: string; icon: any; defaultFormula: string }) => {
-  const [formula, setFormula] = React.useState(defaultFormula);
-  return (
-    <div className="mb-5">
-      <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1">
-        {Icon && <Icon className="w-3 h-3" />} {title}
-      </div>
-      <div className="flex items-center gap-3 bg-white border border-slate-200 rounded-md p-3 shadow-sm transition-all focus-within:border-indigo-400 focus-within:ring-1 focus-within:ring-indigo-400">
-        <FileText className="w-4 h-4 text-slate-400" />
-        <input
-          type="text"
-          value={formula}
-          onChange={(e) => setFormula(e.target.value)}
-          className="flex-1 text-sm font-mono text-slate-800 outline-none bg-transparent"
-        />
-        <div className="px-2 py-1 bg-indigo-50 border border-indigo-100 rounded text-xs font-bold text-indigo-700 whitespace-nowrap">
-          B=30K: {evaluatePreview(formula)}
-        </div>
+const FormulaRow = ({
+  title,
+  icon: Icon,
+  formula,
+  onChange,
+}: {
+  title: string;
+  icon: React.ElementType;
+  formula: string;
+  onChange: (value: string) => void;
+}) => (
+  <div className="mb-5">
+    <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+      {Icon && <Icon className="w-3 h-3" />} {title}
+    </div>
+    <div className="flex items-center gap-3 bg-white border border-slate-200 rounded-md p-3 shadow-sm transition-all focus-within:border-indigo-400 focus-within:ring-1 focus-within:ring-indigo-400">
+      <FileText className="w-4 h-4 text-slate-400" />
+      <input
+        type="text"
+        value={formula}
+        onChange={(e) => onChange(e.target.value)}
+        className="flex-1 text-sm font-mono text-slate-800 outline-none bg-transparent"
+      />
+      <div className="px-2 py-1 bg-indigo-50 border border-indigo-100 rounded text-xs font-bold text-indigo-700 whitespace-nowrap">
+        B=30K: {evaluatePreview(formula)}
       </div>
     </div>
-  );
-};
+  </div>
+);
 
 // ──────────────────────────────────────────────────────────────────────────────
 
 export default function SettingsPage() {
+  const router = useRouter();
+  const navGuardRef = useExecutiveNavGuardRef();
   const [activeTab, setActiveTab]   = useState<SettingsTab>('GENERAL');
   const [showOpsWarning, setShowOpsWarning] = useState(false);
   const [pendingTab, setPendingTab] = useState<SettingsTab | null>(null);
+  const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
+  const [pendingNavigation, setPendingNavigation] = useState<string | null>(null);
+  const [pendingTabSwitch, setPendingTabSwitch] = useState<SettingsTab | null>(null);
+  const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null);
+  const [settingsHydrated, setSettingsHydrated] = useState(false);
   const [s, setS]               = useState<SettingsState>(INITIAL);
   const [saved, setSaved]       = useState(false);
   const [saving, setSaving]     = useState(false);
+  const [sectionSaving, setSectionSaving] = useState<SettingsSectionId | null>(null);
+  const [sectionSaved, setSectionSaved] = useState<Partial<Record<SettingsSectionId, boolean>>>({});
+  const [auditTrail, setAuditTrail] = useState<Partial<Record<SettingsSectionId, SettingsSectionAudit>>>({});
   const [entities, setEntities] = useState<EntityNames>(INITIAL_ENTITY_NAMES);
 
   // ── Company Logo state ──────────────────────────────────────────────────────
   const [companyLogo, setCompanyLogo] = useState<string>('');
   const logoInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    getRankPayMatrix().then((matrix) => {
-      if (!cancelled) setS((prev) => ({ ...prev, rankPay: matrix }));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const [gratuitySettings, setGratuitySettings] = useState<GratuitySettings>({
     minYears: 5,
@@ -2100,56 +2260,10 @@ export default function SettingsPage() {
   });
   const [gratuityError, setGratuityError] = useState('');
 
-  useEffect(() => {
-    let cancelled = false;
-    getGratuitySettings().then((cfg) => {
-      if (!cancelled) setGratuitySettings(cfg);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const [welfareFundSettings, setWelfareFundSettings] = useState<WelfareFundSettings>({
     monthlyDeductionLkr: 500,
   });
   const [welfareFundError, setWelfareFundError] = useState('');
-
-  useEffect(() => {
-    let cancelled = false;
-    getWelfareFundSettings().then((cfg) => {
-      if (!cancelled) setWelfareFundSettings(cfg);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const { url } = await fetchCompanyLogo();
-      if (cancelled) return;
-      if (url) {
-        setCompanyLogo(url);
-        localStorage.setItem(LOGO_STORAGE_KEY, url);
-        return;
-      }
-      const stored = localStorage.getItem(LOGO_STORAGE_KEY);
-      if (stored?.startsWith('data:')) {
-        const migrated = await persistCompanyLogo(stored);
-        if (!cancelled && migrated.success && migrated.url) {
-          setCompanyLogo(migrated.url);
-          localStorage.setItem(LOGO_STORAGE_KEY, migrated.url);
-          return;
-        }
-      }
-      if (stored) setCompanyLogo(stored);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const handleLogoFile = (file: File) => {
     const reader = new FileReader();
@@ -2168,7 +2282,7 @@ export default function SettingsPage() {
   };
 
   // ── Financial Config state ──────────────────────────────────────────────────
-  const [masterBankFormat,      setMasterBankFormat]      = useState(MASTER_BANK_FORMATS[0].id);
+  const [masterBankFormat,      setMasterBankFormat]      = useState<BankExportFormatId>(MASTER_BANK_FORMATS[0].id);
   const [enforceBankFormat,     setEnforceBankFormat]     = useState(true);
   const [isolateExternalBank,   setIsolateExternalBank]   = useState(true);
   // ── Guard Retention & Salary Release Rules state ─────────────────────────────
@@ -2182,17 +2296,14 @@ export default function SettingsPage() {
   // ── Live Wage Preview calculator state ───────────────────────────────────────
   const [smVisits,     setSmVisits]     = useState(70);
   const [hoSalary,     setHoSalary]     = useState(180000);
+  const [guardPreviewQty, setGuardPreviewQty] = useState<GuardMonthPreviewQty>({
+    std: 20, sun: 4, poya: 1, pubHol: 0, sat: 4,
+  });
+  const [cafePreviewBasic, setCafePreviewBasic] = useState(38_000);
+  const [cafePreviewOtHours, setCafePreviewOtHours] = useState(0);
   const [takeHomeFloor, setTakeHomeFloor] = React.useState(5);
   const [maxDeductionPct, setMaxDeductionPct] = React.useState(5);
   const [complianceLastEditor, setComplianceLastEditor] = React.useState<string | null>(null);
-
-  // Load compliance settings from DB on mount
-  React.useEffect(() => {
-    getComplianceConfig().then((cfg) => {
-      setTakeHomeFloor(cfg.statutory_takehome_floor ?? 5);
-      setMaxDeductionPct(cfg.max_deduction_pct ?? 5);
-    }).catch(() => {/* use defaults */});
-  }, []);
 
   // ── Operational Compliance state ─────────────────────────────────────────────
   const [hardBlockEnabled,  setHardBlockEnabled]  = useState(true);
@@ -2206,46 +2317,11 @@ export default function SettingsPage() {
     String(DEFAULT_GEOFENCE_RADIUS_M),
   );
 
-  // Load shift times from DB on mount
-  React.useEffect(() => {
-    getShiftSettings().then((cfg) => {
-      setDayShiftStart(cfg.security_day_start);
-      setDayShiftEnd(cfg.security_day_end);
-      setNightShiftStart(cfg.security_night_start);
-      setNightShiftEnd(cfg.security_night_end);
-    }).catch(() => {/* use defaults */});
-    getGeofenceSettings()
-      .then((cfg) => setDefaultGeofenceRadiusM(String(cfg.default_geofence_radius_m)))
-      .catch(() => {/* use defaults */});
-  }, []);
-
   // ── Café Operating Window state ──────────────────────────────────────────────
   const [cafeOpenStart, setCafeOpenStart] = useState('07:00');
   const [cafeOpenEnd,   setCafeOpenEnd]   = useState('19:00');
 
-  const applyEngineConstants = React.useCallback(
-    (engine: Awaited<ReturnType<typeof getMdEngineConstants>>) => {
-      setS((prev) => ({
-        ...prev,
-        cafeOtCutoffTime: engine.cafeOtCutoffTime,
-        invoiceDispatchDay: engine.invoiceDispatchDay,
-        payrollTargetDay: engine.payrollTargetDay,
-        collectionWarningDay: engine.collectionWarningDay,
-        smPayMode: engine.smPayMode,
-        smFixedBasic: engine.smFixedBasic,
-        smPerVisitBonus: engine.smPerVisitBonus,
-        fuelSurplusCorrection: engine.fuelSurplusCorrection,
-        cafeOtMaxMonthlyHours: engine.cafeOtMaxMonthlyHours,
-      }));
-      setEnforceFlatSiteRate(engine.enforceFlatSiteRate);
-      setAllowPoyaOnFlatRate(engine.allowPoyaOnFlatRate);
-      setPrevMonthThreshold(engine.prevMonthRetentionThreshold);
-      setSalaryMonthThreshold(engine.salaryMonthRetentionThreshold);
-      setCafeOpenStart(engine.cafeOpenStart);
-      setCafeOpenEnd(engine.cafeOpenEnd);
-    },
-    [],
-  );
+  const syncSavedSnapshotRef = useRef<(patch?: Partial<SettingsDirtySnapshot>) => void>(() => {});
 
   // ── Rank Pay Matrix state ───────────────────────────────────────────────────
   const BLANK_RANK: Omit<RankPay, 'id'> = { rankCode: '', fullTitle: '', basicPay: 0, annualIncrement: 0, salaryType: 'BANK', operationalGroup: 'GUARD_FIELD' };
@@ -2254,24 +2330,19 @@ export default function SettingsPage() {
   const [showAddRank,    setShowAddRank]    = useState(false);
   const [newRankDraft,   setNewRankDraft]   = useState<Omit<RankPay, 'id'>>(BLANK_RANK);
   const [rankMatrixError, setRankMatrixError] = useState('');
+  const [rankMatrixSaving, setRankMatrixSaving] = useState(false);
 
-  const [stampDutyAmount, setStampDutyAmount] = useState(25);
-  // IRD monthly thresholds per Inland Revenue (Amendment) Act No. 02 of 2025
-  const [apitSlabs, setApitSlabs] = useState([
-    { id: 1, min: 0,       max: 150000 as number | null, rate: 0  },
-    { id: 2, min: 150000,  max: 233333 as number | null, rate: 6  },
-    { id: 3, min: 233333,  max: 275000 as number | null, rate: 18 },
-    { id: 4, min: 275000,  max: 316667 as number | null, rate: 24 },
-    { id: 5, min: 316667,  max: 358334 as number | null, rate: 30 },
-    { id: 6, min: 358334,  max: null,                    rate: 36 },
-  ]);
+  const [stampDutyAmount, setStampDutyAmount] = useState(DEFAULT_STAMP_DUTY_LKR);
+  const [apitSlabs, setApitSlabs] = useState(DEFAULT_APIT_SLABS);
+  const [guardFormulas, setGuardFormulas] = useState<GuardPayFormulas>(DEFAULT_GUARD_PAY_FORMULAS);
+  const [cafeFormulas, setCafeFormulas] = useState<CafePayFormulas>(DEFAULT_CAFE_PAY_FORMULAS);
 
   const set = <K extends keyof SettingsState>(key: K, value: SettingsState[K]) =>
     setS((prev) => ({ ...prev, [key]: value }));
 
   const startEditRank = (r: RankPay) => {
     setEditingRankId(r.id);
-    setEditDraft({ rankCode: r.rankCode, fullTitle: r.fullTitle, basicPay: r.basicPay, annualIncrement: r.annualIncrement, salaryType: r.salaryType, operationalGroup: r.operationalGroup });
+    setEditDraft({ rankCode: r.rankCode, fullTitle: r.fullTitle.toUpperCase(), basicPay: r.basicPay, annualIncrement: r.annualIncrement, salaryType: r.salaryType, operationalGroup: r.operationalGroup });
     setShowAddRank(false);
   };
 
@@ -2280,43 +2351,266 @@ export default function SettingsPage() {
     setEditDraft(BLANK_RANK);
   };
 
-  const commitEditRank = () => {
-    if (!editDraft.rankCode.trim() || !editDraft.fullTitle.trim()) return;
-    setS((prev) => ({
-      ...prev,
-      rankPay: prev.rankPay.map((r) =>
-        r.id === editingRankId ? { ...r, ...editDraft, salaryType: 'BANK' } : r
-      ),
-    }));
+  const persistRankPayMatrix = async (matrix: RankPay[]): Promise<boolean> => {
+    setRankMatrixSaving(true);
+    setRankMatrixError('');
+    try {
+      const res = await saveRankPayMatrix(matrix);
+      if (!res.success) {
+        setRankMatrixError(res.error ?? 'Failed to save rank matrix');
+        return false;
+      }
+      return true;
+    } catch {
+      setRankMatrixError('Failed to save rank matrix');
+      return false;
+    } finally {
+      setRankMatrixSaving(false);
+    }
+  };
+
+  const rankPayWithPendingEdit = (matrix: RankPay[]): RankPay[] => {
+    if (!editingRankId || !editDraft.rankCode.trim() || !editDraft.fullTitle.trim()) {
+      return matrix;
+    }
+    return matrix.map((r) =>
+      r.id === editingRankId ? { ...r, ...editDraft, salaryType: 'BANK' as const } : r,
+    );
+  };
+
+  const commitEditRank = async () => {
+    if (!editingRankId || !editDraft.rankCode.trim() || !editDraft.fullTitle.trim()) return;
+    const nextMatrix = s.rankPay.map((r) =>
+      r.id === editingRankId ? { ...r, ...editDraft, salaryType: 'BANK' as const } : r,
+    );
+    if (!(await persistRankPayMatrix(nextMatrix))) return;
+    const nextSettings = { ...s, rankPay: nextMatrix };
+    setS(nextSettings);
     setEditingRankId(null);
     setEditDraft(BLANK_RANK);
+    syncSavedSnapshotRef.current({
+      settings: nextSettings,
+      rankPay: nextMatrix,
+      rankAddDraft: null,
+    });
   };
 
-  const deleteRank = (id: string) =>
-    setS((prev) => ({ ...prev, rankPay: prev.rankPay.filter((r) => r.id !== id) }));
+  const deleteRank = async (id: string) => {
+    const nextMatrix = s.rankPay.filter((r) => r.id !== id);
+    if (!(await persistRankPayMatrix(nextMatrix))) return;
+    const nextSettings = { ...s, rankPay: nextMatrix };
+    setS(nextSettings);
+    if (editingRankId === id) cancelEditRank();
+    syncSavedSnapshotRef.current({
+      settings: nextSettings,
+      rankPay: nextMatrix,
+      rankAddDraft: null,
+    });
+  };
 
-  const commitAddRank = () => {
+  const commitAddRank = async () => {
     if (!newRankDraft.rankCode.trim() || !newRankDraft.fullTitle.trim()) return;
-    setS((prev) => ({
-      ...prev,
-      rankPay: [
-        ...prev.rankPay,
-        { id: `rp-${Date.now()}`, ...newRankDraft, salaryType: 'BANK' },
-      ],
-    }));
+    const nextMatrix = [
+      ...s.rankPay,
+      { id: `rp-${Date.now()}`, ...newRankDraft, salaryType: 'BANK' as const },
+    ];
+    if (!(await persistRankPayMatrix(nextMatrix))) return;
+    const nextSettings = { ...s, rankPay: nextMatrix };
+    setS(nextSettings);
     setNewRankDraft(BLANK_RANK);
     setShowAddRank(false);
+    syncSavedSnapshotRef.current({
+      settings: nextSettings,
+      rankPay: nextMatrix,
+      rankAddDraft: null,
+    });
   };
 
-  const reloadSettingsFromDb = React.useCallback(async () => {
-    const [cfg, payroll, names, engine] = await Promise.all([
+  const buildDirtySnapshot = useCallback(
+    (overrides?: Partial<SettingsDirtySnapshot>): SettingsDirtySnapshot => ({
+      settings: overrides?.settings ?? s,
+      entities: overrides?.entities ?? entities,
+      apitSlabs: overrides?.apitSlabs ?? apitSlabs,
+      stampDutyAmount: overrides?.stampDutyAmount ?? stampDutyAmount,
+      masterBankFormat: overrides?.masterBankFormat ?? masterBankFormat,
+      enforceBankFormat: overrides?.enforceBankFormat ?? enforceBankFormat,
+      isolateExternalBank: overrides?.isolateExternalBank ?? isolateExternalBank,
+      prevMonthThreshold: overrides?.prevMonthThreshold ?? prevMonthThreshold,
+      salaryMonthThreshold: overrides?.salaryMonthThreshold ?? salaryMonthThreshold,
+      enforceFlatSiteRate: overrides?.enforceFlatSiteRate ?? enforceFlatSiteRate,
+      allowPoyaOnFlatRate: overrides?.allowPoyaOnFlatRate ?? allowPoyaOnFlatRate,
+      smVisits: overrides?.smVisits ?? smVisits,
+      hoSalary: overrides?.hoSalary ?? hoSalary,
+      guardPreviewQty: overrides?.guardPreviewQty ?? guardPreviewQty,
+      cafePreviewBasic: overrides?.cafePreviewBasic ?? cafePreviewBasic,
+      cafePreviewOtHours: overrides?.cafePreviewOtHours ?? cafePreviewOtHours,
+      takeHomeFloor: overrides?.takeHomeFloor ?? takeHomeFloor,
+      maxDeductionPct: overrides?.maxDeductionPct ?? maxDeductionPct,
+      dayShiftStart: overrides?.dayShiftStart ?? dayShiftStart,
+      dayShiftEnd: overrides?.dayShiftEnd ?? dayShiftEnd,
+      nightShiftStart: overrides?.nightShiftStart ?? nightShiftStart,
+      nightShiftEnd: overrides?.nightShiftEnd ?? nightShiftEnd,
+      defaultGeofenceRadiusM: overrides?.defaultGeofenceRadiusM ?? defaultGeofenceRadiusM,
+      cafeOpenStart: overrides?.cafeOpenStart ?? cafeOpenStart,
+      cafeOpenEnd: overrides?.cafeOpenEnd ?? cafeOpenEnd,
+      guardFormulas: overrides?.guardFormulas ?? guardFormulas,
+      cafeFormulas: overrides?.cafeFormulas ?? cafeFormulas,
+      gratuitySettings: overrides?.gratuitySettings ?? gratuitySettings,
+      welfareFundSettings: overrides?.welfareFundSettings ?? welfareFundSettings,
+      companyLogo: overrides?.companyLogo ?? companyLogo,
+      rankPay: overrides?.rankPay ?? rankPayWithPendingEdit(s.rankPay),
+      rankAddDraft:
+        overrides?.rankAddDraft ??
+        (showAddRank && hasRankAddDraft(newRankDraft) ? newRankDraft : null),
+    }),
+    [
+      s,
+      entities,
+      apitSlabs,
+      stampDutyAmount,
+      masterBankFormat,
+      enforceBankFormat,
+      isolateExternalBank,
+      prevMonthThreshold,
+      salaryMonthThreshold,
+      enforceFlatSiteRate,
+      allowPoyaOnFlatRate,
+      smVisits,
+      hoSalary,
+      guardPreviewQty,
+      cafePreviewBasic,
+      cafePreviewOtHours,
+      takeHomeFloor,
+      maxDeductionPct,
+      dayShiftStart,
+      dayShiftEnd,
+      nightShiftStart,
+      nightShiftEnd,
+      defaultGeofenceRadiusM,
+      cafeOpenStart,
+      cafeOpenEnd,
+      guardFormulas,
+      cafeFormulas,
+      gratuitySettings,
+      welfareFundSettings,
+      companyLogo,
+      editingRankId,
+      editDraft,
+      showAddRank,
+      newRankDraft,
+    ],
+  );
+
+  const currentSnapshot = useMemo(
+    () => serializeSettingsDirtySnapshot(buildDirtySnapshot()),
+    [buildDirtySnapshot],
+  );
+
+  const isDirty = settingsHydrated && savedSnapshot !== null && currentSnapshot !== savedSnapshot;
+
+  syncSavedSnapshotRef.current = (patch?: Partial<SettingsDirtySnapshot>) => {
+    setSavedSnapshot(serializeSettingsDirtySnapshot(buildDirtySnapshot(patch)));
+  };
+
+  const resetRankDraftUi = () => {
+    setEditingRankId(null);
+    setEditDraft(BLANK_RANK);
+    setShowAddRank(false);
+    setNewRankDraft(BLANK_RANK);
+  };
+
+  const applyDirtySnapshot = useCallback((snap: SettingsDirtySnapshot) => {
+    setS(snap.settings);
+    setEntities(snap.entities);
+    setApitSlabs(snap.apitSlabs);
+    setStampDutyAmount(snap.stampDutyAmount);
+    setMasterBankFormat(snap.masterBankFormat);
+    setEnforceBankFormat(snap.enforceBankFormat);
+    setIsolateExternalBank(snap.isolateExternalBank);
+    setPrevMonthThreshold(snap.prevMonthThreshold);
+    setSalaryMonthThreshold(snap.salaryMonthThreshold);
+    setEnforceFlatSiteRate(snap.enforceFlatSiteRate);
+    setAllowPoyaOnFlatRate(snap.allowPoyaOnFlatRate);
+    setSmVisits(snap.smVisits);
+    setHoSalary(snap.hoSalary);
+    setGuardPreviewQty(snap.guardPreviewQty);
+    setCafePreviewBasic(snap.cafePreviewBasic);
+    setCafePreviewOtHours(snap.cafePreviewOtHours);
+    setTakeHomeFloor(snap.takeHomeFloor);
+    setMaxDeductionPct(snap.maxDeductionPct);
+    setDayShiftStart(snap.dayShiftStart);
+    setDayShiftEnd(snap.dayShiftEnd);
+    setNightShiftStart(snap.nightShiftStart);
+    setNightShiftEnd(snap.nightShiftEnd);
+    setDefaultGeofenceRadiusM(snap.defaultGeofenceRadiusM);
+    setCafeOpenStart(snap.cafeOpenStart);
+    setCafeOpenEnd(snap.cafeOpenEnd);
+    setGuardFormulas(snap.guardFormulas);
+    setCafeFormulas(snap.cafeFormulas);
+    setGratuitySettings(snap.gratuitySettings);
+    setWelfareFundSettings(snap.welfareFundSettings);
+    setCompanyLogo(snap.companyLogo);
+    resetRankDraftUi();
+  }, []);
+
+  const hydrateAllSettings = useCallback(async (): Promise<SettingsDirtySnapshot> => {
+    const [
+      cfg,
+      payroll,
+      names,
+      engine,
+      bank,
+      formulas,
+      rankPay,
+      gratuity,
+      welfare,
+      compliance,
+      shift,
+      geofence,
+      logo,
+    ] = await Promise.all([
       getMdInvoiceConfig(),
       getPayrollStatutorySettings(),
       getDivisionNames(),
       getMdEngineConstants(),
+      getBankExportSettings(),
+      getPayFormulasSettings(),
+      getRankPayMatrix(),
+      getGratuitySettings(),
+      getWelfareFundSettings(),
+      getComplianceConfig(),
+      getShiftSettings(),
+      getGeofenceSettings(),
+      fetchCompanyLogo(),
     ]);
-    setS((prev) => ({
-      ...prev,
+
+    let resolvedLogo = logo.url ?? '';
+    if (!resolvedLogo) {
+      const stored = localStorage.getItem(LOGO_STORAGE_KEY);
+      if (stored?.startsWith('data:')) {
+        const migrated = await persistCompanyLogo(stored);
+        if (migrated.success && migrated.url) {
+          resolvedLogo = migrated.url;
+          localStorage.setItem(LOGO_STORAGE_KEY, migrated.url);
+        }
+      } else if (stored) {
+        resolvedLogo = stored;
+      }
+    } else {
+      localStorage.setItem(LOGO_STORAGE_KEY, resolvedLogo);
+    }
+
+    const settings: SettingsState = {
+      ...INITIAL,
+      cafeOtCutoffTime: engine.cafeOtCutoffTime,
+      invoiceDispatchDay: engine.invoiceDispatchDay,
+      payrollTargetDay: engine.payrollTargetDay,
+      collectionWarningDay: engine.collectionWarningDay,
+      smPayMode: engine.smPayMode,
+      smFixedBasic: engine.smFixedBasic,
+      smPerVisitBonus: engine.smPerVisitBonus,
+      fuelSurplusCorrection: engine.fuelSurplusCorrection,
+      cafeOtMaxMonthlyHours: engine.cafeOtMaxMonthlyHours,
       vatRate: cfg.vatRate,
       ssclRate: cfg.ssclRate,
       invoiceHeadOffice: cfg.headOffice,
@@ -2331,16 +2625,496 @@ export default function SettingsPage() {
       payrollEpfEmployer: payroll.payrollEpfEmployer,
       payrollEtfEmployer: payroll.payrollEtfEmployer,
       monthlyDaysDivisor: payroll.monthlyDaysDivisor,
-    }));
-    setEntities(names);
-    applyEngineConstants(engine);
-  }, [applyEngineConstants]);
+      rankPay: rankPay as RankPay[],
+      rankFormulaMap: {},
+    };
+
+    const snap: SettingsDirtySnapshot = {
+      settings,
+      entities: names,
+      apitSlabs: payroll.apitSlabs,
+      stampDutyAmount: payroll.stampDutyLkr,
+      masterBankFormat: bank.masterFormatId,
+      enforceBankFormat: bank.enforceFormatGlobally,
+      isolateExternalBank: bank.isolateExternalBank,
+      prevMonthThreshold: engine.prevMonthRetentionThreshold,
+      salaryMonthThreshold: engine.salaryMonthRetentionThreshold,
+      enforceFlatSiteRate: engine.enforceFlatSiteRate,
+      allowPoyaOnFlatRate: engine.allowPoyaOnFlatRate,
+      smVisits: engine.smPreviewVisits,
+      hoSalary: engine.hoPreviewSalary,
+      guardPreviewQty: engine.guardPreviewQty,
+      cafePreviewBasic: engine.cafePreviewBasic,
+      cafePreviewOtHours: engine.cafePreviewOtHours,
+      takeHomeFloor: compliance.statutory_takehome_floor ?? 5,
+      maxDeductionPct: compliance.max_deduction_pct ?? 5,
+      dayShiftStart: shift.security_day_start,
+      dayShiftEnd: shift.security_day_end,
+      nightShiftStart: shift.security_night_start,
+      nightShiftEnd: shift.security_night_end,
+      defaultGeofenceRadiusM: String(geofence.default_geofence_radius_m),
+      cafeOpenStart: engine.cafeOpenStart,
+      cafeOpenEnd: engine.cafeOpenEnd,
+      guardFormulas: formulas.guard,
+      cafeFormulas: formulas.cafe,
+      gratuitySettings: gratuity,
+      welfareFundSettings: welfare,
+      companyLogo: resolvedLogo,
+      rankPay: rankPay as RankPay[],
+      rankAddDraft: null,
+    };
+
+    applyDirtySnapshot(snap);
+    return snap;
+  }, [applyDirtySnapshot]);
+
+  const reloadSettingsFromDb = useCallback(async () => {
+    const snap = await hydrateAllSettings();
+    setSavedSnapshot(serializeSettingsDirtySnapshot(snap));
+    setSettingsHydrated(true);
+  }, [hydrateAllSettings]);
 
   useEffect(() => {
-    reloadSettingsFromDb().catch(() => {/* keep form defaults */});
+    reloadSettingsFromDb().catch(() => {
+      setSettingsHydrated(true);
+    });
   }, [reloadSettingsFromDb]);
 
-  const handleSave = async () => {
+  const refreshAuditTrail = useCallback(async () => {
+    try {
+      setAuditTrail(await getSettingsAuditTrail());
+    } catch {
+      /* keep prior trail */
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshAuditTrail().catch(() => undefined);
+  }, [refreshAuditTrail]);
+
+  useEffect(() => {
+    if (!settingsHydrated || savedSnapshot !== null) return;
+    setSavedSnapshot(currentSnapshot);
+  }, [settingsHydrated, savedSnapshot, currentSnapshot]);
+
+  const clearUnsavedPrompt = () => {
+    setShowUnsavedDialog(false);
+    setPendingNavigation(null);
+    setPendingTabSwitch(null);
+  };
+
+  const completePendingLeave = useCallback((tab: SettingsTab) => {
+    if (tab === 'OPERATIONS') {
+      setPendingTab('OPERATIONS');
+      setShowOpsWarning(true);
+      return;
+    }
+    setActiveTab(tab);
+  }, []);
+
+  const finishPendingNavigation = () => {
+    if (pendingNavigation) {
+      const href = pendingNavigation;
+      setPendingNavigation(null);
+      router.push(href);
+      return;
+    }
+    if (pendingTabSwitch) {
+      const tab = pendingTabSwitch;
+      setPendingTabSwitch(null);
+      completePendingLeave(tab);
+    }
+  };
+
+  const promptLeaveSettings = useCallback((href: string) => {
+    setPendingNavigation(href);
+    setPendingTabSwitch(null);
+    setShowUnsavedDialog(true);
+  }, []);
+
+  const requestLeaveSettings = useCallback(
+    (href: string) => {
+      if (!isDirty) {
+        router.push(href);
+        return;
+      }
+      promptLeaveSettings(href);
+    },
+    [isDirty, promptLeaveSettings, router],
+  );
+
+  useEffect(() => {
+    navGuardRef.current = {
+      shouldBlock: (href) => isDirty && !isInternalSettingsHref(href),
+      onBlocked: promptLeaveSettings,
+    };
+    return () => {
+      navGuardRef.current = null;
+    };
+  }, [isDirty, navGuardRef, promptLeaveSettings]);
+
+  const requestTabChange = useCallback(
+    (tab: SettingsTab) => {
+      if (tab === activeTab) return;
+      if (isDirty) {
+        setPendingTabSwitch(tab);
+        setPendingNavigation(null);
+        setShowUnsavedDialog(true);
+        return;
+      }
+      completePendingLeave(tab);
+    },
+    [activeTab, completePendingLeave, isDirty],
+  );
+
+  const discardUnsavedChanges = async () => {
+    const snap = await hydrateAllSettings();
+    setSavedSnapshot(serializeSettingsDirtySnapshot(snap));
+    setSettingsHydrated(true);
+    setShowUnsavedDialog(false);
+    finishPendingNavigation();
+  };
+
+  useEffect(() => {
+    if (!isDirty) return;
+
+    const onClick = (event: MouseEvent) => {
+      const anchor = (event.target as HTMLElement | null)?.closest('a[href]');
+      if (!anchor || anchor.getAttribute('target') === '_blank') return;
+      const href = anchor.getAttribute('href');
+      if (!href || isInternalSettingsHref(href)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      requestLeaveSettings(href);
+    };
+
+    document.addEventListener('click', onClick, true);
+    return () => document.removeEventListener('click', onClick, true);
+  }, [isDirty, requestLeaveSettings]);
+
+  useEffect(() => {
+    if (!isDirty) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [isDirty]);
+
+  const buildEngineConstantsPayload = () => ({
+    cafeOtCutoffTime: s.cafeOtCutoffTime,
+    invoiceDispatchDay: s.invoiceDispatchDay,
+    payrollTargetDay: s.payrollTargetDay,
+    collectionWarningDay: s.collectionWarningDay,
+    smPayMode: s.smPayMode,
+    smFixedBasic: s.smFixedBasic,
+    smPerVisitBonus: s.smPerVisitBonus,
+    fuelSurplusCorrection: s.fuelSurplusCorrection,
+    cafeOtMaxMonthlyHours: s.cafeOtMaxMonthlyHours,
+    enforceFlatSiteRate,
+    allowPoyaOnFlatRate,
+    prevMonthRetentionThreshold: prevMonthThreshold,
+    salaryMonthRetentionThreshold: salaryMonthThreshold,
+    cafeOpenStart,
+    cafeOpenEnd,
+    smPreviewVisits: smVisits,
+    hoPreviewSalary: hoSalary,
+    guardPreviewQty,
+    cafePreviewBasic,
+    cafePreviewOtHours,
+  });
+
+  const patchSavedSnapshot = useCallback(
+    (patcher: (snap: SettingsDirtySnapshot) => void) => {
+      if (!savedSnapshot) return;
+      const snap = JSON.parse(savedSnapshot) as SettingsDirtySnapshot;
+      patcher(snap);
+      setSavedSnapshot(serializeSettingsDirtySnapshot(snap));
+    },
+    [savedSnapshot],
+  );
+
+  const flashSectionSaved = (sectionId: SettingsSectionId) => {
+    setSectionSaved((prev) => ({ ...prev, [sectionId]: true }));
+    setTimeout(() => {
+      setSectionSaved((prev) => ({ ...prev, [sectionId]: false }));
+    }, 2500);
+  };
+
+  const sectionAudit = (sectionId: SettingsSectionId) => auditTrail[sectionId];
+
+  const saveSettingsSection = async (sectionId: SettingsSectionId): Promise<boolean> => {
+    setSectionSaving(sectionId);
+    const record = (label: string, res: { success: boolean; error?: string }) => {
+      if (!res.success) failures.push(`${label}: ${res.error ?? 'unknown error'}`);
+    };
+    const failures: string[] = [];
+
+    try {
+      switch (sectionId) {
+        case 'bankExport':
+          record(
+            'Bank export',
+            await saveBankExportSettings({
+              masterFormatId: masterBankFormat,
+              enforceFormatGlobally: enforceBankFormat,
+              isolateExternalBank,
+            }),
+          );
+          if (!failures.length) {
+            patchSavedSnapshot((snap) => {
+              snap.masterBankFormat = masterBankFormat;
+              snap.enforceBankFormat = enforceBankFormat;
+              snap.isolateExternalBank = isolateExternalBank;
+            });
+          }
+          break;
+        case 'statutory':
+          record(
+            'Invoice & taxes',
+            await saveMdInvoiceConfig({
+              vatRate: s.vatRate,
+              ssclRate: s.ssclRate,
+              headOffice: s.invoiceHeadOffice,
+              telephone: s.invoiceTelephone,
+              email: s.invoiceEmail,
+              pvNumber: s.invoicePvNo,
+              supplierTin: s.supplierTin,
+              supplierAddress: s.supplierAddress,
+            }),
+          );
+          record(
+            'Payroll statutory',
+            await savePayrollStatutorySettings({
+              epfEmployeeRate: s.epfEmployeeRate,
+              epfEmployerRate: s.epfEmployerRate,
+              etfRate: s.etfRate,
+              payrollEpfEmployer: s.payrollEpfEmployer,
+              payrollEtfEmployer: s.payrollEtfEmployer,
+              monthlyDaysDivisor: s.monthlyDaysDivisor,
+              apitSlabs,
+              stampDutyLkr: stampDutyAmount,
+            }),
+          );
+          if (!failures.length) {
+            patchSavedSnapshot((snap) => {
+              snap.settings.vatRate = s.vatRate;
+              snap.settings.ssclRate = s.ssclRate;
+              snap.settings.invoiceHeadOffice = s.invoiceHeadOffice;
+              snap.settings.invoiceTelephone = s.invoiceTelephone;
+              snap.settings.invoiceEmail = s.invoiceEmail;
+              snap.settings.invoicePvNo = s.invoicePvNo;
+              snap.settings.supplierTin = s.supplierTin;
+              snap.settings.supplierAddress = s.supplierAddress;
+              snap.settings.epfEmployeeRate = s.epfEmployeeRate;
+              snap.settings.epfEmployerRate = s.epfEmployerRate;
+              snap.settings.etfRate = s.etfRate;
+              snap.settings.payrollEpfEmployer = s.payrollEpfEmployer;
+              snap.settings.payrollEtfEmployer = s.payrollEtfEmployer;
+              snap.settings.monthlyDaysDivisor = s.monthlyDaysDivisor;
+              snap.apitSlabs = apitSlabs;
+              snap.stampDutyAmount = stampDutyAmount;
+            });
+          }
+          break;
+        case 'payGroup':
+          record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
+          if (!failures.length) {
+            patchSavedSnapshot((snap) => {
+              snap.settings.smPayMode = s.smPayMode;
+              snap.settings.smFixedBasic = s.smFixedBasic;
+              snap.settings.smPerVisitBonus = s.smPerVisitBonus;
+              snap.smVisits = smVisits;
+              snap.hoSalary = hoSalary;
+              snap.guardPreviewQty = guardPreviewQty;
+              snap.cafePreviewBasic = cafePreviewBasic;
+              snap.cafePreviewOtHours = cafePreviewOtHours;
+            });
+          }
+          break;
+        case 'guardRetention':
+          record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
+          if (!failures.length) {
+            patchSavedSnapshot((snap) => {
+              snap.prevMonthThreshold = prevMonthThreshold;
+              snap.salaryMonthThreshold = salaryMonthThreshold;
+            });
+          }
+          break;
+        case 'crossDeployment':
+          record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
+          if (!failures.length) {
+            patchSavedSnapshot((snap) => {
+              snap.enforceFlatSiteRate = enforceFlatSiteRate;
+              snap.allowPoyaOnFlatRate = allowPoyaOnFlatRate;
+            });
+          }
+          break;
+        case 'cafeOtCutoff':
+          record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
+          if (!failures.length) {
+            patchSavedSnapshot((snap) => {
+              snap.settings.cafeOtCutoffTime = s.cafeOtCutoffTime;
+              snap.cafeOpenStart = cafeOpenStart;
+              snap.cafeOpenEnd = cafeOpenEnd;
+            });
+          }
+          break;
+        case 'billingCycle':
+          record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
+          if (!failures.length) {
+            patchSavedSnapshot((snap) => {
+              snap.settings.invoiceDispatchDay = s.invoiceDispatchDay;
+              snap.settings.payrollTargetDay = s.payrollTargetDay;
+              snap.settings.collectionWarningDay = s.collectionWarningDay;
+            });
+          }
+          break;
+        case 'fuelSurplus':
+          record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
+          if (!failures.length) {
+            patchSavedSnapshot((snap) => {
+              snap.settings.fuelSurplusCorrection = s.fuelSurplusCorrection;
+            });
+          }
+          break;
+        case 'cafeOperatingWindow':
+          record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
+          if (!failures.length) {
+            patchSavedSnapshot((snap) => {
+              snap.cafeOpenStart = cafeOpenStart;
+              snap.cafeOpenEnd = cafeOpenEnd;
+            });
+          }
+          break;
+        case 'cafeFormulas':
+          record('Pay formulas', await savePayFormulasSettings({ guard: guardFormulas, cafe: cafeFormulas }));
+          record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
+          if (!failures.length) {
+            patchSavedSnapshot((snap) => {
+              snap.cafeFormulas = cafeFormulas;
+              snap.guardFormulas = guardFormulas;
+              snap.settings.cafeOtMaxMonthlyHours = s.cafeOtMaxMonthlyHours;
+            });
+          }
+          break;
+        case 'guardFormulas':
+          record('Pay formulas', await savePayFormulasSettings({ guard: guardFormulas, cafe: cafeFormulas }));
+          if (!failures.length) {
+            patchSavedSnapshot((snap) => {
+              snap.guardFormulas = guardFormulas;
+              snap.cafeFormulas = cafeFormulas;
+            });
+          }
+          break;
+        case 'compliance':
+          record('Compliance limits', await updateComplianceSettings(takeHomeFloor, maxDeductionPct));
+          if (!failures.length) {
+            patchSavedSnapshot((snap) => {
+              snap.takeHomeFloor = takeHomeFloor;
+              snap.maxDeductionPct = maxDeductionPct;
+            });
+            setComplianceLastEditor('Just now');
+          }
+          break;
+        case 'entityBranding': {
+          record('Division names', await saveDivisionNames(entities));
+          let resolvedLogo = companyLogo;
+          if (companyLogo.startsWith('data:')) {
+            const logoRes = await persistCompanyLogo(companyLogo);
+            if (!logoRes.success) {
+              failures.push(`Company logo: ${logoRes.error ?? 'upload failed'}`);
+            } else if (logoRes.url) {
+              resolvedLogo = logoRes.url;
+              setCompanyLogo(logoRes.url);
+              localStorage.setItem(LOGO_STORAGE_KEY, logoRes.url);
+            }
+          }
+          if (!failures.length) {
+            patchSavedSnapshot((snap) => {
+              snap.entities = entities;
+              snap.companyLogo = resolvedLogo;
+            });
+          }
+          break;
+        }
+        case 'rankPay': {
+          const rankPayToSave = rankPayWithPendingEdit(s.rankPay);
+          if (editingRankId && editDraft.rankCode.trim() && editDraft.fullTitle.trim()) {
+            setS((prev) => ({ ...prev, rankPay: rankPayToSave }));
+            setEditingRankId(null);
+            setEditDraft(BLANK_RANK);
+          }
+          record('Rank pay matrix', await saveRankPayMatrix(rankPayToSave));
+          if (!failures.length) {
+            patchSavedSnapshot((snap) => {
+              snap.rankPay = rankPayToSave;
+              snap.settings = { ...snap.settings, rankPay: rankPayToSave };
+              snap.rankAddDraft = null;
+            });
+          }
+          break;
+        }
+        case 'gratuity':
+          record('Gratuity', await saveGratuitySettings(gratuitySettings));
+          if (!failures.length) patchSavedSnapshot((snap) => { snap.gratuitySettings = gratuitySettings; });
+          break;
+        case 'welfareFund':
+          record('Welfare fund', await saveWelfareFundSettings(welfareFundSettings));
+          if (!failures.length) patchSavedSnapshot((snap) => { snap.welfareFundSettings = welfareFundSettings; });
+          break;
+        case 'geofence': {
+          const radius = parseInt(defaultGeofenceRadiusM, 10);
+          if (!Number.isFinite(radius)) {
+            failures.push('Geofence: invalid radius');
+          } else {
+            record('Geofence default', await updateGeofenceSettings(radius));
+            if (!failures.length) {
+              patchSavedSnapshot((snap) => { snap.defaultGeofenceRadiusM = defaultGeofenceRadiusM; });
+            }
+          }
+          break;
+        }
+        case 'shiftTimes':
+          record(
+            'Guard shift times',
+            await updateShiftSettings(dayShiftStart, dayShiftEnd, nightShiftStart, nightShiftEnd),
+          );
+          if (!failures.length) {
+            patchSavedSnapshot((snap) => {
+              snap.dayShiftStart = dayShiftStart;
+              snap.dayShiftEnd = dayShiftEnd;
+              snap.nightShiftStart = nightShiftStart;
+              snap.nightShiftEnd = nightShiftEnd;
+            });
+          }
+          break;
+        default:
+          break;
+      }
+
+      if (failures.length > 0) {
+        alert(`Could not save this section:\n\n${failures.join('\n')}`);
+        return false;
+      }
+
+      await refreshAuditTrail();
+      flashSectionSaved(sectionId);
+      return true;
+    } catch {
+      alert('Failed to save this section. Please try again.');
+      return false;
+    } finally {
+      setSectionSaving(null);
+    }
+  };
+
+  const saveSection = (sectionId: SettingsSectionId) => () => {
+    void saveSettingsSection(sectionId);
+  };
+
+  const handleSave = async (): Promise<boolean> => {
     setSaving(true);
     const failures: string[] = [];
 
@@ -2372,32 +3146,33 @@ export default function SettingsPage() {
           payrollEpfEmployer: s.payrollEpfEmployer,
           payrollEtfEmployer: s.payrollEtfEmployer,
           monthlyDaysDivisor: s.monthlyDaysDivisor,
+          apitSlabs,
+          stampDutyLkr: stampDutyAmount,
         }),
       );
 
       record(
-        'Engine constants',
-        await saveMdEngineConstants({
-          cafeOtCutoffTime: s.cafeOtCutoffTime,
-          invoiceDispatchDay: s.invoiceDispatchDay,
-          payrollTargetDay: s.payrollTargetDay,
-          collectionWarningDay: s.collectionWarningDay,
-          smPayMode: s.smPayMode,
-          smFixedBasic: s.smFixedBasic,
-          smPerVisitBonus: s.smPerVisitBonus,
-          fuelSurplusCorrection: s.fuelSurplusCorrection,
-          cafeOtMaxMonthlyHours: s.cafeOtMaxMonthlyHours,
-          enforceFlatSiteRate,
-          allowPoyaOnFlatRate,
-          prevMonthRetentionThreshold: prevMonthThreshold,
-          salaryMonthRetentionThreshold: salaryMonthThreshold,
-          cafeOpenStart,
-          cafeOpenEnd,
+        'Bank export',
+        await saveBankExportSettings({
+          masterFormatId: masterBankFormat,
+          enforceFormatGlobally: enforceBankFormat,
+          isolateExternalBank,
         }),
       );
 
+      record('Pay formulas', await savePayFormulasSettings({ guard: guardFormulas, cafe: cafeFormulas }));
+
+      record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
+
       record('Division names', await saveDivisionNames(entities));
-      record('Rank pay matrix', await saveRankPayMatrix(s.rankPay));
+
+      const rankPayToSave = rankPayWithPendingEdit(s.rankPay);
+      if (editingRankId && editDraft.rankCode.trim() && editDraft.fullTitle.trim()) {
+        setS((prev) => ({ ...prev, rankPay: rankPayToSave }));
+        setEditingRankId(null);
+        setEditDraft(BLANK_RANK);
+      }
+      record('Rank pay matrix', await saveRankPayMatrix(rankPayToSave));
       record('Gratuity', await saveGratuitySettings(gratuitySettings));
       record('Welfare fund', await saveWelfareFundSettings(welfareFundSettings));
 
@@ -2430,18 +3205,28 @@ export default function SettingsPage() {
 
       if (failures.length > 0) {
         alert(`Some settings could not be saved:\n\n${failures.join('\n')}`);
-        return;
+        return false;
       }
 
       setComplianceLastEditor('Just now');
       await reloadSettingsFromDb();
+      await refreshAuditTrail();
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
+      return true;
     } catch {
       alert('Failed to save settings. Please try again.');
+      return false;
     } finally {
       setSaving(false);
     }
+  };
+
+  const saveUnsavedChangesAndLeave = async () => {
+    const ok = await handleSave();
+    if (!ok) return;
+    setShowUnsavedDialog(false);
+    finishPendingNavigation();
   };
 
   const SM_MODES: { id: SmPayMode; label: string; desc: string }[] = [
@@ -2453,6 +3238,53 @@ export default function SettingsPage() {
   return (
     <>
       <SaveToast visible={saved} message="All settings saved to engine" />
+
+      {/* ── Unsaved changes dialog ── */}
+      {showUnsavedDialog && (
+        <div className="fixed inset-0 z-[310] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm">
+          <div className="mx-4 w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-900/30 ring-1 ring-slate-900/[0.05]">
+            <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4 flex items-center gap-3">
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-amber-300/80 bg-amber-100/80">
+                <AlertTriangle className="h-5 w-5 text-amber-600" />
+              </div>
+              <div>
+                <h3 className="text-base font-black uppercase tracking-widest text-slate-900">Unsaved Changes</h3>
+                <p className="text-sm font-medium text-slate-600">Settings &amp; Compensations</p>
+              </div>
+            </div>
+            <div className="p-6">
+              <p className="text-sm font-semibold text-slate-700 leading-relaxed">
+                You have changes that are not saved yet. Save them before leaving, discard and revert to the last saved version, or keep editing.
+              </p>
+              <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <button
+                  type="button"
+                  onClick={clearUnsavedPrompt}
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-600 shadow-sm hover:bg-slate-50 transition-all"
+                >
+                  Keep Editing
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void discardUnsavedChanges()}
+                  disabled={saving}
+                  className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-bold text-rose-700 shadow-sm hover:bg-rose-100 transition-all disabled:opacity-50"
+                >
+                  Discard Changes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void saveUnsavedChangesAndLeave()}
+                  disabled={saving}
+                  className="rounded-xl bg-emerald-600 px-5 py-2 text-sm font-black uppercase tracking-wider text-white shadow-lg shadow-emerald-600/25 hover:bg-emerald-500 transition-all disabled:opacity-50"
+                >
+                  {saving ? 'Saving…' : 'Save & Leave'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Operations & Compliance warning dialog ── */}
       {showOpsWarning && (
@@ -2508,18 +3340,11 @@ export default function SettingsPage() {
                 Settings & Compensations
               </h1>
               <p className="text-sm font-semibold text-slate-500 uppercase tracking-wider">
-                Master Configurator · One save commits all sections below
+                {isDirty
+                  ? 'Unsaved changes · save each section below or you will be prompted before leaving'
+                  : 'Master Configurator · each section saves independently'}
               </p>
             </div>
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={saving}
-              className="flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-black uppercase tracking-widest text-white shadow-lg shadow-emerald-600/25 hover:bg-emerald-500 transition-all disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <Save className="h-4 w-4" />
-              {saving ? 'Saving…' : 'Save All Settings'}
-            </button>
           </div>
         </header>
 
@@ -2530,14 +3355,7 @@ export default function SettingsPage() {
               <button
                 key={id}
                 type="button"
-                onClick={() => {
-                  if (id === 'OPERATIONS' && activeTab !== 'OPERATIONS') {
-                    setPendingTab('OPERATIONS');
-                    setShowOpsWarning(true);
-                  } else {
-                    setActiveTab(id);
-                  }
-                }}
+                onClick={() => requestTabChange(id)}
                 className={`flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition-all ${
                   activeTab === id
                     ? 'bg-slate-900 text-white shadow-sm'
@@ -2562,7 +3380,7 @@ export default function SettingsPage() {
           )}
 
           {activeTab === 'RBAC' && (
-            <RbacMatrixPanel />
+            <RbacMatrixPanel audit={sectionAudit('portalRbac')} />
           )}
 
           {activeTab === 'CATALOGS' && (
@@ -2579,20 +3397,17 @@ export default function SettingsPage() {
 
               {/* ── Corporate Bank Integration ── */}
               <ExecutiveGlassCard className="overflow-hidden">
-                <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4 flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-indigo-200/80 bg-indigo-50/80">
-                      <Landmark className="h-5 w-5 text-indigo-700" />
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-bold text-slate-800">Corporate Bank Integration</h3>
-                      <p className="text-sm font-medium text-slate-600">
-                        Set the master bank export format and enforce it globally across all payroll desks
-                      </p>
-                      <TraceabilityBlock />
-                    </div>
-                  </div>
-                </div>
+                <SettingsCardHeader
+                  icon={Landmark}
+                  iconClassName="border-indigo-200/80 bg-indigo-50/80 text-indigo-700"
+                  title="Corporate Bank Integration"
+                  sub="Set the master bank export format and enforce it globally across all payroll desks"
+                  sectionId="bankExport"
+                  audit={sectionAudit('bankExport')}
+                  saving={sectionSaving === 'bankExport'}
+                  saved={sectionSaved.bankExport}
+                  onSave={saveSection('bankExport')}
+                />
 
                 <div className="p-6 space-y-6">
                   <div>
@@ -2602,7 +3417,7 @@ export default function SettingsPage() {
                     </label>
                     <select
                       value={masterBankFormat}
-                      onChange={(e) => setMasterBankFormat(e.target.value)}
+                      onChange={(e) => setMasterBankFormat(e.target.value as BankExportFormatId)}
                       className="w-full rounded-2xl border border-slate-200/80 bg-white/90 px-4 py-3 text-sm font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-all sm:max-w-sm"
                     >
                       {MASTER_BANK_FORMATS.map((f) => (
@@ -2716,28 +3531,24 @@ export default function SettingsPage() {
                   </div>
 
                   <p className="text-sm font-medium text-slate-500">
-                    Bank export format is preview-only until wired to the database. All other fields on this page save with <strong>Save All Settings</strong>.
+                    Bank export settings apply to the FM payroll desk when you save this section.
                   </p>
                 </div>
               </ExecutiveGlassCard>
 
-              {/* ── Compensation & Engine · Statutory Modifiers (2-col cluster) ── */}
-              <div className="grid grid-cols-1 gap-8 xl:grid-cols-2">
-
               {/* ── Global Statutory Modifiers ── */}
               <ExecutiveGlassCard className="overflow-hidden">
-                <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-emerald-200/80 bg-emerald-50/80">
-                      <Percent className="h-5 w-5 text-emerald-800" />
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-bold text-slate-800">Global Statutory Modifiers</h3>
-                      <p className="text-sm font-medium text-slate-600">Invoice taxes, payroll deduction percentages, and daily rate divisor applied across all companies</p>
-                      <TraceabilityBlock />
-                    </div>
-                  </div>
-                </div>
+                <SettingsCardHeader
+                  icon={Percent}
+                  iconClassName="border-emerald-200/80 bg-emerald-50/80 text-emerald-800"
+                  title="Global Statutory Modifiers"
+                  sub="Invoice taxes, payroll deduction percentages, and daily rate divisor applied across all companies"
+                  sectionId="statutory"
+                  audit={sectionAudit('statutory')}
+                  saving={sectionSaving === 'statutory'}
+                  saved={sectionSaved.statutory}
+                  onSave={saveSection('statutory')}
+                />
 
                 <div className="p-6 space-y-6">
                   <div className="flex flex-col gap-5 w-full">
@@ -2985,7 +3796,7 @@ export default function SettingsPage() {
                         >
                           <Plus className="h-3 w-3" /> Add Tax Slab
                         </button>
-                        <p className="mt-1.5 text-xs font-medium text-slate-500">Progressive APIT engine locked to current IRD monthly thresholds.</p>
+                        <p className="mt-1.5 text-xs font-medium text-slate-500">APIT slabs persist to the database and drive payroll deductions.</p>
                       </div>
                     </div>
 
@@ -3030,13 +3841,6 @@ export default function SettingsPage() {
                     </div>
                   </div>
 
-                  {/* Granular audit trail */}
-                  <div className="border-t border-slate-100 pt-3">
-                    <p className="text-[10px] font-medium text-slate-400 flex items-center gap-1.5">
-                      <Clock className="h-3 w-3 flex-shrink-0" />
-                      Last edited by: Kasuni Perera (FM) &mdash; 26 May 2026, 16:45 &nbsp;&bull;&nbsp; VAT 18%, SSCL 2.5%, EPF 8%/12%, ETF 3%, APIT IRD brackets locked, Stamp Duty threshold LKR 30,000 &mdash; Ref: CFG-2026-0041
-                    </p>
-                  </div>
                 </div>
               </ExecutiveGlassCard>
 
@@ -3047,18 +3851,17 @@ export default function SettingsPage() {
 
               {/* ── Corporate Pay Group Mapping ── */}
               <ExecutiveGlassCard className="overflow-hidden">
-                <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-violet-200/80 bg-violet-50/80">
-                      <Briefcase className="h-5 w-5 text-violet-700" />
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-bold text-slate-800">Corporate Pay Group Mapping</h3>
-                      <p className="text-sm font-medium text-slate-600">Canonical compensation architecture governing how each operational group is paid</p>
-                      <TraceabilityBlock />
-                    </div>
-                  </div>
-                </div>
+                <SettingsCardHeader
+                  icon={Briefcase}
+                  iconClassName="border-violet-200/80 bg-violet-50/80 text-violet-700"
+                  title="Corporate Pay Group Mapping"
+                  sub="Canonical compensation architecture governing how each operational group is paid"
+                  sectionId="payGroup"
+                  audit={sectionAudit('payGroup')}
+                  saving={sectionSaving === 'payGroup'}
+                  saved={sectionSaved.payGroup}
+                  onSave={saveSection('payGroup')}
+                />
 
                 <div className="p-6 space-y-4">
 
@@ -3087,7 +3890,13 @@ export default function SettingsPage() {
                         </div>
                         {/* Month Simulation Preview */}
                         <div className="mt-3">
-                          <MonthSimulator />
+                          <MonthSimulator
+                            qty={guardPreviewQty}
+                            onQtyChange={setGuardPreviewQty}
+                          />
+                          <p className="mt-1.5 text-xs font-medium text-slate-500">
+                            Month simulation counts persist when you save this section.
+                          </p>
                         </div>
                       </div>
                     </div>
@@ -3375,7 +4184,15 @@ export default function SettingsPage() {
                         </div>
                         {/* Café Month Simulation */}
                         <div className="mt-3">
-                          <CafeMonthSimulator />
+                          <CafeMonthSimulator
+                            basic={cafePreviewBasic}
+                            otHours={cafePreviewOtHours}
+                            onBasicChange={setCafePreviewBasic}
+                            onOtHoursChange={setCafePreviewOtHours}
+                          />
+                          <p className="mt-1.5 text-xs font-medium text-slate-500">
+                            Basic and OT hours persist when you save this section.
+                          </p>
                         </div>
                       </div>
                     </div>
@@ -3386,20 +4203,17 @@ export default function SettingsPage() {
 
               {/* ── Guard Retention & Salary Release Rules ── */}
               <ExecutiveGlassCard className="overflow-hidden">
-                <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
-                  <div className="flex items-center justify-between gap-3 flex-wrap">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-rose-200/80 bg-rose-50/80">
-                        <ShieldAlert className="h-5 w-5 text-rose-700" />
-                      </div>
-                      <div>
-                        <h3 className="text-lg font-bold text-slate-800">Guard Retention &amp; Salary Release Rules</h3>
-                        <p className="text-sm font-medium text-slate-600">Dynamically configure the minimum shift thresholds required to release previous month salaries. This prevents active roster desertion.</p>
-                        <TraceabilityBlock />
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                <SettingsCardHeader
+                  icon={ShieldAlert}
+                  iconClassName="border-rose-200/80 bg-rose-50/80 text-rose-700"
+                  title="Guard Retention & Salary Release Rules"
+                  sub="Dynamically configure the minimum shift thresholds required to release previous month salaries. This prevents active roster desertion."
+                  sectionId="guardRetention"
+                  audit={sectionAudit('guardRetention')}
+                  saving={sectionSaving === 'guardRetention'}
+                  saved={sectionSaved.guardRetention}
+                  onSave={saveSection('guardRetention')}
+                />
 
                 <div className="p-6 space-y-5">
 
@@ -3478,11 +4292,19 @@ export default function SettingsPage() {
 
               {/* COMPLIANCE & DEDUCTION LIMITS CARD */}
               <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm mb-6">
-                <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
-                  <div className="flex items-center gap-2">
-                    <ShieldAlert className="w-5 h-5 text-indigo-600" />
-                    <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">Compliance & Deduction Limits</h3>
+                <div className="flex items-start justify-between gap-3 mb-2 flex-wrap">
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                    <ShieldAlert className="w-5 h-5 text-indigo-600 flex-shrink-0" />
+                    <div>
+                      <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">Compliance & Deduction Limits</h3>
+                      <SettingsTraceability audit={sectionAudit('compliance')} />
+                    </div>
                   </div>
+                  <SectionSaveButton
+                    saving={sectionSaving === 'compliance'}
+                    saved={sectionSaved.compliance}
+                    onClick={saveSection('compliance')}
+                  />
                 </div>
                 <p className="text-xs text-slate-500 mb-5">Configure statutory take-home limits and deduction caps. These values are enforced by both the FM payroll engine and the OM recovery plan builder.</p>
 
@@ -3524,40 +4346,35 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
-                <div className="mt-4 pt-4 border-t border-slate-100 text-[10px] font-medium text-slate-400 flex items-center gap-1">
-                  <Clock className="w-3 h-3" />
-                  {complianceLastEditor ? `Last saved — ${complianceLastEditor}` : 'Commits with Save All Settings in the header'}
-                </div>
               </div>
 
               {/* ── Dynamic Statutory Formula Builder Guards ── */}
-              <ExecutiveGlassCard className="overflow-hidden xl:col-span-2">
-                <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4 flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-teal-200/80 bg-teal-50/80">
-                      <FlaskConical className="h-5 w-5 text-teal-700" />
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-bold text-slate-800">Dynamic Statutory Formula Builder Guards</h3>
-                      <p className="text-sm font-medium text-slate-600">
-                        Construct the algebraic string used by the payroll engine to compute statutory entitlements for guard (field operations) employees
-                      </p>
-                      <TraceabilityBlock />
-                    </div>
-                  </div>
-                </div>
+              <ExecutiveGlassCard className="overflow-hidden">
+                <SettingsCardHeader
+                  icon={FlaskConical}
+                  iconClassName="border-teal-200/80 bg-teal-50/80 text-teal-700"
+                  title="Dynamic Statutory Formula Builder Guards"
+                  sub="Construct the algebraic string used by the payroll engine to compute statutory entitlements for guard (field operations) employees"
+                  sectionId="guardFormulas"
+                  audit={sectionAudit('guardFormulas')}
+                  saving={sectionSaving === 'guardFormulas'}
+                  saved={sectionSaved.guardFormulas}
+                  onSave={saveSection('guardFormulas')}
+                />
 
                 <div className="p-6 space-y-6">
 
                   {/* Day-Type Formula Matrix */}
                   <div className="flex flex-col w-full">
-                    <FormulaRow title="STANDARD WORKING DAY" icon={Sun} defaultFormula="(B/26) + ((B/200) * 1.5 * 3)" />
-                    <FormulaRow title="OT RATE (PER HOUR)" icon={Clock} defaultFormula="(B/200) * 1.5" />
-                    <FormulaRow title="POYA DAY" icon={Star} defaultFormula="(B/200) * (2 * 11)" />
-                    <FormulaRow title="PUBLIC HOLIDAY" icon={Flag} defaultFormula="(B/26) + ((B/26) * (14/12) * (1/26)) + ((B/200) * 1.5 * 3)" />
-                    <FormulaRow title="STATUTORY" icon={Scale} defaultFormula="(B/26) + ((B/26) * (14/12) * (1/26)) + ((B/200) * 1.5 * 3)" />
-                    <FormulaRow title="WEEKLY HOLIDAY (SUNDAY)" icon={Moon} defaultFormula="(B/200) * 1.5 * 11" />
-                    <FormulaRow title="SATURDAY (HALF-DAY BASELINE)" icon={Calendar} defaultFormula="((B/26) * (6/8)) + ((B/200) * 1.5 * 5)" />
+                    {GUARD_FORMULA_ROWS.map(({ key, title, icon }) => (
+                      <FormulaRow
+                        key={key}
+                        title={title}
+                        icon={icon}
+                        formula={guardFormulas[key]}
+                        onChange={(value) => setGuardFormulas((prev) => ({ ...prev, [key]: value }))}
+                      />
+                    ))}
                   </div>
 
                   {/* Variable Legend */}
@@ -3580,39 +4397,35 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
-                <div className="border-t border-slate-200/60 bg-slate-50/60 px-6 py-3 text-sm font-medium text-slate-500">
-                  Formula strings are preview-only until the compile engine is connected. Statutory rates save with Save All Settings.
-                </div>
               </ExecutiveGlassCard>
 
               {/* ── Dynamic Statutory Formula Builder — Café Staff ── */}
-              <ExecutiveGlassCard className="overflow-hidden xl:col-span-2">
-                <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4 flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-amber-200/80 bg-amber-50/80">
-                      <Coffee className="h-5 w-5 text-amber-700" />
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-bold text-slate-800">Dynamic Statutory Formula Builder Cafe Staff</h3>
-                      <p className="text-sm font-medium text-slate-600">
-                        Construct the algebraic string used by the payroll engine to compute statutory entitlements for café employees
-                      </p>
-                      <TraceabilityBlock />
-                    </div>
-                  </div>
-                </div>
+              <ExecutiveGlassCard className="overflow-hidden">
+                <SettingsCardHeader
+                  icon={Coffee}
+                  iconClassName="border-amber-200/80 bg-amber-50/80 text-amber-700"
+                  title="Dynamic Statutory Formula Builder Cafe Staff"
+                  sub="Construct the algebraic string used by the payroll engine to compute statutory entitlements for café employees"
+                  sectionId="cafeFormulas"
+                  audit={sectionAudit('cafeFormulas')}
+                  saving={sectionSaving === 'cafeFormulas'}
+                  saved={sectionSaved.cafeFormulas}
+                  onSave={saveSection('cafeFormulas')}
+                />
 
                 <div className="p-6 space-y-6">
 
                   {/* Day-Type Formula Matrix — Café */}
                   <div className="flex flex-col w-full">
-                    <FormulaRow title="STANDARD SHIFT / OTHER DAYS" icon={Sun}      defaultFormula="(B/26)" />
-                    <FormulaRow title="OT RATE (PER HOUR)"           icon={Clock}    defaultFormula="(B/26/9) * 1.5" />
-                    <FormulaRow title="POYA DAY"                      icon={Star}     defaultFormula="((B/26/9) * 1.5) * HRS" />
-                    <FormulaRow title="PUBLIC HOLIDAY"                icon={Flag}     defaultFormula="(B/26)" />
-                    <FormulaRow title="STATUTORY HOLIDAY"             icon={Scale}    defaultFormula="((B/26/9) * 1.5) * HRS" />
-                    <FormulaRow title="WEEKLY HOLIDAY (SUNDAY)"       icon={Moon}     defaultFormula="(B/26)" />
-                    <FormulaRow title="SATURDAY SHIFT"                icon={Calendar} defaultFormula="(B/26)" />
+                    {CAFE_FORMULA_ROWS.map(({ key, title, icon }) => (
+                      <FormulaRow
+                        key={key}
+                        title={title}
+                        icon={icon}
+                        formula={cafeFormulas[key]}
+                        onChange={(value) => setCafeFormulas((prev) => ({ ...prev, [key]: value }))}
+                      />
+                    ))}
                   </div>
 
                   {/* Calculation Note */}
@@ -3667,29 +4480,21 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
-                <div className="border-t border-slate-200/60 bg-slate-50/60 px-6 py-3 text-sm font-medium text-slate-500">
-                  Café OT cap and cutoff save with Save All Settings in the header.
-                </div>
               </ExecutiveGlassCard>
-
-              </div>{/* end xl:grid-cols-2 cluster */}
 
               {/* ── Cross-Deployment Pay Rules ── */}
               <ExecutiveGlassCard className="overflow-hidden">
-                <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-5">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-sky-200/80 bg-sky-50/80">
-                      <ArrowRightLeft className="h-5 w-5 text-sky-700" />
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-bold text-slate-800">Cross-Deployment Pay Rules</h3>
-                      <p className="text-sm font-medium text-slate-600">
-                        Controls how pay is calculated when a guard is loaned to a non-default site
-                      </p>
-                      <TraceabilityBlock />
-                    </div>
-                  </div>
-                </div>
+                <SettingsCardHeader
+                  icon={ArrowRightLeft}
+                  iconClassName="border-sky-200/80 bg-sky-50/80 text-sky-700"
+                  title="Cross-Deployment Pay Rules"
+                  sub="Controls how pay is calculated when a guard is loaned to a non-default site"
+                  sectionId="crossDeployment"
+                  audit={sectionAudit('crossDeployment')}
+                  saving={sectionSaving === 'crossDeployment'}
+                  saved={sectionSaved.crossDeployment}
+                  onSave={saveSection('crossDeployment')}
+                />
 
                 <div className="divide-y divide-slate-200/60 p-6 space-y-4">
 
@@ -3763,20 +4568,17 @@ export default function SettingsPage() {
 
           {/* ── Legal Entity Branding ── */}
           <ExecutiveGlassCard className="overflow-hidden">
-            {/* Card header */}
-            <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-indigo-200/80 bg-indigo-50/80">
-                  <Globe2 className="h-5 w-5 text-indigo-700" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-bold text-slate-800">Legal Entity Branding &amp; Names</h3>
-                  <p className="text-sm font-medium text-slate-600">Canonical division names used across all generated documents and portals</p>
-                  <TraceabilityBlock />
-                </div>
-              </div>
-
-            </div>
+            <SettingsCardHeader
+              icon={Globe2}
+              iconClassName="border-indigo-200/80 bg-indigo-50/80 text-indigo-700"
+              title="Legal Entity Branding & Names"
+              sub="Canonical division names used across all generated documents and portals"
+              sectionId="entityBranding"
+              audit={sectionAudit('entityBranding')}
+              saving={sectionSaving === 'entityBranding'}
+              saved={sectionSaved.entityBranding}
+              onSave={saveSection('entityBranding')}
+            />
 
             <div className="p-6">
 
@@ -3915,7 +4717,16 @@ export default function SettingsPage() {
 
             {/* Café OT Cutoff */}
             <ExecutiveGlassCard className="p-6">
-              <SectionHeader Icon={Clock} title="Café OT Time-Cutoff Kill-Switch" sub="Blocks the OT multiplier for any minutes worked past this time" accent="text-rose-700" />
+              <SectionHeader
+                Icon={Clock}
+                title="Café OT Time-Cutoff Kill-Switch"
+                sub="Blocks the OT multiplier for any minutes worked past this time"
+                accent="text-rose-700"
+                audit={sectionAudit('cafeOtCutoff')}
+                onSave={saveSection('cafeOtCutoff')}
+                saving={sectionSaving === 'cafeOtCutoff'}
+                saved={sectionSaved.cafeOtCutoff}
+              />
 
               <div className="rounded-2xl border border-rose-200/70 bg-rose-50/40 p-4">
                 <label className={labelCls}>OT Cutoff Time</label>
@@ -3933,6 +4744,66 @@ export default function SettingsPage() {
                 </p>
               </div>
 
+              <div className="mt-5 rounded-2xl border border-amber-200/70 bg-amber-50/40 p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <Coffee className="h-4 w-4 text-amber-700" />
+                  <p className="text-sm font-black uppercase tracking-wide text-amber-900">
+                    Café Front Check-in Hours
+                  </p>
+                </div>
+                <p className="mb-4 text-xs font-semibold text-amber-800">
+                  Counter staff can only GPS check-in during this window. Portal stays open 1 hour after close; check-out requires GPS + selfie.
+                </p>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className={labelCls}>Opens</label>
+                    <input
+                      type="time"
+                      value={cafeOpenStart}
+                      onChange={(e) => setCafeOpenStart(e.target.value)}
+                      className="w-full rounded-xl border border-amber-200/80 bg-white/95 px-3 py-2.5 text-sm font-black text-amber-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-500/40 transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Closes</label>
+                    <input
+                      type="time"
+                      value={cafeOpenEnd}
+                      onChange={(e) => setCafeOpenEnd(e.target.value)}
+                      className="w-full rounded-xl border border-amber-200/80 bg-white/95 px-3 py-2.5 text-sm font-black text-amber-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-500/40 transition-all"
+                    />
+                  </div>
+                </div>
+                <p className="mt-3 text-xs font-semibold text-amber-800">
+                  Active window: <strong>{cafeOpenStart}</strong> – <strong>{cafeOpenEnd}</strong>
+                </p>
+                <p className="mt-2 text-xs font-semibold text-amber-800">
+                  Morning shift (9h): <strong>{cafeOpenStart}</strong> –{' '}
+                  <strong>
+                    {(() => {
+                      const [sh, sm] = cafeOpenStart.split(':').map(Number);
+                      const endMins = sh * 60 + sm + 9 * 60;
+                      const eh = Math.floor(endMins / 60) % 24;
+                      const em = endMins % 60;
+                      return `${String(eh).padStart(2, '0')}:${String(em).padStart(2, '0')}`;
+                    })()}
+                  </strong>
+                  {' · '}
+                  Evening shift (9h):{' '}
+                  <strong>
+                    {(() => {
+                      const [eh, em] = cafeOpenEnd.split(':').map(Number);
+                      const startMins = eh * 60 + em - 9 * 60;
+                      const sh = Math.floor(startMins / 60) % 24;
+                      const sm = startMins % 60;
+                      return `${String(sh).padStart(2, '0')}:${String(sm).padStart(2, '0')}`;
+                    })()}
+                  </strong>
+                  {' – '}
+                  <strong>{cafeOpenEnd}</strong>
+                </p>
+              </div>
+
               <div className="mt-4 flex items-center gap-2 rounded-xl border border-amber-200/80 bg-amber-50/60 px-3 py-2 text-sm text-amber-800">
                 <AlertTriangle className="h-3 w-3 flex-shrink-0" />
                 Changing this affects all future Café payroll calculations immediately.
@@ -3941,7 +4812,15 @@ export default function SettingsPage() {
 
             {/* Billing Cycle */}
             <ExecutiveGlassCard className="p-6">
-              <SectionHeader Icon={Calendar} title="Dynamic Billing Cycle Parameters" sub="Invoice dispatch, payroll target, and collection warning dates" />
+              <SectionHeader
+                Icon={Calendar}
+                title="Dynamic Billing Cycle Parameters"
+                sub="Invoice dispatch, payroll target, and collection warning dates"
+                audit={sectionAudit('billingCycle')}
+                onSave={saveSection('billingCycle')}
+                saving={sectionSaving === 'billingCycle'}
+                saved={sectionSaved.billingCycle}
+              />
 
               <div className="space-y-4">
                 <div>
@@ -4010,18 +4889,23 @@ export default function SettingsPage() {
             {/* Card header */}
             <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 min-w-0 flex-1">
                   <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-emerald-200/80 bg-emerald-50/80">
                     <DollarSign className="h-5 w-5 text-emerald-800" />
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <h3 className="text-lg font-bold text-slate-800">Master Rank Basic Pay Ledger</h3>
                     <p className="text-sm font-medium text-slate-600">Base monthly pay, salary type (Bank/Cash), and pay category per rank — HO, Guard (Field Operations), Café Operations, or SM (MD dictated). Shared with FM; increment applies each completed service year.</p>
-                    <TraceabilityBlock />
+                    <SettingsTraceability audit={sectionAudit('rankPay')} />
                   </div>
                 </div>
 
                 <div className="flex items-center gap-3">
+                  <SectionSaveButton
+                    saving={sectionSaving === 'rankPay' || rankMatrixSaving}
+                    saved={sectionSaved.rankPay}
+                    onClick={saveSection('rankPay')}
+                  />
                   <button
                     type="button"
                     onClick={() => { setShowAddRank((v) => !v); setEditingRankId(null); }}
@@ -4088,12 +4972,12 @@ export default function SettingsPage() {
                             <input
                               type="text"
                               value={editDraft.fullTitle}
-                              onChange={(e) => setEditDraft((d) => ({ ...d, fullTitle: e.target.value }))}
-                              placeholder="e.g. Officer In Charge"
-                              className="w-full max-w-xs rounded-lg border border-emerald-200/80 bg-white/90 px-2.5 py-1.5 text-sm font-semibold text-slate-900 shadow-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 transition-all"
+                              onChange={(e) => setEditDraft((d) => ({ ...d, fullTitle: e.target.value.toUpperCase() }))}
+                              placeholder="e.g. OFFICER IN CHARGE"
+                              className="w-full max-w-xs rounded-lg border border-emerald-200/80 bg-white/90 px-2.5 py-1.5 text-sm font-semibold uppercase text-slate-900 shadow-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 transition-all"
                             />
                           ) : (
-                            <span className="text-sm font-semibold text-slate-800">{r.fullTitle}</span>
+                            <span className="text-sm font-semibold uppercase text-slate-800">{r.fullTitle}</span>
                           )}
                         </td>
 
@@ -4167,10 +5051,10 @@ export default function SettingsPage() {
                             <div className="flex items-center justify-end gap-1.5">
                               <button
                                 type="button"
-                                onClick={commitEditRank}
-                                disabled={!editDraft.rankCode.trim() || !editDraft.fullTitle.trim()}
+                                onClick={() => void commitEditRank()}
+                                disabled={rankMatrixSaving || !editDraft.rankCode.trim() || !editDraft.fullTitle.trim()}
                                 className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-emerald-200/80 bg-emerald-50/80 text-emerald-700 transition-all hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
-                                title="Save"
+                                title="Save rank to database"
                               >
                                 <CheckCircle2 className="h-3.5 w-3.5" />
                               </button>
@@ -4188,15 +5072,17 @@ export default function SettingsPage() {
                               <button
                                 type="button"
                                 onClick={() => startEditRank(r)}
-                                className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-transparent text-slate-300 transition-all hover:border-indigo-200/80 hover:bg-indigo-50/80 hover:text-indigo-600"
+                                disabled={rankMatrixSaving}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-transparent text-slate-300 transition-all hover:border-indigo-200/80 hover:bg-indigo-50/80 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
                                 title="Edit rank"
                               >
                                 <Pencil className="h-3.5 w-3.5" />
                               </button>
                               <button
                                 type="button"
-                                onClick={() => deleteRank(r.id)}
-                                className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-transparent text-slate-300 transition-all hover:border-rose-200/80 hover:bg-rose-50/80 hover:text-rose-600"
+                                onClick={() => void deleteRank(r.id)}
+                                disabled={rankMatrixSaving}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-transparent text-slate-300 transition-all hover:border-rose-200/80 hover:bg-rose-50/80 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-40"
                                 title="Delete rank"
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
@@ -4225,9 +5111,9 @@ export default function SettingsPage() {
                         <input
                           type="text"
                           value={newRankDraft.fullTitle}
-                          onChange={(e) => setNewRankDraft((d) => ({ ...d, fullTitle: e.target.value }))}
-                          placeholder="e.g. Deputy Security Officer"
-                          className="w-full max-w-xs rounded-lg border border-emerald-300/80 bg-white/90 px-2.5 py-1.5 text-sm font-semibold text-slate-900 shadow-sm placeholder:text-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 transition-all"
+                          onChange={(e) => setNewRankDraft((d) => ({ ...d, fullTitle: e.target.value.toUpperCase() }))}
+                          placeholder="e.g. DEPUTY SECURITY OFFICER"
+                          className="w-full max-w-xs rounded-lg border border-emerald-300/80 bg-white/90 px-2.5 py-1.5 text-sm font-semibold uppercase text-slate-900 shadow-sm placeholder:text-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 transition-all"
                         />
                       </td>
                       <td className="px-6 py-3 text-right">
@@ -4276,10 +5162,10 @@ export default function SettingsPage() {
                         <div className="flex items-center justify-end gap-1.5">
                           <button
                             type="button"
-                            onClick={commitAddRank}
-                            disabled={!newRankDraft.rankCode.trim() || !newRankDraft.fullTitle.trim()}
+                            onClick={() => void commitAddRank()}
+                            disabled={rankMatrixSaving || !newRankDraft.rankCode.trim() || !newRankDraft.fullTitle.trim()}
                             className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-emerald-200/80 bg-emerald-50/80 text-emerald-700 transition-all hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
-                            title="Confirm add"
+                            title="Save new rank to database"
                           >
                             <CheckCircle2 className="h-3.5 w-3.5" />
                           </button>
@@ -4314,7 +5200,11 @@ export default function SettingsPage() {
                 {rankMatrixError && (
                   <p className="text-xs font-bold text-red-700 w-full sm:w-auto">{rankMatrixError}</p>
                 )}
-                <p className="text-xs font-medium text-slate-500">Rank changes commit with Save All Settings.</p>
+                <p className="text-xs font-medium text-slate-500">
+                  {rankMatrixSaving
+                    ? 'Saving rank ledger…'
+                    : 'Click ✓ on a row to save that rank immediately, or use Save to commit the full matrix.'}
+                </p>
               </div>
             </div>
 
@@ -4322,22 +5212,17 @@ export default function SettingsPage() {
 
           {/* ── Gratuity provision (Sri Lanka) ── */}
           <ExecutiveGlassCard className="overflow-hidden">
-            <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-violet-200/80 bg-violet-50/80">
-                    <Scale className="h-5 w-5 text-violet-800" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-slate-800">Gratuity Provision Settings</h3>
-                    <p className="text-sm font-medium text-slate-600">
-                      Sri Lanka: (monthly basic ÷ divisor) × years of service when tenure meets minimum. Does not apply to café employees (shared with FM, shown on HR clearance).
-                    </p>
-                    <TraceabilityBlock />
-                  </div>
-                </div>
-              </div>
-            </div>
+            <SettingsCardHeader
+              icon={Scale}
+              iconClassName="border-violet-200/80 bg-violet-50/80 text-violet-800"
+              title="Gratuity Provision Settings"
+              sub="Sri Lanka: (monthly basic ÷ divisor) × years of service when tenure meets minimum. Does not apply to café employees (shared with FM, shown on HR clearance)."
+              sectionId="gratuity"
+              audit={sectionAudit('gratuity')}
+              saving={sectionSaving === 'gratuity'}
+              saved={sectionSaved.gratuity}
+              onSave={saveSection('gratuity')}
+            />
             <div className="grid gap-6 p-6 sm:grid-cols-2">
               <label className="block">
                 <span className="text-xs font-black uppercase tracking-widest text-slate-500">
@@ -4386,22 +5271,17 @@ export default function SettingsPage() {
           </ExecutiveGlassCard>
 
           <ExecutiveGlassCard className="overflow-hidden">
-            <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-teal-200/80 bg-teal-50/80">
-                    <HeartHandshake className="h-5 w-5 text-teal-800" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-slate-800">Employee Welfare Fund</h3>
-                    <p className="text-sm font-medium text-slate-600">
-                      Fixed monthly deduction from every employee on payroll (shared with FM · shown on Batch Execution desk)
-                    </p>
-                    <TraceabilityBlock />
-                  </div>
-                </div>
-              </div>
-            </div>
+            <SettingsCardHeader
+              icon={HeartHandshake}
+              iconClassName="border-teal-200/80 bg-teal-50/80 text-teal-800"
+              title="Employee Welfare Fund"
+              sub="Fixed monthly deduction from every employee on payroll (shared with FM · shown on Batch Execution desk)"
+              sectionId="welfareFund"
+              audit={sectionAudit('welfareFund')}
+              saving={sectionSaving === 'welfareFund'}
+              saved={sectionSaved.welfareFund}
+              onSave={saveSection('welfareFund')}
+            />
             <div className="p-6">
               <label className="block max-w-md">
                 <span className="text-xs font-black uppercase tracking-widest text-slate-500">
@@ -4432,7 +5312,15 @@ export default function SettingsPage() {
 
           {/* ── Row 3: Fuel Toggle ── */}
           <ExecutiveGlassCard className="p-6">
-              <SectionHeader Icon={Car} title="Automated Fuel Surplus Correction" sub="Subtracts unverified mileage payouts from the next month's fuel advance" />
+              <SectionHeader
+                Icon={Car}
+                title="Automated Fuel Surplus Correction"
+                sub="Subtracts unverified mileage payouts from the next month's fuel advance"
+                audit={sectionAudit('fuelSurplus')}
+                onSave={saveSection('fuelSurplus')}
+                saving={sectionSaving === 'fuelSurplus'}
+                saved={sectionSaved.fuelSurplus}
+              />
 
               <div className="mb-4 flex items-center justify-between rounded-2xl border border-slate-200/70 bg-white/50 px-4 py-4 shadow-inner">
                 <div>
@@ -4474,7 +5362,7 @@ export default function SettingsPage() {
 
               <SettingsSectionHeading
                 title="Operations & field deployment"
-                sub="Vetting, geofence, and shift windows — save with Save All Settings in the header"
+                sub="Vetting, geofence, and shift windows — save each section independently"
               />
 
               {/* ── Global ISO Vetting Deployment Control ── */}
@@ -4488,7 +5376,7 @@ export default function SettingsPage() {
                       <div>
                         <h3 className="text-lg font-bold text-slate-800">Global ISO Vetting Deployment Control</h3>
                         <p className="text-sm font-medium text-slate-600">ISO 18788 · MoD / Police Clearance Enforcement Layer</p>
-                        <TraceabilityBlock />
+                        <SettingsTraceability />
                       </div>
                     </div>
                     <div className={`flex items-center gap-2 rounded-xl border px-3 py-1.5 ${hardBlockEnabled ? 'border-rose-200/80 bg-rose-50/80' : 'border-slate-200/60 bg-slate-50/60'}`}>
@@ -4528,35 +5416,25 @@ export default function SettingsPage() {
                     </button>
                   </div>
 
-                  {/* Audit trail */}
-                  <div className="mt-4 flex items-center gap-2 text-sm font-semibold text-slate-500">
-                    <History className="h-4 w-4 flex-shrink-0 text-slate-400" />
-                    <span>
-                      Last edited by:{' '}
-                      <span className="font-bold text-slate-700">Nimal Randeniya (MD)</span>
-                      {' '}· 2026-05-26 at 08:15
-                    </span>
-                    <ShieldCheck className="ml-auto h-4 w-4 flex-shrink-0 text-emerald-500" />
+                  <div className="mt-4">
+                    <SettingsTraceability />
                   </div>
                 </div>
               </ExecutiveGlassCard>
 
               {/* ── Default site geofence radius ── */}
               <ExecutiveGlassCard className="overflow-hidden">
-                <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-emerald-200/80 bg-emerald-50/80">
-                      <MapPin className="h-5 w-5 text-emerald-700" />
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-bold text-slate-800">Default Site Geofence Radius</h3>
-                      <p className="text-sm font-medium text-slate-600">
-                        Pre-fills new site registrations. OM cannot change radius — only captures GPS coordinates.
-                      </p>
-                      <TraceabilityBlock />
-                    </div>
-                  </div>
-                </div>
+                <SettingsCardHeader
+                  icon={MapPin}
+                  iconClassName="border-emerald-200/80 bg-emerald-50/80 text-emerald-700"
+                  title="Default Site Geofence Radius"
+                  sub="Pre-fills new site registrations. OM cannot change radius — only captures GPS coordinates."
+                  sectionId="geofence"
+                  audit={sectionAudit('geofence')}
+                  saving={sectionSaving === 'geofence'}
+                  saved={sectionSaved.geofence}
+                  onSave={saveSection('geofence')}
+                />
                 <div className="p-6 space-y-4">
                   <div className="max-w-xs">
                     <label className="mb-1.5 block text-sm font-bold uppercase tracking-wide text-slate-600">
@@ -4571,29 +5449,28 @@ export default function SettingsPage() {
                       className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 font-mono text-base font-semibold text-slate-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/40 transition-all"
                     />
                     <p className="mt-2 text-sm font-medium text-slate-500">
-                      Allowed range: {MIN_GEOFENCE_RADIUS_M}–{MAX_GEOFENCE_RADIUS_M} m. Guards and SMs must be within this distance of site GPS to check in.
+                      Maximum {MAX_GEOFENCE_RADIUS_M} m. Guards and SMs must be within this distance of site GPS to check in.
                     </p>
                   </div>
                   <p className="pt-4 border-t border-slate-100 text-[10px] font-medium text-slate-400">
-                    Override per site in Site Directory. Commits with Save All Settings in the header.
+                    Override per site in Site Directory. Save this section to commit the company default.
                   </p>
                 </div>
               </ExecutiveGlassCard>
 
               {/* ── Global Shift Timing Defaults for Guards ── */}
               <ExecutiveGlassCard className="overflow-hidden">
-                <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-indigo-200/80 bg-indigo-50/80">
-                      <Clock className="h-5 w-5 text-indigo-700" />
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-bold text-slate-800">Global Shift Timing Defaults for Guards</h3>
-                      <p className="text-sm font-medium text-slate-600">Baseline roster hours applied across all guard (field operations) sites — overridable per-site</p>
-                      <TraceabilityBlock />
-                    </div>
-                  </div>
-                </div>
+                <SettingsCardHeader
+                  icon={Clock}
+                  iconClassName="border-indigo-200/80 bg-indigo-50/80 text-indigo-700"
+                  title="Global Shift Timing Defaults for Guards"
+                  sub="Baseline roster hours applied across all guard (field operations) sites — overridable per-site"
+                  sectionId="shiftTimes"
+                  audit={sectionAudit('shiftTimes')}
+                  saving={sectionSaving === 'shiftTimes'}
+                  saved={sectionSaved.shiftTimes}
+                  onSave={saveSection('shiftTimes')}
+                />
 
                 <div className="p-6 space-y-5">
                   {/* Two-column grid */}
@@ -4668,27 +5545,22 @@ export default function SettingsPage() {
 
                   </div>
 
-                  <p className="pt-4 border-t border-slate-100 text-[10px] font-medium text-slate-400 flex items-center gap-1">
-                    <Clock className="w-3 h-3 text-slate-400" />
-                    Guard shift defaults commit with Save All Settings in the header.
-                  </p>
                 </div>
               </ExecutiveGlassCard>
 
               {/* ── Global Shift Timing Defaults for Café ── */}
               <ExecutiveGlassCard className="overflow-hidden">
-                <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-amber-200/80 bg-amber-50/80">
-                      <Coffee className="h-5 w-5 text-amber-700" />
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-bold text-slate-800">Global Shift Timing Defaults for Café</h3>
-                      <p className="text-sm font-medium text-slate-600">Café operating window — café employees are only paid for hours worked within this period</p>
-                      <TraceabilityBlock />
-                    </div>
-                  </div>
-                </div>
+                <SettingsCardHeader
+                  icon={Coffee}
+                  iconClassName="border-amber-200/80 bg-amber-50/80 text-amber-700"
+                  title="Global Shift Timing Defaults for Café"
+                  sub="Café operating window — café employees are only paid for hours worked within this period"
+                  sectionId="cafeOperatingWindow"
+                  audit={sectionAudit('cafeOperatingWindow')}
+                  saving={sectionSaving === 'cafeOperatingWindow'}
+                  saved={sectionSaved.cafeOperatingWindow}
+                  onSave={saveSection('cafeOperatingWindow')}
+                />
 
                 <div className="p-6 space-y-5">
                   <div className="flex items-start gap-3 rounded-xl border border-amber-200/80 bg-amber-50/60 px-4 py-3">

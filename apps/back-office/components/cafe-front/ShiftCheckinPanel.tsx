@@ -5,6 +5,7 @@ import { Camera, MapPin } from 'lucide-react';
 
 import { ExecutiveGlassCard } from '../executive/ExecutiveVaultShell';
 import { submitCafeShiftCheckin } from '../../app/cafe-front/actions';
+import { readDeviceGeolocationWithRetry } from '../../lib/device-geolocation';
 import type { CafeShiftGate } from '../../lib/cafe-front-shift';
 
 export function ShiftCheckinPanel({ shiftGate }: { shiftGate: CafeShiftGate }) {
@@ -15,17 +16,14 @@ export function ShiftCheckinPanel({ shiftGate }: { shiftGate: CafeShiftGate }) {
   const [isPending, startTransition] = useTransition();
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const captureGps = () => {
+  const captureGps = async () => {
     setError(null);
-    if (!navigator.geolocation) {
-      setError('GPS not available on this device.');
+    const geo = await readDeviceGeolocationWithRetry();
+    if (!geo.ok) {
+      setError(geo.error);
       return;
     }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      () => setError('Could not read GPS location. Enable location services.'),
-      { enableHighAccuracy: true, timeout: 15000 },
-    );
+    setCoords({ lat: geo.latitude, lng: geo.longitude });
   };
 
   const handleFile = (file: File) => {
@@ -54,7 +52,7 @@ export function ShiftCheckinPanel({ shiftGate }: { shiftGate: CafeShiftGate }) {
     });
   };
 
-  if (shiftGate.checkedInToday) {
+  if (shiftGate.portalAccessible) {
     return (
       <ExecutiveGlassCard className="border-emerald-200/80 bg-emerald-50/50 p-6 text-center">
         <p className="text-sm font-bold text-emerald-900">Shift check-in complete</p>
@@ -71,17 +69,11 @@ export function ShiftCheckinPanel({ shiftGate }: { shiftGate: CafeShiftGate }) {
       <div className="border-b border-slate-200/80 bg-slate-50/80 px-5 py-4">
         <h2 className="text-lg font-bold uppercase text-slate-800">Shift Check-in</h2>
         <p className="mt-1 text-xs text-slate-500">
-          GPS + live selfie required before you can see or accept café orders.
+          GPS + live selfie at the café site. HR verifies your identity — roster not required.
         </p>
       </div>
 
       <div className="space-y-4 p-5">
-        {!shiftGate.rosteredToday ? (
-          <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-800">
-            You are not rostered for a shift today. Contact your manager if this is incorrect.
-          </p>
-        ) : null}
-
         <button
           type="button"
           onClick={captureGps}
@@ -131,7 +123,7 @@ export function ShiftCheckinPanel({ shiftGate }: { shiftGate: CafeShiftGate }) {
 
         <button
           type="button"
-          disabled={isPending || !shiftGate.rosteredToday}
+          disabled={isPending}
           onClick={submit}
           className="w-full rounded-xl bg-orange-600 py-3 text-sm font-black uppercase tracking-wider text-white disabled:opacity-40"
         >

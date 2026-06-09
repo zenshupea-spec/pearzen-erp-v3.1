@@ -27,6 +27,16 @@ const CORPORATE_GROUPS = [
   { value: 'CAFE', label: 'Café' },
 ] as const;
 
+const RELIGION_OPTIONS = [
+  { value: 'BUDDHIST', label: 'Buddhist' },
+  { value: 'CHRISTIAN', label: 'Christian' },
+  { value: 'ROMAN CATHOLIC', label: 'Roman Catholic' },
+  { value: 'MUSLIM', label: 'Muslim' },
+  { value: 'HINDU', label: 'Hindu' },
+  { value: 'ATHEIST', label: 'Atheist' },
+  { value: 'OTHER', label: 'Other' },
+] as const;
+
 export default function InductionForm({
   action,
   rankMatrix,
@@ -50,8 +60,14 @@ export default function InductionForm({
       : filterRanksForEditor(groupRanks, "HR");
   }, [rankMatrix, selectedGroup, canManageExecutive]);
 
-  const autoRank =
-    rankOptions.length === 1 ? rankOptions[0].rankCode : '';
+  const autoRank = useMemo(() => {
+    if (!selectedGroup) return '';
+    if (selectedGroup === 'SECTOR_MANAGER') {
+      const sm = rankOptions.find((r) => r.rankCode === 'SM');
+      if (sm) return sm.rankCode;
+    }
+    return rankOptions.length === 1 ? rankOptions[0].rankCode : '';
+  }, [selectedGroup, rankOptions]);
   const rankLocked = Boolean(selectedGroup && autoRank);
   const effectiveRank = rankLocked ? autoRank : selectedRank;
   const isGuard = selectedGroup === 'GUARD';
@@ -187,12 +203,18 @@ export default function InductionForm({
             <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
               Religion
             </label>
-            <input
-              type="text"
+            <select
               name="religion"
-              placeholder="e.g. BUDDHIST"
-              className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono focus:ring-2 focus:ring-rose-500 outline-none uppercase"
-            />
+              defaultValue=""
+              className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono focus:ring-2 focus:ring-rose-500 outline-none uppercase appearance-none"
+            >
+              <option value="">Select religion…</option>
+              {RELIGION_OPTIONS.map((r) => (
+                <option key={r.value} value={r.value}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
 
@@ -422,35 +444,29 @@ export default function InductionForm({
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          <EmployeeDocumentField
+            employeeId=""
+            docType="nic_passport"
+            inductionMode
+            canUpload
+          />
           <div>
             <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
-              MoD Expiry Date *
-            </label>
-            <input
-              type="date"
-              name="mod_expiry"
-              required
-              className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono focus:ring-2 focus:ring-amber-500 outline-none "
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
-              Police Clearance Expiry *
+              Police Clearance Expiry
             </label>
             <input
               type="date"
               name="police_expiry"
-              required
               className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono focus:ring-2 focus:ring-amber-500 outline-none "
             />
           </div>
         </div>
 
         <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">
-          Upload scans (optional at induction — can be completed later in MNR)
+          Document scans are optional at induction — can be completed later in MNR.
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {HR_DOCUMENT_TYPES.map((docType) => (
+          {HR_DOCUMENT_TYPES.filter((docType) => docType !== 'nic_passport').map((docType) => (
             <EmployeeDocumentField
               key={docType}
               employeeId=""

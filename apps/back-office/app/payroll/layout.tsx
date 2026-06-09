@@ -15,7 +15,7 @@ export default async function PayrollProtectionLayout({
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user) redirect('/login');
+  if (!user) redirect('/login/head-office');
 
   const profile = await fetchBackOfficeUserProfile(supabase, user);
   const role = profile.role;

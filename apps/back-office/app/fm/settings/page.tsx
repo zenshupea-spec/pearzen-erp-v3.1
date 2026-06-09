@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { getRankPayMatrix, saveRankPayMatrix } from '../../executive/settings/rank-matrix-actions';
 import { getGratuitySettings, saveGratuitySettings } from '../../executive/settings/gratuity-actions';
 import { getWelfareFundSettings, saveWelfareFundSettings } from '../../executive/settings/welfare-fund-actions';
+import { getMdEngineConstants } from '../../executive/settings/engine-constants-actions';
 import type { GratuitySettings } from '../../../../../packages/gratuity';
 import type { WelfareFundSettings } from '../../../../../packages/welfare-fund';
 import Link from 'next/link';
@@ -442,12 +443,7 @@ const labelCls = 'mb-1 block text-sm font-bold uppercase tracking-wide text-slat
 // ─── Shared Edit Traceability ─────────────────────────────────────────────────
 
 function TraceabilityBlock() {
-  return (
-    <p className="text-[10px] font-medium text-slate-400 flex items-center gap-1 mt-1 pb-3 border-b border-slate-100 mb-4">
-      <Clock className="h-3 w-3 flex-shrink-0" />
-      Last edited by: Kasuni Perera (FM) — 26 May 2026, 16:45
-    </p>
-  );
+  return null;
 }
 
 // ─── Section Header ───────────────────────────────────────────────────────────
@@ -1901,6 +1897,20 @@ export default function FMSettingsPage() {
   const [smVisits,     setSmVisits]     = useState(70);
   const [smVisitRate,  setSmVisitRate]  = useState(2000);
   const [hoSalary,     setHoSalary]     = useState(180000);
+
+  useEffect(() => {
+    let cancelled = false;
+    getMdEngineConstants().then((engine) => {
+      if (cancelled) return;
+      setSmVisits(engine.smPreviewVisits);
+      setHoSalary(engine.hoPreviewSalary);
+      setSmBasic(engine.smFixedBasic);
+      setSmVisitRate(engine.smPerVisitBonus);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [takeHomeFloor, setTakeHomeFloor] = React.useState(40);
   const [maxDeductionPct, setMaxDeductionPct] = React.useState(5);
   const [complianceSaved, setComplianceSaved] = React.useState(false);
@@ -2460,13 +2470,6 @@ export default function FMSettingsPage() {
                     </button>
                   </div>
 
-                  {/* Granular audit trail */}
-                  <div className="border-t border-slate-100 pt-3">
-                    <p className="text-[10px] font-medium text-slate-400 flex items-center gap-1.5">
-                      <Clock className="h-3 w-3 flex-shrink-0" />
-                      Last edited by: Kasuni Perera (FM) &mdash; 26 May 2026, 16:45 &nbsp;&bull;&nbsp; VAT 18%, SSCL 2.5%, EPF 8%/12%, ETF 3%, APIT IRD brackets locked, Stamp Duty threshold LKR 30,000 &mdash; Ref: CFG-2026-0041
-                    </p>
-                  </div>
                 </div>
               </ExecutiveGlassCard>
 

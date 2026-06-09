@@ -9,6 +9,7 @@ import {
   rosterCompanyId,
 } from '../../../lib/company-context';
 import { currentPeriodMonth, normalizePeriodMonth } from './period-month';
+import { auditStaffAction } from '../../../lib/staff-audit';
 import { reconcilePrepWithMenu } from './prep-menu-sync';
 
 export type CafeStaffMember = {
@@ -1040,6 +1041,7 @@ async function persistMenu(
       recipe_cost_lkr: item.recipeCost,
       target_margin_pct: item.targetMargin,
       image_url: item.hasImage ? 'pending' : null,
+      pos_synced_at: new Date().toISOString(),
     };
 
     if (isUuid && existingIds.has(item.id)) {
@@ -1129,6 +1131,15 @@ export async function saveCafeDashboard(
       linkedPrep.displayItems,
       menuItemIds,
     );
+
+    const supabase = await createSupabaseServerClient();
+    await auditStaffAction({
+      supabase,
+      portal: 'cafe',
+      action: 'Save Café Dashboard',
+      targetEntity: `${payload.staff.length} staff · ${payload.menuItems.length} menu items`,
+    });
+
     return { ok: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to save café dashboard';
@@ -1296,6 +1307,20 @@ export async function updateCafeStaffDayLog(input: {
     if (error) throw new Error(error.message);
 
     await syncStaffPeriodFromDayLogs(companyId, input.employeeId, periodMonth);
+
+    const authSupabase = await createSupabaseServerClient();
+    await auditStaffAction({
+      supabase: authSupabase,
+      portal: 'cafe',
+      action: 'Update Staff Day Log',
+      targetEntity: `${input.employeeId} · ${input.workDate}`,
+      actorName: input.editorName,
+      details: {
+        worked: input.worked,
+        otHours,
+        otLkr,
+      },
+    });
 
     return { ok: true, log: mapDayLogRow(data) };
   } catch (err) {

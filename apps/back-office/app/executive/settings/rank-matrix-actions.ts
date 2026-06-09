@@ -14,9 +14,11 @@ import {
   parseSettingEnvelope,
 } from '../../../../../packages/supabase/md-settings-envelope';
 import {
+  getExecutiveMdSettingsContext,
   getMdSettingsDb,
   resolveExecutiveCompanyId,
 } from './lib/executive-md-settings-db';
+import { writeSettingsAuditLog } from './settings-audit';
 
 export async function getRankPayMatrix(): Promise<RankPayEntry[]> {
   const companyId = await resolveExecutiveCompanyId();
@@ -47,7 +49,16 @@ export async function getRankPayMatrix(): Promise<RankPayEntry[]> {
   }
 
   const envelope = parseSettingEnvelope(row?.setting_value);
-  return parseRankPayMatrix(envelope[MD_SETTINGS_ENVELOPE_KEYS.rankPayMatrix]);
+  const fromEnvelope = envelope[MD_SETTINGS_ENVELOPE_KEYS.rankPayMatrix];
+  if (Array.isArray(fromEnvelope) && fromEnvelope.length > 0) {
+    return parseRankPayMatrix(fromEnvelope);
+  }
+
+  if (Array.isArray(row?.rank_pay_matrix)) {
+    return parseRankPayMatrix(row.rank_pay_matrix);
+  }
+
+  return parseRankPayMatrix(fromEnvelope);
 }
 
 export async function saveRankPayMatrix(matrix: RankPayEntry[]) {
@@ -58,7 +69,7 @@ export async function saveRankPayMatrix(matrix: RankPayEntry[]) {
     .map((entry) => ({
       id: entry.id,
       rankCode: entry.rankCode.trim().toUpperCase().slice(0, 12),
-      fullTitle: entry.fullTitle.trim(),
+      fullTitle: entry.fullTitle.trim().toUpperCase(),
       basicPay: Math.max(0, Math.round(entry.basicPay)),
       annualIncrement: Math.max(0, Math.round(entry.annualIncrement ?? 0)),
       salaryType: entry.salaryType === 'CASH' ? 'CASH' : 'BANK',
@@ -71,12 +82,22 @@ export async function saveRankPayMatrix(matrix: RankPayEntry[]) {
     .upsert({ company_id: companyId, rank_pay_matrix: sanitized }, { onConflict: 'company_id' });
 
   if (error && isMissingColumnError(error.message)) {
-    return mergeSettingEnvelope(supabase, companyId, {
+    const res = await mergeSettingEnvelope(supabase, companyId, {
       [MD_SETTINGS_ENVELOPE_KEYS.rankPayMatrix]: sanitized,
     });
+    if (!res.success) return res;
+    revalidatePath('/executive/settings');
+    revalidatePath('/fm/settings');
+    revalidatePath('/hr/mnr');
+    return { success: true };
   }
 
   if (error) return { success: false, error: error.message };
+
+  const { session, companyId: auditCompanyId } = await getExecutiveMdSettingsContext();
+  await writeSettingsAuditLog(session, auditCompanyId, 'UPDATE_RANK_PAY_MATRIX', {
+    rankCount: sanitized.length,
+  });
 
   revalidatePath('/executive/settings');
   revalidatePath('/fm/settings');

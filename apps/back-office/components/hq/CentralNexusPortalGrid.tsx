@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { ArrowRight, Eye } from 'lucide-react';
 
+import { canAccessPortalActivityLedger } from '../../lib/audit-portals';
 import { HQ_PORTAL_NAV } from '../../lib/hq-portal-nav';
 
 const CARD_ACCENT: Record<string, { ring: string; icon: string; hover: string }> = {
@@ -58,7 +59,7 @@ function canSeePortal(
   if (href === '/om') return role === 'OM' || role === 'HR' || role === 'FM';
   if (href === '/hr/mnr') return role === 'HR' || role === 'FM' || role === 'OM';
   if (href === '/fm') return role === 'FM' || role === 'HR';
-  if (href === '/hq/audit') return role === 'HR' || role === 'FM' || role === 'OM';
+  if (href === '/hq/audit') return canAccessPortalActivityLedger(role);
   if (href.startsWith('/hq/')) return role === 'HR' || role === 'FM';
   if (href === '/invoice-desk') return isGodMode;
   return false;

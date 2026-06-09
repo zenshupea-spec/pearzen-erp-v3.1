@@ -1,13 +1,16 @@
 import { redirect } from 'next/navigation';
 
 import AuditLedgerView from '../../../components/audit/AuditLedgerView';
-import { auditTabsForRole } from '../../../lib/audit-portals';
+import {
+  canAccessPortalActivityLedger,
+  portalActivityTabsForRole,
+} from '../../../lib/audit-portals';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import { fetchBackOfficeUserProfile } from '../../../lib/hr-portal-access';
 
 export const dynamic = 'force-dynamic';
 
-export default async function HqStaffAuditPage() {
+export default async function PortalActivityLedgerPage() {
   const supabase = await createSupabaseServerClient();
   const {
     data: { user },
@@ -25,18 +28,15 @@ export default async function HqStaffAuditPage() {
     redirect('/login/head-office?error=no_portal_rank');
   }
 
-  if (role === 'MD' || role === 'OD') {
-    redirect('/executive/audit');
-  }
-
-  const allowedTabs = auditTabsForRole(role);
-  if (allowedTabs.length === 0) {
+  if (!canAccessPortalActivityLedger(role)) {
     redirect('/dashboard');
   }
 
+  const allowedTabs = portalActivityTabsForRole(role);
+
   return (
     <AuditLedgerView
-      variant="staff"
+      variant="portal-activity"
       allowedTabs={allowedTabs}
       defaultTab={allowedTabs[0]!}
     />

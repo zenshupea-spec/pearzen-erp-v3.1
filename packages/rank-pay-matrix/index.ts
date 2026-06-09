@@ -23,7 +23,7 @@ export const DEFAULT_RANK_PAY_MATRIX: RankPayEntry[] = [
   {
     id: 'rp-1',
     rankCode: 'CSO',
-    fullTitle: 'Chief Security Officer',
+    fullTitle: 'CHIEF SECURITY OFFICER',
     basicPay: 35000,
     annualIncrement: 2000,
     salaryType: 'BANK',
@@ -32,7 +32,7 @@ export const DEFAULT_RANK_PAY_MATRIX: RankPayEntry[] = [
   {
     id: 'rp-2',
     rankCode: 'OIC',
-    fullTitle: 'Officer In Charge',
+    fullTitle: 'OFFICER IN CHARGE',
     basicPay: 33000,
     annualIncrement: 1800,
     salaryType: 'BANK',
@@ -41,7 +41,7 @@ export const DEFAULT_RANK_PAY_MATRIX: RankPayEntry[] = [
   {
     id: 'rp-3',
     rankCode: 'SSO',
-    fullTitle: 'Senior Security Officer',
+    fullTitle: 'SENIOR SECURITY OFFICER',
     basicPay: 32000,
     annualIncrement: 1500,
     salaryType: 'BANK',
@@ -50,7 +50,7 @@ export const DEFAULT_RANK_PAY_MATRIX: RankPayEntry[] = [
   {
     id: 'rp-4',
     rankCode: 'JSO',
-    fullTitle: 'Junior Security Officer',
+    fullTitle: 'JUNIOR SECURITY OFFICER',
     basicPay: 30000,
     annualIncrement: 1200,
     salaryType: 'BANK',
@@ -59,7 +59,7 @@ export const DEFAULT_RANK_PAY_MATRIX: RankPayEntry[] = [
   {
     id: 'rp-5',
     rankCode: 'LSO',
-    fullTitle: 'Lady Security Officer',
+    fullTitle: 'LADY SECURITY OFFICER',
     basicPay: 30000,
     annualIncrement: 1200,
     salaryType: 'BANK',
@@ -92,9 +92,9 @@ export function parseRankPayMatrix(raw: unknown): RankPayEntry[] {
             : '';
       const fullTitle =
         typeof row.fullTitle === 'string'
-          ? row.fullTitle.trim()
+          ? row.fullTitle.trim().toUpperCase()
           : typeof row.full_title === 'string'
-            ? row.full_title.trim()
+            ? row.full_title.trim().toUpperCase()
             : '';
       const basicPay = Math.max(0, Math.round(Number(row.basicPay ?? row.basic_pay ?? 0)));
       const annualIncrement = Math.max(

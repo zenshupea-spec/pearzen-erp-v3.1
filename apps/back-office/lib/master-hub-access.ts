@@ -1,9 +1,14 @@
+import { canAccessPortalActivityLedger } from './audit-portals';
 import { CAFE_FRONT_PORTAL_ROUTE, GUARD_FIELD_PORTAL_ROUTE } from './master-hub-pillars';
 
 /** Role gate for Master Hub module cards (server-safe). */
 export function canSeeMasterHubModule(route: string, role: string): boolean {
+  if (route === '/hq/audit') return canAccessPortalActivityLedger(role);
+
   const isGodMode = role === 'MD' || role === 'OD';
   if (isGodMode) return true;
+
+  if (role === 'EA') return false;
 
   if (route === '/executive/cafe') return role === 'HR' || role === 'FM';
   if (route.startsWith('/executive')) return false;
@@ -17,7 +22,6 @@ export function canSeeMasterHubModule(route: string, role: string): boolean {
   }
   if (route === GUARD_FIELD_PORTAL_ROUTE) return role === 'HR' || role === 'FM';
   if (route === CAFE_FRONT_PORTAL_ROUTE) return role === 'HR' || role === 'FM';
-  if (route === '/hq/audit') return role === 'HR' || role === 'FM' || role === 'OM';
   if (route.startsWith('/hq/')) return role === 'HR' || role === 'FM';
   if (route === '/invoice-desk') return false;
 

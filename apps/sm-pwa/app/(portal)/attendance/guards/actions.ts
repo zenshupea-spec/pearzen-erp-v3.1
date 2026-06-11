@@ -2,7 +2,16 @@
 
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
-import { createSupabaseServerClient } from '../../../../../../packages/supabase/server';
+import {
+  createSupabaseServerClient,
+  createSupabaseServiceClient,
+} from '../../../../../../packages/supabase/server';
+import { resolveCanonicalSmEpf } from '../../../../lib/sm-portal-db';
+import {
+  colomboTodayIso,
+  isShiftDateSubmittable,
+  type ShiftType,
+} from '../../../../lib/shift-timing';
 
 export type ExistingAttendanceEntry = {
   site_name: string;
@@ -18,15 +27,39 @@ async function resolveEpf(): Promise<string> {
   const supabase = await createSupabaseServerClient();
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) redirect('/login');
-  return session.user.email?.split('@')[0].toUpperCase() ?? '';
+  const loginEpf = session.user.email?.split('@')[0].toUpperCase() ?? '';
+  return resolveCanonicalSmEpf(loginEpf);
+}
+
+async function fetchShiftTimingSettings() {
+  const supabase = createSupabaseServiceClient();
+  const { data } = await supabase
+    .from('md_settings')
+    .select('security_day_start, security_day_end, security_night_start, security_night_end')
+    .limit(1)
+    .maybeSingle();
+
+  const row = data as {
+    security_day_start?: string | null;
+    security_day_end?: string | null;
+    security_night_start?: string | null;
+    security_night_end?: string | null;
+  } | null;
+
+  return {
+    DAY: row?.security_day_start ?? '07:00',
+    NIGHT: row?.security_night_start ?? '19:00',
+    dayEnd: row?.security_day_end ?? '19:00',
+    nightEnd: row?.security_night_end ?? '07:00',
+  };
 }
 
 export async function getAttendanceForDate(
   shiftDate: string,
-  shiftType: 'DAY' | 'NIGHT',
+  shiftType: ShiftType,
 ): Promise<ExistingAttendanceEntry[]> {
   const epf = await resolveEpf();
-  const supabase = await createSupabaseServerClient();
+  const supabase = createSupabaseServiceClient();
 
   const { data } = await supabase
     .from('sm_guard_attendance')
@@ -38,32 +71,78 @@ export async function getAttendanceForDate(
   return data ?? [];
 }
 
+function normalizeSiteKey(value: string | null | undefined): string {
+  return (value ?? '').trim().toLowerCase();
+}
+
+function lockedKey(siteName: string, guardEpf: string): string {
+  return `${normalizeSiteKey(siteName)}::${guardEpf.trim().toUpperCase()}`;
+}
+
 export async function submitGuardAttendanceAction(
   entries: { siteName: string; guardEpf: string }[],
   shiftDate: string,
-  shiftType: 'DAY' | 'NIGHT',
+  shiftType: ShiftType,
 ): Promise<{ success?: boolean; error?: string }> {
   const epf = await resolveEpf();
-  const supabase = await createSupabaseServerClient();
+  const supabase = createSupabaseServiceClient();
+  const startTimes = await fetchShiftTimingSettings();
+  const now = new Date();
 
-  // Validate date range
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const selected = new Date(shiftDate);
-  selected.setHours(0, 0, 0, 0);
-  const diffDays = Math.round(
-    (selected.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
-  );
-  if (diffDays < 0) return { error: 'Cannot submit for past dates.' };
-  if (diffDays > 3) return { error: 'Can only submit up to 3 days in advance.' };
+  if (!isShiftDateSubmittable(shiftDate, shiftType, startTimes, now)) {
+    return { error: 'Cannot submit for past dates.' };
+  }
 
-  // Guard uniqueness check within the same shift
-  const guardEpfs = entries.map(e => e.guardEpf);
+  const guardEpfs = entries.map((e) => e.guardEpf);
   if (new Set(guardEpfs).size !== guardEpfs.length) {
     return { error: 'A guard cannot be assigned to multiple sites.' };
   }
 
-  // Replace: delete existing for this SM + date + shift type, then insert
+  const { data: existingRows, error: existingError } = await supabase
+    .from('sm_guard_attendance')
+    .select('site_name, guard_epf, status')
+    .eq('sm_epf', epf)
+    .eq('shift_date', shiftDate)
+    .eq('shift_type', shiftType);
+
+  if (existingError) {
+    console.error('[Guard Attendance] Existing lookup error:', existingError.message);
+    return { error: 'Failed to save. Please try again.' };
+  }
+
+  const locked = new Map<string, { site_name: string; guard_epf: string }>();
+  for (const row of existingRows ?? []) {
+    if (!row.guard_epf) continue;
+    locked.set(lockedKey(row.site_name, row.guard_epf), {
+      site_name: row.site_name,
+      guard_epf: row.guard_epf,
+    });
+  }
+
+  for (const entry of entries) {
+    for (const lockedRow of locked.values()) {
+      if (
+        lockedRow.guard_epf === entry.guardEpf &&
+        normalizeSiteKey(lockedRow.site_name) !== normalizeSiteKey(entry.siteName)
+      ) {
+        return { error: 'A previously submitted guard assignment cannot be moved.' };
+      }
+    }
+  }
+
+  for (const lockedRow of locked.values()) {
+    const stillPresent = entries.some(
+      (entry) =>
+        normalizeSiteKey(entry.siteName) === normalizeSiteKey(lockedRow.site_name) &&
+        entry.guardEpf === lockedRow.guard_epf,
+    );
+    if (!stillPresent) {
+      return {
+        error: `Cannot change or remove ${lockedRow.guard_epf} — previous submission is locked.`,
+      };
+    }
+  }
+
   const { error: deleteError } = await supabase
     .from('sm_guard_attendance')
     .delete()
@@ -81,7 +160,7 @@ export async function submitGuardAttendanceAction(
   const { error: insertError } = await supabase
     .from('sm_guard_attendance')
     .insert(
-      entries.map(e => ({
+      entries.map((e) => ({
         sm_epf: epf,
         shift_date: shiftDate,
         shift_type: shiftType,
@@ -97,4 +176,12 @@ export async function submitGuardAttendanceAction(
   }
 
   return { success: true };
+}
+
+export async function getGuardAttendanceShiftSettings() {
+  const startTimes = await fetchShiftTimingSettings();
+  return {
+    startTimes,
+    defaultDate: colomboTodayIso(),
+  };
 }

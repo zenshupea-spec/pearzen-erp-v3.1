@@ -137,18 +137,26 @@ export default function CheckInButton({
           if (result.success) await clearPingFromVault(ping.id);
         }
       }
+      await fetchState();
     };
 
     const handleOffline = () => setIsOnline(false);
+    const handleVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void fetchState();
+      }
+    };
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    document.addEventListener('visibilitychange', handleVisible);
 
     if (navigator.onLine) handleOnline();
 
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      document.removeEventListener('visibilitychange', handleVisible);
       stopCamera();
     };
   }, [empNumber, stopCamera]);

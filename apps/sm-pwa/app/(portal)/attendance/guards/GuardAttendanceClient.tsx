@@ -27,16 +27,35 @@ import {
   getAttendanceForDate,
   type ExistingAttendanceEntry,
 } from './actions';
+import {
+  buildSelectableShiftDates,
+  addCalendarDays,
+  colomboTodayIso,
+  isNowWithinShiftWindow,
+  type ShiftType,
+} from '../../../../lib/shift-timing';
+import {
+  resolveSitesForShiftView,
+  type SiteShiftRequirementRow,
+  type ResolvedShiftSite,
+} from '../../../../lib/site-shift-requirements';
 
 /* ─────────────────────────── types ─────────────────────────── */
 
-type Site = { value: string; label: string; required: number };
+type Site = {
+  value: string;
+  label: string;
+  required: number;
+  shiftRows: SiteShiftRequirementRow[];
+};
+
 type Guard = { epf: string; label: string; defaultSite: string | null };
 
 interface Slot {
   uid: string;
   siteName: string;
   guardEpf: string | null;
+  locked: boolean;
 }
 
 /* ─────────────────────────── helpers ───────────────────────── */
@@ -46,38 +65,55 @@ function makeUid() {
   return `slot_${++_uidCounter}_${Math.random().toString(36).slice(2, 6)}`;
 }
 
+function normalizeSiteKey(value: string | null | undefined): string {
+  return (value ?? '').trim().toLowerCase();
+}
+
 function buildSlots(
-  sites: Site[],
+  sites: ActiveSite[],
   guards: Guard[],
   existing: ExistingAttendanceEntry[],
 ): Slot[] {
   const slots: Slot[] = [];
 
   for (const site of sites) {
+    if (site.readOnly || site.required <= 0) continue;
+
     const required = Math.max(site.required, 1);
-    const siteExisting = existing.filter(e => e.site_name === site.value);
+    const siteKey = normalizeSiteKey(site.value);
+    const siteExisting = existing.filter(
+      (e) => normalizeSiteKey(e.site_name) === siteKey,
+    );
 
     if (siteExisting.length > 0) {
-      // Pre-fill from existing records
       siteExisting.forEach(e => {
-        slots.push({ uid: makeUid(), siteName: site.value, guardEpf: e.guard_epf });
+        slots.push({
+          uid: makeUid(),
+          siteName: site.value,
+          guardEpf: e.guard_epf,
+          locked: Boolean(e.guard_epf),
+        });
       });
-      // Pad up to required if existing is fewer
       const pad = required - siteExisting.length;
       for (let i = 0; i < pad; i++) {
-        slots.push({ uid: makeUid(), siteName: site.value, guardEpf: null });
+        slots.push({ uid: makeUid(), siteName: site.value, guardEpf: null, locked: false });
       }
     } else {
-      // Pre-fill from default guards (those whose home site = this site)
-      const defaults = guards.filter(g => g.defaultSite === site.value);
+      const defaults = guards.filter(
+        (g) => g.defaultSite && normalizeSiteKey(g.defaultSite) === normalizeSiteKey(site.value),
+      );
       const fillCount = Math.min(defaults.length, required);
       for (let i = 0; i < fillCount; i++) {
-        slots.push({ uid: makeUid(), siteName: site.value, guardEpf: defaults[i].epf });
+        slots.push({
+          uid: makeUid(),
+          siteName: site.value,
+          guardEpf: defaults[i].epf,
+          locked: false,
+        });
       }
-      // Pad remaining slots up to required
       const pad = required - fillCount;
       for (let i = 0; i < pad; i++) {
-        slots.push({ uid: makeUid(), siteName: site.value, guardEpf: null });
+        slots.push({ uid: makeUid(), siteName: site.value, guardEpf: null, locked: false });
       }
     }
   }
@@ -92,18 +128,36 @@ function GuardDropdown({
   value,
   guards,
   assignedElsewhere,
+  locked,
   onChange,
 }: {
   siteName: string;
   value: string | null;
   guards: Guard[];
   assignedElsewhere: Set<string>;
+  locked: boolean;
   onChange: (epf: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const selected = value ? guards.find(g => g.epf === value) ?? null : null;
+
+  if (locked && selected) {
+    return (
+      <div className="w-full flex items-center justify-between px-3.5 py-3 rounded-xl border bg-slate-50 border-slate-200 text-left">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <Shield className="w-4 h-4 shrink-0 text-emerald-600" />
+          <span className="text-sm font-mono truncate text-slate-900 font-medium">
+            {selected.label}
+          </span>
+        </div>
+        <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 shrink-0">
+          Locked
+        </span>
+      </div>
+    );
+  }
 
   const available = guards.filter(g => !assignedElsewhere.has(g.epf));
   const taken = guards.filter(g => assignedElsewhere.has(g.epf));
@@ -182,7 +236,9 @@ function GuardDropdown({
             {/* Available guards */}
             {available.map(g => {
               const isSelected = g.epf === value;
-              const isDefault = g.defaultSite === siteName;
+              const isDefault =
+                Boolean(g.defaultSite) &&
+                normalizeSiteKey(g.defaultSite) === normalizeSiteKey(siteName);
               return (
                 <button
                   key={g.epf}
@@ -238,36 +294,59 @@ export default function GuardAttendanceClient({
   guards,
   existing,
   defaultDate,
+  shiftTiming,
 }: {
   sites: Site[];
   guards: Guard[];
   existing: ExistingAttendanceEntry[];
   defaultDate: string;
+  shiftTiming: {
+    DAY: string;
+    NIGHT: string;
+    dayEnd: string;
+    nightEnd: string;
+  };
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [done, setDone] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [selectedDate, setSelectedDate] = useState(defaultDate);
-  const [shiftType, setShiftType] = useState<'DAY' | 'NIGHT'>('DAY');
+  const [shiftType, setShiftType] = useState<ShiftType>('DAY');
   const [loadingDate, setLoadingDate] = useState(false);
-  const [slots, setSlots] = useState<Slot[]>(() => buildSlots(sites, guards, existing));
+  const [existingForShift, setExistingForShift] = useState(existing);
+  const [slots, setSlots] = useState<Slot[]>(() =>
+    buildSlots(resolveSitesForShiftView(sites, 'DAY', existing), guards, existing),
+  );
 
-  /* ── Date options: today + 3 days ───────────────────────────── */
-  const days = useMemo(() => {
-    return Array.from({ length: 4 }, (_, i) => {
-      const d = new Date();
-      d.setDate(d.getDate() + i);
-      const iso = d.toISOString().split('T')[0];
-      const label =
-        i === 0
-          ? `Today · ${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}`
-          : i === 1
-          ? `Tomorrow · ${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}`
-          : d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' });
-      return { iso, label };
-    });
-  }, []);
+  const activeSites = useMemo(
+    () => resolveSitesForShiftView(sites, shiftType, existingForShift),
+    [sites, shiftType, existingForShift],
+  );
+
+  const days = useMemo(
+    () => buildSelectableShiftDates(shiftType, shiftTiming),
+    [shiftType, shiftTiming],
+  );
+
+  useEffect(() => {
+    if (!days.some((day) => day.iso === selectedDate)) {
+      setSelectedDate(days[0]?.iso ?? defaultDate);
+    }
+  }, [days, selectedDate, defaultDate]);
+
+  const prevShiftRef = useRef<ShiftType>(shiftType);
+  useEffect(() => {
+    if (prevShiftRef.current === shiftType) return;
+    prevShiftRef.current = shiftType;
+
+    if (shiftType === 'NIGHT') {
+      const yesterday = addCalendarDays(colomboTodayIso(), -1);
+      if (isNowWithinShiftWindow(yesterday, 'NIGHT', shiftTiming)) {
+        setSelectedDate(yesterday);
+      }
+    }
+  }, [shiftType, shiftTiming]);
 
   /* ── Reload when date or shift type changes ─────────────────── */
   const prevKeyRef = useRef(`${defaultDate}_DAY`);
@@ -279,10 +358,14 @@ export default function GuardAttendanceClient({
     setLoadingDate(true);
     getAttendanceForDate(selectedDate, shiftType)
       .then(data => {
-        setSlots(buildSlots(sites, guards, data));
+        setExistingForShift(data);
+        const resolved = resolveSitesForShiftView(sites, shiftType, data);
+        setSlots(buildSlots(resolved, guards, data));
       })
       .catch(() => {
-        setSlots(buildSlots(sites, guards, []));
+        setExistingForShift([]);
+        const resolved = resolveSitesForShiftView(sites, shiftType, []);
+        setSlots(buildSlots(resolved, guards, []));
       })
       .finally(() => setLoadingDate(false));
   }, [selectedDate, shiftType, sites, guards]);
@@ -296,7 +379,12 @@ export default function GuardAttendanceClient({
 
   /* ── Slot mutations ─────────────────────────────────────────── */
   const updateSlot = useCallback((uid: string, guardEpf: string | null) => {
-    setSlots(prev => prev.map(s => s.uid === uid ? { ...s, guardEpf } : s));
+    setSlots(prev =>
+      prev.map(s => {
+        if (s.uid !== uid || s.locked) return s;
+        return { ...s, guardEpf };
+      }),
+    );
   }, []);
 
   const removeSlot = useCallback((uid: string) => {
@@ -304,7 +392,7 @@ export default function GuardAttendanceClient({
   }, []);
 
   const addSlot = useCallback((siteName: string) => {
-    setSlots(prev => [...prev, { uid: makeUid(), siteName, guardEpf: null }]);
+    setSlots(prev => [...prev, { uid: makeUid(), siteName, guardEpf: null, locked: false }]);
   }, []);
 
   /* ── Submit ─────────────────────────────────────────────────── */
@@ -327,11 +415,16 @@ export default function GuardAttendanceClient({
   /* ── Group slots by site ────────────────────────────────────── */
   const slotsBySite = useMemo(() => {
     const map = new Map<string, Slot[]>();
-    for (const site of sites) {
+    for (const site of activeSites) {
       map.set(site.value, slots.filter(s => s.siteName === site.value));
     }
     return map;
-  }, [slots, sites]);
+  }, [slots, activeSites]);
+
+  const editableSites = useMemo(
+    () => activeSites.filter((site) => !site.readOnly && site.required > 0),
+    [activeSites],
+  );
 
   /* ── Success screen ─────────────────────────────────────────── */
   if (done) {
@@ -366,7 +459,8 @@ export default function GuardAttendanceClient({
       {/* Header */}
       <header className="flex items-center gap-3 pt-2">
         <button
-          onClick={() => router.back()}
+          type="button"
+          onClick={() => router.push('/dashboard')}
           className="p-2 rounded-xl bg-slate-100 border border-slate-200 text-slate-600 hover:text-slate-900 transition-colors"
         >
           <ArrowLeft className="w-5 h-5" />
@@ -457,13 +551,13 @@ export default function GuardAttendanceClient({
               </p>
             </div>
           ) : (
-            sites.map(site => {
+            activeSites.map(site => {
               const siteSlots = slotsBySite.get(site.value) ?? [];
               const assignedCount = siteSlots.filter(s => s.guardEpf).length;
               const required = site.required;
-              const shortfall = required - assignedCount;
-              const isShort = shortfall > 0;
-              const isFull = assignedCount >= required;
+              const shortfall = site.readOnly ? 0 : required - assignedCount;
+              const isShort = !site.readOnly && shortfall > 0;
+              const isFull = !site.readOnly && required > 0 && assignedCount >= required;
 
               return (
                 <div
@@ -490,7 +584,11 @@ export default function GuardAttendanceClient({
                       <p className={`text-xs font-mono font-bold ${
                         isShort ? 'text-red-600/80' : 'text-slate-500'
                       }`}>
-                        {assignedCount} / {required} guard{required !== 1 ? 's' : ''} assigned
+                        {site.readOnly
+                          ? shiftType === 'NIGHT'
+                            ? 'Day shift only — not on night roster'
+                            : 'Night shift only — not on day roster'
+                          : `${assignedCount} / ${required} guard${required !== 1 ? 's' : ''} assigned`}
                       </p>
                     </div>
                     {/* Status badge */}
@@ -513,6 +611,14 @@ export default function GuardAttendanceClient({
 
                   {/* Guard slots */}
                   <div className="p-4 space-y-2.5">
+                    {site.readOnly && (
+                      <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-slate-100 border border-slate-200">
+                        <AlertCircle className="w-4 h-4 text-slate-500 shrink-0" />
+                        <p className="text-xs font-semibold text-slate-600">
+                          Switch to the matching shift type to assign guards here.
+                        </p>
+                      </div>
+                    )}
                     {siteSlots.map((slot, i) => {
                       const isVacant = !slot.guardEpf;
                       return (
@@ -527,6 +633,7 @@ export default function GuardAttendanceClient({
                             siteName={site.value}
                             value={slot.guardEpf}
                             guards={guards}
+                            locked={slot.locked}
                             assignedElsewhere={
                               new Set(
                                 [...assignedEpfs].filter(epf => epf !== slot.guardEpf),
@@ -535,7 +642,7 @@ export default function GuardAttendanceClient({
                             onChange={epf => updateSlot(slot.uid, epf)}
                           />
                         </div>
-                        {siteSlots.length > 1 && (
+                        {siteSlots.length > 1 && !slot.locked && (
                           <button
                             type="button"
                             onClick={() => removeSlot(slot.uid)}
@@ -560,6 +667,7 @@ export default function GuardAttendanceClient({
                     )}
 
                     {/* Add guard slot */}
+                    {!site.readOnly && (
                     <button
                       type="button"
                       onClick={() => addSlot(site.value)}
@@ -568,6 +676,7 @@ export default function GuardAttendanceClient({
                       <Plus className="w-3.5 h-3.5" />
                       Add Guard
                     </button>
+                    )}
                   </div>
                 </div>
               );
@@ -585,8 +694,8 @@ export default function GuardAttendanceClient({
       )}
 
       {/* Submit */}
-      {sites.length > 0 && !loadingDate && (() => {
-        const totalShort = sites.reduce((acc, site) => {
+      {sites.length > 0 && !loadingDate && editableSites.length > 0 && (() => {
+        const totalShort = editableSites.reduce((acc, site) => {
           const siteSlots = slotsBySite.get(site.value) ?? [];
           const assigned = siteSlots.filter(s => s.guardEpf).length;
           return acc + Math.max(0, site.required - assigned);

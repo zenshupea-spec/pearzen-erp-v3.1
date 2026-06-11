@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { ArrowLeft, MapPin, CheckCircle2, Navigation, Clock } from 'lucide-react';
+import { fetchSmAssignedSiteRows } from '../../../lib/sm-portal-db';
 
 export const dynamic = 'force-dynamic';
 
@@ -63,11 +64,7 @@ export default async function SitesToVisitPage() {
   const supabase = await createSupabaseServerClient();
   const today = new Date().toISOString().split('T')[0];
 
-  // Fetch assigned sites with coordinates
-  const { data: assignedRaw } = await supabase
-    .from('site_profiles')
-    .select('*')
-    .eq('assigned_sm_epf', epf);
+  const assignedRaw = await fetchSmAssignedSiteRows(epf);
 
   // Fetch today's visit logs for this SM
   const { data: visitedTodayRaw } = await supabase

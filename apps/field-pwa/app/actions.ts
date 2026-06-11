@@ -1,57 +1,13 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { createSupabaseServerClient } from '../../../packages/supabase/server';
+import { createSupabaseServiceClient } from '../../../packages/supabase/server';
 import { getDistanceInMeters } from '../lib/geofence';
-
-type VerificationMode = 'A' | 'B' | 'C';
-
-type SiteProfileRow = Record<string, unknown> & {
-  site_name?: string;
-};
-
-function toNumberOrNull(value: unknown): number | null {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function pickCoord(row: SiteProfileRow, keys: string[]): number | null {
-  for (const key of keys) {
-    if (key in row) {
-      const parsed = toNumberOrNull(row[key]);
-      if (parsed !== null) return parsed;
-    }
-  }
-  return null;
-}
-
-function parseSiteProfile(raw: SiteProfileRow | SiteProfileRow[] | null | undefined) {
-  const row = Array.isArray(raw) ? raw[0] : raw;
-  if (!row) {
-    return {
-      siteName: 'UNKNOWN SITE',
-      siteLat: null as number | null,
-      siteLng: null as number | null,
-      geofenceRadius: 25,
-      verificationMode: 'B' as VerificationMode,
-      nfcTagId: null as string | null,
-    };
-  }
-
-  const mode = String(row.verification_mode ?? 'B').toUpperCase();
-  const verificationMode: VerificationMode =
-    mode === 'A' || mode === 'C' ? mode : 'B';
-
-  return {
-    siteName: String(row.site_name ?? 'UNKNOWN SITE'),
-    siteLat: pickCoord(row, ['latitude', 'lat', 'site_lat', 'site_latitude']),
-    siteLng: pickCoord(row, ['longitude', 'lng', 'site_lng', 'site_longitude']),
-    geofenceRadius:
-      pickCoord(row, ['geofence_radius', 'radius_meters', 'gps_radius_meters']) ?? 25,
-    verificationMode,
-    nfcTagId: row.nfc_tag_id ? String(row.nfc_tag_id) : null,
-  };
-}
+import {
+  colomboTodayIso,
+  resolveActiveShiftForToday,
+  resolveUpcomingShifts,
+} from '../lib/guard-shift-resolver';
 
 function checkoutWindowStart(endTimeIso: string): Date {
   return new Date(new Date(endTimeIso).getTime() - 30 * 60 * 1000);
@@ -80,88 +36,49 @@ function resolveLogStatus(
 // ==========================================
 export async function getGuardAttendanceState(empNumber: string) {
   try {
-    const supabase = await createSupabaseServerClient();
-    
-    // A. Find the Guard's profile
-    const { data: employee, error: empError } = await supabase
-      .from('employees')
-      .select('id, full_name')
-      .eq('emp_number', empNumber)
-      .eq('status', 'ACTIVE')
-      .single();
+    const supabase = createSupabaseServiceClient();
+    const resolved = await resolveActiveShiftForToday(supabase, empNumber);
 
-    if (empError || !employee) {
-      return { status: 'ERROR', message: 'GUARD PROFILE NOT FOUND OR INACTIVE.' };
-    }
-
-    // B. Look for today's shift on the SM roster
-    const today = new Date().toISOString().split('T')[0];
-
-    const { data: shift, error: shiftError } = await supabase
-      .from('time_rosters')
-      .select(`
-        id,
-        planned_start_time,
-        planned_end_time,
-        site_profiles (
-          site_name,
-          latitude,
-          longitude,
-          lat,
-          lng,
-          geofence_radius,
-          radius_meters,
-          verification_mode,
-          nfc_tag_id
-        )
-      `)
-      .eq('employee_id', employee.id)
-      .eq('shift_date', today)
-      .eq('status', 'ACTIVE')
-      .single();
-
-    if (shiftError || !shift) {
-      return { 
-        status: 'IDLE', 
+    if (!resolved) {
+      return {
+        status: 'IDLE',
         message: 'NO ACTIVE SHIFT SCHEDULED FOR TODAY.',
-        guardName: employee.full_name
       };
     }
 
-    // C. Check last action for today
+    const { employee, shift } = resolved;
+    const today = colomboTodayIso();
+
     const { data: lastLog } = await supabase
       .from('attendance_logs')
       .select('action_type, device_time')
       .eq('emp_number', empNumber)
-      .gte('device_time', `${today}T00:00:00`)
+      .gte('device_time', `${today}T00:00:00+05:30`)
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
 
     const nextAction = lastLog?.action_type === 'CHECK_IN' ? 'CHECK_OUT' : 'CHECK_IN';
-    const siteInfo = parseSiteProfile(
-      (shift as { site_profiles?: SiteProfileRow | SiteProfileRow[] }).site_profiles,
-    );
-    const checkoutOpensAt = checkoutWindowStart(shift.planned_end_time).toISOString();
+    const checkoutOpensAt = checkoutWindowStart(shift.plannedEndTime).toISOString();
 
     return {
       status: 'READY',
       nextAction,
-      shiftId: shift.id,
+      shiftId: shift.shiftId,
       guardName: employee.full_name,
-      locationName: siteInfo.siteName,
-      startTime: shift.planned_start_time,
-      endTime: shift.planned_end_time,
+      locationName: shift.siteName,
+      startTime: shift.plannedStartTime,
+      endTime: shift.plannedEndTime,
       checkoutOpensAt,
-      siteLat: siteInfo.siteLat,
-      siteLng: siteInfo.siteLng,
-      geofenceRadius: siteInfo.geofenceRadius,
-      verificationMode: siteInfo.verificationMode,
-      nfcTagId: siteInfo.nfcTagId,
+      siteLat: shift.siteLat,
+      siteLng: shift.siteLng,
+      geofenceRadius: shift.geofenceRadius,
+      verificationMode: shift.verificationMode,
+      nfcTagId: shift.nfcTagId,
     };
-
-  } catch (error: any) {
-    console.error('❌ FIELD API ERROR:', error.message);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('❌ FIELD API ERROR:', message);
     return { status: 'ERROR', message: 'CRITICAL SYSTEM FAILURE.' };
   }
 }
@@ -208,53 +125,16 @@ export type ProcessLocationPingInput = {
 };
 
 export async function processLocationPing(payload: ProcessLocationPingInput) {
-  const supabase = await createSupabaseServerClient();
+  const supabase = createSupabaseServiceClient();
   let photo_url = payload.photo_url;
 
-  const today = new Date().toISOString().split('T')[0];
-
-  const { data: employee } = await supabase
-    .from('employees')
-    .select('id')
-    .eq('emp_number', payload.emp_number)
-    .eq('status', 'ACTIVE')
-    .single();
-
-  if (!employee) {
-    return { success: false, error: 'Guard profile not found.' };
-  }
-
-  const { data: shift } = await supabase
-    .from('time_rosters')
-    .select(`
-      id,
-      planned_end_time,
-      site_profiles (
-        site_name,
-        latitude,
-        longitude,
-        lat,
-        lng,
-        geofence_radius,
-        radius_meters,
-        verification_mode,
-        nfc_tag_id
-      )
-    `)
-    .eq('employee_id', employee.id)
-    .eq('shift_date', today)
-    .eq('status', 'ACTIVE')
-    .single();
-
-  if (!shift) {
+  const resolved = await resolveActiveShiftForToday(supabase, payload.emp_number);
+  if (!resolved) {
     return { success: false, error: 'No active shift scheduled for today.' };
   }
 
-  const siteInfo = parseSiteProfile(
-    (shift as { site_profiles?: SiteProfileRow | SiteProfileRow[] }).site_profiles,
-  );
-
-  const verificationMode = siteInfo.verificationMode;
+  const { shift } = resolved;
+  const verificationMode = shift.verificationMode;
 
   if (verificationMode === 'A') {
     return { success: false, error: 'This site uses roster-only verification. Contact your sector manager.' };
@@ -266,28 +146,28 @@ export async function processLocationPing(payload: ProcessLocationPingInput) {
       return { success: false, error: 'NFC tag scan required for this site.' };
     }
     const tagMatches =
-      (siteInfo.nfcTagId && scanned === siteInfo.nfcTagId) ||
-      scanned === siteInfo.siteName;
+      (shift.nfcTagId && scanned === shift.nfcTagId) ||
+      scanned === shift.siteName;
     if (!tagMatches) {
       return { success: false, error: 'NFC tag does not match your scheduled site.' };
     }
-  } else if (siteInfo.siteLat !== null && siteInfo.siteLng !== null) {
+  } else if (shift.siteLat !== null && shift.siteLng !== null) {
     const distance = getDistanceInMeters(
       payload.latitude,
       payload.longitude,
-      siteInfo.siteLat,
-      siteInfo.siteLng,
+      shift.siteLat,
+      shift.siteLng,
     );
-    if (distance > siteInfo.geofenceRadius) {
+    if (distance > shift.geofenceRadius) {
       return {
         success: false,
-        error: `You are ${distance}m from site (max ${siteInfo.geofenceRadius}m).`,
+        error: `You are ${distance}m from site (max ${shift.geofenceRadius}m).`,
       };
     }
   }
 
   if (payload.action_type === 'CHECK_OUT') {
-    const windowStart = checkoutWindowStart(shift.planned_end_time);
+    const windowStart = checkoutWindowStart(shift.plannedEndTime);
     const deviceDate = new Date(payload.device_time);
     if (deviceDate < windowStart && payload.checkout_flag !== 'EARLY') {
       return {
@@ -319,7 +199,7 @@ export async function processLocationPing(payload: ProcessLocationPingInput) {
   const logStatus = resolveLogStatus(
     payload.action_type,
     payload.device_time,
-    shift.planned_end_time,
+    shift.plannedEndTime,
     payload.checkout_flag,
   );
 
@@ -358,45 +238,16 @@ export type UpcomingShift = {
 
 export async function getUpcomingShifts(empNumber: string): Promise<UpcomingShift[]> {
   try {
-    const supabase = await createSupabaseServerClient();
+    const supabase = createSupabaseServiceClient();
+    const rows = await resolveUpcomingShifts(supabase, empNumber, 14);
 
-    const { data: employee } = await supabase
-      .from('employees')
-      .select('id')
-      .eq('emp_number', empNumber)
-      .eq('status', 'ACTIVE')
-      .single();
-
-    if (!employee) return [];
-
-    const today = new Date().toISOString().split('T')[0];
-
-    const { data: rows, error } = await supabase
-      .from('time_rosters')
-      .select('id, shift_date, planned_start_time, planned_end_time, site_profiles ( site_name )')
-      .eq('employee_id', employee.id)
-      .eq('status', 'ACTIVE')
-      .gte('shift_date', today)
-      .order('shift_date', { ascending: true })
-      .order('planned_start_time', { ascending: true })
-      .limit(14);
-
-    if (error || !rows) return [];
-
-    return rows.map((shift) => {
-      const sp = (shift as { site_profiles?: { site_name: string } | { site_name: string }[] })
-        .site_profiles;
-      const siteName =
-        (Array.isArray(sp) ? sp[0]?.site_name : sp?.site_name) || 'Site TBC';
-
-      return {
-        id: shift.id,
-        shiftDate: shift.shift_date,
-        startTime: shift.planned_start_time,
-        endTime: shift.planned_end_time,
-        siteName,
-      };
-    });
+    return rows.map((shift) => ({
+      id: shift.shiftId,
+      shiftDate: shift.shiftDate,
+      startTime: shift.plannedStartTime,
+      endTime: shift.plannedEndTime,
+      siteName: shift.siteName,
+    }));
   } catch (err) {
     console.error('❌ UPCOMING SHIFTS ERROR:', err);
     return [];

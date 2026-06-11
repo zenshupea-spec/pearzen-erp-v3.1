@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
+import { createSupabaseServiceClient } from '../../../../../../packages/supabase/service';
 
 export async function POST(req: NextRequest) {
   const { epfNumber, password } = await req.json() as { epfNumber: string; password: string };
@@ -48,8 +49,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Access denied. Not an active Sector Manager.' }, { status: 403 });
   }
 
-  // Check portal auth provisioning record
-  const { data: authRecord } = await supabase
+  // sm_portal_auth is service-role only until login; anon RLS would hide the row.
+  const admin = createSupabaseServiceClient();
+  const { data: authRecord } = await admin
     .from('sm_portal_auth')
     .select('needs_pin_setup, is_active, current_otp')
     .eq('epf_number', epf)
@@ -74,7 +76,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Update last_login_at
-  await supabase
+  await admin
     .from('sm_portal_auth')
     .update({ last_login_at: new Date().toISOString() })
     .eq('epf_number', epf);

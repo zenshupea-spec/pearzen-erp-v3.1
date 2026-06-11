@@ -1,13 +1,12 @@
-import { createSupabaseServerClient } from '../../../packages/supabase/server';
+import { createSupabaseServiceClient } from '../../../packages/supabase/server';
+import {
+  colomboTodayIso,
+  countRosteredShiftsForToday,
+  findActiveEmployeeByRosterKey,
+} from './guard-shift-resolver';
 
 const WB_WORKING_DAYS = 26;
 const DEFAULT_SHIFT_PAY_LKR = 2000;
-
-function todayInColombo(): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Colombo' }).format(
-    new Date(),
-  );
-}
 
 function dateInColombo(iso: string | Date): string {
   const d = typeof iso === 'string' ? new Date(iso) : iso;
@@ -54,28 +53,20 @@ export async function calculateTodayEarnings(
   };
 
   try {
-    const supabase = await createSupabaseServerClient();
-    const today = todayInColombo();
+    const supabase = createSupabaseServiceClient();
+    const today = colomboTodayIso();
 
-    const { data: employee } = await supabase
-      .from('employees')
-      .select('id, base_salary')
-      .eq('emp_number', empNumber)
-      .eq('status', 'ACTIVE')
-      .single();
-
+    const employee = await findActiveEmployeeByRosterKey(supabase, empNumber);
     if (!employee) return empty;
 
-    const shiftPay = shiftPayFromSalary(employee.base_salary);
+    const { data: salaryRow } = await supabase
+      .from('employees')
+      .select('base_salary')
+      .eq('id', employee.id)
+      .maybeSingle();
 
-    const { data: rosters } = await supabase
-      .from('time_rosters')
-      .select('id, shift_date, planned_start_time')
-      .eq('employee_id', employee.id)
-      .eq('shift_date', today)
-      .eq('status', 'ACTIVE');
-
-    const rosteredToday = rosters?.length ?? 0;
+    const shiftPay = shiftPayFromSalary(salaryRow?.base_salary);
+    const rosteredToday = await countRosteredShiftsForToday(supabase, employee, today);
     if (rosteredToday === 0) {
       return { ...empty, shiftPay };
     }

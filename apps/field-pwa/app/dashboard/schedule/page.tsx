@@ -1,10 +1,13 @@
 import Link from 'next/link';
 import { ArrowLeft, CalendarDays } from 'lucide-react';
-import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
+import {
+  createSupabaseServerClient,
+  createSupabaseServiceClient,
+} from '../../../../../packages/supabase/server';
 import { redirect } from 'next/navigation';
 import { getUpcomingShifts } from '../../actions';
 import { resolveGuardSession } from '../../../lib/guard-auth';
-import { createSupabaseServiceClient } from '../../../../../packages/supabase/server';
+import { colomboTodayIso } from '../../../lib/guard-shift-resolver';
 
 function formatShiftDate(isoDate: string) {
   return new Date(`${isoDate}T12:00:00`).toLocaleDateString('en-GB', {
@@ -64,8 +67,7 @@ export default async function SchedulePage() {
       ) : (
         <ul className="space-y-3">
           {shifts.map((shift) => {
-            const isToday =
-              shift.shiftDate === new Date().toISOString().split('T')[0];
+            const isToday = shift.shiftDate === colomboTodayIso();
             return (
               <li
                 key={shift.id}

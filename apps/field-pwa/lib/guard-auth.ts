@@ -21,18 +21,28 @@ export function fieldPwaAuthEmail(epf: string): string {
   return `${epfAuthLocalPart(epf)}@pearzen.local`;
 }
 
+const SUPABASE_AUTH_PASSWORD_MIN_LENGTH = 6;
+
+/** Supabase Auth rejects passwords shorter than 6 characters. */
+function ensureFieldPwaAuthPasswordLength(password: string): string {
+  if (password.length >= SUPABASE_AUTH_PASSWORD_MIN_LENGTH) return password;
+  return `guard-${password}`;
+}
+
 export function fieldPwaAuthPassword(epfOrKey: string): string {
   const fixed = process.env.FIELD_PWA_AUTH_PASSWORD;
   if (fixed) return fixed;
 
   const template = process.env.FIELD_PWA_AUTH_PASSWORD_TEMPLATE;
   if (template) {
-    return template
-      .replaceAll('{{epfNo}}', epfOrKey)
-      .replaceAll('{{empNumber}}', epfOrKey);
+    return ensureFieldPwaAuthPasswordLength(
+      template
+        .replaceAll('{{epfNo}}', epfOrKey)
+        .replaceAll('{{empNumber}}', epfOrKey),
+    );
   }
 
-  return epfOrKey;
+  return ensureFieldPwaAuthPasswordLength(epfOrKey);
 }
 
 /** Key used on attendance_logs / time_rosters (prefers internal emp_number when set). */

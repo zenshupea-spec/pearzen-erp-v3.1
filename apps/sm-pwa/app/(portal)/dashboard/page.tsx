@@ -12,6 +12,7 @@ import {
   Shield,
   Users,
 } from 'lucide-react';
+import { fetchSmAssignedSites } from '../../../lib/sm-portal-db';
 import DashboardStatsClient from './DashboardStatsClient';
 
 export const dynamic = 'force-dynamic';
@@ -71,14 +72,8 @@ export default async function SMDashboard() {
       .select('id, ack_sm, status')
       .eq('sm_epf', epf);
 
-    const { data: assignedForIncidents } = await supabase
-      .from('site_profiles')
-      .select('site_name')
-      .eq('assigned_sm_epf', epf);
-
-    const siteNamesForIncidents = (assignedForIncidents ?? []).map(
-      (s: { site_name: string }) => s.site_name,
-    );
+    const assignedSites = await fetchSmAssignedSites(epf);
+    const siteNamesForIncidents = assignedSites.map((site) => site.site_name);
 
     const { data: siteIncidents } =
       siteNamesForIncidents.length > 0
@@ -97,13 +92,7 @@ export default async function SMDashboard() {
       },
     );
 
-    // Assigned sites not yet visited today
-    const { data: assignedSitesData } = await supabase
-      .from('site_profiles')
-      .select('site_name')
-      .eq('assigned_sm_epf', epf);
-
-    const assignedSiteNames = (assignedSitesData ?? []).map((s: { site_name: string }) => s.site_name);
+    const assignedSiteNames = assignedSites.map((site) => site.site_name);
 
     const { data: visitedTodayData } = await supabase
       .from('sm_visit_logs')

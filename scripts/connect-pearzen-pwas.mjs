@@ -38,7 +38,11 @@ const SM_PWA_ENV = {
   NEXT_PUBLIC_TENANT_BASE_DOMAIN: DOMAIN,
 };
 
-const SM_ONLY_ENV_KEYS = new Set(['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY']);
+const SM_ONLY_ENV_KEYS = new Set([
+  'NEXT_PUBLIC_SUPABASE_URL',
+  'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+  'SUPABASE_SERVICE_ROLE_KEY',
+]);
 
 function loadEnv() {
   for (const file of ['.env.seed.tmp', '.env.local', '.env']) {
@@ -264,6 +268,9 @@ async function collectSharedEnv(backOfficeProjectId) {
   // Sensitive Vercel env vars are not returned by the API — use local .env.seed.tmp.
   for (const key of PWA_ENV_KEYS) {
     if (!out[key] && process.env[key]) out[key] = process.env[key];
+  }
+  if (!out.SUPABASE_SERVICE_ROLE_KEY && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    out.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
   }
 
   const seedValues = {

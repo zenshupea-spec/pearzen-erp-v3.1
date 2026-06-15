@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { ExecutiveGlassCard } from '../../../../components/executive/ExecutiveVaultShell';
 import {
   fetchExecutiveSessionProfile,
@@ -12,10 +12,20 @@ import { CafePortalShell } from '../CafePortalShell';
 import { normalizeIngredient } from '../cafe-ingredient-utils';
 import { ExpiryTrackingPanel } from '../cafe-ingredients-panels';
 import { isCafeHubView } from '../../../../lib/hq-hub';
+import { useCafeBranchScope } from '../use-cafe-branch';
+import PortalLoadingScreen from '../../../../../../packages/pwa-shell/PortalLoadingScreen';
 
 export default function CafeExpiryPage() {
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const fromHub = searchParams.get('hub') === '1';
+  const {
+    branches,
+    locationId,
+    locationName,
+    setLocationName,
+    handleBranchChange,
+  } = useCafeBranchScope(pathname);
   const [sessionProfile, setSessionProfile] = useState<ExecutiveSessionProfile | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -28,15 +38,26 @@ export default function CafeExpiryPage() {
   }, []);
 
   useEffect(() => {
-    void getCafeDashboard().then((payload) => {
+    if (!locationId) return;
+    setLoading(true);
+    void getCafeDashboard(locationId).then((payload) => {
       if (payload.error) setLoadError(payload.error);
+      setLocationName(payload.locationName ?? null);
       setIngredients((payload.ingredients ?? []).map((ing) => normalizeIngredient(ing)));
       setLoading(false);
     });
-  }, []);
+  }, [locationId, setLocationName]);
 
   return (
-    <CafePortalShell hubView={hubView} subtitle="Expiry tracking · stock lots closest to expire first">
+    <CafePortalShell
+      hubView={hubView}
+      subtitle="Expiry tracking · stock lots closest to expire first"
+      branches={branches}
+      selectedBranchId={locationId}
+      onBranchChange={handleBranchChange}
+      showBranchSelector={!hubView}
+      locationName={locationName}
+    >
       {loadError ? (
         <ExecutiveGlassCard className="border-rose-200/80 bg-rose-50/50 p-4">
           <p className="text-sm font-bold text-rose-900">Could not load live café data</p>
@@ -45,9 +66,7 @@ export default function CafeExpiryPage() {
       ) : null}
 
       {loading ? (
-        <ExecutiveGlassCard className="p-8 text-center text-sm text-slate-500">
-          Loading expiry tracker…
-        </ExecutiveGlassCard>
+        <PortalLoadingScreen accent="amber" fullscreen={false} />
       ) : (
         <ExpiryTrackingPanel ingredients={ingredients} />
       )}

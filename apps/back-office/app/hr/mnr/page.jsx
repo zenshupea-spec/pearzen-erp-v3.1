@@ -1,5 +1,7 @@
 "use client";
 
+import PortalLoadingScreen from '../../../../../packages/pwa-shell/PortalLoadingScreen';
+
 import { useCallback, useEffect, useRef, useState, useMemo, useTransition } from "react";
 import Link from "next/link";
 import {
@@ -28,8 +30,12 @@ import {
 } from "../../../lib/executive-rank-guard";
 import { getEmployees } from "../../actions/mnrActions";
 import { getRankPayMatrix } from "../../executive/settings/rank-matrix-actions";
+import { getInternalWorkLocationsForMnr } from "../../executive/settings/internal-work-locations-actions";
 import { getMnrAccess, saveEmployeeAll } from "./actions";
 import { getMnrRejoinDeskMeta, rejoinEmployee } from "./rejoin-actions";
+import { normalizeEpfNo } from "../../../lib/employee-epf";
+import { isNicLookupReady } from "../../../lib/employee-nic";
+import { lookupPriorRecordsByNic } from "../epf-actions";
 import ClearanceModal from "./ClearanceModal";
 import HrHubPills from "../HrHubPills";
 import EmployeeDocumentField from "../EmployeeDocumentField";
@@ -46,10 +52,6 @@ function employeeEpfNo(emp) {
   return emp.epf_no ?? emp.epf_num ?? null;
 }
 
-function normalizeEpfNo(value) {
-  const s = String(value ?? "").trim();
-  return s ? s.toLowerCase() : "";
-}
 
 function findEpfNoOwner(epfNo, excludeEmployeeId, employees) {
   const norm = normalizeEpfNo(epfNo);
@@ -227,6 +229,10 @@ export default function MasterNominalRoll() {
   const [mnrSignedIn, setMnrSignedIn] = useState(false);
   const [clearanceEmp, setClearanceEmp] = useState(null);
   const [mdRankMatrix, setMdRankMatrix] = useState([]);
+  const [internalWorkLocations, setInternalWorkLocations] = useState({
+    headOffice: [],
+    cafe: [],
+  });
   const [rejoinMeta, setRejoinMeta] = useState({
     blacklistedByEmployeeId: {},
     guardRatingByEmployeeId: {},
@@ -238,6 +244,9 @@ export default function MasterNominalRoll() {
 
   useEffect(() => {
     getRankPayMatrix().then(setMdRankMatrix).catch(() => setMdRankMatrix([]));
+    getInternalWorkLocationsForMnr()
+      .then(setInternalWorkLocations)
+      .catch(() => setInternalWorkLocations({ headOffice: [], cafe: [] }));
   }, []);
 
   const fetchEmployees = useCallback(async () => {
@@ -719,12 +728,7 @@ export default function MasterNominalRoll() {
         )}
 
         {loading ? (
-          <div className="flex flex-col items-center justify-center py-32 gap-4">
-            <div className="w-10 h-10 rounded-full border-2 border-rose-500 border-t-transparent animate-spin" />
-            <p className="text-slate-500 text-sm font-black uppercase tracking-widest">
-              Loading Personnel Registry…
-            </p>
-          </div>
+          <PortalLoadingScreen accent="rose" fullscreen={false} />
         ) : (
           <>
             <p className="text-xs text-slate-500 font-bold uppercase tracking-wider mb-3">
@@ -986,6 +990,7 @@ export default function MasterNominalRoll() {
           }}
           onOpenClearanceSummary={(employee) => setClearanceEmp(employee)}
           mdRankMatrix={mdRankMatrix}
+          internalWorkLocations={internalWorkLocations}
           allEmployees={employees}
         />
       )}
@@ -1062,6 +1067,15 @@ function normalizeCorporateGroup(value) {
 
 function isHeadOfficeGroup(emp) {
   return normalizeCorporateGroup(emp?.group) === "HEAD_OFFICE";
+}
+
+function isCafeGroup(emp) {
+  return normalizeCorporateGroup(emp?.group) === "CAFE";
+}
+
+function isInternalLocationGroup(group) {
+  const normalized = normalizeCorporateGroup(group);
+  return normalized === "HEAD_OFFICE" || normalized === "CAFE";
 }
 
 const SALARY_TYPE_OPTIONS = [
@@ -1180,6 +1194,7 @@ function EmployeeDrawer({
   onSaved,
   onOpenClearanceSummary,
   mdRankMatrix,
+  internalWorkLocations,
   allEmployees,
 }) {
   const formRef = useRef(null);
@@ -1187,12 +1202,17 @@ function EmployeeDrawer({
   const [saveError, setSaveError] = useState("");
   const [epfDuplicate, setEpfDuplicate] = useState(null);
   const [emailDuplicate, setEmailDuplicate] = useState(null);
+  const [previousEpfNo, setPreviousEpfNo] = useState("");
+  const [priorNicMatches, setPriorNicMatches] = useState([]);
+  const [nicLookupLoading, setNicLookupLoading] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [pendingNav, setPendingNav] = useState(null);
   const pendingNavRef = useRef(null);
   const [formKey, setFormKey] = useState(0);
   const [editRank, setEditRank] = useState("");
+  const [editGroup, setEditGroup] = useState("");
   const [editSite, setEditSite] = useState("");
+  const [editBaseSalary, setEditBaseSalary] = useState("");
   const today   = new Date();
   const daysDiff = (dateStr) => {
     if (!dateStr) return null;
@@ -1210,16 +1230,51 @@ function EmployeeDrawer({
 
   useEffect(() => {
     const rank = (emp.rank || "").trim().toUpperCase();
+    const group = normalizeCorporateGroup(emp.group);
     setEditRank(rank);
+    setEditGroup(group);
     setEditSite(defaultSiteForRank(mdRankMatrix, rank, emp.site || ""));
-  }, [emp.id, emp.rank, emp.site, formKey, mdRankMatrix]);
+    setEditBaseSalary(
+      emp.base_salary != null && emp.base_salary !== "" ? String(emp.base_salary) : "",
+    );
+    setPreviousEpfNo(emp.previous_epf_no ?? "");
+    setPriorNicMatches([]);
+  }, [emp.id, emp.rank, emp.group, emp.site, emp.base_salary, emp.previous_epf_no, formKey, mdRankMatrix]);
 
   const siteApplicable = isFieldGuardRank(mdRankMatrix, editRank);
+  const internalLocationApplicable = isInternalLocationGroup(editGroup);
+  const internalLocationOptions =
+    normalizeCorporateGroup(editGroup) === "HEAD_OFFICE"
+      ? internalWorkLocations.headOffice
+      : normalizeCorporateGroup(editGroup) === "CAFE"
+        ? internalWorkLocations.cafe
+        : [];
+  const internalLocationLabel =
+    normalizeCorporateGroup(editGroup) === "HEAD_OFFICE"
+      ? "Head Office Branch"
+      : "Café Branch";
 
   const handleEditRankChange = (e) => {
     const newRank = e.target.value;
     setEditRank(newRank);
+    const entry = findRankPayEntry(mdRankMatrix, newRank);
+    if (entry?.basicPay > 0) {
+      setEditBaseSalary(String(entry.basicPay));
+    }
     if (isFieldGuardRank(mdRankMatrix, newRank)) {
+      setEditSite((prev) => prev || "Unassigned (Bench)");
+    } else if (!isInternalLocationGroup(editGroup)) {
+      setEditSite("");
+    }
+    setDirty(true);
+  };
+
+  const handleEditGroupChange = (e) => {
+    const newGroup = normalizeCorporateGroup(e.target.value);
+    setEditGroup(newGroup);
+    if (isInternalLocationGroup(newGroup)) {
+      setEditSite("");
+    } else if (isFieldGuardRank(mdRankMatrix, editRank)) {
       setEditSite((prev) => prev || "Unassigned (Bench)");
     } else {
       setEditSite("");
@@ -1267,6 +1322,27 @@ function EmployeeDrawer({
     isHeadOfficeGroup(emp) &&
     (!isExecutiveRank(emp.rank) || canManageExecutive);
 
+  const handleNicBlur = async (nic) => {
+    const trimmed = String(nic ?? "").trim();
+    if (!isNicLookupReady(trimmed)) {
+      setPriorNicMatches([]);
+      return;
+    }
+    setNicLookupLoading(true);
+    try {
+      const { matches } = await lookupPriorRecordsByNic(trimmed, emp.id);
+      const others = matches.filter((m) => m.id !== emp.id);
+      setPriorNicMatches(others);
+      if (others.length > 0 && !previousEpfNo.trim()) {
+        setPreviousEpfNo(others[0].epfNo ?? "");
+      }
+    } catch {
+      setPriorNicMatches([]);
+    } finally {
+      setNicLookupLoading(false);
+    }
+  };
+
   const submitSave = async () => {
     const form = formRef.current;
     if (!canEdit || !editing || !form) return false;
@@ -1285,6 +1361,14 @@ function EmployeeDrawer({
     if (epfOwner) {
       setEpfDuplicate(epfOwner);
       setSaveError(`EPF number is already in use by ${epfOwner.full_name}.`);
+      return false;
+    }
+    if (
+      payload.epf_no &&
+      payload.previous_epf_no &&
+      normalizeEpfNo(payload.epf_no) === normalizeEpfNo(payload.previous_epf_no)
+    ) {
+      setSaveError("New EPF number must differ from the previous EPF number.");
       return false;
     }
     if (canEditWorkEmail) {
@@ -1494,7 +1578,21 @@ function EmployeeDrawer({
                     </p>
                   )}
                 </div>
-                <EditField label="NIC" name="nic" defaultValue={emp.nic} required mono inputClass={inputClass} />
+                <NicEditField
+                  label="NIC"
+                  name="nic"
+                  defaultValue={emp.nic}
+                  required
+                  mono
+                  inputClass={inputClass}
+                  onBlurLookup={handleNicBlur}
+                  lookupLoading={nicLookupLoading}
+                />
+                {priorNicMatches.length > 0 ? (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-bold text-amber-900">
+                    Prior record(s) for this NIC — check blacklist and performance before saving.
+                  </div>
+                ) : null}
                 <EditField label="Passport No" name="passport_no" defaultValue={emp.passport_no} mono inputClass={inputClass} />
                 <EpfNoEditField
                   name="epf_no"
@@ -1503,6 +1601,15 @@ function EmployeeDrawer({
                   allEmployees={allEmployees}
                   inputClass={inputClass}
                   onDuplicateChange={setEpfDuplicate}
+                />
+                <EditField
+                  label="Previous EPF No"
+                  name="previous_epf_no"
+                  value={previousEpfNo}
+                  onChange={(e) => setPreviousEpfNo(e.target.value)}
+                  mono
+                  readOnly={priorNicMatches.length > 0}
+                  inputClass={priorNicMatches.length > 0 ? `${inputClass} bg-slate-50` : inputClass}
                 />
                 <EditField label="Date of Birth" name="dob" type="date" defaultValue={emp.dob} inputClass={inputClass} />
                 <EnumSelectField
@@ -1547,27 +1654,60 @@ function EmployeeDrawer({
                 <CorporateGroupSelectField
                   label="Corporate Group"
                   name="group"
-                  defaultValue={emp.group}
+                  value={editGroup}
+                  onChange={handleEditGroupChange}
                   inputClass={inputClass}
                 />
-                <SiteSelectField
-                  label="Assigned Site"
-                  name="site"
-                  value={editSite}
-                  onChange={(e) => {
-                    setEditSite(e.target.value);
-                    setDirty(true);
-                  }}
-                  applicable={siteApplicable}
-                  inputClass={inputClass}
-                />
+                {siteApplicable && !internalLocationApplicable ? (
+                  <SiteSelectField
+                    label="Assigned Site"
+                    name="site"
+                    value={editSite}
+                    onChange={(e) => {
+                      setEditSite(e.target.value);
+                      setDirty(true);
+                    }}
+                    applicable
+                    inputClass={inputClass}
+                  />
+                ) : null}
+                {internalLocationApplicable ? (
+                  <InternalLocationSelectField
+                    label={internalLocationLabel}
+                    name="site"
+                    value={editSite}
+                    onChange={(e) => {
+                      setEditSite(e.target.value);
+                      setDirty(true);
+                    }}
+                    applicable
+                    options={internalLocationOptions}
+                    inputClass={inputClass}
+                  />
+                ) : null}
+                {!siteApplicable && !internalLocationApplicable ? (
+                  <input type="hidden" name="site" value="" />
+                ) : null}
                 <EditField label="Date Joined" name="date_joined" type="date" defaultValue={emp.date_joined} inputClass={inputClass} />
                 <GuardStatusSelectField
                   emp={emp}
                   mdRankMatrix={mdRankMatrix}
                   inputClass={inputClass}
                 />
-                <EditField label="Base Salary (LKR)" name="base_salary" type="number" defaultValue={emp.base_salary} inputClass={inputClass} />
+                <EditField
+                  label="Base Salary (LKR)"
+                  name="base_salary"
+                  type="number"
+                  value={editBaseSalary}
+                  onChange={(e) => {
+                    setEditBaseSalary(e.target.value);
+                    setDirty(true);
+                  }}
+                  inputClass={inputClass}
+                />
+                <EditField label="Site Allowance (LKR)" name="site_allowance_lkr" type="number" defaultValue={emp.site_allowance_lkr} inputClass={inputClass} />
+                <EditField label="Meal Allowance (LKR)" name="meal_allowance_lkr" type="number" defaultValue={emp.meal_allowance_lkr} inputClass={inputClass} />
+                <EditField label="Transport Allowance (LKR)" name="transport_allowance_lkr" type="number" defaultValue={emp.transport_allowance_lkr} inputClass={inputClass} />
                 <SalaryTypeSelectField
                   label="Salary Type"
                   name="salary_type"
@@ -1633,6 +1773,7 @@ function EmployeeDrawer({
                   <DetailRow label="NIC"          value={emp.nic}         mono />
                   <DetailRow label="Passport No"  value={emp.passport_no} mono />
                   <DetailRow label="EPF No"       value={employeeEpfNo(emp) || (emp.epf_yn ? "EPF Member (no number recorded)" : "Non-EPF")} />
+                  <DetailRow label="Previous EPF" value={emp.previous_epf_no} mono />
                   <DetailRow label="Date of Birth" value={emp.dob} />
                   <DetailRow label="Gender"       value={emp.gender} />
                   <DetailRow label="Nationality"  value={emp.nationality} />
@@ -1649,7 +1790,10 @@ function EmployeeDrawer({
                     <RankBadge rank={emp.rank} mdRankMatrix={mdRankMatrix} />
                   </div>
                   <DetailRow label="Corporate Group" value={corporateGroupLabel(emp.group)} />
-                  <DetailRow label="Assigned Site"   value={emp.site} />
+                  <DetailRow
+                    label={isInternalLocationGroup(emp.group) ? (isHeadOfficeGroup(emp) ? "Head Office Branch" : "Café Branch") : "Assigned Site"}
+                    value={emp.site}
+                  />
                   <DetailRow label="Date Joined"     value={emp.date_joined} />
                   <DetailRow
                     label="Status"
@@ -1689,6 +1833,9 @@ function EmployeeDrawer({
                     </div>
                   )}
                   <DetailRow label="Base Salary"     value={emp.base_salary ? `LKR ${Number(emp.base_salary).toLocaleString()}` : null} />
+                  <DetailRow label="Site Allowance"  value={emp.site_allowance_lkr ? `LKR ${Number(emp.site_allowance_lkr).toLocaleString()}` : null} />
+                  <DetailRow label="Meal Allowance"  value={emp.meal_allowance_lkr ? `LKR ${Number(emp.meal_allowance_lkr).toLocaleString()}` : null} />
+                  <DetailRow label="Transport Allowance" value={emp.transport_allowance_lkr ? `LKR ${Number(emp.transport_allowance_lkr).toLocaleString()}` : null} />
                   <DetailRow label="Salary Type"     value={salaryTypeLabel(emp.salary_type)} />
                   <DetailRow label="EPF Enrolled"    value={emp.epf_yn ? "Yes" : "No"} />
                 </>
@@ -1933,14 +2080,59 @@ function SiteSelectField({ label, name, value, onChange, applicable, inputClass 
             {legacy && <option value={legacy}>{legacy}</option>}
           </select>
         </>
-      ) : (
+      ) : null}
+    </div>
+  );
+}
+
+function InternalLocationSelectField({
+  label,
+  name,
+  value,
+  onChange,
+  applicable,
+  options,
+  inputClass,
+}) {
+  const normalized = (value || "").trim();
+  const optionNames = options.map((loc) => loc.name);
+  const inList = optionNames.includes(normalized);
+  const legacy = normalized && !inList ? normalized : "";
+
+  return (
+    <div className="flex flex-col gap-1 py-2 border-b border-slate-100 last:border-0">
+      <label className="text-xs font-black text-slate-500 uppercase tracking-widest">{label}</label>
+      {applicable ? (
         <>
-          <input type="hidden" name={name} value="" />
-          <div className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-400">
-            Site assignment applies to field guards only
-          </div>
+          {options.length === 0 ? (
+            <p className="text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+              No branches configured yet. Add GPS branches in MD Settings → Operations first.
+            </p>
+          ) : null}
+          {legacy && (
+            <p className="text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+              Current branch &ldquo;{legacy}&rdquo; is not in the MD list. Pick a branch below or keep the legacy value.
+            </p>
+          )}
+          <select
+            name={name}
+            value={normalized}
+            onChange={onChange}
+            required={options.length > 0}
+            className={inputClass}
+          >
+            <option value="" disabled>
+              Select branch…
+            </option>
+            {options.map((loc) => (
+              <option key={loc.id} value={loc.name}>
+                {loc.name}
+              </option>
+            ))}
+            {legacy && <option value={legacy}>{legacy}</option>}
+          </select>
         </>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -1978,8 +2170,8 @@ function SalaryTypeSelectField({ label, name, defaultValue, inputClass }) {
   );
 }
 
-function CorporateGroupSelectField({ label, name, defaultValue, inputClass }) {
-  const raw = (defaultValue || "").trim().toUpperCase();
+function CorporateGroupSelectField({ label, name, value, defaultValue, onChange, inputClass }) {
+  const raw = (value ?? defaultValue ?? "").trim().toUpperCase();
   const normalized = normalizeCorporateGroup(raw);
   const knownValues = CORPORATE_GROUP_OPTIONS.map((o) => o.value);
   const legacy = raw && !knownValues.includes(raw) && normalized === raw ? raw : "";
@@ -1994,9 +2186,21 @@ function CorporateGroupSelectField({ label, name, defaultValue, inputClass }) {
       )}
       <select
         name={name}
-        defaultValue={
-          knownValues.includes(normalized) ? normalized : legacy || normalized || ""
+        value={
+          onChange
+            ? knownValues.includes(normalized)
+              ? normalized
+              : legacy || normalized || ""
+            : undefined
         }
+        defaultValue={
+          onChange
+            ? undefined
+            : knownValues.includes(normalized)
+              ? normalized
+              : legacy || normalized || ""
+        }
+        onChange={onChange}
         className={inputClass}
       >
         <option value="" disabled>
@@ -2118,6 +2322,43 @@ function WorkEmailEditField({
   );
 }
 
+function NicEditField({
+  label,
+  name,
+  defaultValue,
+  required,
+  mono,
+  inputClass,
+  onBlurLookup,
+  lookupLoading,
+}) {
+  const [value, setValue] = useState(defaultValue ?? "");
+
+  useEffect(() => {
+    setValue(defaultValue ?? "");
+  }, [defaultValue]);
+
+  return (
+    <div className="flex flex-col gap-1 py-2 border-b border-slate-100 last:border-0">
+      <label className="text-xs font-black text-slate-500 uppercase tracking-widest">{label}</label>
+      <div className="relative">
+        <input
+          type="text"
+          name={name}
+          value={value}
+          required={required}
+          onChange={(e) => setValue(e.target.value.toUpperCase())}
+          onBlur={() => onBlurLookup?.(value)}
+          className={`${inputClass}${mono ? " font-mono tracking-wider" : ""}`}
+        />
+        {lookupLoading ? (
+          <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-slate-400" />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function EpfNoEditField({
   name,
   defaultValue,
@@ -2158,15 +2399,19 @@ function EpfNoEditField({
   );
 }
 
-function EditField({ label, name, defaultValue, type = "text", required, mono, multiline, readOnly, inputClass, bare }) {
+function EditField({ label, name, defaultValue, value, onChange, type = "text", required, mono, multiline, readOnly, inputClass, bare }) {
   const isEmail = type === "email";
+  const controlled = value !== undefined;
   const inner = (
     <>
       <label className="text-xs font-black text-slate-500 uppercase tracking-widest">{label}</label>
       {multiline ? (
         <textarea
           name={name}
-          defaultValue={defaultValue ?? ""}
+          {...(controlled
+            ? { value: value ?? "" }
+            : { defaultValue: defaultValue ?? "" })}
+          onChange={onChange}
           required={required}
           rows={3}
           className={`${inputClass} ${mono ? "font-mono" : ""}`}
@@ -2175,7 +2420,10 @@ function EditField({ label, name, defaultValue, type = "text", required, mono, m
         <input
           type={type}
           name={name}
-          defaultValue={defaultValue ?? ""}
+          {...(controlled
+            ? { value: value ?? "" }
+            : { defaultValue: defaultValue ?? "" })}
+          onChange={onChange}
           required={required}
           readOnly={readOnly}
           autoCapitalize={isEmail ? "none" : undefined}

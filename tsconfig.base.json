@@ -23,6 +23,9 @@
     "paths": {
       "@pearzen/supabase/*": [
         "packages/supabase/*"
+      ],
+      "@pearzen/pwa-shell/*": [
+        "packages/pwa-shell/*"
       ]
     }
   }

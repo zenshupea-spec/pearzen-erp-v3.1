@@ -36,6 +36,15 @@ import {
   CopyCheck,
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
+import {
+  deleteShalomProperty,
+  fetchShalomProperties,
+  syncShalomPropertyFromOtas,
+  upsertShalomBooking,
+  upsertShalomProperty,
+  type ShalomPropertyRecord,
+} from '../shalom-actions';
+import { buildShalomIcalExportUrl } from './shalom-ical-url';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -66,6 +75,8 @@ interface Property {
   overhead: number;
   occupancyTarget: number;
   otaChannels: ('AIRBNB' | 'BOOKING')[];
+  airbnbIcalUrl: string;
+  bookingIcalUrl: string;
   bookings: Booking[];
 }
 
@@ -133,6 +144,8 @@ const PROPERTIES: Property[] = [
     overhead: 185_000,
     occupancyTarget: 65,
     otaChannels: ['AIRBNB', 'BOOKING'],
+    airbnbIcalUrl: '',
+    bookingIcalUrl: '',
     bookings: NAWALA_BOOKINGS,
   },
   {
@@ -143,6 +156,8 @@ const PROPERTIES: Property[] = [
     overhead: 120_000,
     occupancyTarget: 55,
     otaChannels: ['AIRBNB', 'BOOKING'],
+    airbnbIcalUrl: '',
+    bookingIcalUrl: '',
     bookings: KANDY_BOOKINGS,
   },
 ];
@@ -270,11 +285,12 @@ function PropertySelector({
   selected: Property;
   onSelect: (p: Property) => void;
   onAdd: () => void;
-  onRemove: () => void;
+  onRemove: () => void | Promise<void>;
   onOpenSettings: () => void;
 }) {
   const [open,           setOpen]           = useState(false);
   const [confirmRemove,  setConfirmRemove]   = useState(false);
+  const [removing,       setRemoving]        = useState(false);
   return (
     <div className="flex flex-wrap items-center gap-2">
       {/* Dropdown */}
@@ -350,9 +366,9 @@ function PropertySelector({
         <button
           type="button"
           onClick={() => setConfirmRemove(true)}
-          disabled={properties.length <= 1}
-          title={properties.length <= 1 ? 'Cannot remove the last property' : `Remove ${selected.name}`}
-          className="flex items-center gap-1.5 rounded-2xl border border-dashed border-rose-200/70 bg-white/40 px-3 py-2 text-xs font-bold text-rose-400 hover:border-rose-300 hover:bg-rose-50/60 hover:text-rose-700 disabled:cursor-not-allowed disabled:opacity-30 transition-all"
+          disabled={removing}
+          title={`Remove ${selected.name}`}
+          className="flex items-center gap-1.5 rounded-2xl border border-dashed border-rose-200/70 bg-white/40 px-3 py-2 text-xs font-bold text-rose-400 hover:border-rose-300 hover:bg-rose-50/60 hover:text-rose-700 disabled:cursor-not-allowed disabled:opacity-50 transition-all"
         >
           <Trash2 className="h-3.5 w-3.5" />
           Remove Property
@@ -363,20 +379,99 @@ function PropertySelector({
           <button
             type="button"
             onClick={() => setConfirmRemove(false)}
-            className="rounded-lg border border-slate-200 bg-white/80 px-2 py-1 text-[10px] font-bold text-slate-600 hover:bg-white transition-all"
+            disabled={removing}
+            className="rounded-lg border border-slate-200 bg-white/80 px-2 py-1 text-[10px] font-bold text-slate-600 hover:bg-white transition-all disabled:opacity-50"
           >
             Cancel
           </button>
           <button
             type="button"
-            onClick={() => { onRemove(); setConfirmRemove(false); }}
-            className="rounded-lg bg-rose-600 px-2 py-1 text-[10px] font-bold text-white shadow-sm hover:bg-rose-700 transition-all"
+            disabled={removing}
+            onClick={() => {
+              void (async () => {
+                setRemoving(true);
+                try {
+                  await onRemove();
+                  setConfirmRemove(false);
+                } finally {
+                  setRemoving(false);
+                }
+              })();
+            }}
+            className="rounded-lg bg-rose-600 px-2 py-1 text-[10px] font-bold text-white shadow-sm hover:bg-rose-700 transition-all disabled:opacity-60"
           >
-            Confirm
+            {removing ? 'Removing…' : 'Confirm'}
           </button>
         </div>
       )}
     </div>
+  );
+}
+
+// ─── Outbound iCal link (ERP → Airbnb / Booking.com) ─────────────────────────
+
+function OutboundIcalLinkPanel({
+  propertyId,
+  compact,
+}: {
+  propertyId: string;
+  compact?: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+  const exportUrl = buildShalomIcalExportUrl(propertyId);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(exportUrl).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
+  };
+
+  return (
+    <ExecutiveGlassCard className={compact ? 'p-4' : 'p-5'}>
+      <div className={`flex items-center gap-2 ${compact ? 'mb-2' : 'mb-3'}`}>
+        <div className="flex h-7 w-7 items-center justify-center rounded-xl border border-sky-200/80 bg-sky-50/80">
+          <Link2 className="h-3.5 w-3.5 text-sky-600" />
+        </div>
+        <div>
+          <p className="text-[10px] font-black uppercase tracking-widest text-sky-800">
+            Paste into Airbnb
+          </p>
+          <p className="text-[9px] text-slate-500">
+            Outbound link — pushes ERP blocks to Airbnb
+          </p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          readOnly
+          value={exportUrl}
+          className="w-full rounded-xl border border-sky-200/60 bg-white/90 py-2.5 pl-3 pr-3 text-[11px] font-mono text-slate-600 shadow-sm focus:outline-none select-all cursor-text"
+          onFocus={(e) => e.currentTarget.select()}
+        />
+        <button
+          type="button"
+          onClick={handleCopy}
+          className={`flex shrink-0 items-center gap-1.5 rounded-xl border px-4 py-2.5 text-[11px] font-black uppercase tracking-widest shadow-sm transition-all ${
+            copied
+              ? 'border-emerald-300/70 bg-emerald-100/80 text-emerald-800 shadow-emerald-200/60'
+              : 'border-sky-300/70 bg-sky-100/80 text-sky-800 hover:bg-sky-200/80 shadow-sky-200/60'
+          }`}
+        >
+          {copied
+            ? <><CopyCheck className="h-3.5 w-3.5" /> Copied!</>
+            : <><Copy     className="h-3.5 w-3.5" /> Copy</>
+          }
+        </button>
+      </div>
+
+      <p className="mt-2.5 text-[10px] leading-relaxed text-slate-500">
+        Paste into Airbnb&apos;s calendar import (&ldquo;Import calendar&rdquo;). Uses your live Pearzen URL
+        (not localhost). For Booking.com, import your <strong>Airbnb export</strong> iCal link here — Booking.com
+        typically rejects non-OTA calendar URLs.
+      </p>
+    </ExecutiveGlassCard>
   );
 }
 
@@ -395,44 +490,65 @@ function AddPropertyModal({
 }: {
   open: boolean;
   onClose: () => void;
-  onConnect: (p: Property) => void;
+  onConnect: (input: {
+    id: string;
+    name: string;
+    location: string;
+    bedrooms: number;
+    overhead: number;
+    occupancyTarget: number;
+    otaChannels: ('AIRBNB' | 'BOOKING')[];
+    airbnbIcalUrl: string;
+    bookingIcalUrl: string;
+  }) => void | Promise<void>;
 }) {
   const [form, setForm] = useState(EMPTY_ADD_FORM);
+  const [draftPropertyId, setDraftPropertyId] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  // Reset form each time the modal is opened
+  // Reset form and pre-assign export URL id each time the modal opens
   useEffect(() => {
-    if (open) setForm(EMPTY_ADD_FORM);
+    if (open) {
+      setForm(EMPTY_ADD_FORM);
+      setDraftPropertyId(crypto.randomUUID());
+      setSaving(false);
+    }
   }, [open]);
 
   if (!open) return null;
 
-  const canSubmit = form.name.trim().length > 0;
+  const canSubmit = form.name.trim().length > 0 && !saving;
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!canSubmit) return;
     const channels: ('AIRBNB' | 'BOOKING')[] = [
       ...(form.airbnb  ? ['AIRBNB'   as const] : []),
       ...(form.booking ? ['BOOKING'  as const] : []),
     ];
-    const newProp: Property = {
-      id: `prop-${Date.now()}`,
-      name: form.name.trim(),
-      location: form.location.trim() || 'Unknown location',
-      bedrooms: Math.max(1, parseInt(form.bedrooms) || 2),
-      overhead: parseInt(form.overhead) || 0,
-      occupancyTarget: Math.max(1, Math.min(100, parseInt(form.occupancy) || 60)),
-      otaChannels: channels,
-      bookings: [],
-    };
-    onConnect(newProp);
-    onClose();
+    setSaving(true);
+    try {
+      await onConnect({
+        id: draftPropertyId,
+        name: form.name.trim(),
+        location: form.location.trim() || 'Unknown location',
+        bedrooms: Math.max(1, parseInt(form.bedrooms) || 2),
+        overhead: parseInt(form.overhead) || 0,
+        occupancyTarget: Math.max(1, Math.min(100, parseInt(form.occupancy) || 60)),
+        otaChannels: channels,
+        airbnbIcalUrl: form.airbnb ? form.airbnbIcal.trim() : '',
+        bookingIcalUrl: form.booking ? form.bookingIcal.trim() : '',
+      });
+      onClose();
+    } finally {
+      setSaving(false);
+    }
   };
 
   const inputCls = 'w-full rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/40 transition-all';
   const labelCls = 'mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-600';
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm" onClick={onClose}>
-      <div className="relative w-full max-w-md overflow-hidden rounded-3xl border border-white/75 bg-[#eef2f6] shadow-[0_32px_80px_-16px_rgba(15,23,42,0.35)] backdrop-blur-2xl" onClick={(e) => e.stopPropagation()}>
+      <div className="relative w-full max-w-lg overflow-hidden rounded-3xl border border-white/75 bg-[#eef2f6] shadow-[0_32px_80px_-16px_rgba(15,23,42,0.35)] backdrop-blur-2xl" onClick={(e) => e.stopPropagation()}>
         <div aria-hidden className="pointer-events-none absolute -top-16 right-0 h-48 w-48 rounded-full bg-emerald-400/18 blur-[72px]" />
         <div className="relative p-6">
           <div className="mb-5 flex items-start justify-between">
@@ -470,8 +586,11 @@ function AddPropertyModal({
               </div>
             </ExecutiveGlassCard>
 
+            {draftPropertyId ? <OutboundIcalLinkPanel propertyId={draftPropertyId} compact /> : null}
+
             <ExecutiveGlassCard className="p-4">
-              <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-emerald-800">OTA Channel Sync</p>
+              <p className="mb-1 text-[10px] font-bold uppercase tracking-widest text-emerald-800">Import from OTAs</p>
+              <p className="mb-3 text-[9px] text-slate-500">Paste each platform&apos;s export URL below — pulls their bookings into Pearzen.</p>
               <div className="space-y-3">
                 {([
                   { id: 'airbnb',  icalKey: 'airbnbIcal',  label: 'Airbnb',      Icon: Airplay, cls: 'text-rose-700 border-rose-200 bg-rose-50/80', placeholder: 'https://www.airbnb.com/calendar/ical/...' },
@@ -501,7 +620,7 @@ function AddPropertyModal({
                             className={inputCls}
                           />
                           <p className="text-[9px] text-slate-400">
-                            Paste the iCal export URL from your {label} listing settings. Used for two-way availability sync.
+                            Copy this from your {label} listing → Calendar → Export calendar.
                           </p>
                         </div>
                       )}
@@ -522,7 +641,7 @@ function AddPropertyModal({
               </button>
               <button
                 type="button"
-                onClick={handleSubmit}
+                onClick={() => void handleSubmit()}
                 disabled={!canSubmit}
                 title={!canSubmit ? 'Enter a property name to continue' : undefined}
                 className={`flex-[2] rounded-xl py-3 text-sm font-bold uppercase tracking-widest text-white shadow-lg transition-all ${
@@ -531,7 +650,7 @@ function AddPropertyModal({
                     : 'cursor-not-allowed bg-slate-300 shadow-none'
                 }`}
               >
-                Connect Property
+                {saving ? 'Saving…' : 'Connect Property'}
               </button>
             </div>
           </div>
@@ -554,24 +673,27 @@ function PropertyConfigModal({
   onClose: () => void;
   property: Property;
   settings: PropSettings;
-  onSave: (s: PropSettings) => void;
+  onSave: (payload: {
+    settings: PropSettings;
+    airbnbIcalUrl: string;
+    bookingIcalUrl: string;
+  }) => void | Promise<void>;
 }) {
-  const [draft,  setDraft]  = useState<PropSettings>(settings);
-  const [copied, setCopied] = useState(false);
+  const [draft, setDraft] = useState<PropSettings>(settings);
+  const [airbnbIcalUrl, setAirbnbIcalUrl] = useState(property.airbnbIcalUrl);
+  const [bookingIcalUrl, setBookingIcalUrl] = useState(property.bookingIcalUrl);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (open) { setDraft(settings); setCopied(false); }
-  }, [open, settings]);
+    if (open) {
+      setDraft(settings);
+      setAirbnbIcalUrl(property.airbnbIcalUrl);
+      setBookingIcalUrl(property.bookingIcalUrl);
+      setSaving(false);
+    }
+  }, [open, settings, property.airbnbIcalUrl, property.bookingIcalUrl]);
 
   if (!open) return null;
-
-  const icalExportUrl = `https://erp.pearzen.com/api/ical/export/${property.id}.ics`;
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(icalExportUrl).catch(() => {});
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2500);
-  };
 
   const inputCls = 'w-full rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/40 transition-all';
   const labelCls = 'mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-600';
@@ -623,50 +745,37 @@ function PropertyConfigModal({
           </div>
 
           <div className="space-y-5">
-            {/* ── Outbound iCal Export ── */}
-            <ExecutiveGlassCard className="p-5">
-              <div className="mb-3 flex items-center gap-2">
-                <div className="flex h-7 w-7 items-center justify-center rounded-xl border border-sky-200/80 bg-sky-50/80">
-                  <Link2 className="h-3.5 w-3.5 text-sky-600" />
-                </div>
-                <div>
-                  <p className="text-[10px] font-black uppercase tracking-widest text-sky-800">
-                    Two-Way Sync: Outbound iCal Link
-                  </p>
-                  <p className="text-[9px] text-slate-500">Export this property's ERP calendar to your OTA channels</p>
-                </div>
-              </div>
+            <OutboundIcalLinkPanel propertyId={property.id} />
 
-              <div className="flex items-center gap-2">
-                <div className="relative flex-1">
+            <ExecutiveGlassCard className="p-5">
+              <p className="mb-1 text-[10px] font-black uppercase tracking-widest text-emerald-800">
+                Import from OTAs
+              </p>
+              <p className="mb-3 text-[9px] text-slate-500">
+                Paste each platform&apos;s export URL — Pearzen pulls reserved dates into the calendar below.
+              </p>
+              <div className="space-y-3">
+                <div>
+                  <label className={labelCls}>Airbnb iCal export URL</label>
                   <input
-                    type="text"
-                    readOnly
-                    value={icalExportUrl}
-                    className="w-full rounded-xl border border-sky-200/60 bg-white/90 py-2.5 pl-3 pr-3 text-[11px] font-mono text-slate-600 shadow-sm focus:outline-none select-all cursor-text"
-                    onFocus={(e) => e.currentTarget.select()}
+                    type="url"
+                    placeholder="https://www.airbnb.com/calendar/ical/..."
+                    value={airbnbIcalUrl}
+                    onChange={(e) => setAirbnbIcalUrl(e.target.value)}
+                    className={inputCls}
                   />
                 </div>
-                <button
-                  type="button"
-                  onClick={handleCopy}
-                  className={`flex shrink-0 items-center gap-1.5 rounded-xl border px-4 py-2.5 text-[11px] font-black uppercase tracking-widest shadow-sm transition-all ${
-                    copied
-                      ? 'border-emerald-300/70 bg-emerald-100/80 text-emerald-800 shadow-emerald-200/60'
-                      : 'border-sky-300/70 bg-sky-100/80 text-sky-800 hover:bg-sky-200/80 shadow-sky-200/60'
-                  }`}
-                >
-                  {copied
-                    ? <><CopyCheck className="h-3.5 w-3.5" /> Copied!</>
-                    : <><Copy     className="h-3.5 w-3.5" /> Copy Link</>
-                  }
-                </button>
+                <div>
+                  <label className={labelCls}>Booking.com iCal export URL</label>
+                  <input
+                    type="url"
+                    placeholder="https://ical.booking.com/v1/..."
+                    value={bookingIcalUrl}
+                    onChange={(e) => setBookingIcalUrl(e.target.value)}
+                    className={inputCls}
+                  />
+                </div>
               </div>
-
-              <p className="mt-2.5 text-[10px] leading-relaxed text-slate-500">
-                Paste this link into Airbnb&apos;s &ldquo;Step 2&rdquo; or Booking.com&apos;s import settings. This pushes your
-                internal ERP date blocks to the OTAs to prevent double-booking.
-              </p>
             </ExecutiveGlassCard>
 
             {/* ── Deep Clean Buffer ── */}
@@ -848,10 +957,25 @@ function PropertyConfigModal({
             </button>
             <button
               type="button"
-              onClick={() => { onSave(draft); onClose(); }}
-              className="flex-[2] rounded-xl bg-emerald-600 py-3 text-sm font-bold uppercase tracking-widest text-white shadow-lg shadow-emerald-600/25 hover:bg-emerald-500 transition-all"
+              disabled={saving}
+              onClick={() => {
+                void (async () => {
+                  setSaving(true);
+                  try {
+                    await onSave({
+                      settings: draft,
+                      airbnbIcalUrl: airbnbIcalUrl.trim(),
+                      bookingIcalUrl: bookingIcalUrl.trim(),
+                    });
+                    onClose();
+                  } finally {
+                    setSaving(false);
+                  }
+                })();
+              }}
+              className="flex-[2] rounded-xl bg-emerald-600 py-3 text-sm font-bold uppercase tracking-widest text-white shadow-lg shadow-emerald-600/25 hover:bg-emerald-500 transition-all disabled:opacity-60"
             >
-              Save Configuration
+              {saving ? 'Saving…' : 'Save Configuration'}
             </button>
           </div>
         </div>
@@ -950,7 +1074,9 @@ function ManualBlockModal({
             />
           </ExecutiveGlassCard>
 
-          <p className="mt-3 text-[10px] text-slate-500">This date will be blocked across all OTA channels when you push blocks.</p>
+          <p className="mt-3 text-[10px] text-slate-500">
+            Saved to Pearzen and included in your outbound iCal link for Airbnb.
+          </p>
 
           <div className="mt-4 flex gap-3">
             <button type="button" onClick={onClose} className="flex-1 rounded-xl border border-slate-200 bg-white/70 py-2.5 text-sm font-bold text-slate-700 hover:bg-white/90 transition-all">Cancel</button>
@@ -1577,26 +1703,98 @@ function CalendarGrid({
   );
 }
 
+function recordToProperty(row: ShalomPropertyRecord): Property {
+  return {
+    id: row.id,
+    name: row.name,
+    location: row.location,
+    bedrooms: row.bedrooms,
+    overhead: row.overhead,
+    occupancyTarget: row.occupancyTarget,
+    otaChannels: row.otaChannels,
+    airbnbIcalUrl: row.airbnbIcalUrl,
+    bookingIcalUrl: row.bookingIcalUrl,
+    bookings: row.bookings.map((b) => ({
+      id: b.id,
+      guestName: b.guestName,
+      channel: b.channel,
+      checkIn: b.checkIn,
+      checkOut: b.checkOut,
+      nights: b.nights,
+      ratePerNight: b.ratePerNight,
+      totalRevenue: b.totalRevenue,
+      paid: b.paid,
+      notes: b.notes,
+      enriched: b.enriched,
+      enrichedContact: b.enrichedContact,
+    })),
+  };
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ShalomPage() {
-  const [properties, setProperties]  = useState<Property[]>(PROPERTIES);
-  const [selectedProp, setSelectedProp] = useState<Property>(PROPERTIES[0]);
-  const [viewYear,  setViewYear]     = useState(2026);
-  const [viewMonth, setViewMonth]    = useState(5);
+  const now = new Date();
+  const [properties, setProperties]  = useState<Property[]>([]);
+  const [loadError, setLoadError]    = useState<string | null>(null);
+  const [selectedProp, setSelectedProp] = useState<Property | null>(null);
+  const [viewYear,  setViewYear]     = useState(now.getFullYear());
+  const [viewMonth, setViewMonth]    = useState(now.getMonth() + 1);
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
   const [blockDate, setBlockDate]    = useState<string | null>(null);
   const [manualBlocks,    setManualBlocks]    = useState<Record<string, string[]>>({});
-  const [propSettings,    setPropSettings]    = useState<Record<string, PropSettings>>(() =>
-    Object.fromEntries(PROPERTIES.map((p) => [p.id, defaultPropSettings(p.id)])),
-  );
+  const [propSettings,    setPropSettings]    = useState<Record<string, PropSettings>>({});
   const [addPropOpen,     setAddPropOpen]     = useState(false);
   const [propSettingsOpen, setPropSettingsOpen] = useState(false);
+  const [importingOta,   setImportingOta]    = useState(false);
   const [toast, setToast]                    = useState<string | null>(null);
+
+  const applyPropertyRecords = useCallback((records: ShalomPropertyRecord[], focusId?: string) => {
+    const rows = records.map(recordToProperty);
+    setProperties(rows);
+    setSelectedProp((prev) => {
+      const targetId = focusId ?? prev?.id;
+      return rows.find((p) => p.id === targetId) ?? rows[0] ?? null;
+    });
+    setPropSettings((prev) => ({
+      ...prev,
+      ...Object.fromEntries(
+        rows.map((p) => [p.id, prev[p.id] ?? defaultPropSettings(p.id)]),
+      ),
+    }));
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      const result = await fetchShalomProperties();
+      if (result.properties.length === 0) {
+        setLoadError(result.error ?? null);
+        return;
+      }
+
+      let records = result.properties;
+      let syncError: string | null = null;
+      const first = records[0]!;
+      if (first.airbnbIcalUrl || first.bookingIcalUrl) {
+        const sync = await syncShalomPropertyFromOtas(first.id);
+        if (sync.properties?.length) records = sync.properties;
+        if (sync.errors.length > 0) {
+          syncError = sync.errors.join(' · ');
+        }
+      }
+
+      applyPropertyRecords(records, first.id);
+      setLoadError(syncError ?? result.error ?? null);
+    })();
+  }, [applyPropertyRecords]);
 
   // Sync selected prop when properties list changes
   useEffect(() => {
-    setSelectedProp((prev) => properties.find((p) => p.id === prev.id) ?? properties[0]);
+    if (!properties.length) {
+      setSelectedProp(null);
+      return;
+    }
+    setSelectedProp((prev) => properties.find((p) => p.id === prev?.id) ?? properties[0]!);
   }, [properties]);
 
   const prevMonth = () => {
@@ -1608,36 +1806,244 @@ export default function ShalomPage() {
     else setViewMonth((m) => m + 1);
   };
 
-  const currentBlocks = manualBlocks[selectedProp.id] ?? [];
+  const currentBlocks = selectedProp ? (manualBlocks[selectedProp.id] ?? []) : [];
 
-  const handleConfirmBlock = (date: string, _reason: string) => {
-    setManualBlocks((prev) => ({
-      ...prev,
-      [selectedProp.id]: [...(prev[selectedProp.id] ?? []), date],
-    }));
-  };
+  const handleConfirmBlock = useCallback(async (date: string, reason: string) => {
+    if (!selectedProp) return;
 
-  const currentSettings: PropSettings =
-    propSettings[selectedProp.id] ?? defaultPropSettings(selectedProp.id);
+    const checkOut = addDays(date, 1);
+    const result = await upsertShalomBooking({
+      propertyId: selectedProp.id,
+      guestName: 'Blocked',
+      channel: 'BLOCKED',
+      checkIn: date,
+      checkOut,
+      nights: 1,
+      ratePerNight: 0,
+      totalRevenue: 0,
+      paid: true,
+      notes: reason.trim(),
+    });
+    if (!result.success || !result.id) {
+      const message = result.error ?? 'Failed to save block';
+      setLoadError(message);
+      setToast(message);
+      return;
+    }
+
+    const block: Booking = {
+      id: result.id,
+      guestName: 'Blocked',
+      channel: 'BLOCKED',
+      checkIn: date,
+      checkOut,
+      nights: 1,
+      ratePerNight: 0,
+      totalRevenue: 0,
+      paid: true,
+      notes: reason.trim() || undefined,
+    };
+
+    setProperties((prev) =>
+      prev.map((p) =>
+        p.id === selectedProp.id ? { ...p, bookings: [...p.bookings, block] } : p,
+      ),
+    );
+    setLoadError(null);
+    setToast('Date blocked — included in your Airbnb export calendar.');
+  }, [selectedProp]);
+
+  const currentSettings: PropSettings = selectedProp
+    ? (propSettings[selectedProp.id] ?? defaultPropSettings(selectedProp.id))
+    : defaultPropSettings('');
 
   const handleSavePropSettings = useCallback(
-    (s: PropSettings) => setPropSettings((prev) => ({ ...prev, [selectedProp.id]: s })),
-    [selectedProp.id],
+    async (payload: {
+      settings: PropSettings;
+      airbnbIcalUrl: string;
+      bookingIcalUrl: string;
+    }) => {
+      if (!selectedProp) return;
+
+      const result = await upsertShalomProperty({
+        id: selectedProp.id,
+        name: selectedProp.name,
+        location: selectedProp.location,
+        bedrooms: selectedProp.bedrooms,
+        overhead: selectedProp.overhead,
+        occupancyTarget: selectedProp.occupancyTarget,
+        otaChannels: selectedProp.otaChannels,
+        airbnbIcalUrl: payload.airbnbIcalUrl,
+        bookingIcalUrl: payload.bookingIcalUrl,
+        settings: payload.settings as unknown as Record<string, unknown>,
+      });
+      if (!result.success) {
+        setLoadError(result.error ?? 'Failed to save property settings');
+        throw new Error(result.error ?? 'Failed to save property settings');
+      }
+
+      setPropSettings((prev) => ({ ...prev, [selectedProp.id]: payload.settings }));
+      setProperties((prev) =>
+        prev.map((p) =>
+          p.id === selectedProp.id
+            ? {
+                ...p,
+                airbnbIcalUrl: payload.airbnbIcalUrl,
+                bookingIcalUrl: payload.bookingIcalUrl,
+              }
+            : p,
+        ),
+      );
+
+      const sync = await syncShalomPropertyFromOtas(selectedProp.id);
+      if (sync.properties?.length) {
+        applyPropertyRecords(sync.properties, selectedProp.id);
+      }
+      if (sync.errors.length > 0) {
+        setToast(`Saved settings — OTA sync: ${sync.errors.join(' · ')}`);
+      } else {
+        setToast(`Saved and imported ${sync.imported} OTA reservation(s).`);
+      }
+    },
+    [applyPropertyRecords, selectedProp],
   );
 
-  const handleRemoveProp = useCallback(() => {
-    setProperties((prev) => prev.filter((p) => p.id !== selectedProp.id));
-  }, [selectedProp.id]);
+  const handleRemoveProp = useCallback(async () => {
+    if (!selectedProp) return;
 
-  const handleConnect = useCallback((newProp: Property) => {
+    const removedId = selectedProp.id;
+    const removedName = selectedProp.name;
+    const result = await deleteShalomProperty(removedId);
+    if (!result.success) {
+      setLoadError(result.error ?? 'Failed to remove property');
+      setToast(result.error ?? 'Failed to remove property');
+      throw new Error(result.error ?? 'Failed to remove property');
+    }
+
+    const remaining = properties.filter((p) => p.id !== removedId);
+    setProperties(remaining);
+    setSelectedProp(remaining[0] ?? null);
+    setPropSettings((prev) => {
+      const next = { ...prev };
+      delete next[removedId];
+      return next;
+    });
+    setManualBlocks((prev) => {
+      const next = { ...prev };
+      delete next[removedId];
+      return next;
+    });
+    setLoadError(null);
+    setToast(
+      remaining.length > 0
+        ? `Removed "${removedName}".`
+        : `Removed "${removedName}". Add a property to continue.`,
+    );
+  }, [properties, selectedProp]);
+
+  const handleConnect = useCallback(async (input: {
+    id: string;
+    name: string;
+    location: string;
+    bedrooms: number;
+    overhead: number;
+    occupancyTarget: number;
+    otaChannels: ('AIRBNB' | 'BOOKING')[];
+    airbnbIcalUrl: string;
+    bookingIcalUrl: string;
+  }) => {
+    const result = await upsertShalomProperty({
+      id: input.id,
+      name: input.name,
+      location: input.location,
+      bedrooms: input.bedrooms,
+      overhead: input.overhead,
+      occupancyTarget: input.occupancyTarget,
+      otaChannels: input.otaChannels,
+      airbnbIcalUrl: input.airbnbIcalUrl,
+      bookingIcalUrl: input.bookingIcalUrl,
+    });
+    if (!result.success) {
+      setLoadError(result.error ?? 'Failed to save property');
+      throw new Error(result.error ?? 'Failed to save property');
+    }
+
+    const newProp: Property = {
+      id: result.id ?? input.id,
+      name: input.name,
+      location: input.location,
+      bedrooms: input.bedrooms,
+      overhead: input.overhead,
+      occupancyTarget: input.occupancyTarget,
+      otaChannels: input.otaChannels,
+      airbnbIcalUrl: input.airbnbIcalUrl,
+      bookingIcalUrl: input.bookingIcalUrl,
+      bookings: [],
+    };
+
+    if (input.airbnbIcalUrl || input.bookingIcalUrl) {
+      const sync = await syncShalomPropertyFromOtas(newProp.id);
+      if (sync.properties?.length) {
+        const refreshed = sync.properties.find((p) => p.id === newProp.id);
+        if (refreshed) {
+          newProp.bookings = refreshed.bookings.map((b) => ({
+            id: b.id,
+            guestName: b.guestName,
+            channel: b.channel,
+            checkIn: b.checkIn,
+            checkOut: b.checkOut,
+            nights: b.nights,
+            ratePerNight: b.ratePerNight,
+            totalRevenue: b.totalRevenue,
+            paid: b.paid,
+            notes: b.notes,
+            enriched: b.enriched,
+            enrichedContact: b.enrichedContact,
+          }));
+        }
+        applyPropertyRecords(sync.properties, newProp.id);
+      }
+      if (sync.errors.length > 0) {
+        setToast(`Property saved — OTA sync: ${sync.errors.join(' · ')}`);
+        return;
+      }
+      setToast(`Property saved — imported ${sync.imported} Airbnb/Booking reservation(s).`);
+      return;
+    }
+
     setProperties((prev) => [...prev, newProp]);
     setSelectedProp(newProp);
+    setLoadError(null);
     setPropSettings((prev) => ({
       ...prev,
       [newProp.id]: { cleanBufferEnabled: true, cleanBufferDays: 1, defaultRate: 0, seasonalRates: [] },
     }));
-    setToast(`Property "${newProp.name}" successfully connected and synced.`);
-  }, []);
+    setToast(`Property "${newProp.name}" saved. Add an Airbnb iCal URL to import reservations.`);
+  }, [applyPropertyRecords]);
+
+  const handleImportFromOtas = useCallback(async () => {
+    if (!selectedProp) return;
+    setImportingOta(true);
+    try {
+      const sync = await syncShalomPropertyFromOtas(selectedProp.id);
+      if (sync.properties?.length) {
+        applyPropertyRecords(sync.properties, selectedProp.id);
+      }
+      if (sync.errors.length > 0) {
+        setLoadError(sync.errors.join(' · '));
+        setToast(`OTA sync failed: ${sync.errors[0]}`);
+        return;
+      }
+      setLoadError(null);
+      setToast(
+        sync.imported > 0
+          ? `Imported ${sync.imported} reservation(s) from Airbnb/Booking.`
+          : 'OTA calendars synced — no new reservations in feed.',
+      );
+    } finally {
+      setImportingOta(false);
+    }
+  }, [applyPropertyRecords, selectedProp]);
 
   const handleEnrich = useCallback((
     bookingId: string,
@@ -1659,13 +2065,19 @@ export default function ShalomPage() {
     setSelectedBooking((prev) => (prev ? updater(prev) : null));
   }, []);
 
-  const handlePushRates = () => setToast(`Rates pushed to ${selectedProp.otaChannels.join(' & ')} for ${selectedProp.name}`);
-  const handlePushBlocks = () => setToast(`Availability blocks synced to OTAs for ${selectedProp.name}`);
+  const handlePushRates = () => {
+    if (!selectedProp) return;
+    setToast(`Rates pushed to ${selectedProp.otaChannels.join(' & ')} for ${selectedProp.name}`);
+  };
+  const handlePushBlocks = () => {
+    if (!selectedProp) return;
+    setToast(`Availability blocks synced to OTAs for ${selectedProp.name}`);
+  };
 
   const monthPrefix = `${viewYear}-${String(viewMonth).padStart(2, '0')}`;
   const monthBookings = useMemo(() =>
-    selectedProp.bookings.filter((b) => b.checkIn.startsWith(monthPrefix) || b.checkOut.startsWith(monthPrefix)),
-    [selectedProp.bookings, monthPrefix],
+    (selectedProp?.bookings ?? []).filter((b) => b.checkIn.startsWith(monthPrefix) || b.checkOut.startsWith(monthPrefix)),
+    [selectedProp?.bookings, monthPrefix],
   );
 
   const daysInViewMonth    = new Date(viewYear, viewMonth, 0).getDate();
@@ -1673,6 +2085,34 @@ export default function ShalomPage() {
   const pendingRevenue     = monthBookings.filter((b) => !b.paid && b.channel !== 'BLOCKED').reduce((s, b) => s + b.totalRevenue, 0);
   const bookedNights       = monthBookings.filter((b) => b.channel !== 'BLOCKED').reduce((s, b) => s + b.nights, 0);
   const occupancyPct       = Math.round((bookedNights / daysInViewMonth) * 100);
+
+  if (!selectedProp) {
+    return (
+      <div className="min-h-screen p-8 font-sans">
+        <h1 className="text-2xl font-black text-slate-900">Shalom Residences</h1>
+        {loadError ? (
+          <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
+            {loadError}
+          </p>
+        ) : null}
+        <p className="mt-4 text-sm font-semibold text-slate-600">
+          No rental properties in Supabase yet. Use Add Property to register your first Shalom residence.
+        </p>
+        <button
+          type="button"
+          onClick={() => setAddPropOpen(true)}
+          className="mt-4 rounded-xl bg-teal-600 px-4 py-2 text-sm font-bold text-white"
+        >
+          Add Property
+        </button>
+        <AddPropertyModal
+          open={addPropOpen}
+          onClose={() => setAddPropOpen(false)}
+          onConnect={handleConnect}
+        />
+      </div>
+    );
+  }
 
   return (
     <>
@@ -1694,7 +2134,7 @@ export default function ShalomPage() {
 
       <div className="w-full flex-grow flex flex-col pb-12 font-sans">
         {/* ── Header ── */}
-        <header className="sticky top-0 z-40 border-b border-white/60 bg-white/45 px-6 md:px-12 2xl:px-24 py-4 shadow-[0_8px_32px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl backdrop-saturate-150">
+        <header className="sticky top-0 z-40 border-b border-white/60 bg-white/45 px-4 py-4 shadow-[0_8px_32px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl backdrop-saturate-150 md:px-12 2xl:px-24">
           <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -1714,6 +2154,11 @@ export default function ShalomPage() {
         </header>
 
         <div className="px-6 md:px-12 2xl:px-24 space-y-6 pt-8">
+          {loadError ? (
+            <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
+              {loadError}
+            </p>
+          ) : null}
 
           {/* ── Summary Cards ── */}
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
@@ -1782,6 +2227,15 @@ export default function ShalomPage() {
 
               {/* OTA Sync Buttons */}
               <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleImportFromOtas()}
+                  disabled={importingOta}
+                  className="flex items-center gap-1.5 rounded-xl border border-rose-200/80 bg-rose-50/80 px-3 py-1.5 text-[10px] font-bold text-rose-800 hover:bg-rose-100/80 transition-all disabled:opacity-60"
+                >
+                  <RefreshCw className={`h-3 w-3 ${importingOta ? 'animate-spin' : ''}`} />
+                  {importingOta ? 'Importing…' : 'Import from OTAs'}
+                </button>
                 <button
                   type="button"
                   onClick={handlePushRates}

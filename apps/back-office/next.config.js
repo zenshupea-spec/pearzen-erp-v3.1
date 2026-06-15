@@ -6,6 +6,14 @@ const nextConfig = {
     // WIP branches have TS drift; unblock production deploys until types are aligned.
     ignoreBuildErrors: true,
   },
+  async rewrites() {
+    return [
+      {
+        source: '/ical/export/:filename',
+        destination: '/api/ical/export/:filename',
+      },
+    ];
+  },
 };
 
 module.exports = nextConfig;

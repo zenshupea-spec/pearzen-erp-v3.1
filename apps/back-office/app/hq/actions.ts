@@ -4,7 +4,7 @@ import { createSupabaseServiceClient } from '../../../../packages/supabase/servi
 import {
   CLASSIC_VENTURE_COMPANY_ID,
   resolveCompanyIdForSession,
-} from '../../lib/company-context';
+} from '../../lib/company-context-server';
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
 
 export type HqHubKpis = {

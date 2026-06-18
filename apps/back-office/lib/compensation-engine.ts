@@ -171,7 +171,7 @@ export function processShiftPay(
 ): ShiftCalculationResult {
   if (profile.requires_md_approval) {
     throw new Error(
-      `PAYROLL LOCKED: ${profile.emp_number} has a custom salary pending MD approval. Access Denied.`
+      `PAYROLL LOCKED: ${profile.emp_number} has a custom salary pending FM approval. Access Denied.`
     );
   }
 

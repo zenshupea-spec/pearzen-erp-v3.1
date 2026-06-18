@@ -207,7 +207,10 @@ function GuardPerformanceCard({
               {card.fullName}
             </p>
             <p className="truncate text-[10px] font-semibold text-slate-500">
-              {card.rank ?? '—'} · <span className="font-mono">{card.empNumber}</span>
+              {card.rank ?? '—'}
+              {card.sector ? ` · ${card.sector}` : ''}
+              {' · '}
+              <span className="font-mono">{card.empNumber}</span>
             </p>
           </div>
         </div>

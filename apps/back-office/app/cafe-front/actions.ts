@@ -12,6 +12,7 @@ import {
   cafeFrontAuthEmail,
   findCafeEmployeeByEpf,
   getCafePortalAuthRecord,
+  isCafeOtpValid,
   isCafeEmployee,
   isEmployeeActive,
   employeeRosterKey,
@@ -33,7 +34,7 @@ import {
   computeCafeShiftWindows,
   type CafeShiftWindows,
 } from '../../lib/cafe-shift-hours';
-import { resolveCompanyIdForSession } from '../../lib/company-context';
+import { resolveCompanyIdForSession } from '../../lib/company-context-server';
 import { DEFAULT_GEOFENCE_RADIUS_M } from '../../lib/site-geofence';
 import {
   getCafeDashboard,
@@ -59,6 +60,8 @@ export type CafeFrontOrder = {
   items: Array<{ menuItemId?: string; name: string; qty: number; unitPriceLkr: number }>;
   totalLkr: number;
   status: string;
+  paymentMethod: string;
+  paymentStatus: string;
   placedAt: string;
   paymentReceivedAt?: string;
   acceptedByName?: string;
@@ -182,7 +185,7 @@ export async function getCafeShiftCheckinContext(): Promise<CafeShiftCheckinCont
 
   const supabase = createSupabaseServiceClient();
   const [site, openHours] = await Promise.all([
-    resolveCafeSiteGeofence(supabase, companyId),
+    resolveCafeSiteGeofence(supabase, companyId, session.employee.site),
     loadCafeOpenHours(supabase, companyId),
   ]);
 
@@ -247,6 +250,15 @@ export async function authenticateCafeFrontStaff(formData: FormData) {
   const authRecord = await getCafePortalAuthRecord(service, epf);
   if (!authRecord || !authRecord.is_active) {
     return { success: false, error: 'Portal access not provisioned. Contact HR.' };
+  }
+
+  if (authRecord.needs_pin_setup) {
+    if (!authRecord.current_otp || password !== authRecord.current_otp) {
+      return { success: false, error: 'Invalid OTP.' };
+    }
+    if (!isCafeOtpValid(authRecord)) {
+      return { success: false, error: 'OTP expired. Ask HR for a new one.' };
+    }
   }
 
   const supabase = await createSupabaseServerClient();
@@ -465,7 +477,7 @@ export async function submitCafeShiftCheckin(input: {
 
   const supabase = createSupabaseServiceClient();
   const [site, openHours] = await Promise.all([
-    resolveCafeSiteGeofence(supabase, companyId),
+    resolveCafeSiteGeofence(supabase, companyId, session.employee.site),
     loadCafeOpenHours(supabase, companyId),
   ]);
 
@@ -557,7 +569,7 @@ export async function submitCafeShiftCheckout(input: {
   if (!companyId) return { ok: false, error: 'No company context.' };
 
   const supabase = createSupabaseServiceClient();
-  const site = await resolveCafeSiteGeofence(supabase, companyId);
+  const site = await resolveCafeSiteGeofence(supabase, companyId, session.employee.site);
 
   const locationCheck = validateCafeCheckinLocation(input.latitude, input.longitude, site);
   if (!locationCheck.ok) return { ok: false, error: locationCheck.error };
@@ -706,7 +718,7 @@ export async function getCafeFrontOrders(): Promise<CafeFrontOrder[]> {
   const { data } = await supabase
     .from('cafe_customer_orders')
     .select(
-      'id, queue_number, fulfillment_type, customer_name, customer_phone, delivery_address, items, total_lkr, status, placed_at, payment_received_at, accepted_by_employee_id, accepted_at, ready_at, prep_seconds',
+      'id, queue_number, fulfillment_type, customer_name, customer_phone, delivery_address, items, total_lkr, status, payment_method, payment_status, placed_at, payment_received_at, accepted_by_employee_id, accepted_at, ready_at, prep_seconds',
     )
     .eq('company_id', companyId)
     .in('status', ['PLACED', 'PAYMENT_RECEIVED', 'PREPARING', 'READY'])
@@ -741,6 +753,8 @@ export async function getCafeFrontOrders(): Promise<CafeFrontOrder[]> {
     items: (row.items as CafeFrontOrder['items']) ?? [],
     totalLkr: Number(row.total_lkr) || 0,
     status: row.status,
+    paymentMethod: row.payment_method ?? 'card_online',
+    paymentStatus: row.payment_status ?? 'pending',
     placedAt: row.placed_at,
     paymentReceivedAt: row.payment_received_at ?? undefined,
     acceptedByName: row.accepted_by_employee_id

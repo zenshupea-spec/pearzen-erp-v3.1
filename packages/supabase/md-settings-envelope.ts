@@ -5,6 +5,7 @@ export const MD_SETTINGS_ENVELOPE_KEYS = {
   rankPayMatrix: '_rankPayMatrix',
   gratuitySettings: '_gratuitySettings',
   welfareFundSettings: '_welfareFundSettings',
+  advanceSalarySettings: '_advanceSalarySettings',
   divisionNames: '_divisionNames',
   compliance: '_compliance',
   geofence: '_geofence',
@@ -13,6 +14,8 @@ export const MD_SETTINGS_ENVELOPE_KEYS = {
   bankExport: '_bankExport',
   payFormulas: '_payFormulas',
   portalRbacMatrix: '_portalRbacMatrix',
+  internalWorkLocations: '_internalWorkLocations',
+  securityWebsite: '_securityWebsite',
 } as const;
 
 export function isMissingColumnError(message: string | undefined): boolean {

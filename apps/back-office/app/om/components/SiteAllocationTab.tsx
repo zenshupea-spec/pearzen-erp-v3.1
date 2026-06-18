@@ -1,10 +1,18 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Building2, Loader2, RefreshCw, Users } from 'lucide-react';
+import { Building2, Loader2, RefreshCw, UserCheck, Users } from 'lucide-react';
 
 import { useOmFieldData } from '../context/OmFieldDataContext';
 import type { OmAllocationSite, OmAllocationSlot } from '../lib/field-operations-types';
+
+function formatGuardOptionLabel(guard: {
+  name: string;
+  rank: string;
+  epfNo: string;
+}): string {
+  return `${guard.rank} · ${guard.name} · EPF ${guard.epfNo}`;
+}
 
 function SiteAllocationCard({
   site,
@@ -12,7 +20,7 @@ function SiteAllocationCard({
   onSave,
 }: {
   site: OmAllocationSite;
-  guardOptions: { empNo: string; name: string; rank: string }[];
+  guardOptions: { empNo: string; name: string; rank: string; epfNo: string }[];
   onSave: (site: OmAllocationSite, assignments: Record<string, string>) => Promise<void>;
 }) {
   const [assignments, setAssignments] = useState<Record<string, string>>(() => {
@@ -48,6 +56,15 @@ function SiteAllocationCard({
           <p className="mt-0.5 text-xs text-slate-500">
             {site.clientName} · {site.location}
           </p>
+          {site.assignedSmEpf ? (
+            <p className="mt-1.5 inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-800">
+              <UserCheck className="h-3 w-3 shrink-0" />
+              SM ·{' '}
+              {site.assignedSmName && site.assignedSmName !== site.assignedSmEpf
+                ? `${site.assignedSmName} · EPF ${site.assignedSmEpf}`
+                : `EPF ${site.assignedSmEpf}`}
+            </p>
+          ) : null}
         </div>
         <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-0.5 text-[10px] font-black uppercase text-slate-600">
           {openSlots} open slot{openSlots === 1 ? '' : 's'}
@@ -56,7 +73,7 @@ function SiteAllocationCard({
 
       <div className="space-y-3">
         {site.slots.map((slot: OmAllocationSlot) => (
-          <div key={slot.slotId} className="grid gap-2 sm:grid-cols-[1fr_180px] sm:items-center">
+          <div key={slot.slotId} className="grid gap-2 sm:grid-cols-[1fr_minmax(260px,1fr)] sm:items-center">
             <div>
               <p className="text-xs font-bold text-slate-800">
                 {slot.rank} · {slot.shiftType} shift
@@ -68,12 +85,12 @@ function SiteAllocationCard({
               onChange={(e) =>
                 setAssignments((prev) => ({ ...prev, [slot.slotId]: e.target.value }))
               }
-              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-800"
+              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-800"
             >
               <option value="">— Unassigned —</option>
               {guardOptions.map((guard) => (
                 <option key={guard.empNo} value={guard.empNo}>
-                  {guard.name} ({guard.empNo})
+                  {formatGuardOptionLabel(guard)}
                 </option>
               ))}
             </select>
@@ -113,6 +130,7 @@ export default function SiteAllocationTab() {
     () =>
       guardPool.map((guard) => ({
         empNo: guard.empNo,
+        epfNo: guard.epfNo,
         name: guard.name,
         rank: guard.rank,
       })),

@@ -15,8 +15,6 @@ import {
   Users,
   Building2,
   ChevronDown,
-  Plus,
-  X,
   Shield,
   AlertCircle,
   Sun,
@@ -69,12 +67,17 @@ function normalizeSiteKey(value: string | null | undefined): string {
   return (value ?? '').trim().toLowerCase();
 }
 
+function normalizeEpf(epf: string | null | undefined): string {
+  return (epf ?? '').trim().toUpperCase();
+}
+
 function buildSlots(
-  sites: ActiveSite[],
+  sites: ResolvedShiftSite[],
   guards: Guard[],
   existing: ExistingAttendanceEntry[],
 ): Slot[] {
   const slots: Slot[] = [];
+  const assignedEpfs = new Set<string>();
 
   for (const site of sites) {
     if (site.readOnly || site.required <= 0) continue;
@@ -87,11 +90,13 @@ function buildSlots(
 
     if (siteExisting.length > 0) {
       siteExisting.forEach(e => {
+        const epf = e.guard_epf?.trim() ? e.guard_epf : null;
+        if (epf) assignedEpfs.add(normalizeEpf(epf));
         slots.push({
           uid: makeUid(),
           siteName: site.value,
-          guardEpf: e.guard_epf,
-          locked: Boolean(e.guard_epf),
+          guardEpf: epf,
+          locked: Boolean(epf),
         });
       });
       const pad = required - siteExisting.length;
@@ -100,10 +105,14 @@ function buildSlots(
       }
     } else {
       const defaults = guards.filter(
-        (g) => g.defaultSite && normalizeSiteKey(g.defaultSite) === normalizeSiteKey(site.value),
+        (g) =>
+          g.defaultSite &&
+          normalizeSiteKey(g.defaultSite) === siteKey &&
+          !assignedEpfs.has(normalizeEpf(g.epf)),
       );
       const fillCount = Math.min(defaults.length, required);
       for (let i = 0; i < fillCount; i++) {
+        assignedEpfs.add(normalizeEpf(defaults[i].epf));
         slots.push({
           uid: makeUid(),
           siteName: site.value,
@@ -159,8 +168,8 @@ function GuardDropdown({
     );
   }
 
-  const available = guards.filter(g => !assignedElsewhere.has(g.epf));
-  const taken = guards.filter(g => assignedElsewhere.has(g.epf));
+  const available = guards.filter(g => !assignedElsewhere.has(normalizeEpf(g.epf)));
+  const taken = guards.filter(g => assignedElsewhere.has(normalizeEpf(g.epf)));
 
   // Close on outside click / scroll
   useEffect(() => {
@@ -373,26 +382,27 @@ export default function GuardAttendanceClient({
   /* ── Track all assigned EPFs across slots ───────────────────── */
   const assignedEpfs = useMemo(() => {
     const s = new Set<string>();
-    slots.forEach(slot => { if (slot.guardEpf) s.add(slot.guardEpf); });
+    slots.forEach(slot => {
+      if (slot.guardEpf) s.add(normalizeEpf(slot.guardEpf));
+    });
     return s;
   }, [slots]);
 
   /* ── Slot mutations ─────────────────────────────────────────── */
   const updateSlot = useCallback((uid: string, guardEpf: string | null) => {
-    setSlots(prev =>
-      prev.map(s => {
+    setSlots(prev => {
+      if (guardEpf) {
+        const key = normalizeEpf(guardEpf);
+        const alreadyAssigned = prev.some(
+          s => s.uid !== uid && s.guardEpf && normalizeEpf(s.guardEpf) === key,
+        );
+        if (alreadyAssigned) return prev;
+      }
+      return prev.map(s => {
         if (s.uid !== uid || s.locked) return s;
         return { ...s, guardEpf };
-      }),
-    );
-  }, []);
-
-  const removeSlot = useCallback((uid: string) => {
-    setSlots(prev => prev.filter(s => s.uid !== uid));
-  }, []);
-
-  const addSlot = useCallback((siteName: string) => {
-    setSlots(prev => [...prev, { uid: makeUid(), siteName, guardEpf: null, locked: false }]);
+      });
+    });
   }, []);
 
   /* ── Submit ─────────────────────────────────────────────────── */
@@ -636,22 +646,16 @@ export default function GuardAttendanceClient({
                             locked={slot.locked}
                             assignedElsewhere={
                               new Set(
-                                [...assignedEpfs].filter(epf => epf !== slot.guardEpf),
+                                [...assignedEpfs].filter(
+                                  epf =>
+                                    !slot.guardEpf ||
+                                    epf !== normalizeEpf(slot.guardEpf),
+                                ),
                               )
                             }
                             onChange={epf => updateSlot(slot.uid, epf)}
                           />
                         </div>
-                        {siteSlots.length > 1 && !slot.locked && (
-                          <button
-                            type="button"
-                            onClick={() => removeSlot(slot.uid)}
-                            className="p-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-400 hover:text-red-600 hover:border-red-500/30 transition-colors shrink-0"
-                            aria-label="Remove slot"
-                          >
-                            <X className="w-4 h-4" />
-                          </button>
-                        )}
                       </div>
                       );
                     })}
@@ -666,17 +670,6 @@ export default function GuardAttendanceClient({
                       </div>
                     )}
 
-                    {/* Add guard slot */}
-                    {!site.readOnly && (
-                    <button
-                      type="button"
-                      onClick={() => addSlot(site.value)}
-                      className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-dashed border-slate-200 text-slate-400 hover:text-slate-600 hover:border-slate-300 text-sm font-bold uppercase tracking-wider transition-colors active:scale-[0.98]"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      Add Guard
-                    </button>
-                    )}
                   </div>
                 </div>
               );

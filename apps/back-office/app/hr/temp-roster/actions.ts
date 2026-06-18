@@ -7,11 +7,11 @@ import {
   fetchWithRosterCompanyFallback,
   resolveCompanyIdForSession,
   rosterCompanyId,
-} from '../../../lib/company-context';
+} from '../../../lib/company-context-server';
 import {
   assertHrPortalEditor,
   fetchBackOfficeUserProfile,
-} from '../../../lib/hr-portal-access';
+} from '../../../lib/hr-portal-access-server';
 import type {
   SectorManagerRoster,
   TempGuard,

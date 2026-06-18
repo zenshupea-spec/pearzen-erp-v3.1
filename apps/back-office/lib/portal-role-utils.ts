@@ -1,6 +1,6 @@
 /** Client-safe portal role helpers (no Supabase / server imports). */
 
-export const HR_PORTAL_EDITOR_ROLES = ["HR", "MD", "OD", "FM"] as const;
+export const HR_PORTAL_EDITOR_ROLES = ["HR", "MD", "OD", "FM", "EA"] as const;
 export const PORTAL_RANKS = ["MD", "OD", "OM", "HR", "FM"] as const;
 export const EXECUTIVE_RANKS = ["MD", "OD"] as const;
 

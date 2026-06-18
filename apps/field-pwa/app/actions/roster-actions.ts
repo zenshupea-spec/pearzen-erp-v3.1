@@ -2,6 +2,11 @@
 
 import { revalidatePath } from 'next/cache';
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
+import {
+  applyMdSettingsShiftWindow,
+  fetchSecurityShiftTiming,
+  type ShiftType,
+} from '../../lib/guard-shift-resolver';
 
 export type SectorGuard = {
   id: string;
@@ -21,17 +26,24 @@ export type RosterLine = {
   shift_type: string;
 };
 
-function dayBounds(shiftDate: string, shiftType: string) {
-  const base = shiftDate;
-  if (shiftType.toLowerCase() === 'night') {
-    return {
-      planned_start_time: `${base}T20:00:00.000Z`,
-      planned_end_time: `${base}T06:00:00.000Z`,
-    };
+function normalizeShiftType(shiftType: string): ShiftType {
+  return shiftType.toLowerCase() === 'night' ? 'NIGHT' : 'DAY';
+}
+
+async function dayBounds(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  shiftDate: string,
+  shiftType: string,
+) {
+  const startTimes = await fetchSecurityShiftTiming(supabase);
+  const type = normalizeShiftType(shiftType);
+  const window = applyMdSettingsShiftWindow(shiftDate, type, startTimes);
+  if (!window) {
+    throw new Error('Could not resolve shift window from md_settings.');
   }
   return {
-    planned_start_time: `${base}T08:00:00.000Z`,
-    planned_end_time: `${base}T16:00:00.000Z`,
+    planned_start_time: window.plannedStartTime,
+    planned_end_time: window.plannedEndTime,
   };
 }
 
@@ -136,12 +148,14 @@ export async function submitRoster(
 
     const supabase = await createSupabaseServerClient();
 
-    const rows = payload.map((line) => {
-      const { planned_start_time, planned_end_time } = dayBounds(
-        line.shift_date,
-        line.shift_type
-      );
-      return {
+    const rows = await Promise.all(
+      payload.map(async (line) => {
+        const { planned_start_time, planned_end_time } = await dayBounds(
+          supabase,
+          line.shift_date,
+          line.shift_type,
+        );
+        return {
         company_id: line.company_id,
         employee_id: line.guard_id,
         site_id: line.sector_id,
@@ -149,8 +163,9 @@ export async function submitRoster(
         planned_start_time,
         planned_end_time,
         status: 'ACTIVE' as const,
-      };
-    });
+        };
+      }),
+    );
 
     const { error } = await supabase.from('time_rosters').insert(rows);
     if (error) throw error;

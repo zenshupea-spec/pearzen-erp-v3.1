@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import {
   Coffee,
   User,
@@ -53,6 +53,7 @@ import {
   type CafeLaborRosterMember,
   type CafeStaffDayLog,
 } from './actions';
+import { calcPayrollCostLkr } from './cafe-cost-utils';
 import { formatPeriodMonthLabel, normalizePeriodMonth } from './period-month';
 import {
   getMenuKitchenTrackKind,
@@ -62,6 +63,7 @@ import {
   type KitchenTrackKind,
 } from './prep-menu-sync';
 import { CafePortalShell } from './CafePortalShell';
+import { useCafeBranchScope } from './use-cafe-branch';
 import {
   addIngredientStockLot,
   assignUsePriorityForNewLot,
@@ -2272,9 +2274,19 @@ function LookbackDateStrip({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function CafePage() {
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const fromHub = searchParams.get('hub') === '1';
+  const {
+    branches,
+    locationId,
+    locationName,
+    setLocationName,
+    handleBranchChange,
+  } = useCafeBranchScope(pathname);
   const [sessionProfile, setSessionProfile] = useState<ExecutiveSessionProfile | null>(null);
+  const [mtdWastageCostLkr, setMtdWastageCostLkr] = useState(0);
+  const [laborRoster, setLaborRoster] = useState<CafeLaborRosterMember[]>([]);
   const [staff, setStaff]             = useState<StaffMember[]>([]);
   const [tasks, setTasks]             = useState<Task[]>([]);
   const [listA, setListA]               = useState<DailyStockItem[]>([]);
@@ -2289,6 +2301,7 @@ export default function CafePage() {
   const [cafeLogoUrl, setCafeLogoUrl]   = useState<string | null>(null);
   const [cafeCoverUrl, setCafeCoverUrl] = useState<string | null>(null);
   const [cafeCoverTextColor, setCafeCoverTextColor] = useState('#ffffff');
+  const [cafeCoverTintStrength, setCafeCoverTintStrength] = useState(100);
   const [customerMenuUrl, setCustomerMenuUrl] = useState<string | null>('https://tasha.lk');
   const [dashboardReady, setDashboardReady] = useState(false);
   const [loadError, setLoadError]       = useState<string | null>(null);
@@ -2307,7 +2320,9 @@ export default function CafePage() {
   }, []);
 
   useEffect(() => {
-    void getCafeDashboard().then((payload) => {
+    if (!locationId) return;
+    setDashboardReady(false);
+    void getCafeDashboard(locationId).then((payload) => {
       if (payload.error) setLoadError(payload.error);
       setStaff(payload.staff);
       setTasks(payload.tasks);
@@ -2335,33 +2350,44 @@ export default function CafePage() {
       setCafeLogoUrl(payload.cafeLogoUrl ?? null);
       setCafeCoverUrl(payload.cafeCoverUrl ?? null);
       setCafeCoverTextColor(payload.cafeCoverTextColor ?? '#ffffff');
+      setCafeCoverTintStrength(payload.cafeCoverTintStrength ?? 100);
       setCustomerMenuUrl(payload.customerMenuUrl ?? 'https://tasha.lk');
+      setLocationName(payload.locationName ?? null);
+      setMtdWastageCostLkr(payload.mtdWastageCostLkr ?? 0);
       setDashboardReady(true);
     });
-  }, []);
+    void getCafeLaborRoster().then((result) => {
+      setLaborRoster(result.staff);
+    });
+  }, [locationId, setLocationName]);
 
   const persistDashboard = useCallback(
     (patch: Partial<CafeDashboardPayload>) => {
       if (!dashboardReady) return;
-      void saveCafeDashboard({
-        staff: patch.staff ?? staff,
-        tasks: patch.tasks ?? tasks,
-        listA: patch.listA ?? listA,
-        listB: patch.listB ?? listB,
-        voids: patch.voids ?? voids,
-        menuItems: patch.menuItems ?? menuItems,
-        menuCategories: patch.menuCategories ?? menuCategories,
-        ingredients: patch.ingredients ?? ingredients,
-        prepItems: patch.prepItems ?? prepItems,
-        displayItems: patch.displayItems ?? displayItems,
-        globalOverhead: patch.globalOverhead ?? globalOverhead,
-        cafeLogoUrl: patch.cafeLogoUrl ?? cafeLogoUrl,
-        cafeCoverUrl: patch.cafeCoverUrl ?? cafeCoverUrl,
-        cafeCoverTextColor: patch.cafeCoverTextColor ?? cafeCoverTextColor,
-        customerMenuUrl: patch.customerMenuUrl ?? customerMenuUrl,
-      });
+      void saveCafeDashboard(
+        {
+          staff: patch.staff ?? staff,
+          tasks: patch.tasks ?? tasks,
+          listA: patch.listA ?? listA,
+          listB: patch.listB ?? listB,
+          voids: patch.voids ?? voids,
+          menuItems: patch.menuItems ?? menuItems,
+          menuCategories: patch.menuCategories ?? menuCategories,
+          ingredients: patch.ingredients ?? ingredients,
+          prepItems: patch.prepItems ?? prepItems,
+          displayItems: patch.displayItems ?? displayItems,
+          globalOverhead: patch.globalOverhead ?? globalOverhead,
+          cafeLogoUrl: patch.cafeLogoUrl ?? cafeLogoUrl,
+          cafeCoverUrl: patch.cafeCoverUrl ?? cafeCoverUrl,
+          cafeCoverTextColor: patch.cafeCoverTextColor ?? cafeCoverTextColor,
+          cafeCoverTintStrength: patch.cafeCoverTintStrength ?? cafeCoverTintStrength,
+          customerMenuUrl: patch.customerMenuUrl ?? customerMenuUrl,
+          locationId: locationId ?? undefined,
+        },
+        locationId,
+      );
     },
-    [dashboardReady, staff, tasks, listA, listB, voids, menuItems, menuCategories, ingredients, prepItems, displayItems, globalOverhead, cafeLogoUrl, cafeCoverUrl, cafeCoverTextColor, customerMenuUrl],
+    [dashboardReady, staff, tasks, listA, listB, voids, menuItems, menuCategories, ingredients, prepItems, displayItems, globalOverhead, cafeLogoUrl, cafeCoverUrl, cafeCoverTextColor, cafeCoverTintStrength, customerMenuUrl, locationId],
   );
 
   const menuPrepSyncKey = useMemo(
@@ -2387,7 +2413,7 @@ export default function CafePage() {
       persistDashboard({});
     }, 900);
     return () => window.clearTimeout(timer);
-  }, [staff, tasks, listA, listB, voids, menuItems, menuCategories, ingredients, prepItems, displayItems, globalOverhead, cafeLogoUrl, cafeCoverUrl, cafeCoverTextColor, customerMenuUrl, dashboardReady, persistDashboard]);
+  }, [staff, tasks, listA, listB, voids, menuItems, menuCategories, ingredients, prepItems, displayItems, globalOverhead, cafeLogoUrl, cafeCoverUrl, cafeCoverTextColor, cafeCoverTintStrength, customerMenuUrl, dashboardReady, persistDashboard]);
 
   const lookbackOffset = dateToOffset(lookbackDate);
   const activeTasks    = getTasksForOffset(lookbackOffset, tasks);
@@ -2402,6 +2428,10 @@ export default function CafePage() {
   const grossPayroll    = staff.reduce((s, m) => s + m.dailyRate * m.daysWorked, 0);
   const totalDeductions = staff.reduce((s, m) => s + m.deductionsMTD, 0);
   const netPayroll      = grossPayroll - totalDeductions;
+  const payrollCost     = laborRoster.length
+    ? calcPayrollCostLkr(laborRoster)
+    : grossPayroll;
+  const payrollAndWastageCost = payrollCost + mtdWastageCostLkr;
 
   const flaggedA = listA.filter((i) => listAPct(i) < THEFT_THRESHOLD).length;
   const flaggedB = listB.filter((i) => listBPct(i) < THEFT_THRESHOLD).length;
@@ -2470,6 +2500,11 @@ export default function CafePage() {
             ? 'Labor roster · task proof lock · procurement & menu'
             : 'Labor roster · task proof lock · stock variance & theft radar'
         }
+        branches={branches}
+        selectedBranchId={locationId}
+        onBranchChange={handleBranchChange}
+        showBranchSelector={!hubView}
+        locationName={locationName}
       >
           {loadError ? (
             <ExecutiveGlassCard className="border-rose-200/80 bg-rose-50/50 p-4">
@@ -2504,16 +2539,18 @@ export default function CafePage() {
 
             {!hubView ? (
               <>
-                <ExecutiveGlassCard className="p-5">
-                  <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Total Deductions</p>
+                <ExecutiveGlassCard className="bg-gradient-to-br from-white/70 to-amber-50/50 p-5">
+                  <p className="text-xs font-bold uppercase tracking-widest text-slate-500">
+                    Payroll &amp; Wastage Cost
+                  </p>
                   <div className="mt-2 flex items-baseline gap-1.5">
-                    <TrendingDown className="h-5 w-5 text-rose-600" />
-                    <p className="text-2xl font-black tabular-nums text-rose-900">
-                      {totalDeductions > 0 ? `−${lkr(totalDeductions)}` : lkr(0)}
+                    <TrendingDown className="h-5 w-5 text-amber-700" />
+                    <p className="text-2xl font-black tabular-nums text-amber-950">
+                      {lkr(payrollAndWastageCost)}
                     </p>
                   </div>
                   <p className="mt-1 text-xs font-semibold text-slate-500">
-                    Summed from roster fines · deducted from gross
+                    Labor {lkr(payrollCost)} + wastage {lkr(mtdWastageCostLkr)} · MTD
                   </p>
                 </ExecutiveGlassCard>
 

@@ -1,13 +1,13 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { ExecutiveGlassCard } from '../../../../components/executive/ExecutiveVaultShell';
 import {
   fetchExecutiveSessionProfile,
   type ExecutiveSessionProfile,
 } from '../../actions';
-import { getCafeDashboard, saveCafeDashboard, type CafeDashboardPayload } from '../actions';
+import { getCafeDashboard, type CafeDashboardPayload } from '../actions';
 import { CafePortalShell } from '../CafePortalShell';
 import { normalizeIngredient } from '../cafe-ingredient-utils';
 import {
@@ -18,6 +18,8 @@ import {
 import { IngredientsLedgerPanel } from '../cafe-ingredients-panels';
 import { isCafeHubView } from '../../../../lib/hq-hub';
 import { reconcilePrepWithMenu } from '../prep-menu-sync';
+import { useCafeBranchScope } from '../use-cafe-branch';
+import { useCafeDashboardSave } from '../use-cafe-dashboard-persistence';
 
 const MENU_DEFAULT_CATS = [
   'Hot Beverages',
@@ -28,8 +30,16 @@ const MENU_DEFAULT_CATS = [
 ];
 
 export default function CafeIngredientsPage() {
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const fromHub = searchParams.get('hub') === '1';
+  const {
+    branches,
+    locationId,
+    locationName,
+    setLocationName,
+    handleBranchChange,
+  } = useCafeBranchScope(pathname);
   const [sessionProfile, setSessionProfile] = useState<ExecutiveSessionProfile | null>(null);
   const [dashboard, setDashboard] = useState<CafeDashboardPayload | null>(null);
   const [dashboardReady, setDashboardReady] = useState(false);
@@ -37,13 +47,23 @@ export default function CafeIngredientsPage() {
 
   const hubView = isCafeHubView(sessionProfile?.rank, fromHub);
 
+  const { markDirty, resetDirty } = useCafeDashboardSave(
+    dashboard,
+    dashboardReady,
+    locationId,
+  );
+
   useEffect(() => {
     fetchExecutiveSessionProfile().then(setSessionProfile);
   }, []);
 
   useEffect(() => {
-    void getCafeDashboard().then((payload) => {
+    if (!locationId) return;
+    setDashboardReady(false);
+    resetDirty();
+    void getCafeDashboard(locationId).then((payload) => {
       if (payload.error) setLoadError(payload.error);
+      setLocationName(payload.locationName ?? null);
       const loadedIngredients = (payload.ingredients ?? []).map((ing) =>
         normalizeIngredient(ing),
       );
@@ -65,32 +85,29 @@ export default function CafeIngredientsPage() {
         displayItems: linkedPrep.displayItems,
       });
       setDashboardReady(true);
+      resetDirty();
     });
-  }, []);
+  }, [locationId, resetDirty, setLocationName]);
 
-  const persistDashboard = useCallback(
-    (next: CafeDashboardPayload) => {
-      if (!dashboardReady) return;
-      setDashboard(next);
-      void saveCafeDashboard(next);
+  const mutateDashboard = useCallback(
+    (
+      updater: (prev: CafeDashboardPayload) => CafeDashboardPayload,
+      immediate = false,
+    ) => {
+      setDashboard((prev) => {
+        if (!prev) return prev;
+        return updater(prev);
+      });
+      markDirty(immediate);
     },
-    [dashboardReady],
+    [markDirty],
   );
-
-  useEffect(() => {
-    if (!dashboardReady || !dashboard) return;
-    const timer = window.setTimeout(() => {
-      persistDashboard(dashboard);
-    }, 900);
-    return () => window.clearTimeout(timer);
-  }, [dashboard, dashboardReady, persistDashboard]);
 
   const ingredients = (dashboard?.ingredients ?? []).map((ing) => normalizeIngredient(ing));
   const menuItems = (dashboard?.menuItems ?? []) as CafeMenuRecipeItem[];
 
   const setIngredients: React.Dispatch<React.SetStateAction<typeof ingredients>> = (updater) => {
-    setDashboard((prev) => {
-      if (!prev) return prev;
+    mutateDashboard((prev) => {
       const current = prev.ingredients.map((ing) => normalizeIngredient(ing));
       const nextIngredients = typeof updater === 'function' ? updater(current) : updater;
       const syncedMenu = syncMenuRecipeCosts(prev.menuItems as CafeMenuRecipeItem[], nextIngredients);
@@ -99,12 +116,11 @@ export default function CafeIngredientsPage() {
         ingredients: nextIngredients,
         menuItems: syncedMenu,
       };
-    });
+    }, true);
   };
 
   const setMenuItems: React.Dispatch<React.SetStateAction<CafeMenuRecipeItem[]>> = (updater) => {
-    setDashboard((prev) => {
-      if (!prev) return prev;
+    mutateDashboard((prev) => {
       const currentMenu = prev.menuItems as CafeMenuRecipeItem[];
       const nextMenu = typeof updater === 'function' ? updater(currentMenu) : updater;
       const normalizedIngredients = prev.ingredients.map((ing) => normalizeIngredient(ing));
@@ -112,13 +128,18 @@ export default function CafeIngredientsPage() {
         ...prev,
         menuItems: syncMenuRecipeCosts(nextMenu, normalizedIngredients),
       };
-    });
+    }, true);
   };
 
   return (
     <CafePortalShell
       hubView={hubView}
       subtitle="Ingredients ledger · procurement inputs"
+      branches={branches}
+      selectedBranchId={locationId}
+      onBranchChange={handleBranchChange}
+      showBranchSelector={!hubView}
+      locationName={locationName}
     >
       {loadError ? (
         <ExecutiveGlassCard className="border-rose-200/80 bg-rose-50/50 p-4">

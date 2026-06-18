@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import {
   ArrowDownAZ,
   ArrowUpDown,
+  ChevronDown,
   Download,
   Eye,
   Printer,
@@ -11,6 +12,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
+import FmRosterPayslipHistoryPanel from '../components/FmRosterPayslipHistoryPanel';
 import FmSubnav from '../components/FmSubnav';
 import FmPayrollMonthSelector from '../components/FmPayrollMonthSelector';
 import FmPayslipPreviewModal from '../components/FmPayslipPreviewModal';
@@ -27,6 +29,12 @@ import {
   type PayrollWorkforceFilter,
   type RosterSortKey,
 } from '../lib/fm-payroll-roster-data';
+import {
+  matchesSalaryPaymentFilter,
+  SALARY_PAYMENT_FILTER_OPTIONS,
+  type RosterSalaryPaymentFilter,
+} from '../lib/fm-roster-salary-status';
+import { useRosterSalaryStatus } from '../lib/use-roster-salary-status';
 import {
   downloadBulkPayslipPdf,
   downloadPayslipPdf,
@@ -81,18 +89,34 @@ export default function FmPayrollRosterPage() {
   );
   const [query, setQuery] = useState('');
   const [workforce, setWorkforce] = useState<PayrollWorkforceFilter>('all');
+  const [paymentFilter, setPaymentFilter] = useState<RosterSalaryPaymentFilter>('all');
   const [sortKey, setSortKey] = useState<RosterSortKey>('name');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [previewRow, setPreviewRow] = useState<FmPayrollRosterRow | null>(null);
+  const [previewPeriodLabel, setPreviewPeriodLabel] = useState('');
+  const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
   const [bulkDownloading, setBulkDownloading] = useState(false);
 
   const periodLabel = formatPayrollPeriodLabel(payrollPeriod);
   const scale = historicalPortfolioScale(payrollPeriod);
+  const { loading: paymentStatusLoading, resolveStatus } = useRosterSalaryStatus(payrollPeriod);
 
-  const filtered = useMemo(
+  useEffect(() => {
+    setPreviewPeriodLabel(periodLabel);
+    setExpandedRowId(null);
+  }, [payrollPeriod.year, payrollPeriod.month, periodLabel]);
+
+  const workforceFiltered = useMemo(
     () => filterPayrollRoster(allRows, { query, workforce }),
     [allRows, query, workforce],
   );
+
+  const filtered = useMemo(() => {
+    if (paymentFilter === 'all') return workforceFiltered;
+    return workforceFiltered.filter((row) =>
+      matchesSalaryPaymentFilter(resolveStatus(row), paymentFilter),
+    );
+  }, [workforceFiltered, paymentFilter, resolveStatus]);
 
   const sorted = useMemo(
     () => sortPayrollRoster(filtered, sortKey, sortDir),
@@ -114,11 +138,15 @@ export default function FmPayrollRosterPage() {
   const totals = useMemo(() => rosterTotals(scaledRows), [scaledRows]);
 
   const selectionLabel = useMemo(() => {
-    const opt = WORKFORCE_FILTER_OPTIONS.find((o) => o.id === workforce);
-    const group = opt?.label ?? 'All workforce';
-    if (query.trim()) return `${group} (search: "${query.trim()}")`;
-    return group;
-  }, [workforce, query]);
+    const workforceOpt = WORKFORCE_FILTER_OPTIONS.find((o) => o.id === workforce);
+    const paymentOpt = SALARY_PAYMENT_FILTER_OPTIONS.find((o) => o.id === paymentFilter);
+    const group = workforceOpt?.label ?? 'All workforce';
+    const payment = paymentOpt && paymentOpt.id !== 'all' ? paymentOpt.label : null;
+    const parts = [group];
+    if (payment) parts.push(payment);
+    if (query.trim()) parts.push(`search: "${query.trim()}"`);
+    return parts.join(' · ');
+  }, [workforce, paymentFilter, query]);
 
   const toggleSort = (key: RosterSortKey) => {
     if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -158,8 +186,9 @@ export default function FmPayrollRosterPage() {
           </h1>
           <p className="mt-2 max-w-2xl text-sm font-medium text-slate-600">
             Search and sort every employee on the payroll — CVS, sector managers, café staff, and
-            field guards. View, print, or download payslips for {periodLabel} — per employee or in
-            bulk for the current workforce filter and search.
+            field guards. Click a row to expand payslip history (latest to oldest) with salary and
+            advance payment status. View, print, or download payslips for {periodLabel} — per
+            employee or in bulk for the current workforce filter and search.
           </p>
           <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-semibold text-slate-600 shadow-sm">
@@ -221,6 +250,41 @@ export default function FmPayrollRosterPage() {
                         className={`ml-1.5 tabular-nums ${active ? 'text-blue-200' : 'text-slate-400'}`}
                       >
                         {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="flex flex-wrap gap-1.5">
+                <span className="mr-1 self-center text-[9px] font-black uppercase tracking-[0.16em] text-slate-400">
+                  Payment · {periodLabel.split(' ')[0]}
+                </span>
+                {SALARY_PAYMENT_FILTER_OPTIONS.map((opt) => {
+                  const active = paymentFilter === opt.id;
+                  const count =
+                    opt.id === 'all'
+                      ? workforceFiltered.length
+                      : workforceFiltered.filter((row) =>
+                          matchesSalaryPaymentFilter(resolveStatus(row), opt.id),
+                        ).length;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setPaymentFilter(opt.id)}
+                      disabled={paymentStatusLoading && opt.id !== 'all'}
+                      className={`rounded-xl px-3 py-2 text-[11px] font-bold transition-all disabled:cursor-wait disabled:opacity-60 ${
+                        active
+                          ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20'
+                          : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      {opt.short}
+                      <span
+                        className={`ml-1.5 tabular-nums ${active ? 'text-emerald-200' : 'text-slate-400'}`}
+                      >
+                        {paymentStatusLoading && opt.id !== 'all' ? '…' : count}
                       </span>
                     </button>
                   );
@@ -365,17 +429,45 @@ export default function FmPayrollRosterPage() {
                     <td colSpan={8} className="px-6 py-16 text-center">
                       <p className="text-sm font-bold text-slate-600">No employees match your filters</p>
                       <p className="mt-1 text-xs text-slate-400">
-                        Try another workforce group or clear the search bar.
+                        Try another workforce group, payment filter, or clear the search bar.
                       </p>
                     </td>
                   </tr>
                 ) : (
-                  scaledRows.map((row) => (
+                  scaledRows.map((row) => {
+                    const expanded = expandedRowId === row.id;
+                    return (
+                      <Fragment key={row.id}>
                     <tr
-                      key={row.id}
-                      className={`border-l-4 transition-colors hover:bg-slate-50/80 ${rosterRowAccent(row.workforceGroup)}`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setExpandedRowId((current) => (current === row.id ? null : row.id))}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          setExpandedRowId((current) => (current === row.id ? null : row.id));
+                        }
+                      }}
+                      className={`cursor-pointer border-l-4 transition-colors hover:bg-slate-50/80 ${rosterRowAccent(row.workforceGroup)} ${
+                        expanded ? 'bg-slate-50/90' : ''
+                      }`}
                     >
                       <td className="px-4 py-3">
+                        <div className="flex items-start gap-2">
+                          <span
+                            className={`mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md border transition-all ${
+                              expanded
+                                ? 'border-blue-200 bg-blue-50'
+                                : 'border-slate-200 bg-white'
+                            }`}
+                          >
+                            <ChevronDown
+                              className={`h-3.5 w-3.5 transition-transform duration-200 ${
+                                expanded ? 'rotate-180 text-blue-600' : 'text-slate-500'
+                              }`}
+                            />
+                          </span>
+                          <div className="min-w-0">
                         <p className="font-bold text-slate-900">{row.name}</p>
                         <div className="mt-1 flex flex-wrap items-center gap-1.5">
                           <span className="font-mono text-[10px] text-slate-500">{row.empNumber}</span>
@@ -387,6 +479,8 @@ export default function FmPayrollRosterPage() {
                           <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">
                             {row.rank}
                           </span>
+                        </div>
+                          </div>
                         </div>
                       </td>
                       <td className="px-3 py-3 font-mono text-[11px] font-semibold text-slate-700">
@@ -410,12 +504,15 @@ export default function FmPayrollRosterPage() {
                       <td className="px-3 py-3 text-right font-mono text-xs font-black text-emerald-700">
                         {lkr(row.netPayLkr)}
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3" onClick={(event) => event.stopPropagation()}>
                         <div className="flex items-center justify-center gap-1">
                           <button
                             type="button"
                             title="View payslip"
-                            onClick={() => setPreviewRow(row)}
+                            onClick={() => {
+                              setPreviewPeriodLabel(periodLabel);
+                              setPreviewRow(row);
+                            }}
                             className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
                           >
                             <Eye className="h-3.5 w-3.5" />
@@ -423,7 +520,10 @@ export default function FmPayrollRosterPage() {
                           <button
                             type="button"
                             title="Print payslip"
-                            onClick={() => openPayslipPrint(row, periodLabel)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openPayslipPrint(row, periodLabel);
+                            }}
                             className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-50"
                           >
                             <Printer className="h-3.5 w-3.5" />
@@ -439,7 +539,20 @@ export default function FmPayrollRosterPage() {
                         </div>
                       </td>
                     </tr>
-                  ))
+                    {expanded && (
+                      <FmRosterPayslipHistoryPanel
+                        key={`${row.id}-history`}
+                        row={row}
+                        anchorPeriod={payrollPeriod}
+                        onPreview={(historyRow, historyPeriodLabel) => {
+                          setPreviewPeriodLabel(historyPeriodLabel);
+                          setPreviewRow(historyRow);
+                        }}
+                      />
+                    )}
+                      </Fragment>
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -456,7 +569,7 @@ export default function FmPayrollRosterPage() {
       {previewRow && (
         <FmPayslipPreviewModal
           row={previewRow}
-          periodLabel={periodLabel}
+          periodLabel={previewPeriodLabel}
           onClose={() => setPreviewRow(null)}
         />
       )}

@@ -10,8 +10,8 @@ import {
 import {
   authenticatedLandingPath,
   fetchBackOfficeUserProfile,
-} from '../../../lib/hr-portal-access';
-import { resolveTenantCompanyFromRequest } from '../../../lib/tenant-context';
+} from '../../../lib/hr-portal-access-server';
+import { resolveTenantCompanyFromRequest } from '../../../lib/tenant-context-server';
 
 import SetHeadOfficePinForm from './SetHeadOfficePinForm';
 

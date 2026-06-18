@@ -11,7 +11,7 @@ import { assertMnrEditAllowed } from '../../lib/executive-rank-guard';
 import {
   fetchBackOfficeUserProfile,
   isHrPortalEditor,
-} from '../../lib/hr-portal-access';
+} from '../../lib/hr-portal-access-server';
 
 async function assertCanUploadIdPhoto(
   employeeId: string,

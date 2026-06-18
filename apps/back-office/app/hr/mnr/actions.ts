@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import {
+  findRankPayEntry,
   isRankInMatrix,
   isRankValidForCorporateGroup,
 } from "../../../../../packages/rank-pay-matrix";
@@ -17,7 +18,12 @@ import {
   formatHrPortalEditorLabel,
   isHrPortalEditor,
   normalizePortalRole,
-} from "../../../lib/hr-portal-access";
+} from "../../../lib/hr-portal-access-server";
+import {
+  assertEpfDiffersFromPrevious,
+  assertEpfNoUnique,
+  friendlyEpfSaveError,
+} from "../../../lib/employee-epf";
 import { encryptEmployeePiiRecord } from "../../../lib/employee-pii";
 import { getRankPayMatrix } from "../../executive/settings/rank-matrix-actions";
 import { auditStaffAction } from "../../../lib/staff-audit";
@@ -47,9 +53,23 @@ async function requireHrEditor() {
   return { supabase, editorLabel: formatHrPortalEditorLabel(name, role), editorRole: role };
 }
 
-function normalizeEpfNo(value: unknown): string {
-  const s = typeof value === "string" ? value.trim() : "";
-  return s ? s.toLowerCase() : "";
+function resolveEmploymentBaseSalary(
+  payload: { base_salary?: unknown; rank?: unknown },
+  matrix: Awaited<ReturnType<typeof getRankPayMatrix>>,
+  existingBaseSalary?: number | null,
+): number | null {
+  if (payload.base_salary != null && payload.base_salary !== "") {
+    const n = Number(payload.base_salary);
+    return Number.isFinite(n) ? n : null;
+  }
+  const rankRaw = typeof payload.rank === "string" ? payload.rank.trim() : "";
+  if (rankRaw) {
+    const entry = findRankPayEntry(matrix, rankRaw.toUpperCase());
+    if (entry?.basicPay != null && entry.basicPay > 0) {
+      return entry.basicPay;
+    }
+  }
+  return existingBaseSalary ?? null;
 }
 
 function normalizeWorkEmail(value: unknown): string {
@@ -61,7 +81,7 @@ function friendlyEmployeeSaveError(message: string): string {
   if (message.includes("employees_email_lower_unique")) {
     return "Work email is already assigned to another employee.";
   }
-  return message;
+  return friendlyEpfSaveError(message);
 }
 
 async function assertEmailUnique(
@@ -86,40 +106,6 @@ async function assertEmailUnique(
   if (conflict) {
     throw new Error(
       `Work email is already in use by ${conflict.full_name as string}.`
-    );
-  }
-}
-
-function employeeStoredEpfNo(row: {
-  epf_no?: string | null;
-  epf_num?: string | number | null;
-}): string {
-  const raw = row.epf_no ?? row.epf_num;
-  return raw == null ? "" : String(raw).trim();
-}
-
-async function assertEpfNoUnique(
-  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
-  epfNo: unknown,
-  employeeId: string
-) {
-  const norm = normalizeEpfNo(epfNo);
-  if (!norm) return;
-
-  const { data, error } = await supabase
-    .from("employees")
-    .select("id, full_name, epf_no, epf_num")
-    .neq("id", employeeId);
-
-  if (error) throw new Error(error.message);
-
-  const conflict = (data ?? []).find(
-    (row) => normalizeEpfNo(employeeStoredEpfNo(row)) === norm
-  );
-
-  if (conflict) {
-    throw new Error(
-      `EPF number is already in use by ${conflict.full_name as string}.`
     );
   }
 }
@@ -173,7 +159,7 @@ export async function saveEmployeeSection(
 
   const { data: existing, error: fetchError } = await supabase
     .from("employees")
-    .select("section_edits, rank, email, group")
+    .select("section_edits, rank, email, group, company_id")
     .eq("id", employeeId)
     .single();
 
@@ -204,10 +190,15 @@ export async function saveEmployeeSection(
     const emailToSave = isHeadOffice
       ? emailRaw || null
       : (existing?.email as string | null | undefined) ?? null;
-    await assertEpfNoUnique(supabase, payload.epf_no, employeeId);
+    assertEpfDiffersFromPrevious(payload.epf_no, payload.previous_epf_no);
+    await assertEpfNoUnique(supabase, payload.epf_no, {
+      excludeEmployeeId: employeeId,
+      companyId: existing?.company_id as string | null | undefined,
+    });
     await assertEmailUnique(supabase, emailToSave, employeeId);
     patch = {
       ...patch,
+      previous_epf_no: payload.previous_epf_no || null,
       ...encryptEmployeePiiRecord({
         full_name: payload.full_name,
         email: emailToSave,
@@ -225,12 +216,11 @@ export async function saveEmployeeSection(
   } else if (section === "employment") {
     const rankRaw = typeof payload.rank === "string" ? payload.rank.trim() : "";
     const rank = rankRaw ? rankRaw.toUpperCase() : null;
+    const groupRaw =
+      typeof payload.group === "string" ? payload.group.trim().toUpperCase() : "";
+    const matrix = await getRankPayMatrix();
     if (rank) {
-      const matrix = await getRankPayMatrix();
-      const groupRaw =
-        typeof payload.group === "string" ? payload.group.trim().toUpperCase() : "";
-      const group =
-        groupRaw === "GUARD_FIELD" ? "GUARD" : groupRaw;
+      const group = groupRaw === "GUARD_FIELD" ? "GUARD" : groupRaw;
       if (groupRaw) {
         if (!isRankValidForCorporateGroup(matrix, group, rank)) {
           throw new Error(
@@ -254,9 +244,23 @@ export async function saveEmployeeSection(
       site: payload.site || null,
       date_joined: payload.date_joined || null,
       status: payload.status || null,
-      base_salary: payload.base_salary != null && payload.base_salary !== ""
-        ? Number(payload.base_salary)
-        : null,
+      base_salary: resolveEmploymentBaseSalary(
+        payload,
+        matrix,
+        existing?.base_salary as number | null | undefined,
+      ),
+      site_allowance_lkr:
+        payload.site_allowance_lkr != null && payload.site_allowance_lkr !== ""
+          ? Math.max(0, Math.round(Number(payload.site_allowance_lkr)))
+          : 0,
+      meal_allowance_lkr:
+        payload.meal_allowance_lkr != null && payload.meal_allowance_lkr !== ""
+          ? Math.max(0, Math.round(Number(payload.meal_allowance_lkr)))
+          : 0,
+      transport_allowance_lkr:
+        payload.transport_allowance_lkr != null && payload.transport_allowance_lkr !== ""
+          ? Math.max(0, Math.round(Number(payload.transport_allowance_lkr)))
+          : 0,
       salary_type:
         typeof payload.salary_type === "string" && payload.salary_type.trim()
           ? payload.salary_type.trim().toUpperCase()
@@ -338,7 +342,7 @@ export async function saveEmployeeAll(
 
   const { data: existing, error: fetchError } = await supabase
     .from("employees")
-    .select("section_edits, rank, email, group")
+    .select("section_edits, rank, email, group, company_id")
     .eq("id", employeeId)
     .single();
 
@@ -369,8 +373,8 @@ export async function saveEmployeeAll(
   const rank = rankRaw
     ? rankRaw.toUpperCase()
     : ((existing?.rank as string | null | undefined) ?? null);
+  const matrix = await getRankPayMatrix();
   if (rankRaw) {
-    const matrix = await getRankPayMatrix();
     const group = groupRawPayload
       ? (groupRawPayload === "GUARD_FIELD" ? "GUARD" : groupRawPayload)
       : groupRawExisting;
@@ -391,7 +395,11 @@ export async function saveEmployeeAll(
     ? (groupRawPayload === "GUARD_FIELD" ? "GUARD" : groupRawPayload)
     : ((existing?.group as string | null | undefined) ?? null);
 
-  await assertEpfNoUnique(supabase, payload.epf_no, employeeId);
+  assertEpfDiffersFromPrevious(payload.epf_no, payload.previous_epf_no);
+  await assertEpfNoUnique(supabase, payload.epf_no, {
+    excludeEmployeeId: employeeId,
+    companyId: existing?.company_id as string | null | undefined,
+  });
   await assertEmailUnique(supabase, emailToSave, employeeId);
 
   const patch: Record<string, unknown> = {
@@ -399,6 +407,7 @@ export async function saveEmployeeAll(
       existing?.section_edits as Record<string, SectionEditMeta> | undefined,
       editorLabel
     ),
+    previous_epf_no: payload.previous_epf_no || null,
     ...encryptEmployeePiiRecord({
       full_name: payload.full_name,
       email: emailToSave,
@@ -420,10 +429,23 @@ export async function saveEmployeeAll(
     site: payload.site || null,
     date_joined: payload.date_joined || null,
     status: payload.status || null,
-    base_salary:
-      payload.base_salary != null && payload.base_salary !== ""
-        ? Number(payload.base_salary)
-        : null,
+    base_salary: resolveEmploymentBaseSalary(
+      payload,
+      matrix,
+      existing?.base_salary as number | null | undefined,
+    ),
+    site_allowance_lkr:
+      payload.site_allowance_lkr != null && payload.site_allowance_lkr !== ""
+        ? Math.max(0, Math.round(Number(payload.site_allowance_lkr)))
+        : 0,
+    meal_allowance_lkr:
+      payload.meal_allowance_lkr != null && payload.meal_allowance_lkr !== ""
+        ? Math.max(0, Math.round(Number(payload.meal_allowance_lkr)))
+        : 0,
+    transport_allowance_lkr:
+      payload.transport_allowance_lkr != null && payload.transport_allowance_lkr !== ""
+        ? Math.max(0, Math.round(Number(payload.transport_allowance_lkr)))
+        : 0,
     salary_type:
       typeof payload.salary_type === "string" && payload.salary_type.trim()
         ? payload.salary_type.trim().toUpperCase()

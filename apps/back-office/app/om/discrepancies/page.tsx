@@ -5,9 +5,6 @@ import OmCommandShell from '../components/OmCommandShell';
 
 export const dynamic = 'force-dynamic';
 
-const DEMO_COMPANY_ID = 'demo';
-const DEMO_ADMIN_ID = 'demo-admin';
-
 export default async function OmDiscrepanciesPage() {
   const supabase = await createSupabaseServerClient();
 
@@ -16,9 +13,9 @@ export default async function OmDiscrepanciesPage() {
   } = await supabase.auth.getUser();
 
   let companyId: string | undefined;
-  let adminId = DEMO_ADMIN_ID;
+  let adminId = '';
   let adminName = 'Admin';
-  let isPreview = !user;
+  const isPreview = !user;
 
   if (user) {
     adminId = user.id;
@@ -44,13 +41,7 @@ export default async function OmDiscrepanciesPage() {
         .maybeSingle();
       companyId = company?.id;
     }
-
-    if (!companyId) {
-      isPreview = true;
-    }
   }
-
-  const resolvedCompanyId = companyId ?? DEMO_COMPANY_ID;
 
   return (
     <OmCommandShell
@@ -59,14 +50,19 @@ export default async function OmDiscrepanciesPage() {
       icon={AlertTriangle}
       accent="amber"
       maxWidth="7xl"
-      demoBanner={isPreview}
+      demoBanner={isPreview || !companyId}
     >
-      <DiscrepancyDashboard
-        companyId={resolvedCompanyId}
-        adminId={adminId}
-        adminName={adminName}
-        useDemoFallback={isPreview}
-      />
+      {companyId && adminId ? (
+        <DiscrepancyDashboard
+          companyId={companyId}
+          adminId={adminId}
+          adminName={adminName}
+        />
+      ) : (
+        <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-600">
+          Sign in with a company-linked account to load the live discrepancy queue.
+        </p>
+      )}
     </OmCommandShell>
   );
 }

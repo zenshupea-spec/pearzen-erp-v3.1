@@ -5,13 +5,13 @@ import { createSupabaseServiceClient } from '../../../packages/supabase/service'
 import { getDeductionMonthLockStatus } from '../app/hq/deductions/actions';
 import { getSmProxyDashboard } from '../app/hq/sm-proxy/actions';
 import { getAttendanceStream } from '../app/hq/guard-proxy/actions';
-import { GUARD_FIELD_PORTAL_ROUTE } from './master-hub-pillars';
+import { GUARD_FIELD_PORTAL_ROUTE, SM_PORTAL_ROUTE } from './master-hub-pillars';
 import { getOmSiteAllocationData } from '../app/om/actions/allocation';
 import { getGuardVacanciesDesk } from '../app/hr/vacancies/actions';
 import {
   fetchWithRosterCompanyFallback,
   resolveCompanyIdForSession,
-} from './company-context';
+} from './company-context-server';
 
 export type MasterHubBadges = Record<string, string | undefined>;
 
@@ -82,7 +82,7 @@ export async function getMasterHubBadges(): Promise<MasterHubBadges> {
     badges['/om'] = `${sitesShort} Site${sitesShort === 1 ? '' : 's'} Short`;
   }
   if (smProxy.pendingRosters > 0) {
-    badges['/hq/sm-proxy'] = `${smProxy.pendingRosters} Roster${smProxy.pendingRosters === 1 ? '' : 's'} Pending`;
+    badges[SM_PORTAL_ROUTE] = `${smProxy.pendingRosters} Roster${smProxy.pendingRosters === 1 ? '' : 's'} Pending`;
   }
   if (missedScans > 0) {
     badges[GUARD_FIELD_PORTAL_ROUTE] = `${missedScans} Missed Scan${missedScans === 1 ? '' : 's'}`;

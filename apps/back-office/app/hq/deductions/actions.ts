@@ -6,7 +6,7 @@ import {
   createSupabaseServiceClient,
 } from '../../../../../packages/supabase/server';
 import { isMissingUniformVoStockTable } from '../../../../../packages/uniform-vo-stock';
-import { resolveCompanyIdForSession } from '../../../lib/company-context';
+import { resolveCompanyIdForSession } from '../../../lib/company-context-server';
 import { auditStaffAction } from '../../../lib/staff-audit';
 import {
   MEALS_DEDUCTIONS_LEDGER,
@@ -90,8 +90,8 @@ export async function getDeductionMonthLockStatus(
       locked: false,
       lockedAt: null,
       draftEntryCount,
-      isDemo: true,
-      tableReady: false,
+      isDemo: false,
+      tableReady: true,
     };
   }
 
@@ -400,9 +400,18 @@ export async function markUniformCourierDispatched(input: {
 function isMissingTableError(message: string): boolean {
   return (
     message.includes('42P01') ||
+    message.includes('PGRST205') ||
+    message.toLowerCase().includes('schema cache') ||
     message.toLowerCase().includes('does not exist') ||
     message.toLowerCase().includes('relation')
   );
+}
+
+function deductionsSetupError(message: string): string {
+  if (isMissingTableError(message)) {
+    return 'Deductions tables are not set up yet. Run npm run db:apply-deductions-admin, then refresh.';
+  }
+  return message;
 }
 
 function parseDemoShiftCount(detail: string | undefined): number {
@@ -502,10 +511,10 @@ export async function getSiteDeductionGroups(
   const { data: employees, error: empError } = await empQuery;
   if (empError) {
     if (isMissingTableError(empError.message)) {
-      return { groups: demoSiteGroups(payrollMonth), payrollMonth, isDemo: true };
+      return { groups: [], payrollMonth, isDemo: true };
     }
     console.error('❌ Deductions (employees):', empError.message);
-    return { groups: demoSiteGroups(payrollMonth), payrollMonth, isDemo: true };
+    return { groups: [], payrollMonth, isDemo: false };
   }
 
   type EmpRow = {
@@ -526,7 +535,7 @@ export async function getSiteDeductionGroups(
   );
 
   if (!guards.length) {
-    return { groups: demoSiteGroups(payrollMonth), payrollMonth, isDemo: true };
+    return { groups: [], payrollMonth, isDemo: false };
   }
 
   const employeeIds = guards.map((g) => g.id);
@@ -797,7 +806,7 @@ export async function saveEmployeeDeductionEntry(input: {
     if (input.employeeId.startsWith('demo-')) {
       return { success: false, error: 'Preview mode — connect Supabase and run migrations first.' };
     }
-    return { success: false, error: error.message };
+    return { success: false, error: deductionsSetupError(error.message) };
   }
 
   await auditStaffAction({
@@ -844,7 +853,7 @@ export async function approveEmployeeDeductionEntry(
     })
     .eq('id', entryId);
 
-  if (updateError) return { success: false, error: updateError.message };
+  if (updateError) return { success: false, error: deductionsSetupError(updateError.message) };
 
   const uniform = Number(entry.uniform_amount_lkr ?? 0);
   const meals = Number(entry.meals_amount_lkr ?? 0);

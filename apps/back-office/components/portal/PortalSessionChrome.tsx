@@ -30,12 +30,16 @@ export default function PortalSessionChrome() {
   const deadlineRef = useRef(Date.now() + 30 * 60 * 1000);
   const signingOutRef = useRef(false);
 
-  const resetIdleDeadline = useCallback(() => {
-    if (!policy.autoLockEnabled || locked) return;
+  const bumpIdleDeadline = useCallback(() => {
     const ms = policy.idleTimeoutMinutes * 60 * 1000;
     deadlineRef.current = Date.now() + ms;
     setRemainingMs(ms);
-  }, [locked, policy.autoLockEnabled, policy.idleTimeoutMinutes]);
+  }, [policy.idleTimeoutMinutes]);
+
+  const resetIdleDeadline = useCallback(() => {
+    if (!policy.autoLockEnabled || locked) return;
+    bumpIdleDeadline();
+  }, [bumpIdleDeadline, locked, policy.autoLockEnabled]);
 
   useEffect(() => {
     let cancelled = false;
@@ -102,8 +106,8 @@ export default function PortalSessionChrome() {
   };
 
   const handleUnlock = () => {
+    bumpIdleDeadline();
     setLocked(false);
-    resetIdleDeadline();
   };
 
   if (!signedIn) return null;

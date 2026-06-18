@@ -1,4 +1,11 @@
-import type { FmPortfolioSiteSeed } from '../portfolio-actions';
+import type { FmPortfolioDeduction, FmPortfolioSiteSeed } from '../portfolio-actions';
+import type { GuardPayrollCohort, PinnedPayrollGroupKind } from './guard-payroll-cohorts';
+
+export type FmShiftTypeLine = {
+  label: string;
+  shifts: number;
+  amountLkr: number;
+};
 
 export type PayrollWorkforceGroup = 'cvs' | 'cvs_sm' | 'cafe' | 'guard';
 
@@ -18,6 +25,7 @@ export type RosterSortKey =
 export type FmPayrollRosterRow = {
   id: string;
   workforceGroup: PayrollWorkforceGroup;
+  payrollGroup?: PinnedPayrollGroupKind;
   epfNo: string;
   empNumber: string;
   name: string;
@@ -27,8 +35,43 @@ export type FmPayrollRosterRow = {
   salaryLkr: number;
   earningsLkr: number;
   deductionsLkr: number;
+  advanceDeductionLkr: number;
   netPayLkr: number;
   payslipId: string;
+  totalShifts?: number;
+  daysWorked?: number;
+  shiftTypeLines?: FmShiftTypeLine[];
+  basicShiftPaidLkr?: number;
+  bra1Lkr?: number;
+  bra2Lkr?: number;
+  noPayRecoveryDays?: number;
+  noPayRecoveryLkr?: number;
+  adjustedBasicTotalLkr?: number;
+  siteAllowanceLkr?: number;
+  attendanceAllowanceLkr?: number;
+  mealAllowanceLkr?: number;
+  transportAllowanceLkr?: number;
+  extraOtLkr?: number;
+  arrearsLkr?: number;
+  performanceIncentiveLkr?: number;
+  deductionLines?: { type: FmPortfolioDeduction['type']; amountLkr: number }[];
+  mealsDeductionLkr?: number;
+  accommodationDeductionLkr?: number;
+  deathDonationsLkr?: number;
+  weddingGiftsDeductionLkr?: number;
+  extraItemsDeductionLkr?: number;
+  unitDamagesDeductionLkr?: number;
+  trainingDeductionLkr?: number;
+  salaryLoanDeductionLkr?: number;
+  uniformsDeductionLkr?: number;
+  otherDeductionsLkr?: number;
+  payeeTaxLkr?: number;
+  stampDutyLkr?: number;
+  epfEmployeeLkr?: number;
+  epfEmployerLkr?: number;
+  etfEmployerLkr?: number;
+  bankName?: string;
+  bankAccountNo?: string;
 };
 
 type PortfolioSeedEmployee = FmPortfolioSiteSeed['employees'][number];
@@ -36,7 +79,7 @@ type PortfolioSeedSite = FmPortfolioSiteSeed;
 
 const WORKFORCE_LABELS: Record<PayrollWorkforceGroup, string> = {
   cvs: 'CVS',
-  cvs_sm: 'CVS SM',
+  cvs_sm: 'SM CVS',
   cafe: 'Café',
   guard: 'Guards',
 };
@@ -46,11 +89,11 @@ export function workforceGroupLabel(group: PayrollWorkforceGroup): string {
 }
 
 export function workforceGroupFromSite(
-  payrollGroup?: 'ho' | 'sm' | 'cafe',
+  payrollGroup?: PinnedPayrollGroupKind,
 ): PayrollWorkforceGroup {
-  if (payrollGroup === 'ho') return 'cvs';
-  if (payrollGroup === 'sm') return 'cvs_sm';
-  if (payrollGroup === 'cafe') return 'cafe';
+  if (payrollGroup === 'ho' || payrollGroup === 'ho_no_bank') return 'cvs';
+  if (payrollGroup === 'sm' || payrollGroup === 'sm_no_bank') return 'cvs_sm';
+  if (payrollGroup === 'cafe' || payrollGroup === 'cafe_no_bank') return 'cafe';
   return 'guard';
 }
 
@@ -74,6 +117,9 @@ function inferSector(location: string, siteName: string): string {
 
 function inferEpfNo(empNumber: string, workforceGroup: PayrollWorkforceGroup): string {
   const digits = empNumber.replace(/\D/g, '');
+  if (workforceGroup === 'guard') {
+    return digits || '—';
+  }
   if (workforceGroup === 'cvs') {
     return digits ? `EPF-HO-${digits}` : '—';
   }
@@ -86,9 +132,36 @@ function inferEpfNo(empNumber: string, workforceGroup: PayrollWorkforceGroup): s
   return digits ? `EPF-${digits.padStart(6, '0')}` : '—';
 }
 
+const SHIFT_TYPE_LABELS: Record<
+  PortfolioSeedEmployee['earnings']['dayTypeBreakdown'][number]['type'],
+  string
+> = {
+  'Normal Days': 'Basic shift pay',
+  Saturdays: 'Saturday',
+  Sundays: 'Sunday',
+  'Poya Days': 'Poyaday',
+  'Public Holidays': 'Public Holiday',
+};
+
+function shiftTypeLinesFromEmployee(emp: PortfolioSeedEmployee): FmShiftTypeLine[] {
+  return emp.earnings.dayTypeBreakdown.map((entry) => ({
+    label: SHIFT_TYPE_LABELS[entry.type],
+    shifts: entry.totalShifts,
+    amountLkr: entry.lkrEarned,
+  }));
+}
+
+function deductionLinesFromEmployee(emp: PortfolioSeedEmployee) {
+  return emp.deductions.map((deduction) => ({
+    type: deduction.type,
+    amountLkr: deduction.thisMonthAmount,
+  }));
+}
+
 function salaryFromEmployee(emp: PortfolioSeedEmployee): number {
   if (emp.earnings.hoFixedData) return emp.earnings.hoFixedData.mnrBaseSalaryLkr;
   if (emp.earnings.cafeData) return emp.earnings.cafeData.monthlyBasicLkr;
+  if (emp.earnings.guardData) return emp.earnings.guardData.monthlyBasicLkr;
   return Math.round(emp.totalGross / 1.05);
 }
 
@@ -102,25 +175,79 @@ function primarySiteLabel(
   return primary.shifts > 0 ? primary.site : fallbackSiteName;
 }
 
+function advanceDeductionLkr(emp: PortfolioSeedEmployee): number {
+  return emp.deductions
+    .filter((deduction) => deduction.type === 'Advance')
+    .reduce((sum, deduction) => sum + deduction.thisMonthAmount, 0);
+}
+
+function deductionAmountByType(emp: PortfolioSeedEmployee, type: string): number {
+  return emp.deductions
+    .filter((deduction) => deduction.type === type)
+    .reduce((sum, deduction) => sum + deduction.thisMonthAmount, 0);
+}
+
 function flattenSite(site: PortfolioSeedSite): FmPayrollRosterRow[] {
   const workforceGroup = workforceGroupFromSite(site.payrollGroup);
   const sector = inferSector(site.location, site.name);
 
-  return site.employees.map((emp) => ({
-    id: emp.id,
-    workforceGroup,
-    epfNo: inferEpfNo(emp.empNumber, workforceGroup),
-    empNumber: emp.empNumber,
-    name: emp.name,
-    rank: emp.rank,
-    sector,
-    site: primarySiteLabel(emp, site.name),
-    salaryLkr: salaryFromEmployee(emp),
-    earningsLkr: emp.totalGross,
-    deductionsLkr: emp.totalDeductions,
-    netPayLkr: emp.netTakeHome,
-    payslipId: `PS-${emp.empNumber.replace(/[^A-Z0-9]/gi, '')}-202605`,
-  }));
+  return site.employees.map((emp) => {
+    const shiftTypeLines = shiftTypeLinesFromEmployee(emp);
+    const basicShiftPaidLkr = shiftTypeLines.reduce((sum, line) => sum + line.amountLkr, 0);
+    const totalShifts = emp.shiftsAtSite;
+    const salaryLkr = salaryFromEmployee(emp);
+    const fixedAllowances = emp.earnings.fixedAllowances;
+    const variableEarnings = emp.earnings.variableEarnings;
+    const siteAllowanceLkr =
+      fixedAllowances != null
+        ? fixedAllowances.siteAllowanceLkr
+        : Math.max(0, emp.totalGross - basicShiftPaidLkr);
+    const mealAllowanceLkr = fixedAllowances?.mealAllowanceLkr ?? 0;
+    const transportAllowanceLkr = fixedAllowances?.transportAllowanceLkr ?? 0;
+    const arrearsLkr = variableEarnings?.arrearsLkr ?? 0;
+    const performanceIncentiveLkr = variableEarnings?.performanceIncentiveLkr ?? 0;
+
+    return {
+      id: emp.id,
+      workforceGroup,
+      payrollGroup: site.payrollGroup,
+      epfNo: inferEpfNo(emp.empNumber, workforceGroup),
+      empNumber: emp.empNumber,
+      name: emp.name,
+      rank: emp.rank,
+      sector,
+      site: primarySiteLabel(emp, site.name),
+      salaryLkr,
+      earningsLkr: emp.totalGross,
+      deductionsLkr: emp.totalDeductions,
+      advanceDeductionLkr: advanceDeductionLkr(emp),
+      netPayLkr: emp.netTakeHome,
+      payslipId: `PS-${emp.empNumber.replace(/[^A-Z0-9]/gi, '')}-202605`,
+      totalShifts,
+      daysWorked: emp.earnings.cafeData?.daysWorked ?? totalShifts,
+      shiftTypeLines,
+      basicShiftPaidLkr,
+      siteAllowanceLkr,
+      mealAllowanceLkr,
+      transportAllowanceLkr,
+      arrearsLkr,
+      performanceIncentiveLkr,
+      extraOtLkr: emp.earnings.cafeData?.otPayLkr ?? 0,
+      deductionLines: deductionLinesFromEmployee(emp),
+      mealsDeductionLkr: deductionAmountByType(emp, 'Meals'),
+      uniformsDeductionLkr: deductionAmountByType(emp, 'Uniform'),
+      deathDonationsLkr: deductionAmountByType(emp, 'Death Donation'),
+      weddingGiftsDeductionLkr: deductionAmountByType(emp, 'Wedding Gifts'),
+      extraItemsDeductionLkr: deductionAmountByType(emp, 'Extra Items'),
+      unitDamagesDeductionLkr: deductionAmountByType(emp, 'Unit Damages'),
+      trainingDeductionLkr: deductionAmountByType(emp, 'Training'),
+      salaryLoanDeductionLkr: deductionAmountByType(emp, 'Salary Loan'),
+      otherDeductionsLkr:
+        deductionAmountByType(emp, 'Other Deductions') +
+        deductionAmountByType(emp, 'Penalty'),
+      adjustedBasicTotalLkr: salaryLkr,
+    };
+  });
 }
 
 export function buildFmPayrollRoster(
@@ -211,7 +338,7 @@ export const WORKFORCE_FILTER_OPTIONS: {
 }[] = [
   { id: 'all', label: 'All workforce', short: 'All' },
   { id: 'cvs', label: 'CVS — Head Office', short: 'CVS' },
-  { id: 'cvs_sm', label: 'CVS Sector Managers', short: 'CVS SM' },
+  { id: 'cvs_sm', label: 'SM group — SM CVS', short: 'SM CVS' },
   { id: 'cafe', label: 'Café Tasha', short: 'Café' },
   { id: 'guard', label: 'Field guards', short: 'Guards' },
 ];

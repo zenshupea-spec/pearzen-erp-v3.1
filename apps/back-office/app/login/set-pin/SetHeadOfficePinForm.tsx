@@ -1,15 +1,15 @@
 'use client';
 
 import { useState, useTransition } from 'react';
-import { Shield } from 'lucide-react';
+import { Eye, EyeOff, Shield } from 'lucide-react';
 
 import BrandWatermarkBackground from '../../../components/portal/BrandWatermarkBackground';
-import { HO_PORTAL_PIN_LENGTH } from '../../../lib/head-office-portal-auth';
+import {
+  HO_PORTAL_PASSWORD_HINT,
+  HO_PORTAL_PASSWORD_MIN_LENGTH,
+  validateHeadOfficePortalPassword,
+} from '../../../lib/head-office-portal-password';
 import { setHeadOfficePinAction } from './actions';
-
-function normalizePin(value: string): string {
-  return value.replace(/\D/g, '').slice(0, HO_PORTAL_PIN_LENGTH);
-}
 
 export default function SetHeadOfficePinForm({
   logoUrl,
@@ -20,8 +20,9 @@ export default function SetHeadOfficePinForm({
 }) {
   const [isPending, startTransition] = useTransition();
   const [errorMsg, setErrorMsg] = useState('');
-  const [pin, setPin] = useState('');
-  const [confirmPin, setConfirmPin] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [step, setStep] = useState<'choose' | 'confirm'>('choose');
 
   const displayCompanyName = companyName?.trim() || 'Classic Venture Security';
@@ -29,8 +30,9 @@ export default function SetHeadOfficePinForm({
   const handleChoose = (event: React.FormEvent) => {
     event.preventDefault();
     setErrorMsg('');
-    if (pin.length !== HO_PORTAL_PIN_LENGTH) {
-      setErrorMsg(`Enter all ${HO_PORTAL_PIN_LENGTH} digits.`);
+    const check = validateHeadOfficePortalPassword(password);
+    if (!check.ok) {
+      setErrorMsg(check.error);
       return;
     }
     setStep('confirm');
@@ -39,15 +41,17 @@ export default function SetHeadOfficePinForm({
   const handleConfirm = (event: React.FormEvent) => {
     event.preventDefault();
     setErrorMsg('');
-    if (confirmPin.length !== HO_PORTAL_PIN_LENGTH) {
-      setErrorMsg(`Confirm all ${HO_PORTAL_PIN_LENGTH} digits.`);
+    if (password !== confirmPassword) {
+      setErrorMsg('Passwords do not match.');
       return;
     }
     startTransition(async () => {
-      const result = await setHeadOfficePinAction(pin, confirmPin);
+      const result = await setHeadOfficePinAction(password, confirmPassword);
       if (result?.error) setErrorMsg(result.error);
     });
   };
+
+  const passwordValid = validateHeadOfficePortalPassword(password).ok;
 
   return (
     <div className="relative min-h-[100dvh] w-full overflow-hidden bg-white text-slate-900 antialiased">
@@ -71,12 +75,12 @@ export default function SetHeadOfficePinForm({
                 {displayCompanyName}
               </p>
               <h1 className="mt-3 text-3xl font-black uppercase tracking-tight text-slate-900 sm:text-4xl">
-                Set your PIN
+                Set your password
               </h1>
               <p className="mt-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
                 {step === 'choose'
-                  ? `Choose a ${HO_PORTAL_PIN_LENGTH}-digit PIN only you will know`
-                  : 'Confirm your PIN'}
+                  ? 'Choose a permanent portal password'
+                  : 'Confirm your password'}
               </p>
             </div>
           </div>
@@ -92,20 +96,30 @@ export default function SetHeadOfficePinForm({
                 </div>
               ) : null}
 
-              <input
-                type="password"
-                value={pin}
-                onChange={(e) => setPin(normalizePin(e.target.value))}
-                inputMode="numeric"
-                maxLength={HO_PORTAL_PIN_LENGTH}
-                autoComplete="new-password"
-                placeholder={`${HO_PORTAL_PIN_LENGTH}-digit PIN`}
-                className="w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-4 py-4 text-center font-mono text-2xl font-black tracking-[0.5em] text-slate-900 shadow-inner transition-all placeholder:text-base placeholder:tracking-normal placeholder:text-slate-400 focus:border-rose-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-rose-500/10"
-              />
+              <p className="text-center text-xs text-slate-500">{HO_PORTAL_PASSWORD_HINT}</p>
+
+              <div className="relative">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  minLength={HO_PORTAL_PASSWORD_MIN_LENGTH}
+                  autoComplete="new-password"
+                  placeholder="New password"
+                  className="w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-4 py-4 pr-12 font-mono text-sm font-normal normal-case tracking-normal text-slate-900 shadow-inner transition-all placeholder:text-slate-400 focus:border-rose-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-rose-500/10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 transition-colors hover:text-slate-700"
+                >
+                  {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                </button>
+              </div>
 
               <button
                 type="submit"
-                disabled={pin.length !== HO_PORTAL_PIN_LENGTH}
+                disabled={!passwordValid}
                 className="w-full rounded-xl bg-slate-900 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-md shadow-slate-900/25 transition-all hover:bg-slate-800 active:scale-[0.98] disabled:opacity-50"
               >
                 Continue
@@ -124,13 +138,12 @@ export default function SetHeadOfficePinForm({
 
               <input
                 type="password"
-                value={confirmPin}
-                onChange={(e) => setConfirmPin(normalizePin(e.target.value))}
-                inputMode="numeric"
-                maxLength={HO_PORTAL_PIN_LENGTH}
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                minLength={HO_PORTAL_PASSWORD_MIN_LENGTH}
                 autoComplete="new-password"
-                placeholder="Confirm PIN"
-                className="w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-4 py-4 text-center font-mono text-2xl font-black tracking-[0.5em] text-slate-900 shadow-inner transition-all placeholder:text-base placeholder:tracking-normal placeholder:text-slate-400 focus:border-rose-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-rose-500/10"
+                placeholder="Confirm password"
+                className="w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-4 py-4 font-mono text-sm font-normal normal-case tracking-normal text-slate-900 shadow-inner transition-all placeholder:text-slate-400 focus:border-rose-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-rose-500/10"
               />
 
               <div className="flex gap-3">
@@ -138,7 +151,7 @@ export default function SetHeadOfficePinForm({
                   type="button"
                   onClick={() => {
                     setStep('choose');
-                    setConfirmPin('');
+                    setConfirmPassword('');
                     setErrorMsg('');
                   }}
                   className="flex-1 rounded-xl border border-slate-200 py-4 text-sm font-black uppercase tracking-wider text-slate-600"
@@ -147,10 +160,10 @@ export default function SetHeadOfficePinForm({
                 </button>
                 <button
                   type="submit"
-                  disabled={isPending || confirmPin.length !== HO_PORTAL_PIN_LENGTH}
+                  disabled={isPending || confirmPassword.length < HO_PORTAL_PASSWORD_MIN_LENGTH}
                   className="flex-[2] rounded-xl bg-emerald-600 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-md shadow-emerald-600/25 transition-all hover:bg-emerald-500 active:scale-[0.98] disabled:opacity-50"
                 >
-                  {isPending ? 'Saving…' : 'Save PIN'}
+                  {isPending ? 'Saving…' : 'Save password'}
                 </button>
               </div>
             </form>

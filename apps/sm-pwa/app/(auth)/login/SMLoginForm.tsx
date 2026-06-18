@@ -22,6 +22,7 @@ export default function SMLoginForm({ logoUrl }: { logoUrl: string | null }) {
         const res = await fetch('/api/auth/sm-login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
           body: JSON.stringify({ epfNumber, password }),
         });
 

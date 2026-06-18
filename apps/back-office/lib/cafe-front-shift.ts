@@ -6,7 +6,7 @@ import {
   isWithinPortalAccessWindow,
   loadCafeOpenHours,
 } from './cafe-front-checkin';
-import { resolveCompanyIdForSession } from './company-context';
+import { resolveCompanyIdForSession } from './company-context-server';
 function normalizeCafeShiftType(value: string | null | undefined): 'MORNING' | 'EVENING' | null {
   const raw = String(value ?? '').trim().toUpperCase();
   if (raw === 'MORNING' || raw === 'DAY') return 'MORNING';

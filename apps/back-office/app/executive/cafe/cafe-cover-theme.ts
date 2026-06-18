@@ -24,8 +24,34 @@ export const DEFAULT_CAFE_COVER_THEME: CafeCoverTheme = {
 /** Default colour for header/footer text on the menu cover band. */
 export const DEFAULT_CAFE_COVER_TEXT_COLOR = '#ffffff';
 
-export const COVER_TEXT_SHADOW =
-  '0 2px 10px rgba(0,0,0,0.72), 0 0 3px rgba(0,0,0,0.55), 0 1px 0 rgba(0,0,0,0.35)';
+/** 100 = default slate tint matching the live customer menu header. */
+export const DEFAULT_CAFE_COVER_TINT_STRENGTH = 100;
+
+export { CAFE_COVER_BAND_TEXT_SHADOW as COVER_TEXT_SHADOW } from '../../../../../packages/cafe-open-hours';
+
+/** Dark gradient overlay applied on top of the menu cover photo. */
+export function buildCoverOverlayGradient(strength = DEFAULT_CAFE_COVER_TINT_STRENGTH): string {
+  const t = clamp(strength, 0, 100) / 100;
+  const top = (0.35 * t).toFixed(3);
+  const bottom = (0.55 * t).toFixed(3);
+  return `linear-gradient(180deg, rgba(15,23,42,${top}), rgba(15,23,42,${bottom}))`;
+}
+
+export function coverBandBackgroundStyle(
+  coverUrl: string | null,
+  tintStrength = DEFAULT_CAFE_COVER_TINT_STRENGTH,
+  imagePosition: 'top' | 'center' | 'bottom' = 'center',
+): { backgroundImage: string; backgroundSize: string; backgroundPosition: string } | null {
+  if (!coverUrl) return null;
+  const overlay = buildCoverOverlayGradient(tintStrength);
+  const position =
+    imagePosition === 'top' ? 'top' : imagePosition === 'bottom' ? 'bottom' : 'center';
+  return {
+    backgroundImage: `${overlay}, url(${coverUrl})`,
+    backgroundSize: 'cover',
+    backgroundPosition: position,
+  };
+}
 
 function clamp(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));

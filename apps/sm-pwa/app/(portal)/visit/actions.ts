@@ -1,8 +1,8 @@
 'use server'
 
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
-import { redirect } from 'next/navigation';
-import { cookies } from 'next/headers';
+import { resolveSmLookupKeys } from '../../../lib/sm-portal-db';
+import { resolveSmSessionEpf } from '../../../lib/sm-assignments';
 
 const VISIT_SELFIE_BUCKET = 'sm-visit-selfies';
 
@@ -88,19 +88,9 @@ export async function logVisitAction(formData: FormData): Promise<
   | { already_logged: true; site: string }
   | { success: true; site: string }
 > {
-  const cookieStore = await cookies();
-  const isDemo = cookieStore.get('sm_demo_session')?.value === 'SM-001';
-
   const supabase = await createSupabaseServerClient();
-  let epf: string;
-
-  if (isDemo) {
-    epf = 'SM-001';
-  } else {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) redirect('/login');
-    epf = session.user.email?.split('@')[0].toUpperCase() ?? '';
-  }
+  const epf = await resolveSmSessionEpf();
+  const smLookupKeys = await resolveSmLookupKeys(epf);
 
   const latitude = toNumberOrNull(formData.get('latitude'));
   const longitude = toNumberOrNull(formData.get('longitude'));
@@ -149,7 +139,7 @@ export async function logVisitAction(formData: FormData): Promise<
     const { data: assignedSites, error: sitesError } = await supabase
       .from('site_profiles')
       .select('*')
-      .eq('assigned_sm_epf', epf);
+      .in('assigned_sm_epf', smLookupKeys);
 
     if (sitesError) {
       return { error: 'Unable to load assigned sites. Please try again.' };

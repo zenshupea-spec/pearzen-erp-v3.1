@@ -4,8 +4,10 @@ import { redirect } from 'next/navigation';
 
 import HqLayoutShell from '../../components/hq/HqLayoutShell';
 import { canAccessPortalActivityLedger } from '../../lib/audit-portals';
+import { canAccessHqHub } from '../../lib/hq-hub';
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
-import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access';
+import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access-server';
+import { loginPathForStaffPortal } from '../../lib/portal-isolation';
 
 export default async function HQLayout({ children }: { children: ReactNode }) {
   const supabase = await createSupabaseServerClient();
@@ -15,26 +17,25 @@ export default async function HQLayout({ children }: { children: ReactNode }) {
   } = await supabase.auth.getUser();
 
   if (authError || !user) {
-    redirect('/login/head-office');
+    redirect(loginPathForStaffPortal('hq'));
   }
 
   const profile = await fetchBackOfficeUserProfile(supabase, user);
   const role = profile.role;
-  const isGodMode = role === 'MD' || role === 'OD';
   const pathname = (await headers()).get('x-pathname') ?? '';
   const isPortalActivityLedger =
     pathname === '/hq/audit' || pathname.startsWith('/hq/audit/');
 
   if (!role) {
-    redirect('/login/head-office?error=no_portal_rank');
+    redirect(`${loginPathForStaffPortal('hq')}?error=no_portal_rank`);
   }
 
   if (isPortalActivityLedger) {
     if (!canAccessPortalActivityLedger(role)) {
       redirect('/dashboard');
     }
-  } else if (!isGodMode && role !== 'HR' && role !== 'FM' && role !== 'OM') {
-    redirect('/login/head-office?error=hq_denied');
+  } else if (!canAccessHqHub(role) && !profile.rbacGated) {
+    redirect(`${loginPathForStaffPortal('hq')}?error=hq_denied`);
   }
 
   const profileName =

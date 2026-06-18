@@ -26,9 +26,10 @@ import GuardHoldPanel from './GuardHoldPanel';
 import GuardArchivePanel from './GuardArchivePanel';
 import SmHoldPanel from './SmHoldPanel';
 import SmArchivePanel from './SmArchivePanel';
+import { colomboTodayIso } from '../../lib/guard-verification-query';
 import {
-  isOnHold,
-  isPhotoVerificationQueue,
+  isOnHoldPanelShift,
+  isReviewableVerificationShift,
   VERIFICATION_PHOTO_RETENTION_DAYS,
 } from './shift-verification-utils';
 
@@ -36,7 +37,7 @@ type Workspace = 'review' | 'on_hold' | 'approved' | 'rejected';
 type VerificationMode = 'guards' | 'sector_managers';
 
 function todayDateStr() {
-  return new Date().toISOString().slice(0, 10);
+  return colomboTodayIso();
 }
 
 function formatShiftDate(isoDate: string) {
@@ -209,8 +210,11 @@ export default function ShiftVerificationTab() {
     setDetailShift(null);
   }, [mode, dateStr, workspace]);
 
-  const photoQueueShifts = useMemo(() => shifts.filter(isPhotoVerificationQueue), [shifts]);
-  const onHoldShifts = useMemo(() => shifts.filter(isOnHold), [shifts]);
+  const reviewQueueShifts = useMemo(
+    () => shifts.filter(isReviewableVerificationShift),
+    [shifts],
+  );
+  const onHoldShifts = useMemo(() => shifts.filter(isOnHoldPanelShift), [shifts]);
   const approvedShifts = useMemo(
     () => shifts.filter((s) => s.aggregateStatus === 'APPROVED'),
     [shifts],
@@ -237,7 +241,7 @@ export default function ShiftVerificationTab() {
 
   const navCounts = isGuards
     ? {
-        review: photoQueueShifts.length,
+        review: reviewQueueShifts.length,
         on_hold: onHoldShifts.length,
         approved: approvedShifts.length,
         rejected: rejectedShifts.length,
@@ -273,9 +277,10 @@ export default function ShiftVerificationTab() {
             <p className="max-w-2xl text-sm leading-relaxed text-slate-600">
               {isGuards ? (
                 <>
-                  Only shifts in <strong className="text-slate-900">Active verification</strong>{' '}
-                  appear in the grid. On-hold items stay off payroll. Rejected shifts are blocked
-                  until you revert them. Field photos auto-purge after{' '}
+                  Live check-ins and completed shifts appear in{' '}
+                  <strong className="text-slate-900">Active verification</strong>. On-hold items
+                  stay off payroll. Rejected shifts are blocked until you revert them. Field photos
+                  auto-purge after{' '}
                   <strong className="text-slate-900">
                     {VERIFICATION_PHOTO_RETENTION_DAYS} days
                   </strong>
@@ -363,7 +368,7 @@ export default function ShiftVerificationTab() {
           <div className="flex w-full flex-wrap gap-2 sm:w-auto">
             <MetricPill
               label="In grid"
-              value={isGuards ? photoQueueShifts.length : pendingVisits.length}
+              value={isGuards ? reviewQueueShifts.length : pendingVisits.length}
               tone="indigo"
             />
             <MetricPill
@@ -404,11 +409,11 @@ export default function ShiftVerificationTab() {
                   </p>
                 </div>
                 <span className="ml-auto rounded-full bg-indigo-100 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-indigo-800">
-                  {photoQueueShifts.length} ready
+                  {reviewQueueShifts.length} ready
                 </span>
               </div>
               <VerificationQueue
-                shifts={photoQueueShifts}
+                shifts={reviewQueueShifts}
                 onRefresh={refreshVerification}
                 selectedShift={detailShift}
                 onSelectedShiftChange={setDetailShift}

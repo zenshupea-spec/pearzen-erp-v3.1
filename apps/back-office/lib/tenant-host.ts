@@ -265,6 +265,18 @@ export function guardPortalLoginUrl(
   );
 }
 
+export function guardPortalUrl(
+  origin?: string,
+  slug?: string | null,
+): string {
+  return externalPortalLoginUrl(
+    defaultFieldPwaOrigin(),
+    "/",
+    slug,
+    origin,
+  );
+}
+
 export function cafeFrontPortalLoginUrl(
   origin?: string,
   slug?: string | null,
@@ -295,14 +307,14 @@ export function tenantSubPortalLinks(
 
   return [
     {
-      id: "executive",
-      label: "Executive Portal",
-      href: pathUrl("/login/head-office?next=/executive/finance"),
+      id: "md",
+      label: "MD Portal",
+      href: pathUrl("/login/md"),
     },
     {
       id: "hq",
-      label: "HQ Portal",
-      href: pathUrl("/login/head-office"),
+      label: "HQ Staff Portal",
+      href: pathUrl("/login/hq"),
     },
     {
       id: "om",
@@ -339,7 +351,7 @@ export function tenantPortalLoginUrl(
   slug: string | null | undefined,
   origin?: string,
 ): string | null {
-  return tenantAppPathUrl(slug, "/login/head-office", origin);
+  return tenantAppPathUrl(slug, "/login", origin);
 }
 
 export function tenantProductionDomain(
@@ -355,5 +367,5 @@ export function tenantProductionPortalUrl(
 ): string | null {
   const domain = tenantProductionDomain(slug);
   if (!domain) return null;
-  return `https://${domain}/login/head-office`;
+  return `https://${domain}/login`;
 }

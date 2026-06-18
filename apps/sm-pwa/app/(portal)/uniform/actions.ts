@@ -1,7 +1,6 @@
 'use server'
 
 import { revalidatePath } from 'next/cache';
-import { cookies } from 'next/headers';
 import {
   createSupabaseServerClient,
   createSupabaseServiceClient,
@@ -54,12 +53,6 @@ function decodeBase64Image(photoBase64: string): {
 }
 
 async function resolveActionAuth(): Promise<ActionAuth> {
-  const cookieStore = await cookies();
-  const demoEpf = cookieStore.get('sm_demo_session')?.value?.trim().toUpperCase();
-  if (demoEpf) {
-    return { epf: demoEpf, isDemo: true, userId: null };
-  }
-
   const supabase = await createSupabaseServerClient();
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) {

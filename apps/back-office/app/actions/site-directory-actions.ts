@@ -10,13 +10,20 @@ import {
   fetchWithRosterCompanyFallback,
   resolveCompanyIdForSession,
   rosterCompanyId,
-} from '../../lib/company-context';
+} from '../../lib/company-context-server';
+import { normalizeSmEpf } from '../../lib/om-service-db';
+import {
+  anyMealProvided,
+  EMPTY_SITE_MEALS,
+  parseSiteMealsFromRow,
+  type SiteMealsProvided,
+} from '../../lib/site-welfare';
 import {
   clampGeofenceRadiusM,
   DEFAULT_GEOFENCE_RADIUS_M,
 } from '../../lib/site-geofence';
 
-export type SiteStatus = 'ACTIVE' | 'SUSPENDED' | 'PENDING';
+export type SiteStatus = 'ACTIVE' | 'SUSPENDED' | 'PENDING' | 'ARCHIVED';
 
 export type RankKey = 'CSO' | 'OIC' | 'SSO' | 'JSO' | 'LSO';
 
@@ -31,13 +38,17 @@ export type RateAudit = {
   editedAt: string;
 };
 
+export type VerificationMode = 'A' | 'B' | 'C';
+
 export type MasterSite = {
   id: string;
   siteKind: SiteRegistrationKind;
   clientName: string;
   parentClient?: string;
   siteName: string;
+  siteCode: string;
   address: string;
+  clientBillingAddress: string;
   lat: number;
   lng: number;
   sector: string;
@@ -50,11 +61,16 @@ export type MasterSite = {
   guardPayRate: number;
   deductions: number;
   perVisitCharge: number;
+  minDwellTimeMinutes: number;
   visitsLogged: number;
   status: SiteStatus;
   contractStart: string;
   contractEnd: string;
   geofenceRadiusM: number;
+  verificationMode: VerificationMode;
+  nfcTagId: string | null;
+  mealsProvided: SiteMealsProvided;
+  providesAccommodation: boolean;
   rateMatrix: Partial<Record<RankKey, RankRateEntry>>;
   rateAudit: RateAudit | null;
 };
@@ -94,30 +110,49 @@ export type RegisterSiteInput = {
   minDwellTime: string;
   rankRows: {
     rank: string;
+    shiftType?: string;
     headcount: string;
     invoiceRate: string;
     payRate: string;
   }[];
+  mealsProvided?: SiteMealsProvided;
+  providesAccommodation?: boolean;
 };
 
 export type SiteConfigUpdate = {
+  siteName: string;
+  siteCode: string;
+  address: string;
+  clientName: string;
+  parentClient: string;
+  clientBillingAddress: string;
   lat: number;
   lng: number;
   contractStart: string;
   contractEnd: string;
   sectorManagerEpf: string;
-  smPhone: string;
-  verificationMode?: 'A' | 'B' | 'C';
+  perVisitCharge: number;
+  minDwellTimeMinutes: number;
+  geofenceRadiusM: number;
+  verificationMode: VerificationMode;
+  mealsProvided: SiteMealsProvided;
+  providesAccommodation: boolean;
 };
 
 const RANKS: RankKey[] = ['CSO', 'OIC', 'SSO', 'JSO', 'LSO'];
 
 function parseSiteStatus(value: unknown, hasSm: boolean): SiteStatus {
   const raw = String(value ?? '').toUpperCase();
-  if (raw === 'ACTIVE' || raw === 'SUSPENDED' || raw === 'PENDING') {
+  if (raw === 'ACTIVE' || raw === 'SUSPENDED' || raw === 'PENDING' || raw === 'ARCHIVED') {
     return raw;
   }
   return hasSm ? 'ACTIVE' : 'PENDING';
+}
+
+function parseVerificationMode(value: unknown): VerificationMode {
+  const raw = String(value ?? 'B').toUpperCase();
+  if (raw === 'A' || raw === 'B' || raw === 'C') return raw;
+  return 'B';
 }
 
 function blendedRates(matrix: Partial<Record<RankKey, RankRateEntry>>) {
@@ -253,7 +288,7 @@ async function fetchSectorManagersForCompany(
 }
 
 async function fetchSitesForCompany(companyId: string | null): Promise<Record<string, unknown>[]> {
-  const supabase = await createSupabaseServerClient();
+  const supabase = getSiteDirectoryDb();
   let query = supabase
     .from('site_profiles')
     .select('*')
@@ -297,7 +332,7 @@ type SiteStaffAssignmentRow = {
 async function fetchSiteStaffAssignmentRows(
   companyId: string | null,
 ): Promise<SiteStaffAssignmentRow[]> {
-  const supabase = await createSupabaseServerClient();
+  const supabase = getSiteDirectoryDb();
   let query = supabase
     .from('site_staff_assignments')
     .select('site_profile_id, staff_epf')
@@ -366,10 +401,7 @@ function mapDbRowToMasterSite(
 ): MasterSite {
   const rateMatrix = parseRateMatrix(row.rate_matrix);
   const { inv, pay } = blendedRates(rateMatrix);
-  const smEpf =
-    row.assigned_sm_epf == null || row.assigned_sm_epf === ''
-      ? null
-      : String(row.assigned_sm_epf).trim().toUpperCase();
+  const smEpf = normalizeSmEpf(row.assigned_sm_epf);
   const siteStaffEpfs = siteStaffBySiteId.get(String(row.id)) ?? (smEpf ? [smEpf] : []);
   const rateAuditRaw = row.rate_audit as RateAudit | null;
 
@@ -381,7 +413,10 @@ function mapDbRowToMasterSite(
     clientName: String(row.client_name ?? row.site_name ?? ''),
     parentClient: row.parent_client ? String(row.parent_client) : undefined,
     siteName: String(row.site_name ?? ''),
+    siteCode: row.site_code == null ? '' : String(row.site_code),
     address: row.address == null ? '' : String(row.address),
+    clientBillingAddress:
+      row.client_billing_address == null ? '' : String(row.client_billing_address),
     lat: row.latitude == null ? 0 : Number(row.latitude),
     lng: row.longitude == null ? 0 : Number(row.longitude),
     sector:
@@ -399,6 +434,7 @@ function mapDbRowToMasterSite(
     guardPayRate: pay,
     deductions: 0,
     perVisitCharge: Number(row.per_visit_charge_lkr ?? 0),
+    minDwellTimeMinutes: Number(row.min_dwell_time_minutes ?? 0),
     visitsLogged: 0,
     status: parseSiteStatus(row.site_status, Boolean(smEpf)),
     contractStart: row.contract_start
@@ -410,6 +446,10 @@ function mapDbRowToMasterSite(
         ? DEFAULT_GEOFENCE_RADIUS_M
         : Number(row.geofence_radius),
     ),
+    verificationMode: parseVerificationMode(row.verification_mode),
+    nfcTagId: row.nfc_tag_id == null ? null : String(row.nfc_tag_id),
+    mealsProvided: parseSiteMealsFromRow(row),
+    providesAccommodation: Boolean(row.provides_accommodation),
     rateMatrix,
     rateAudit:
       rateAuditRaw && rateAuditRaw.editedAt
@@ -418,22 +458,93 @@ function mapDbRowToMasterSite(
   };
 }
 
+function totalHeadsFromRankMatrix(matrix: Partial<Record<RankKey, RankRateEntry>>): number {
+  return RANKS.reduce((sum, rank) => sum + (matrix[rank]?.qty ?? 0), 0);
+}
+
+type StoredRateMatrix = Partial<Record<RankKey, RankRateEntry>> & {
+  _shiftRows?: Array<{
+    rank: string;
+    shiftType: string;
+    qty: number;
+    invoiceRate: number;
+    payRate: number;
+  }>;
+};
+
+function preserveShiftRowsOnSave(
+  existing: unknown,
+  input: Partial<Record<RankKey, RankRateEntry>>,
+): StoredRateMatrix {
+  const shiftRows =
+    existing &&
+    typeof existing === 'object' &&
+    Array.isArray((existing as StoredRateMatrix)._shiftRows)
+      ? (existing as StoredRateMatrix)._shiftRows
+      : undefined;
+
+  if (!shiftRows?.length) return input;
+  return { ...input, _shiftRows: shiftRows };
+}
+
+async function fetchExistingRateMatrix(
+  db: ReturnType<typeof getSiteDirectoryDb>,
+  siteId: string,
+): Promise<unknown> {
+  const { data, error } = await db
+    .from('site_profiles')
+    .select('rate_matrix')
+    .eq('id', siteId)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  return data?.rate_matrix ?? null;
+}
+
 function buildRateMatrixFromRows(
   rankRows: RegisterSiteInput['rankRows'],
-): Partial<Record<RankKey, RankRateEntry>> {
+): Partial<Record<RankKey, RankRateEntry>> & {
+  _shiftRows?: Array<{
+    rank: string;
+    shiftType: string;
+    qty: number;
+    invoiceRate: number;
+    payRate: number;
+  }>;
+} {
   const matrix: Partial<Record<RankKey, RankRateEntry>> = {};
+  const shiftRows: Array<{
+    rank: string;
+    shiftType: string;
+    qty: number;
+    invoiceRate: number;
+    payRate: number;
+  }> = [];
+
   for (const row of rankRows) {
     const rank = row.rank as RankKey;
     if (!RANKS.includes(rank)) continue;
     const qty = parseInt(row.headcount, 10) || 0;
     if (qty <= 0) continue;
-    matrix[rank] = {
+
+    const shiftType = String(row.shiftType ?? 'both').toLowerCase();
+    shiftRows.push({
+      rank,
+      shiftType,
       qty,
       invoiceRate: parseFloat(row.invoiceRate) || 0,
       payRate: parseFloat(row.payRate) || 0,
+    });
+
+    const existing = matrix[rank];
+    matrix[rank] = {
+      qty: (existing?.qty ?? 0) + qty,
+      invoiceRate: parseFloat(row.invoiceRate) || existing?.invoiceRate || 0,
+      payRate: parseFloat(row.payRate) || existing?.payRate || 0,
     };
   }
-  return matrix;
+
+  return shiftRows.length ? { ...matrix, _shiftRows: shiftRows } : matrix;
 }
 
 function resolveClientName(input: RegisterSiteInput): string {
@@ -475,14 +586,39 @@ function supabaseErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-/** Service-role writes — executive/FM sessions often fail site_profiles RLS. */
-function getSiteDirectoryWriteDb() {
+/** Service-role DB — executive/FM sessions often fail site_profiles RLS. */
+function getSiteDirectoryDb() {
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()) {
     throw new Error(
-      'Site directory writes are not configured (missing SUPABASE_SERVICE_ROLE_KEY).',
+      'Site directory is not configured (missing SUPABASE_SERVICE_ROLE_KEY).',
     );
   }
   return createSupabaseServiceClient();
+}
+
+async function siteCodeInUse(
+  db: ReturnType<typeof createSupabaseServiceClient>,
+  companyId: string,
+  siteCode: string,
+  excludeSiteId?: string,
+): Promise<boolean> {
+  const normalized = siteCode.trim().toUpperCase();
+  if (!normalized) return false;
+
+  let query = db
+    .from('site_profiles')
+    .select('id')
+    .eq('company_id', companyId)
+    .eq('site_code', normalized)
+    .limit(1);
+
+  if (excludeSiteId) {
+    query = query.neq('id', excludeSiteId);
+  }
+
+  const { data, error } = await query;
+  if (error) throw new Error(error.message);
+  return (data?.length ?? 0) > 0;
 }
 
 async function resolveCompanyScope() {
@@ -605,8 +741,15 @@ export async function fetchMasterSiteDirectory(): Promise<{
 export async function createMasterSite(
   input: RegisterSiteInput,
 ): Promise<{ success: true; site: MasterSite } | { success: false; error: string }> {
-  const isClientSite = input.siteKind === 'client';
-  const isInternalSite = !isClientSite;
+  if (input.siteKind !== 'client') {
+    return {
+      success: false,
+      error:
+        'Head office and café branches are configured in MD Settings → Operations. Site Directory is for client guard sites only.',
+    };
+  }
+
+  const isClientSite = true;
 
   const clientName = resolveClientName(input);
   if (!clientName) return { success: false, error: 'Client name is required.' };
@@ -616,7 +759,7 @@ export async function createMasterSite(
   if (!input.contractStart) return { success: false, error: 'Contract start date is required.' };
 
   const rateMatrix = isClientSite ? buildRateMatrixFromRows(input.rankRows) : {};
-  const totalHeads = Object.values(rateMatrix).reduce((s, r) => s + (r?.qty ?? 0), 0);
+  const totalHeads = totalHeadsFromRankMatrix(rateMatrix);
   const gpsParts = input.gpsCoords.split(',').map((p) => p.trim());
   const lat = gpsParts[0] ? parseFloat(gpsParts[0]) : null;
   const lng = gpsParts[1] ? parseFloat(gpsParts[1]) : null;
@@ -627,30 +770,23 @@ export async function createMasterSite(
     return { success: false, error: 'GPS coordinates are required (or request OM field capture for client sites).' };
   }
 
-  const assignedStaffEpfs = isInternalSite ? resolveAssignedStaffEpfs(input) : [];
-  const smEpf = isInternalSite
-    ? assignedStaffEpfs[0] ?? null
-    : input.sectorManagerEpf.trim() || null;
-
-  if (isInternalSite && !assignedStaffEpfs.length) {
-    return {
-      success: false,
-      error:
-        input.siteKind === 'cafe_branch'
-          ? 'Select at least one café staff member for this branch.'
-          : 'Select at least one head office employee for this location.',
-    };
-  }
+  const smEpfRaw = input.sectorManagerEpf.trim();
+  const smEpf =
+    smEpfRaw && smEpfRaw.toLowerCase() !== 'null' ? smEpfRaw.toUpperCase() : null;
 
   try {
     const { companyId } = await resolveCompanyScope();
+    const db = getSiteDirectoryDb();
 
-    const siteType =
-      input.siteKind === 'head_office'
-        ? ('OFFICE' as const)
-        : input.siteKind === 'cafe_branch'
-          ? ('HOTEL' as const)
-          : ('OTHER' as const);
+    if (await siteCodeInUse(db, companyId, input.siteCode)) {
+      return {
+        success: false,
+        error: `Site code "${input.siteCode.trim().toUpperCase()}" is already assigned to another site.`,
+      };
+    }
+
+    const siteType = 'OTHER' as const;
+    const mealsProvided = input.mealsProvided ?? EMPTY_SITE_MEALS;
 
     const record = {
       company_id: companyId,
@@ -671,24 +807,21 @@ export async function createMasterSite(
       needs_om_gps_capture: requestOmGps || !hasGps,
       assigned_sm_epf: smEpf,
       per_visit_charge_lkr: isClientSite ? parseFloat(input.perVisitCharge) || 0 : 0,
-      min_dwell_time_minutes: isClientSite ? parseInt(input.minDwellTime, 10) || 0 : 0,
+      min_dwell_time_minutes: 0,
       required_guards: isClientSite ? totalHeads || 1 : 0,
       rate_matrix: rateMatrix,
       site_status: smEpf || hasGps ? 'ACTIVE' : 'PENDING',
       verification_mode: 'B',
+      provides_food: anyMealProvided(mealsProvided),
+      meal_breakfast: mealsProvided.breakfast,
+      meal_lunch: mealsProvided.lunch,
+      meal_dinner: mealsProvided.dinner,
+      meal_tea: mealsProvided.tea,
+      provides_accommodation: Boolean(input.providesAccommodation),
     };
 
-    const db = getSiteDirectoryWriteDb();
     const { data, error } = await db.from('site_profiles').insert(record).select('*').single();
     if (error) throw new Error(error.message);
-
-    const siteId = String((data as Record<string, unknown>).id);
-    const siteLabel = composedSiteName(clientName, input.siteName, input.siteKind);
-
-    if (isInternalSite && assignedStaffEpfs.length) {
-      await insertSiteStaffAssignments(db, companyId, siteId, assignedStaffEpfs);
-      await syncEmployeeSiteAssignments(db, companyId, siteLabel, assignedStaffEpfs);
-    }
 
     const { smByEpf, staffByEpf, siteStaffBySiteId } = await loadSiteMappingContext(companyId);
 
@@ -696,6 +829,7 @@ export async function createMasterSite(
     revalidatePath('/fm/sites');
     revalidatePath('/om');
     revalidatePath('/hr/mnr');
+    revalidatePath('/hr/vacancies');
 
     return {
       success: true,
@@ -722,7 +856,7 @@ export async function activateMasterSite(input: {
 
   try {
     const { companyId } = await resolveCompanyScope();
-    const db = getSiteDirectoryWriteDb();
+    const db = getSiteDirectoryDb();
     const { error } = await db
       .from('site_profiles')
       .update({ assigned_sm_epf: smEpf, site_status: 'ACTIVE' })
@@ -740,6 +874,7 @@ export async function activateMasterSite(input: {
     revalidatePath('/executive/sites');
     revalidatePath('/fm/sites');
     revalidatePath('/om');
+    revalidatePath('/hr/vacancies');
 
     return {
       success: true,
@@ -762,15 +897,18 @@ export async function updateMasterSiteRates(input: {
   rateMatrix: Partial<Record<RankKey, RankRateEntry>>;
 }): Promise<{ success: true; site: MasterSite } | { success: false; error: string }> {
   const rateAudit = { editedBy: 'MD', editedAt: new Date().toISOString() };
-  const totalHeads = Object.values(input.rateMatrix).reduce((s, r) => s + (r?.qty ?? 0), 0);
+  const totalHeads = totalHeadsFromRankMatrix(input.rateMatrix);
 
   try {
     const { companyId } = await resolveCompanyScope();
-    const db = getSiteDirectoryWriteDb();
+    const db = getSiteDirectoryDb();
+    const existingMatrix = await fetchExistingRateMatrix(db, input.siteId);
+    const rateMatrix = preserveShiftRowsOnSave(existingMatrix, input.rateMatrix);
+
     const { error } = await db
       .from('site_profiles')
       .update({
-        rate_matrix: input.rateMatrix,
+        rate_matrix: rateMatrix,
         rate_audit: rateAudit,
         required_guards: totalHeads || 1,
       })
@@ -787,6 +925,7 @@ export async function updateMasterSiteRates(input: {
 
     revalidatePath('/executive/sites');
     revalidatePath('/fm/sites');
+    revalidatePath('/hr/vacancies');
 
     return {
       success: true,
@@ -809,27 +948,76 @@ export async function updateMasterSiteConfig(input: {
   config: SiteConfigUpdate;
   rateMatrix: Partial<Record<RankKey, RankRateEntry>>;
 }): Promise<{ success: true; site: MasterSite } | { success: false; error: string }> {
-  const smEpf = input.config.sectorManagerEpf.trim() || null;
-  const totalHeads = Object.values(input.rateMatrix).reduce((s, r) => s + (r?.qty ?? 0), 0);
+  const smEpfRaw = input.config.sectorManagerEpf.trim();
+  const smEpf =
+    smEpfRaw && smEpfRaw.toLowerCase() !== 'null' ? smEpfRaw.toUpperCase() : null;
+  const totalHeads = totalHeadsFromRankMatrix(input.rateMatrix);
   const rateAudit = { editedBy: 'MD', editedAt: new Date().toISOString() };
 
   try {
     const { companyId } = await resolveCompanyScope();
-    const db = getSiteDirectoryWriteDb();
+    const db = getSiteDirectoryDb();
+
+    const { data: existing, error: fetchError } = await db
+      .from('site_profiles')
+      .select('site_status, rate_matrix')
+      .eq('id', input.siteId)
+      .maybeSingle();
+
+    if (fetchError) throw new Error(fetchError.message);
+    if (!existing) return { success: false, error: 'Site not found.' };
+
+    const rateMatrix = preserveShiftRowsOnSave(existing.rate_matrix, input.rateMatrix);
+
+    const currentStatus = String(existing.site_status ?? '').toUpperCase();
+    const siteStatus =
+      currentStatus === 'ARCHIVED' || currentStatus === 'SUSPENDED'
+        ? currentStatus
+        : smEpf
+          ? 'ACTIVE'
+          : 'PENDING';
+
+    const siteName = input.config.siteName.trim();
+    const clientName = input.config.clientName.trim();
+    const parentClient = input.config.parentClient.trim() || clientName;
+    const siteCode = input.config.siteCode.trim().toUpperCase();
+
+    if (siteCode && (await siteCodeInUse(db, companyId, siteCode, input.siteId))) {
+      return {
+        success: false,
+        error: `Site code "${siteCode}" is already assigned to another site.`,
+      };
+    }
+
     const { error } = await db
       .from('site_profiles')
       .update({
+        site_name: siteName,
+        site_code: siteCode || null,
+        address: input.config.address.trim().toUpperCase(),
+        client_name: clientName,
+        parent_client: parentClient,
+        client_billing_address: input.config.clientBillingAddress.trim() || null,
         latitude: input.config.lat,
         longitude: input.config.lng,
         contract_start: input.config.contractStart || null,
         contract_end: input.config.contractEnd || null,
         assigned_sm_epf: smEpf,
-        site_status: smEpf ? 'ACTIVE' : 'PENDING',
-        rate_matrix: input.rateMatrix,
+        site_status: siteStatus,
+        rate_matrix: rateMatrix,
         rate_audit: rateAudit,
         required_guards: totalHeads || 1,
-        verification_mode: input.config.verificationMode ?? 'B',
+        verification_mode: input.config.verificationMode,
         needs_om_gps_capture: false,
+        per_visit_charge_lkr: input.config.perVisitCharge,
+        min_dwell_time_minutes: 0,
+        geofence_radius: clampGeofenceRadiusM(input.config.geofenceRadiusM),
+        provides_food: anyMealProvided(input.config.mealsProvided),
+        meal_breakfast: input.config.mealsProvided.breakfast,
+        meal_lunch: input.config.mealsProvided.lunch,
+        meal_dinner: input.config.mealsProvided.dinner,
+        meal_tea: input.config.mealsProvided.tea,
+        provides_accommodation: input.config.providesAccommodation,
       })
       .eq('id', input.siteId);
 
@@ -845,6 +1033,7 @@ export async function updateMasterSiteConfig(input: {
     revalidatePath('/executive/sites');
     revalidatePath('/fm/sites');
     revalidatePath('/om');
+    revalidatePath('/hr/vacancies');
 
     return {
       success: true,
@@ -858,6 +1047,103 @@ export async function updateMasterSiteConfig(input: {
   } catch (error: unknown) {
     const message = supabaseErrorMessage(error, 'Failed to save configuration.');
     console.error('❌ SUPABASE ERROR (updateMasterSiteConfig):', message);
+    return { success: false, error: message };
+  }
+}
+
+export async function archiveMasterSite(input: {
+  siteId: string;
+}): Promise<{ success: true; site: MasterSite } | { success: false; error: string }> {
+  try {
+    const { companyId } = await resolveCompanyScope();
+    const db = getSiteDirectoryDb();
+    const { error } = await db
+      .from('site_profiles')
+      .update({ site_status: 'ARCHIVED' })
+      .eq('id', input.siteId);
+
+    if (error) throw new Error(error.message);
+
+    const [rows, mapping] = await Promise.all([
+      fetchWithRosterCompanyFallback(fetchSitesForCompany, companyId),
+      loadSiteMappingContext(companyId),
+    ]);
+    const site = rows.find((r) => String(r.id) === input.siteId);
+    if (!site) return { success: false, error: 'Site not found after archive.' };
+
+    revalidatePath('/executive/sites');
+    revalidatePath('/fm/sites');
+    revalidatePath('/om');
+    revalidatePath('/hr/vacancies');
+
+    return {
+      success: true,
+      site: mapDbRowToMasterSite(
+        site,
+        mapping.smByEpf,
+        mapping.staffByEpf,
+        mapping.siteStaffBySiteId,
+      ),
+    };
+  } catch (error: unknown) {
+    const message = supabaseErrorMessage(error, 'Failed to archive site.');
+    console.error('❌ SUPABASE ERROR (archiveMasterSite):', message);
+    return { success: false, error: message };
+  }
+}
+
+export async function restoreMasterSite(input: {
+  siteId: string;
+}): Promise<{ success: true; site: MasterSite } | { success: false; error: string }> {
+  try {
+    const { companyId } = await resolveCompanyScope();
+    const db = getSiteDirectoryDb();
+
+    const { data: existing, error: fetchError } = await db
+      .from('site_profiles')
+      .select('assigned_sm_epf')
+      .eq('id', input.siteId)
+      .maybeSingle();
+
+    if (fetchError) throw new Error(fetchError.message);
+    if (!existing) return { success: false, error: 'Site not found.' };
+
+    const smEpf = existing.assigned_sm_epf
+      ? String(existing.assigned_sm_epf).trim().toUpperCase()
+      : '';
+    const nextStatus: SiteStatus = smEpf ? 'ACTIVE' : 'PENDING';
+
+    const { error } = await db
+      .from('site_profiles')
+      .update({ site_status: nextStatus })
+      .eq('id', input.siteId);
+
+    if (error) throw new Error(error.message);
+
+    const [rows, mapping] = await Promise.all([
+      fetchWithRosterCompanyFallback(fetchSitesForCompany, companyId),
+      loadSiteMappingContext(companyId),
+    ]);
+    const site = rows.find((r) => String(r.id) === input.siteId);
+    if (!site) return { success: false, error: 'Site not found after restore.' };
+
+    revalidatePath('/executive/sites');
+    revalidatePath('/fm/sites');
+    revalidatePath('/om');
+    revalidatePath('/hr/vacancies');
+
+    return {
+      success: true,
+      site: mapDbRowToMasterSite(
+        site,
+        mapping.smByEpf,
+        mapping.staffByEpf,
+        mapping.siteStaffBySiteId,
+      ),
+    };
+  } catch (error: unknown) {
+    const message = supabaseErrorMessage(error, 'Failed to restore site.');
+    console.error('❌ SUPABASE ERROR (restoreMasterSite):', message);
     return { success: false, error: message };
   }
 }

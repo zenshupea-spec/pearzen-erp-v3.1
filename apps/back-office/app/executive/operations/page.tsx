@@ -1,12 +1,13 @@
 'use client';
 
 import React, { Suspense, useState, useMemo, useRef, useCallback, useEffect } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import OmCommandShellLayout from '../../om/components/OmCommandShellLayout';
 import OmSubnav from '../../om/components/OmSubnav';
 import GuardCardsTab from '../../om/guard-cards/GuardCardsTab';
 import SiteAllocationTab from '../../om/components/SiteAllocationTab';
 import { getLiveFieldRadar } from '../../om/actions/field-radar';
+import { fetchOffDutyGuardsForSector } from '../actions';
 import {
   COMMAND_CENTER_REFRESH_MS,
   tabFromSearchParam,
@@ -412,40 +413,9 @@ function getSectorVacancyStats(sectors: SectorCard[]) {
 }
 
 function getDateViewSectors(sectors: SectorCard[], dateView: DateView): SectorCard[] {
-  if (dateView === 'today') return sectors;
-
-  return sectors.map((s): SectorCard => {
-    if (dateView === 'yesterday') {
-      const extra = Math.round(s.guardsTotal * 0.05);
-      return {
-        ...s,
-        guardsOnShift: Math.max(0, s.guardsOnShift - extra),
-        deficits: s.deficits + 1,
-        openIncidents: s.openIncidents + 1,
-        status: s.status === 'NOMINAL' ? 'ATTENTION' : s.status,
-        lastUpdate: '08:58 PM',
-        dayShiftShorts: s.dayShiftShorts.map((ss) => ({
-          ...ss,
-          missingCount: ss.missingCount + 1,
-          missingGuards: [...(ss.missingGuards ?? []), 'Chamara Wickrama'],
-        })),
-      };
-    }
-    const extra = Math.round(s.guardsTotal * 0.1);
-    return {
-      ...s,
-      guardsOnShift: Math.max(0, s.guardsOnShift - extra),
-      deficits: s.deficits + 2,
-      openIncidents: s.openIncidents + 2,
-      status: s.status === 'NOMINAL' ? 'ATTENTION' : 'CRITICAL',
-      lastUpdate: '09:10 PM',
-      dayShiftShorts: s.dayShiftShorts.map((ss) => ({
-        ...ss,
-        missingCount: ss.missingCount + 2,
-        missingGuards: [...(ss.missingGuards ?? []), 'Chamara Wickrama', 'Ishara Jayasena'],
-      })),
-    };
-  });
+  // Historical roster snapshots are not wired yet — always show live radar data.
+  if (dateView !== 'today') return sectors;
+  return sectors;
 }
 
 // ─── Styling maps ─────────────────────────────────────────────────────────────
@@ -909,7 +879,7 @@ function IncidentCalendar({
 
 function IncidentCommandQueue({
   sectionRef,
-  seedIncidents = INITIAL_FIELD_INCIDENTS,
+  seedIncidents = [],
   currentRole = 'MD',
 }: {
   sectionRef?: React.RefObject<HTMLElement | null>;
@@ -928,6 +898,20 @@ function IncidentCommandQueue({
   const [selectedDate, setSelectedDate] = useState<Date>(defaultDate);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [selectedId,   setSelectedId]   = useState<string>(seedIncidents[0]?.id ?? '');
+
+  useEffect(() => {
+    setIncidents(seedIncidents);
+    if (seedIncidents.length > 0) {
+      setSelectedDate(new Date(seedIncidents[0].timestamp.slice(0, 10) + 'T00:00:00Z'));
+      setSelectedId((current) =>
+        seedIncidents.some((inc) => inc.id === current)
+          ? current
+          : seedIncidents[0].id,
+      );
+    } else {
+      setSelectedId('');
+    }
+  }, [seedIncidents]);
 
   const handleAcknowledge = (id: string) => {
     setIncidents((prev) =>
@@ -1563,7 +1547,7 @@ function DeficitsModal({ sector, onClose }: { sector: SectorCard; onClose: () =>
   );
 }
 
-// ─── Nearby Guards Mock Data ──────────────────────────────────────────────────
+// ─── Nearby off-duty guards (live from MNR) ───────────────────────────────────
 
 interface NearbyGuard {
   name: string;
@@ -1572,63 +1556,6 @@ interface NearbyGuard {
   phone: string;
   status: 'Off Duty' | 'On Leave';
 }
-
-const NEARBY_GUARDS_BY_SECTOR: Record<string, NearbyGuard[]> = {
-  'Colombo North': [
-    { name: 'Thilak Jayawardena', empNo: 'EMP-0821', distanceKm: 2.1, phone: '+94 77 112 3344', status: 'Off Duty' },
-    { name: 'Ranjith Kumara',     empNo: 'EMP-0934', distanceKm: 4.8, phone: '+94 71 223 4455', status: 'Off Duty' },
-    { name: 'Chaminda Wijeratne', empNo: 'EMP-1101', distanceKm: 7.3, phone: '+94 76 334 5566', status: 'Off Duty' },
-    { name: 'Sisira Bandara',     empNo: 'EMP-1045', distanceKm: 9.6, phone: '+94 77 445 6677', status: 'On Leave' },
-    { name: 'Nuwan Perera',       empNo: 'EMP-0876', distanceKm: 12.4, phone: '+94 71 556 7788', status: 'Off Duty' },
-  ],
-  'Colombo South': [
-    { name: 'Pradeep Seneviratne', empNo: 'EMP-0755', distanceKm: 1.7, phone: '+94 76 667 8899', status: 'Off Duty' },
-    { name: 'Harsha Fernando',     empNo: 'EMP-1023', distanceKm: 5.2, phone: '+94 77 778 9900', status: 'Off Duty' },
-    { name: 'Kasun Rajapaksa',     empNo: 'EMP-0912', distanceKm: 8.9, phone: '+94 71 889 0011', status: 'Off Duty' },
-    { name: 'Roshan Wickrama',     empNo: 'EMP-1067', distanceKm: 11.3, phone: '+94 76 990 1122', status: 'On Leave' },
-  ],
-  'Colombo Central': [
-    { name: 'Ishan Dissanayake',   empNo: 'EMP-0813', distanceKm: 0.9, phone: '+94 77 101 2233', status: 'Off Duty' },
-    { name: 'Gayan Rathnayake',    empNo: 'EMP-0967', distanceKm: 3.4, phone: '+94 71 202 3344', status: 'Off Duty' },
-    { name: 'Sampath Jayasekara',  empNo: 'EMP-1134', distanceKm: 6.7, phone: '+94 76 303 4455', status: 'Off Duty' },
-    { name: 'Lahiru Karunaratne',  empNo: 'EMP-1052', distanceKm: 13.8, phone: '+94 77 404 5566', status: 'On Leave' },
-  ],
-  'Gampaha': [
-    { name: 'Madushan Perera',   empNo: 'EMP-0741', distanceKm: 3.1, phone: '+94 71 505 6677', status: 'Off Duty' },
-    { name: 'Isuru Bandara',     empNo: 'EMP-0989', distanceKm: 6.5, phone: '+94 76 606 7788', status: 'Off Duty' },
-    { name: 'Danushka Silva',    empNo: 'EMP-1118', distanceKm: 10.2, phone: '+94 77 707 8899', status: 'Off Duty' },
-  ],
-  'Negombo': [
-    { name: 'Chanaka Jayawardena', empNo: 'EMP-0832', distanceKm: 2.4, phone: '+94 71 808 9900', status: 'Off Duty' },
-    { name: 'Pasan Wickrama',      empNo: 'EMP-1001', distanceKm: 5.9, phone: '+94 76 909 0011', status: 'Off Duty' },
-    { name: 'Thushara Kumara',     empNo: 'EMP-1143', distanceKm: 14.1, phone: '+94 77 010 1122', status: 'On Leave' },
-  ],
-  'Kandy': [
-    { name: 'Sujan Rathnasiri',   empNo: 'EMP-0778', distanceKm: 1.5, phone: '+94 71 121 2233', status: 'Off Duty' },
-    { name: 'Buddhika Fernando',   empNo: 'EMP-1009', distanceKm: 7.2, phone: '+94 76 232 3344', status: 'Off Duty' },
-    { name: 'Nalaka Jayasinghe',  empNo: 'EMP-0855', distanceKm: 11.6, phone: '+94 77 343 4455', status: 'Off Duty' },
-  ],
-  'Kurunegala': [
-    { name: 'Dilshan Perera',    empNo: 'EMP-0891', distanceKm: 4.3, phone: '+94 71 454 5566', status: 'Off Duty' },
-    { name: 'Madusanka Bandara', empNo: 'EMP-1028', distanceKm: 9.8, phone: '+94 76 565 6677', status: 'Off Duty' },
-  ],
-  'Ratnapura': [
-    { name: 'Thilina Dissanayake', empNo: 'EMP-0763', distanceKm: 2.7, phone: '+94 77 676 7788', status: 'Off Duty' },
-    { name: 'Asela Kumara',        empNo: 'EMP-1015', distanceKm: 6.1, phone: '+94 71 787 8899', status: 'Off Duty' },
-    { name: 'Sanjaya Wickramasinghe', empNo: 'EMP-0944', distanceKm: 13.5, phone: '+94 76 898 9900', status: 'On Leave' },
-  ],
-  'Matara': [
-    { name: 'Chathura Seneviratne', empNo: 'EMP-0827', distanceKm: 3.6, phone: '+94 77 909 0011', status: 'Off Duty' },
-    { name: 'Janaka Fernando',      empNo: 'EMP-1037', distanceKm: 8.4, phone: '+94 71 010 1122', status: 'Off Duty' },
-  ],
-};
-
-function getNearbyGuards(sectorName: string): NearbyGuard[] {
-  const guards = NEARBY_GUARDS_BY_SECTOR[sectorName] ?? [];
-  return guards.filter((g) => g.distanceKm <= 15).sort((a, b) => a.distanceKm - b.distanceKm);
-}
-
-// ─── Nearest Guard Popup ──────────────────────────────────────────────────────
 
 function NearestGuardPopup({
   site,
@@ -1639,7 +1566,21 @@ function NearestGuardPopup({
   sectorName: string;
   onClose: () => void;
 }) {
-  const guards = getNearbyGuards(sectorName);
+  const [guards, setGuards] = useState<NearbyGuard[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchOffDutyGuardsForSector(sectorName).then((rows) => {
+      if (cancelled) return;
+      setGuards(rows);
+      setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sectorName]);
+
   return (
     <>
       <div className="fixed inset-0 z-[400]" onClick={onClose} />
@@ -1663,7 +1604,10 @@ function NearestGuardPopup({
           </button>
         </div>
         <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
-          {guards.length === 0 && (
+          {loading && (
+            <div className="px-4 py-6 text-center text-xs text-slate-400">Loading off-duty guards…</div>
+          )}
+          {!loading && guards.length === 0 && (
             <div className="px-4 py-6 text-center text-xs text-slate-400">No guards found within 15 km.</div>
           )}
           {guards.map((g) => (
@@ -2242,6 +2186,7 @@ export type OperationsPortal = 'executive' | 'om';
 
 function OperationsPageInner({ portal = 'executive' }: { portal?: OperationsPortal }) {
   const omPortal = portal === 'om';
+  const router = useRouter();
   const searchParams = useSearchParams();
   const activeTab = tabFromSearchParam(searchParams.get('tab'));
   const [dateView, setDateView] = useState<DateView>('today');
@@ -2253,6 +2198,12 @@ function OperationsPageInner({ portal = 'executive' }: { portal?: OperationsPort
   const [liveIncidents, setLiveIncidents] = useState<FieldIncident[]>([]);
   const [radarError, setRadarError] = useState<string | undefined>();
   const incidentQueueRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (omPortal && activeTab === 'site-allocation') {
+      router.replace('/om/sites/guards');
+    }
+  }, [omPortal, activeTab, router]);
 
   useEffect(() => {
     let cancelled = false;

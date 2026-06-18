@@ -41,7 +41,7 @@ export async function fetchPendingSalaryOverrides() {
   const { data, error } = await supabase
     .from('employees')
     .select('id, first_name, last_name, custom_salary, status')
-    .eq('salary_approval_status', 'PENDING_MD');
+    .in('salary_approval_status', ['PENDING_FM', 'PENDING_MD']);
 
   if (error) {
     console.error("❌ SUPABASE ERROR (Fetch Overrides):", error.message);

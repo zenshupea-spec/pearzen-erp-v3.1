@@ -1,8 +1,7 @@
 'use server'
 
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
-import { redirect } from 'next/navigation';
-import { getCurrentSmEpf, getSMAssignments } from '../../../lib/sm-assignments';
+import { getSMAssignments, resolveSmSessionEpf } from '../../../lib/sm-assignments';
 import {
   DEFAULT_PENALTY_CATALOG,
   parsePenaltyCatalog,
@@ -71,18 +70,12 @@ export async function getPenaltyCatalogForSM(): Promise<PenaltyCatalogEntry[]> {
 
 export async function issuePenaltyAction(formData: FormData) {
   const supabase = await createSupabaseServerClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) redirect('/login');
-
-  const epf = session.user.email?.split('@')[0].toUpperCase() ?? '';
+  const epf = await resolveSmSessionEpf();
 
   const guardEpf = (formData.get('guard_epf') as string)?.trim().toUpperCase();
   const guardName = (formData.get('guard_name') as string)?.trim();
   const penaltyCatalogIds = [...new Set(formData.getAll('penalty_catalog_id').map(String).filter(Boolean))];
   const consentSelfieBase64 = (formData.get('consent_selfie') as string)?.trim();
-
-  const smEpf = await getCurrentSmEpf();
-  if (!smEpf || smEpf !== epf) redirect('/login');
 
   const { guards: allowedGuards } = await getSMAssignments(epf);
   const allowedGuardEpfs = new Set(allowedGuards.map((g) => g.value));

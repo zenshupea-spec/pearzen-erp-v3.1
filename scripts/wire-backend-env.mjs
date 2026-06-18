@@ -35,6 +35,8 @@ const BACK_OFFICE_KEYS = [
   'HEAD_OFFICE_LAT',
   'HEAD_OFFICE_LNG',
   'HEAD_OFFICE_RADIUS_KM',
+  'NEXT_PUBLIC_GOOGLE_MAPS_API_KEY',
+  'GOOGLE_MAPS_API_KEY',
 ];
 
 const FIELD_PWA_KEYS = [
@@ -45,6 +47,14 @@ const FIELD_PWA_KEYS = [
 ];
 
 const SM_PWA_KEYS = [...SHARED_KEYS];
+
+const CLIENT_PWA_KEYS = [
+  ...SHARED_KEYS,
+  'NEXT_PUBLIC_CUSTOMER_MENU_COMPANY_ID',
+];
+
+/** Default café company for local customer menu (see .env.example). */
+const DEFAULT_CUSTOMER_MENU_COMPANY_ID = '29fbb2ff-6aa6-46c4-8b2d-d19eebb2874e';
 
 /** Dev-only 32-char key when ENCRYPTION_KEY is missing (HR NIC/phone encrypt). */
 const DEV_ENCRYPTION_KEY = 'pearzen-local-dev-encryption-32';
@@ -103,6 +113,12 @@ function pick(env, keys) {
     if (key === 'FIELD_PWA_AUTH_PASSWORD_TEMPLATE' && !value) {
       value = '{{epfNo}}';
     }
+    if (key === 'NEXT_PUBLIC_CUSTOMER_MENU_COMPANY_ID' && !value) {
+      value = DEFAULT_CUSTOMER_MENU_COMPANY_ID;
+      console.warn(
+        '  NEXT_PUBLIC_CUSTOMER_MENU_COMPANY_ID not in source files — using default café company UUID.',
+      );
+    }
     if (!value && SHARED_KEYS.includes(key)) {
       missing.push(key);
       continue;
@@ -145,6 +161,9 @@ for (const missing of writeAppEnv('field-pwa', FIELD_PWA_KEYS, env)) {
   missing.forEach((k) => allMissing.add(k));
 }
 for (const missing of writeAppEnv('sm-pwa', SM_PWA_KEYS, env)) {
+  missing.forEach((k) => allMissing.add(k));
+}
+for (const missing of writeAppEnv('client-pwa', CLIENT_PWA_KEYS, env)) {
   missing.forEach((k) => allMissing.add(k));
 }
 

@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
-import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access';
+import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access-server';
 
 export const dynamic = 'force-dynamic';
 

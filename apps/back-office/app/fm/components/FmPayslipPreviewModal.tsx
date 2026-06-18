@@ -3,6 +3,7 @@
 import { Download, Printer, X } from 'lucide-react';
 import type { FmPayrollRosterRow } from '../lib/fm-payroll-roster-data';
 import {
+  buildClassicPayslipPreviewHtml,
   downloadPayslipPdf,
   openPayslipPrint,
   payslipPreviewSections,
@@ -18,16 +19,17 @@ export default function FmPayslipPreviewModal({
   onClose: () => void;
 }) {
   const sections = payslipPreviewSections(row, periodLabel);
+  const previewHtml = buildClassicPayslipPreviewHtml(row, periodLabel);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-slate-900/45 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+      <div className="relative flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
         <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
           <div>
             <p className="text-sm font-black text-slate-900">Payslip Preview</p>
             <p className="text-[11px] text-slate-500">
-              {row.name} · {row.empNumber}
+              {row.name} · {row.empNumber} · 5.5&quot; × 11&quot;
             </p>
           </div>
           <button
@@ -39,15 +41,16 @@ export default function FmPayslipPreviewModal({
           </button>
         </div>
 
-        <div className="overflow-y-auto px-6 py-5">
-          <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-              Classic Venture Security
-            </p>
-            <p className="mt-1 text-lg font-black text-slate-900">{row.name}</p>
-            <p className="font-mono text-xs text-slate-500">{row.payslipId}</p>
+        <div className="grid gap-4 overflow-y-auto px-6 py-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+          <div className="overflow-auto rounded-xl border border-slate-200 bg-slate-100 p-3">
+            <div
+              className="mx-auto origin-top scale-[0.72] sm:scale-[0.82]"
+              style={{ width: '5.3in' }}
+              dangerouslySetInnerHTML={{ __html: previewHtml }}
+            />
           </div>
-          <dl className="mt-4 space-y-2">
+
+          <dl className="space-y-2">
             {sections.map((item) => (
               <div
                 key={item.label}
@@ -56,7 +59,9 @@ export default function FmPayslipPreviewModal({
                     ? 'bg-emerald-50 ring-1 ring-emerald-100'
                     : item.danger
                       ? 'bg-red-50/80 ring-1 ring-red-100'
-                      : 'bg-white'
+                      : item.highlight
+                        ? 'bg-blue-50/70 ring-1 ring-blue-100'
+                        : 'bg-white ring-1 ring-slate-100'
                 }`}
               >
                 <dt className="text-xs font-semibold text-slate-600">{item.label}</dt>
@@ -68,7 +73,9 @@ export default function FmPayslipPreviewModal({
                       ? 'text-emerald-800'
                       : item.danger
                         ? 'text-red-700'
-                        : 'text-slate-900'
+                        : item.highlight
+                          ? 'text-blue-800'
+                          : 'text-slate-900'
                   }`}
                 >
                   {item.value}

@@ -7,7 +7,7 @@ import {
   fetchWithRosterCompanyFallback,
   resolveCompanyIdForSession,
   rosterCompanyId,
-} from '../../lib/company-context';
+} from '../../lib/company-context-server';
 import {
   applyRolloverDebts,
   buildGuardRostersByClient,

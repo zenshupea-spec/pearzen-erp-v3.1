@@ -342,16 +342,16 @@ export function isDemoId(id: string) {
 // ─── Site allocation (OM command center preview) ───────────────────────────
 
 export const DEMO_ALLOC_GUARD_POOL: OmAssignableGuard[] = [
-  { empNo: 'E-0041', name: 'W.K. Samaraweera', rank: 'SSO', rankKey: 'SSO', clearance: 'valid' },
-  { empNo: 'E-0044', name: 'D.S. Rajapaksa', rank: 'OIC', rankKey: 'OIC', clearance: 'valid' },
-  { empNo: 'E-0052', name: 'R.M. Perera', rank: 'JSO', rankKey: 'JSO', clearance: 'valid' },
-  { empNo: 'E-0063', name: 'A.L. Fernando', rank: 'LSO', rankKey: 'LSO', clearance: 'expired' },
-  { empNo: 'E-0071', name: 'K.G. Dissanayake', rank: 'JSO', rankKey: 'JSO', clearance: 'expired' },
-  { empNo: 'E-0088', name: 'P.B. Wickramasinghe', rank: 'SSO', rankKey: 'SSO', clearance: 'valid' },
-  { empNo: 'E-0092', name: 'T.M. Jayasuriya', rank: 'JSO', rankKey: 'JSO', clearance: 'valid' },
-  { empNo: 'E-0105', name: 'N.R. Bandara', rank: 'OIC', rankKey: 'OIC', clearance: 'valid' },
-  { empNo: 'E-0118', name: 'S.L. Seneviratne', rank: 'SSO', rankKey: 'SSO', clearance: 'valid' },
-  { empNo: 'E-0123', name: 'R.P. Gunasekara', rank: 'JSO', rankKey: 'JSO', clearance: 'valid' },
+  { empNo: 'E-0041', epfNo: 'E-0041', name: 'W.K. Samaraweera', rank: 'SSO', rankKey: 'SSO', clearance: 'valid' },
+  { empNo: 'E-0044', epfNo: 'E-0044', name: 'D.S. Rajapaksa', rank: 'OIC', rankKey: 'OIC', clearance: 'valid' },
+  { empNo: 'E-0052', epfNo: 'E-0052', name: 'R.M. Perera', rank: 'JSO', rankKey: 'JSO', clearance: 'valid' },
+  { empNo: 'E-0063', epfNo: 'E-0063', name: 'A.L. Fernando', rank: 'LSO', rankKey: 'LSO', clearance: 'expired' },
+  { empNo: 'E-0071', epfNo: 'E-0071', name: 'K.G. Dissanayake', rank: 'JSO', rankKey: 'JSO', clearance: 'expired' },
+  { empNo: 'E-0088', epfNo: 'E-0088', name: 'P.B. Wickramasinghe', rank: 'SSO', rankKey: 'SSO', clearance: 'valid' },
+  { empNo: 'E-0092', epfNo: 'E-0092', name: 'T.M. Jayasuriya', rank: 'JSO', rankKey: 'JSO', clearance: 'valid' },
+  { empNo: 'E-0105', epfNo: 'E-0105', name: 'N.R. Bandara', rank: 'OIC', rankKey: 'OIC', clearance: 'valid' },
+  { empNo: 'E-0118', epfNo: 'E-0118', name: 'S.L. Seneviratne', rank: 'SSO', rankKey: 'SSO', clearance: 'valid' },
+  { empNo: 'E-0123', epfNo: 'E-0123', name: 'R.P. Gunasekara', rank: 'JSO', rankKey: 'JSO', clearance: 'valid' },
 ];
 
 export const DEMO_UNASSIGNED_SITES: OmAllocationSite[] = [

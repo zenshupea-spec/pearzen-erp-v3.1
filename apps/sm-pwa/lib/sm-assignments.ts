@@ -1,9 +1,11 @@
 import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 import { createSupabaseServerClient } from '../../../packages/supabase/server';
 import {
   fetchGuardsForSm,
   fetchSmAssignedSites,
   guardLabel,
+  resolveCanonicalSmEpf,
 } from './sm-portal-db';
 
 export type SMAssignmentOption = {
@@ -16,46 +18,32 @@ export type SMAssignments = {
   guards: SMAssignmentOption[];
 };
 
-const DEMO_SITES_SM001: SMAssignmentOption[] = [
-  { value: 'Lanka Hospitals', label: 'Lanka Hospitals' },
-  { value: 'Commercial Bank HQ', label: 'Commercial Bank HQ' },
-  { value: 'Arpico Supercentre', label: 'Arpico Supercentre' },
-  { value: 'BOC Borella Branch', label: 'BOC Borella Branch' },
-  { value: 'Dialog Axiata HQ', label: 'Dialog Axiata HQ' },
-];
+function loginEpfFromSessionEmail(email: string | null | undefined): string {
+  return email?.split('@')[0]?.trim().toUpperCase() ?? '';
+}
+
+/** Canonical SM EPF from Supabase session. */
+export async function resolveSmSessionEpf(): Promise<string> {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (!session) redirect('/login');
+
+  return resolveCanonicalSmEpf(loginEpfFromSessionEmail(session.user.email));
+}
 
 export async function getCurrentSmEpf(): Promise<string | null> {
-  const cookieStore = await cookies();
-  const demo = cookieStore.get('sm_demo_session')?.value;
-  if (demo) return demo.toUpperCase();
-
   const supabase = await createSupabaseServerClient();
   const {
     data: { session },
   } = await supabase.auth.getSession();
   if (!session) return null;
 
-  return session.user.email?.split('@')[0].toUpperCase() ?? null;
+  return resolveCanonicalSmEpf(loginEpfFromSessionEmail(session.user.email));
 }
 
 export async function getSMAssignments(epf: string): Promise<SMAssignments> {
-  if (epf === 'SM-001') {
-    const demoGuards = await fetchGuardsForSm(
-      epf,
-      DEMO_SITES_SM001.map((site) => site.value),
-    );
-    return {
-      sites: DEMO_SITES_SM001,
-      guards:
-        demoGuards.length > 0
-          ? demoGuards.map((guard) => ({ value: guard.epf, label: guard.label }))
-          : [
-              { value: 'G-001', label: 'G-001 — Demo Guard A' },
-              { value: 'G-002', label: 'G-002 — Demo Guard B' },
-            ],
-    };
-  }
-
   const profileSites = await fetchSmAssignedSites(epf);
   const siteNames = profileSites.map((site) => site.site_name);
   const guards = await fetchGuardsForSm(epf, siteNames);

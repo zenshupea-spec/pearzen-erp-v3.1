@@ -4,7 +4,6 @@ import { revalidatePath } from 'next/cache';
 
 import {
   isHrDocumentType,
-  uploadEmployeeHrDocumentFile,
   type HrDocumentType,
 } from '../../../../packages/supabase/employee-hr-documents';
 import {
@@ -14,7 +13,8 @@ import {
 import {
   assertHrPortalEditor,
   fetchBackOfficeUserProfile,
-} from '../../lib/hr-portal-access';
+} from '../../lib/hr-portal-access-server';
+import { uploadCompressedEmployeeHrDocument } from '../../lib/hr-document-upload';
 
 async function requireHrEditor() {
   const supabase = await createSupabaseServerClient();
@@ -37,7 +37,13 @@ export async function uploadEmployeeHrDocument(
   employeeId: string,
   docType: string,
   formData: FormData,
-): Promise<{ success: boolean; url?: string; error?: string }> {
+): Promise<{
+  success: boolean;
+  url?: string;
+  storedBytes?: number;
+  originalBytes?: number;
+  error?: string;
+}> {
   if (!isHrDocumentType(docType)) {
     return { success: false, error: 'Invalid document type.' };
   }
@@ -50,7 +56,7 @@ export async function uploadEmployeeHrDocument(
   try {
     await requireHrEditor();
     const service = createSupabaseServiceClient();
-    const result = await uploadEmployeeHrDocumentFile(
+    const result = await uploadCompressedEmployeeHrDocument(
       service,
       employeeId,
       docType as HrDocumentType,

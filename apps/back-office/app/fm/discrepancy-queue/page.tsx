@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import { setFmDiscrepancyUnresolvedCount } from '../use-fm-discrepancy-count';
 import Link from 'next/link';
 import FmSubnav from '../components/FmSubnav';
 import {
@@ -970,6 +971,10 @@ export default function DiscrepancyQueuePage() {
     };
   }, [deficits]);
 
+  useEffect(() => {
+    setFmDiscrepancyUnresolvedCount(stats.unresolvedCount);
+  }, [stats.unresolvedCount]);
+
   const handleSelectDeficit = useCallback((d: UnresolvedDeficit) => {
     setActiveId(d.deficitId);
     if (d.status === 'UNRESOLVED') setDraft(emptyDraft(d.deficitAmount));
@@ -1062,10 +1067,7 @@ export default function DiscrepancyQueuePage() {
 
       <div className="relative z-10 mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
 
-        <FmSubnav
-          holidayCalendarIncomplete={holidayCalendarIncomplete}
-          discrepancyCount={stats.unresolvedCount}
-        />
+        <FmSubnav holidayCalendarIncomplete={holidayCalendarIncomplete} />
 
         {/* Page Header */}
         <div className="mb-8">

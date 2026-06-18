@@ -87,14 +87,14 @@ export default function CompensationMatrixPage() {
           </h2>
           {overrides.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-slate-300/90 bg-white/40 p-10 text-center text-slate-600 shadow-inner backdrop-blur-md">
-              No custom salary overrides requiring MD attention.
+              No custom salary overrides requiring FM attention.
             </div>
           ) : (
             <div className="space-y-3">
               {overrides.map((emp) => (
                 <div
                   key={emp.id}
-                  className="flex items-center justify-between rounded-2xl border border-amber-200/80 bg-white/60 p-5 shadow-[0_8px_32px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl"
+                  className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-amber-200/80 bg-white/60 p-5 shadow-[0_8px_32px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl"
                 >
                   <div>
                     <h3 className="font-bold text-slate-900">
@@ -107,20 +107,12 @@ export default function CompensationMatrixPage() {
                       </span>
                     </p>
                   </div>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      className="rounded-lg border border-slate-200 bg-white/90 px-4 py-2 text-xs font-bold uppercase text-rose-700 shadow-sm hover:bg-rose-50"
-                    >
-                      Reject
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold uppercase text-white shadow-lg shadow-emerald-600/20 hover:bg-emerald-500"
-                    >
-                      Approve
-                    </button>
-                  </div>
+                  <Link
+                    href="/fm/exceptions"
+                    className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold uppercase text-white shadow-lg shadow-indigo-600/20 hover:bg-indigo-500"
+                  >
+                    Review in FM portal
+                  </Link>
                 </div>
               ))}
             </div>

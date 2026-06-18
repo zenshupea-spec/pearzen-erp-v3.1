@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { createSupabaseRouteClient } from "../../../../../packages/supabase/route";
+import { clearPortal2faSessionCookies } from "../../../lib/head-office-portal-auth";
 import { isForgeOperatorEmail } from "../../../lib/forge-access";
 
 export async function GET(request: NextRequest) {
@@ -37,6 +38,8 @@ export async function GET(request: NextRequest) {
             `${requestUrl.origin}/login/forge?error=forge_denied`,
           );
         }
+      } else {
+        clearPortal2faSessionCookies(response);
       }
 
       return response;

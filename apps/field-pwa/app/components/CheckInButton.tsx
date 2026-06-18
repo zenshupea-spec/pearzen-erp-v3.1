@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import { getGuardAttendanceState, processLocationPing } from '../actions';
 import {
   savePingToVault,
@@ -10,6 +11,12 @@ import {
 } from '../../lib/offline-vault';
 import { getDistanceInMeters } from '../../lib/geofence';
 import { scanSiteNFC } from '../../lib/location-verification';
+import { formatColomboTime } from '../../lib/shift-display';
+import {
+  geolocationSupported,
+  readDeviceGeolocationWithRetry,
+  watchDeviceGeolocation,
+} from '../../lib/device-geolocation';
 
 type ButtonState =
   | 'LOADING_STATE'
@@ -30,6 +37,7 @@ type ShiftPayload = {
   startTime: string;
   endTime: string;
   checkoutOpensAt: string;
+  checkoutClosesAt: string;
   siteLat: number | null;
   siteLng: number | null;
   geofenceRadius: number;
@@ -52,16 +60,26 @@ type CheckInButtonProps = {
   layout?: 'default' | 'portal';
 };
 
-function formatTime(iso: string) {
-  if (!iso) return '';
-  return new Date(iso).toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
+type EarlyCheckoutPrompt = {
+  open: boolean;
+  onConfirm: (() => void | Promise<void>) | null;
+};
 
 function isEarlyCheckout(checkoutOpensAt: string, now = new Date()) {
   return now < new Date(checkoutOpensAt);
+}
+
+function isPastCheckoutWindow(checkoutClosesAt: string, now = new Date()) {
+  return now > new Date(checkoutClosesAt);
+}
+
+function isNormalCheckoutWindow(
+  checkoutOpensAt: string,
+  checkoutClosesAt: string,
+  now = new Date(),
+) {
+  const at = now.getTime();
+  return at >= new Date(checkoutOpensAt).getTime() && at <= new Date(checkoutClosesAt).getTime();
 }
 
 export default function CheckInButton({
@@ -76,48 +94,75 @@ export default function CheckInButton({
   const [tempLocation, setTempLocation] = useState<TempLocation | null>(null);
   const [shiftData, setShiftData] = useState<ShiftPayload | null>(null);
   const [securedMessage, setSecuredMessage] = useState('');
+  const [earlyCheckoutPrompt, setEarlyCheckoutPrompt] = useState<EarlyCheckoutPrompt>({
+    open: false,
+    onConfirm: null,
+  });
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const geoWatchRef = useRef<{ stop: () => void } | null>(null);
+  const cachedCoordsRef = useRef<{
+    latitude: number;
+    longitude: number;
+    updatedAt: number;
+  } | null>(null);
 
   const stopCamera = useCallback(() => {
-    const video = videoRef.current;
-    if (video?.srcObject) {
-      const stream = video.srcObject as MediaStream;
+    const stream = cameraStreamRef.current;
+    if (stream) {
       stream.getTracks().forEach((track) => track.stop());
+      cameraStreamRef.current = null;
+    }
+
+    const video = videoRef.current;
+    if (video) {
+      video.pause();
+      const attached = video.srcObject as MediaStream | null;
+      if (attached) {
+        attached.getTracks().forEach((track) => track.stop());
+      }
       video.srcObject = null;
     }
   }, []);
 
+  const fetchState = useCallback(async () => {
+    const res = await getGuardAttendanceState(empNumber);
+
+    if (res.status === 'READY') {
+      setNextAction(res.nextAction as ActionType);
+      setShiftData({
+        nextAction: res.nextAction as ActionType,
+        shiftId: res.shiftId as string,
+        locationName: res.locationName as string,
+        startTime: res.startTime as string,
+        endTime: res.endTime as string,
+        checkoutOpensAt: res.checkoutOpensAt as string,
+        checkoutClosesAt: res.checkoutClosesAt as string,
+        siteLat: (res.siteLat as number | null) ?? null,
+        siteLng: (res.siteLng as number | null) ?? null,
+        geofenceRadius: (res.geofenceRadius as number) ?? 25,
+        verificationMode: (res.verificationMode as VerificationMode) ?? 'B',
+        nfcTagId: (res.nfcTagId as string | null) ?? null,
+      });
+    } else {
+      setNextAction('CHECK_IN');
+      setShiftData(null);
+    }
+    setUiState('IDLE');
+  }, [empNumber]);
+
+  const isStuckPastCheckout =
+    shiftData != null &&
+    nextAction === 'CHECK_OUT' &&
+    uiState === 'IDLE' &&
+    isPastCheckoutWindow(shiftData.checkoutClosesAt);
+
   useEffect(() => {
     setIsOnline(navigator.onLine);
 
-    async function fetchState() {
-      const res = await getGuardAttendanceState(empNumber);
-
-      if (res.status === 'READY') {
-        setNextAction(res.nextAction as ActionType);
-        setShiftData({
-          nextAction: res.nextAction as ActionType,
-          shiftId: res.shiftId as string,
-          locationName: res.locationName as string,
-          startTime: res.startTime as string,
-          endTime: res.endTime as string,
-          checkoutOpensAt: res.checkoutOpensAt as string,
-          siteLat: (res.siteLat as number | null) ?? null,
-          siteLng: (res.siteLng as number | null) ?? null,
-          geofenceRadius: (res.geofenceRadius as number) ?? 25,
-          verificationMode: (res.verificationMode as VerificationMode) ?? 'B',
-          nfcTagId: (res.nfcTagId as string | null) ?? null,
-        });
-      } else {
-        setNextAction('CHECK_IN');
-        setShiftData(null);
-      }
-      setUiState('IDLE');
-    }
-
-    fetchState();
+    void fetchState();
 
     const handleOnline = async () => {
       setIsOnline(true);
@@ -158,10 +203,67 @@ export default function CheckInButton({
       window.removeEventListener('offline', handleOffline);
       document.removeEventListener('visibilitychange', handleVisible);
       stopCamera();
+      geoWatchRef.current?.stop();
+      geoWatchRef.current = null;
     };
-  }, [empNumber, stopCamera]);
+  }, [empNumber, stopCamera, fetchState]);
+
+  useEffect(() => {
+    const needsGps = shiftData?.verificationMode === 'B';
+    if (!needsGps || !geolocationSupported()) {
+      geoWatchRef.current?.stop();
+      geoWatchRef.current = null;
+      return;
+    }
+
+    geoWatchRef.current?.stop();
+    const handle = watchDeviceGeolocation({
+      highAccuracy: true,
+      onUpdate: (position) => {
+        cachedCoordsRef.current = {
+          latitude: position.latitude,
+          longitude: position.longitude,
+          updatedAt: Date.now(),
+        };
+      },
+      onError: () => {
+        /* Background warm-up — errors surface on check-in tap */
+      },
+    });
+    geoWatchRef.current = handle;
+
+    return () => {
+      handle?.stop();
+      if (geoWatchRef.current === handle) {
+        geoWatchRef.current = null;
+      }
+    };
+  }, [shiftData?.verificationMode, shiftData?.shiftId]);
+
+  useEffect(() => {
+    if (uiState !== 'CAMERA_FEED') {
+      stopCamera();
+      return;
+    }
+
+    const stream = cameraStreamRef.current;
+    const video = videoRef.current;
+    if (!stream || !video || video.srcObject === stream) return;
+
+    video.srcObject = stream;
+    void video.play().catch(() => undefined);
+  }, [uiState, stopCamera]);
+
+  useEffect(() => {
+    if (!isStuckPastCheckout) return;
+    const timer = window.setInterval(() => {
+      void fetchState();
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [isStuckPastCheckout, fetchState]);
 
   const startCamera = async () => {
+    stopCamera();
     setUiState('CAMERA_FEED');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -171,10 +273,14 @@ export default function CheckInButton({
           height: { ideal: 1280 },
         },
       });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
+      cameraStreamRef.current = stream;
+      const video = videoRef.current;
+      if (video) {
+        video.srcObject = stream;
+        await video.play().catch(() => undefined);
       }
     } catch (err) {
+      stopCamera();
       console.error('Camera access denied or failed', err);
       alert('Camera access is required to verify your identity.');
       setUiState('IDLE');
@@ -201,12 +307,18 @@ export default function CheckInButton({
     return { ok: true };
   };
 
-  const confirmEarlyCheckout = (): boolean => {
-    if (!shiftData) return false;
-    const opensAt = formatTime(shiftData.checkoutOpensAt);
-    return window.confirm(
-      `You are checking out before ${opensAt}. This shift will be flagged for OM review and will not go straight to payroll. Continue?`,
-    );
+  const requestEarlyCheckoutConfirm = (onConfirm: () => void | Promise<void>) => {
+    setEarlyCheckoutPrompt({ open: true, onConfirm });
+  };
+
+  const dismissEarlyCheckoutPrompt = () => {
+    setEarlyCheckoutPrompt({ open: false, onConfirm: null });
+  };
+
+  const handleEarlyCheckoutConfirm = async () => {
+    const onConfirm = earlyCheckoutPrompt.onConfirm;
+    dismissEarlyCheckoutPrompt();
+    if (onConfirm) await onConfirm();
   };
 
   const beginVerification = async (checkoutFlag?: 'EARLY' | 'NORMAL') => {
@@ -250,41 +362,47 @@ export default function CheckInButton({
 
     setUiState('LOCATING');
 
-    if (!navigator.geolocation) {
-      alert('Geolocation is not supported on this device.');
+    if (!geolocationSupported()) {
+      alert(
+        'GPS is not available. Open this page over HTTPS on your phone and allow location when prompted.',
+      );
       setUiState('IDLE');
       return;
     }
 
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        const lat = position.coords.latitude;
-        const lng = position.coords.longitude;
-        const deviceTime = new Date().toISOString();
-        const gpsCheck = verifyGpsAtSite(lat, lng);
+    const cached = cachedCoordsRef.current;
+    const useCached =
+      cached != null && Date.now() - cached.updatedAt <= 20_000;
 
-        if (!gpsCheck.ok) {
-          setDistanceAway(gpsCheck.distance);
-          setUiState('OUT_OF_BOUNDS');
-          return;
-        }
+    const geo = useCached
+      ? { ok: true as const, latitude: cached.latitude, longitude: cached.longitude }
+      : await readDeviceGeolocationWithRetry();
 
-        setTempLocation({
-          lat,
-          lng,
-          time: deviceTime,
-          action: nextAction,
-          checkoutFlag,
-        });
-        await startCamera();
-      },
-      (error) => {
-        console.error('GPS Error:', error);
-        alert('Failed to acquire GPS lock. Ensure location services are on.');
-        setUiState('IDLE');
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
-    );
+    if (!geo.ok) {
+      alert(geo.error);
+      setUiState('IDLE');
+      return;
+    }
+
+    const lat = geo.latitude;
+    const lng = geo.longitude;
+    const deviceTime = new Date().toISOString();
+    const gpsCheck = verifyGpsAtSite(lat, lng);
+
+    if (!gpsCheck.ok) {
+      setDistanceAway(gpsCheck.distance);
+      setUiState('OUT_OF_BOUNDS');
+      return;
+    }
+
+    setTempLocation({
+      lat,
+      lng,
+      time: deviceTime,
+      action: nextAction,
+      checkoutFlag,
+    });
+    await startCamera();
   };
 
   const handlePing = async () => {
@@ -298,9 +416,17 @@ export default function CheckInButton({
 
     if (uiState !== 'IDLE' || !shiftData) return;
 
+    if (
+      nextAction === 'CHECK_OUT' &&
+      isPastCheckoutWindow(shiftData.checkoutClosesAt)
+    ) {
+      setUiState('LOADING_STATE');
+      await fetchState();
+      return;
+    }
+
     if (nextAction === 'CHECK_OUT' && isEarlyCheckout(shiftData.checkoutOpensAt)) {
-      if (!confirmEarlyCheckout()) return;
-      await beginVerification('EARLY');
+      requestEarlyCheckoutConfirm(() => beginVerification('EARLY'));
       return;
     }
 
@@ -355,8 +481,13 @@ export default function CheckInButton({
       });
       if (result.success) {
         triggerSecuredState(action, result.flagged === true);
+      } else if (result.error === 'CHECKOUT_WINDOW_CLOSED') {
+        alert(
+          `Normal checkout ended at ${formatColomboTime(shiftData?.checkoutClosesAt ?? '')}. Refresh the page — your shift may have been auto-closed for OM review.`,
+        );
+        setUiState('IDLE');
       } else if (result.error === 'EARLY_CHECKOUT') {
-        if (confirmEarlyCheckout()) {
+        requestEarlyCheckoutConfirm(async () => {
           const retry = await processLocationPing({
             emp_number: empNumber,
             action_type: action,
@@ -375,9 +506,7 @@ export default function CheckInButton({
             alert(retry.error ?? 'Check-out failed.');
             setUiState('IDLE');
           }
-        } else {
-          setUiState('IDLE');
-        }
+        });
       } else {
         alert(result.error ?? 'Sync failed. Saving offline.');
         await cacheOfflinePing(action, lat, lng, time, photoBase64);
@@ -451,7 +580,7 @@ export default function CheckInButton({
       dynamicStyle =
         'bg-yellow-500 text-yellow-900 border-yellow-300 animate-pulse cursor-wait';
       buttonText = 'Locating';
-      subText = 'Awaiting GPS lock';
+      subText = 'Finding your location…';
       disabled = true;
       break;
     case 'SYNCING':
@@ -499,14 +628,34 @@ export default function CheckInButton({
           'bg-emerald-500 text-white border-emerald-300 hover:bg-emerald-400 shadow-emerald-500/50 hover:shadow-emerald-400/60';
         buttonText = isPortal ? 'Check-in' : 'Check in';
         subText = shiftData.verificationMode === 'C' ? 'NFC + selfie' : 'GPS + selfie';
+      } else if (isPastCheckoutWindow(shiftData.checkoutClosesAt)) {
+        dynamicStyle =
+          'bg-slate-700 text-white border-slate-500 hover:bg-slate-600 shadow-slate-700/50';
+        buttonText = isPortal ? 'Refresh' : 'Refresh';
+        subText = isPortal
+          ? 'Auto-closing shift — tap to update'
+          : 'Checkout window closed — tap to refresh';
       } else {
-        const early = isEarlyCheckout(shiftData.checkoutOpensAt);
         dynamicStyle =
           'bg-red-600 text-white border-red-400 hover:bg-red-500 shadow-red-600/50 ring-4 ring-red-500/30';
         buttonText = isPortal ? 'Check-out' : 'Check out';
-        subText = early
-          ? `Opens ${formatTime(shiftData.checkoutOpensAt)} · early = flagged`
-          : 'Complete your shift';
+        subText = isPortal
+          ? isEarlyCheckout(shiftData.checkoutOpensAt)
+            ? `Opens ${formatColomboTime(shiftData.checkoutOpensAt)} · early = flagged`
+            : isNormalCheckoutWindow(
+                  shiftData.checkoutOpensAt,
+                  shiftData.checkoutClosesAt,
+                )
+              ? `Until ${formatColomboTime(shiftData.checkoutClosesAt)}`
+              : 'Complete your shift'
+          : isEarlyCheckout(shiftData.checkoutOpensAt)
+            ? `Opens ${formatColomboTime(shiftData.checkoutOpensAt)} · early = flagged`
+            : isNormalCheckoutWindow(
+                  shiftData.checkoutOpensAt,
+                  shiftData.checkoutClosesAt,
+                )
+              ? `Normal checkout until ${formatColomboTime(shiftData.checkoutClosesAt)}`
+              : 'Complete your shift';
       }
       break;
   }
@@ -515,14 +664,67 @@ export default function CheckInButton({
     shiftData &&
     nextAction === 'CHECK_OUT' &&
     uiState === 'IDLE' &&
-    !isEarlyCheckout(shiftData.checkoutOpensAt) ? (
+    isNormalCheckoutWindow(shiftData.checkoutOpensAt, shiftData.checkoutClosesAt) ? (
       <p className="text-center text-xs font-medium text-emerald-700">
-        Checkout window open until {formatTime(shiftData.endTime)}
+        Normal checkout {formatColomboTime(shiftData.checkoutOpensAt)} –{' '}
+        {formatColomboTime(shiftData.checkoutClosesAt)}
       </p>
     ) : null;
 
+  const earlyCheckoutOpensAt = shiftData
+    ? formatColomboTime(shiftData.checkoutOpensAt)
+    : '';
+
   return (
     <div className={`flex w-full flex-col space-y-4 ${isPortal ? '' : 'px-4 space-y-6'}`}>
+      {earlyCheckoutPrompt.open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="early-checkout-title"
+        >
+          <div className="w-full max-w-sm overflow-hidden rounded-2xl border border-amber-200/80 bg-white shadow-2xl shadow-slate-900/20">
+            <div className="flex items-start gap-3 border-b border-slate-100 px-5 py-4">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-700 ring-1 ring-amber-200/80">
+                <AlertTriangle className="h-5 w-5" strokeWidth={2.25} />
+              </span>
+              <div className="min-w-0 pt-0.5">
+                <h2
+                  id="early-checkout-title"
+                  className="text-sm font-black uppercase tracking-wide text-slate-900"
+                >
+                  Early check-out
+                </h2>
+                <p className="mt-2 text-sm font-medium leading-relaxed text-slate-600">
+                  You are checking out before{' '}
+                  <span className="font-mono font-bold text-slate-900">{earlyCheckoutOpensAt}</span>.
+                  This shift will be flagged for OM review and will not go straight to payroll.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2.5 p-4">
+              <button
+                type="button"
+                onClick={() => {
+                  dismissEarlyCheckoutPrompt();
+                  setUiState('IDLE');
+                }}
+                className="flex-1 rounded-xl border border-slate-200 bg-white py-3 text-xs font-black uppercase tracking-wider text-slate-700 transition-colors hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleEarlyCheckoutConfirm()}
+                className="flex-1 rounded-xl bg-red-600 py-3 text-xs font-black uppercase tracking-wider text-white shadow-sm transition-colors hover:bg-red-500"
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {!isPortal && (
         <div className="mx-auto mt-4 w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900/80 p-6 backdrop-blur-md">
           <h2 className="mb-4 border-b border-slate-700/50 pb-2 text-xs font-bold uppercase tracking-widest text-emerald-400">
@@ -539,7 +741,7 @@ export default function CheckInButton({
                 {shiftData.locationName}
               </p>
               <p className="font-mono text-sm text-emerald-400">
-                {formatTime(shiftData.startTime)} – {formatTime(shiftData.endTime)}
+                {formatColomboTime(shiftData.startTime)} – {formatColomboTime(shiftData.endTime)}
               </p>
             </div>
           ) : (
@@ -559,13 +761,8 @@ export default function CheckInButton({
             {shiftData.locationName}
           </p>
           <p className="mt-0.5 font-mono text-xs text-blue-600">
-            {formatTime(shiftData.startTime)} – {formatTime(shiftData.endTime)}
+            {formatColomboTime(shiftData.startTime)} – {formatColomboTime(shiftData.endTime)}
           </p>
-          {nextAction === 'CHECK_OUT' && (
-            <p className="mt-1 text-[10px] font-medium text-slate-500">
-              Checkout from {formatTime(shiftData.checkoutOpensAt)}
-            </p>
-          )}
         </div>
       )}
 

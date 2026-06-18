@@ -7,10 +7,19 @@ import {
   fetchWithRosterCompanyFallback,
   resolveCompanyIdForSession,
   rosterCompanyId,
-} from '../../../lib/company-context';
+} from '../../../lib/company-context-server';
 import { currentPeriodMonth, normalizePeriodMonth } from './period-month';
 import { auditStaffAction } from '../../../lib/staff-audit';
+import { calcLoggedWastageCostLkr, calcPayrollCostLkr } from './cafe-cost-utils';
 import { reconcilePrepWithMenu } from './prep-menu-sync';
+import { syncMenuRecipeCosts } from './cafe-menu-sync';
+import { loadCafeOpenHours } from '../../../lib/cafe-front-checkin';
+import { DEFAULT_CAFE_OPEN_HOURS } from '../../../../../packages/cafe-open-hours';
+
+export type CafeBranch = {
+  id: string;
+  name: string;
+};
 
 export type CafeStaffMember = {
   id: string;
@@ -126,6 +135,12 @@ export type CafeIngredient = {
   supplier: CafeIngredientSupplier;
 };
 
+const DEFAULT_INGREDIENT_SUPPLIER: CafeIngredientSupplier = {
+  name: 'Unassigned',
+  address: '',
+  phone: '',
+};
+
 export type CafeMenuItem = {
   id: string;
   name: string;
@@ -175,7 +190,14 @@ export type CafeDashboardPayload = {
   cafeLogoUrl: string | null;
   cafeCoverUrl: string | null;
   cafeCoverTextColor: string;
+  cafeCoverTintStrength: number;
   customerMenuUrl: string | null;
+  showItemImages?: boolean;
+  cafeOpenStart?: string;
+  cafeOpenEnd?: string;
+  locationId?: string;
+  locationName?: string;
+  mtdWastageCostLkr?: number;
   error?: string;
 };
 
@@ -187,7 +209,9 @@ type SnapshotExtras = {
   cafeLogoUrl?: string | null;
   cafeCoverUrl?: string | null;
   cafeCoverTextColor?: string;
+  cafeCoverTintStrength?: number;
   customerMenuUrl?: string | null;
+  showItemImages?: boolean;
 };
 
 const DEFAULT_CATEGORIES = [
@@ -197,6 +221,87 @@ const DEFAULT_CATEGORIES = [
   'Mains & Sandwiches',
   'Desserts',
 ];
+
+function parseSnapshotPayload(payload: unknown): SnapshotExtras {
+  if (!payload || typeof payload !== 'object') return {};
+  const row = payload as SnapshotExtras & CafeDashboardPayload;
+  return {
+    ingredients: row.ingredients ?? [],
+    menuItems: row.menuItems ?? [],
+    menuCategories: row.menuCategories?.length ? row.menuCategories : DEFAULT_CATEGORIES,
+    globalOverhead: row.globalOverhead ?? 20,
+    cafeLogoUrl: row.cafeLogoUrl ?? null,
+    cafeCoverUrl: row.cafeCoverUrl ?? null,
+    cafeCoverTextColor: row.cafeCoverTextColor ?? '#ffffff',
+    cafeCoverTintStrength: row.cafeCoverTintStrength ?? 100,
+    customerMenuUrl: row.customerMenuUrl ?? 'https://tasha.lk',
+    showItemImages: row.showItemImages !== false,
+  };
+}
+
+/** Ensure every recipe line has a matching ledger row (repairs split saves). */
+function repairRecipeIngredientLedger(
+  ingredients: CafeIngredient[],
+  menuItems: CafeMenuItem[],
+): CafeIngredient[] {
+  const byId = new Map(ingredients.map((ing) => [ing.id, ing]));
+  const orphanedIds = new Set<string>();
+
+  for (const item of menuItems) {
+    for (const line of item.recipe ?? []) {
+      if (line.ingredientId && !byId.has(line.ingredientId)) {
+        orphanedIds.add(line.ingredientId);
+      }
+    }
+  }
+
+  if (!orphanedIds.size) return ingredients;
+
+  const recovered: CafeIngredient[] = [...orphanedIds].map((id) => ({
+    id,
+    name: 'Recovered ingredient',
+    supplier: DEFAULT_INGREDIENT_SUPPLIER,
+    unit: 'gm',
+    purchaseAmount: 1000,
+    packagePrice: 0,
+    unitPrice: 0,
+    fulfillmentMode: 'bought',
+    currentStock: 0,
+    minimumStock: 0,
+    rollingAvg14dUsage: 0,
+    stockLots: [],
+  }));
+
+  return [...ingredients, ...recovered];
+}
+
+/** Merge snapshot BOM + ingredients so menu saves never zero recipe costs. */
+function prepareMenuItemsForPersist(
+  menuItems: CafeMenuItem[],
+  ingredients: CafeIngredient[],
+  snapshot: SnapshotExtras,
+): CafeMenuItem[] {
+  const snapshotIngredients = snapshot.ingredients ?? [];
+  const ingredientsForSync = ingredients.length ? ingredients : snapshotIngredients;
+  const snapById = new Map((snapshot.menuItems ?? []).map((item) => [item.id, item]));
+
+  const merged = menuItems.map((item) => {
+    const snap = snapById.get(item.id);
+    return {
+      ...item,
+      recipe: item.recipe?.length ? item.recipe : (snap?.recipe ?? []),
+      targetMargin: item.targetMargin ?? snap?.targetMargin ?? 65,
+    };
+  });
+
+  return syncMenuRecipeCosts(merged, ingredientsForSync).map((item) => {
+    const snap = snapById.get(item.id);
+    if (item.recipeCost <= 0 && snap && snap.recipeCost > 0) {
+      return { ...item, recipeCost: snap.recipeCost };
+    }
+    return item;
+  });
+}
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -307,7 +412,11 @@ function defaultDashboard(): CafeDashboardPayload {
     cafeLogoUrl: null,
     cafeCoverUrl: null,
     cafeCoverTextColor: '#ffffff',
+    cafeCoverTintStrength: 100,
     customerMenuUrl: 'https://tasha.lk',
+    showItemImages: true,
+    cafeOpenStart: DEFAULT_CAFE_OPEN_HOURS.openStart,
+    cafeOpenEnd: DEFAULT_CAFE_OPEN_HOURS.openEnd,
   };
 }
 
@@ -359,55 +468,109 @@ function staffFromEmployees(
   });
 }
 
-async function ensureCafeLocation(companyId: string) {
+type CafeLocationRow = {
+  id: string;
+  name: string;
+  logo_url: string | null;
+  global_overhead_pct: number;
+};
+
+async function listCafeLocationsForCompany(companyId: string): Promise<CafeLocationRow[]> {
   const supabase = createSupabaseServiceClient();
-  const { data: existing } = await supabase
+  const { data } = await supabase
     .from('cafe_locations')
-    .select('id, logo_url, global_overhead_pct')
+    .select('id, name, logo_url, global_overhead_pct')
     .eq('company_id', companyId)
-    .limit(1)
-    .maybeSingle();
+    .order('name');
 
-  if (existing?.id) return existing;
+  return (data ?? []) as CafeLocationRow[];
+}
 
+async function ensureCafeLocation(companyId: string): Promise<CafeLocationRow> {
+  const locations = await listCafeLocationsForCompany(companyId);
+  if (locations[0]) return locations[0];
+
+  const supabase = createSupabaseServiceClient();
   const { data: created, error } = await supabase
     .from('cafe_locations')
     .insert({ company_id: companyId, name: 'Café Tasha' })
-    .select('id, logo_url, global_overhead_pct')
+    .select('id, name, logo_url, global_overhead_pct')
     .single();
 
   if (error) throw new Error(error.message);
-  return created;
+  return created as CafeLocationRow;
 }
 
-async function loadSnapshotExtras(companyId: string): Promise<SnapshotExtras> {
+async function resolveCafeLocation(
+  companyId: string,
+  locationId?: string | null,
+): Promise<CafeLocationRow> {
+  const locations = await listCafeLocationsForCompany(companyId);
+  if (!locations.length) return ensureCafeLocation(companyId);
+
+  if (locationId) {
+    const match = locations.find((row) => row.id === locationId);
+    if (match) return match;
+  }
+
+  return locations[0];
+}
+
+/** List café branches for the active company (MD branch selector). */
+export async function listCafeBranches(): Promise<{ branches: CafeBranch[]; error?: string }> {
+  noStore();
+  const companyId = await resolveCompanyId();
+  if (!companyId) return { branches: [], error: 'No company context' };
+
+  try {
+    const locations = await listCafeLocationsForCompany(companyId);
+    return { branches: locations.map((row) => ({ id: row.id, name: row.name })) };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to list café branches';
+    return { branches: [], error: message };
+  }
+}
+
+async function loadSnapshotExtras(
+  companyId: string,
+  locationId: string,
+): Promise<SnapshotExtras> {
   const supabase = createSupabaseServiceClient();
-  const { data } = await supabase
+  const scoped = await supabase
+    .from('cafe_dashboard_snapshots')
+    .select('payload')
+    .eq('company_id', companyId)
+    .eq('cafe_location_id', locationId)
+    .maybeSingle();
+
+  if (!scoped.error && scoped.data?.payload) {
+    return parseSnapshotPayload(scoped.data.payload);
+  }
+
+  const company = await supabase
     .from('cafe_dashboard_snapshots')
     .select('payload')
     .eq('company_id', companyId)
     .maybeSingle();
 
-  if (!data?.payload || typeof data.payload !== 'object') return {};
-  const payload = data.payload as SnapshotExtras & CafeDashboardPayload;
-  return {
-    ingredients: payload.ingredients ?? [],
-    menuItems: payload.menuItems ?? [],
-    menuCategories: payload.menuCategories?.length ? payload.menuCategories : DEFAULT_CATEGORIES,
-    globalOverhead: payload.globalOverhead ?? 20,
-    cafeLogoUrl: payload.cafeLogoUrl ?? null,
-    cafeCoverUrl: payload.cafeCoverUrl ?? null,
-    cafeCoverTextColor: payload.cafeCoverTextColor ?? '#ffffff',
-    customerMenuUrl: payload.customerMenuUrl ?? 'https://tasha.lk',
-  };
+  if (company.data?.payload) {
+    return parseSnapshotPayload(company.data.payload);
+  }
+
+  return {};
 }
 
-async function loadTasks(companyId: string, date: string): Promise<CafeTask[]> {
+async function loadTasks(
+  companyId: string,
+  locationId: string,
+  date: string,
+): Promise<CafeTask[]> {
   const supabase = createSupabaseServiceClient();
   const { data: templates } = await supabase
     .from('cafe_task_templates')
     .select('id, name, freq, assigned_name, due_time')
     .eq('company_id', companyId)
+    .eq('cafe_location_id', locationId)
     .eq('active', true)
     .order('name');
 
@@ -442,6 +605,7 @@ async function loadTasks(companyId: string, date: string): Promise<CafeTask[]> {
 
 async function loadStockLists(
   companyId: string,
+  locationId: string,
   date: string,
 ): Promise<{ listA: CafeDailyStockItem[]; listB: CafeBulkStockItem[] }> {
   const supabase = createSupabaseServiceClient();
@@ -449,6 +613,7 @@ async function loadStockLists(
     .from('cafe_stock_items')
     .select('id, list_type, name, unit, assigned_name, bulk_period_days')
     .eq('company_id', companyId)
+    .eq('cafe_location_id', locationId)
     .order('name');
 
   if (!items?.length) return { listA: [], listB: [] };
@@ -496,7 +661,53 @@ async function loadStockLists(
   return { listA, listB };
 }
 
-async function loadVoids(companyId: string): Promise<CafeVoid[]> {
+async function loadMtdWastageCostLkr(
+  companyId: string,
+  locationId: string,
+  ingredients: CafeIngredient[],
+): Promise<number> {
+  const supabase = createSupabaseServiceClient();
+  const periodMonth = currentPeriodMonth();
+  const { start, end } = monthDateRange(periodMonth);
+
+  const { data: items } = await supabase
+    .from('cafe_stock_items')
+    .select('id, name, unit')
+    .eq('company_id', companyId)
+    .eq('cafe_location_id', locationId)
+    .eq('list_type', 'DAILY');
+
+  if (!items?.length) return 0;
+
+  const itemIds = items.map((item) => item.id);
+  const { data: counts } = await supabase
+    .from('cafe_stock_counts')
+    .select('stock_item_id, logged_wastage')
+    .in('stock_item_id', itemIds)
+    .gte('count_date', start)
+    .lte('count_date', end);
+
+  const wastageByItem = new Map<string, number>();
+  for (const row of counts ?? []) {
+    const prev = wastageByItem.get(row.stock_item_id) ?? 0;
+    wastageByItem.set(row.stock_item_id, prev + (Number(row.logged_wastage) || 0));
+  }
+
+  const listA: CafeDailyStockItem[] = items.map((item) => ({
+    id: item.id,
+    name: item.name,
+    unit: item.unit,
+    openingStock: 0,
+    closingStock: 0,
+    posSold: 0,
+    loggedWastage: wastageByItem.get(item.id) ?? 0,
+    assignedTo: '',
+  }));
+
+  return calcLoggedWastageCostLkr(listA, ingredients);
+}
+
+async function loadVoids(companyId: string, locationId: string): Promise<CafeVoid[]> {
   const supabase = createSupabaseServiceClient();
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
@@ -505,6 +716,7 @@ async function loadVoids(companyId: string): Promise<CafeVoid[]> {
     .from('cafe_pos_voids')
     .select('id, voided_at, item_description, amount_lkr, voided_by_name, reason, flagged')
     .eq('company_id', companyId)
+    .eq('cafe_location_id', locationId)
     .gte('voided_at', startOfDay.toISOString())
     .order('voided_at', { ascending: false });
 
@@ -627,7 +839,9 @@ async function loadMenu(
 }
 
 /** Load café dashboard from normalized tables + snapshot extras (ingredients, recipes). */
-export async function getCafeDashboard(): Promise<CafeDashboardPayload> {
+export async function getCafeDashboard(
+  locationIdInput?: string | null,
+): Promise<CafeDashboardPayload> {
   noStore();
   const companyId = await resolveCompanyId();
   if (!companyId) return { ...defaultDashboard(), error: 'No company context' };
@@ -635,7 +849,7 @@ export async function getCafeDashboard(): Promise<CafeDashboardPayload> {
   const supabase = createSupabaseServiceClient();
 
   try {
-    const location = await ensureCafeLocation(companyId);
+    const location = await resolveCafeLocation(companyId, locationIdInput);
     const periodMonth = currentPeriodMonth();
     const today = todayIso();
 
@@ -648,12 +862,13 @@ export async function getCafeDashboard(): Promise<CafeDashboardPayload> {
       .eq('period_month', periodMonth);
 
     const staff = staffFromEmployees(employees, periods ?? []);
-    const extras = await loadSnapshotExtras(companyId);
+    const extras = await loadSnapshotExtras(companyId, location.id);
+    const openHours = await loadCafeOpenHours(supabase, companyId);
 
     const [tasks, stock, voids, menu] = await Promise.all([
-      loadTasks(companyId, today),
-      loadStockLists(companyId, today),
-      loadVoids(companyId),
+      loadTasks(companyId, location.id, today),
+      loadStockLists(companyId, location.id, today),
+      loadVoids(companyId, location.id),
       loadMenu(companyId, extras.menuItems ?? []),
     ]);
 
@@ -666,6 +881,15 @@ export async function getCafeDashboard(): Promise<CafeDashboardPayload> {
       prepDisplay.prepItems,
       prepDisplay.displayItems,
     );
+    const ingredients = repairRecipeIngredientLedger(
+      extras.ingredients ?? [],
+      menu.menuItems,
+    );
+    const mtdWastageCostLkr = await loadMtdWastageCostLkr(
+      companyId,
+      location.id,
+      ingredients,
+    );
 
     return {
       staff,
@@ -677,14 +901,21 @@ export async function getCafeDashboard(): Promise<CafeDashboardPayload> {
       menuCategories: extras.menuCategories?.length
         ? extras.menuCategories
         : menu.menuCategories,
-      ingredients: extras.ingredients ?? [],
+      ingredients,
       prepItems: linkedPrep.prepItems,
       displayItems: linkedPrep.displayItems,
       globalOverhead: Number(location.global_overhead_pct) || extras.globalOverhead || 20,
       cafeLogoUrl: location.logo_url ?? extras.cafeLogoUrl ?? null,
       cafeCoverUrl: extras.cafeCoverUrl ?? null,
       cafeCoverTextColor: extras.cafeCoverTextColor ?? '#ffffff',
+      cafeCoverTintStrength: extras.cafeCoverTintStrength ?? 100,
       customerMenuUrl: extras.customerMenuUrl ?? 'https://tasha.lk',
+      showItemImages: extras.showItemImages !== false,
+      cafeOpenStart: openHours.openStart,
+      cafeOpenEnd: openHours.openEnd,
+      locationId: location.id,
+      locationName: location.name,
+      mtdWastageCostLkr,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to load café dashboard';
@@ -715,15 +946,15 @@ async function persistStaffPeriods(companyId: string, staff: CafeStaffMember[]) 
   if (error) throw new Error(error.message);
 }
 
-async function persistTasks(companyId: string, tasks: CafeTask[]) {
+async function persistTasks(companyId: string, locationId: string, tasks: CafeTask[]) {
   const supabase = createSupabaseServiceClient();
-  const location = await ensureCafeLocation(companyId);
   const today = todayIso();
 
   const existing = await supabase
     .from('cafe_task_templates')
     .select('id')
-    .eq('company_id', companyId);
+    .eq('company_id', companyId)
+    .eq('cafe_location_id', locationId);
 
   const existingIds = new Set((existing.data ?? []).map((t) => t.id));
   const incomingIds = new Set(tasks.map((t) => t.id));
@@ -746,7 +977,7 @@ async function persistTasks(companyId: string, tasks: CafeTask[]) {
         .from('cafe_task_templates')
         .insert({
           company_id: companyId,
-          cafe_location_id: location.id,
+          cafe_location_id: locationId,
           name: task.name,
           freq: task.freq,
           assigned_name: task.assignedTo,
@@ -780,6 +1011,7 @@ async function persistTasks(companyId: string, tasks: CafeTask[]) {
 
 async function persistStock(
   companyId: string,
+  locationId: string,
   listA: CafeDailyStockItem[],
   listB: CafeBulkStockItem[],
 ) {
@@ -789,7 +1021,8 @@ async function persistStock(
   const { data: existing } = await supabase
     .from('cafe_stock_items')
     .select('id')
-    .eq('company_id', companyId);
+    .eq('company_id', companyId)
+    .eq('cafe_location_id', locationId);
 
   const existingIds = new Set((existing ?? []).map((i) => i.id));
   const incomingIds = new Set([...listA, ...listB].map((i) => i.id));
@@ -817,6 +1050,7 @@ async function persistStock(
         .from('cafe_stock_items')
         .insert({
           company_id: companyId,
+          cafe_location_id: locationId,
           list_type: listType,
           name: item.name,
           unit: item.unit,
@@ -864,7 +1098,7 @@ async function persistStock(
   }
 }
 
-async function persistVoids(companyId: string, voids: CafeVoid[]) {
+async function persistVoids(companyId: string, locationId: string, voids: CafeVoid[]) {
   const supabase = createSupabaseServiceClient();
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
@@ -873,6 +1107,7 @@ async function persistVoids(companyId: string, voids: CafeVoid[]) {
     .from('cafe_pos_voids')
     .select('id')
     .eq('company_id', companyId)
+    .eq('cafe_location_id', locationId)
     .gte('voided_at', startOfDay.toISOString());
 
   const existingIds = new Set((existing ?? []).map((v) => v.id));
@@ -898,6 +1133,7 @@ async function persistVoids(companyId: string, voids: CafeVoid[]) {
     } else {
       await supabase.from('cafe_pos_voids').insert({
         company_id: companyId,
+        cafe_location_id: locationId,
         voided_at: voidedAt.toISOString(),
         item_description: v.item,
         amount_lkr: v.amount,
@@ -1059,7 +1295,11 @@ async function persistMenu(
   }
 }
 
-async function persistSnapshotExtras(companyId: string, payload: CafeDashboardPayload) {
+async function persistSnapshotExtras(
+  companyId: string,
+  locationId: string,
+  payload: CafeDashboardPayload,
+) {
   const supabase = createSupabaseServiceClient();
   const snapshotPayload: SnapshotExtras = {
     ingredients: payload.ingredients,
@@ -1069,22 +1309,35 @@ async function persistSnapshotExtras(companyId: string, payload: CafeDashboardPa
     cafeLogoUrl: payload.cafeLogoUrl,
     cafeCoverUrl: payload.cafeCoverUrl,
     cafeCoverTextColor: payload.cafeCoverTextColor,
+    cafeCoverTintStrength: payload.cafeCoverTintStrength ?? 100,
     customerMenuUrl: payload.customerMenuUrl,
+    showItemImages: payload.showItemImages !== false,
   };
 
-  const { error } = await supabase.from('cafe_dashboard_snapshots').upsert(
-    {
-      company_id: companyId,
-      payload: snapshotPayload,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: 'company_id' },
+  const row = {
+    company_id: companyId,
+    payload: snapshotPayload,
+    updated_at: new Date().toISOString(),
+  };
+
+  const withLocation = await supabase.from('cafe_dashboard_snapshots').upsert(
+    { ...row, cafe_location_id: locationId },
+    { onConflict: 'company_id,cafe_location_id' },
   );
-  if (error) throw new Error(error.message);
+
+  if (withLocation.error?.message?.includes('cafe_location_id')) {
+    const legacy = await supabase.from('cafe_dashboard_snapshots').upsert(row, {
+      onConflict: 'company_id',
+    });
+    if (legacy.error) throw new Error(legacy.error.message);
+    return;
+  }
+
+  if (withLocation.error) throw new Error(withLocation.error.message);
 }
 
 async function persistLocationSettings(
-  companyId: string,
+  locationId: string,
   globalOverhead: number,
   cafeLogoUrl: string | null,
 ) {
@@ -1096,34 +1349,49 @@ async function persistLocationSettings(
       logo_url: cafeLogoUrl,
       updated_at: new Date().toISOString(),
     })
-    .eq('company_id', companyId);
+    .eq('id', locationId);
 }
 
 /** Persist full café dashboard state to normalized tables + snapshot. */
 export async function saveCafeDashboard(
   payload: CafeDashboardPayload,
+  locationIdInput?: string | null,
 ): Promise<{ ok: boolean; error?: string }> {
   noStore();
   const companyId = await resolveCompanyId();
   if (!companyId) return { ok: false, error: 'No company context' };
 
   try {
-    await ensureCafeLocation(companyId);
-    const menuItemIds = payload.menuItems.map((item) => item.id);
-    const linkedPrep = reconcilePrepWithMenu(
+    const location = await resolveCafeLocation(companyId, locationIdInput ?? payload.locationId);
+    const snapshot = await loadSnapshotExtras(companyId, location.id);
+    const ingredients = repairRecipeIngredientLedger(
+      payload.ingredients,
       payload.menuItems,
+    );
+    const menuItemIds = payload.menuItems.map((item) => item.id);
+    const syncedMenuItems = prepareMenuItemsForPersist(
+      payload.menuItems,
+      ingredients,
+      snapshot,
+    );
+    const linkedPrep = reconcilePrepWithMenu(
+      syncedMenuItems,
       payload.prepItems,
       payload.displayItems,
     );
 
     await Promise.all([
       persistStaffPeriods(companyId, payload.staff),
-      persistTasks(companyId, payload.tasks),
-      persistStock(companyId, payload.listA, payload.listB),
-      persistVoids(companyId, payload.voids),
-      persistMenu(companyId, payload.menuItems, payload.menuCategories),
-      persistLocationSettings(companyId, payload.globalOverhead, payload.cafeLogoUrl),
-      persistSnapshotExtras(companyId, payload),
+      persistTasks(companyId, location.id, payload.tasks),
+      persistStock(companyId, location.id, payload.listA, payload.listB),
+      persistVoids(companyId, location.id, payload.voids),
+      persistMenu(companyId, syncedMenuItems, payload.menuCategories),
+      persistLocationSettings(location.id, payload.globalOverhead, payload.cafeLogoUrl),
+      persistSnapshotExtras(companyId, location.id, {
+        ...payload,
+        ingredients,
+        menuItems: syncedMenuItems,
+      }),
     ]);
     await persistPrepAndDisplay(
       companyId,
@@ -1347,6 +1615,228 @@ export async function issueCafeFine(input: {
   return { ...result, staff };
 }
 
+export type CafeCustomerRow = {
+  id: string;
+  customerName: string;
+  customerPhone: string;
+  totalSpentLkr: number;
+  orderCount: number;
+  discountPct: number;
+  lastOrderAt: string | null;
+};
+
+function mapCafeCustomerRow(row: Record<string, unknown>): CafeCustomerRow {
+  return {
+    id: String(row.id),
+    customerName: String(row.customer_name ?? ''),
+    customerPhone: String(row.phone_normalized ?? ''),
+    totalSpentLkr: Number(row.total_spent_lkr) || 0,
+    orderCount: Number(row.order_count) || 0,
+    discountPct: Number(row.discount_pct) || 0,
+    lastOrderAt: row.last_order_at ? String(row.last_order_at) : null,
+  };
+}
+
+/** Phone lookup for customer menu checkout (auto-fill name + loyalty discount). */
+export async function lookupCafeCustomerByPhone(phone: string): Promise<{
+  customerName: string;
+  discountPct: number;
+  totalSpentLkr: number;
+  orderCount: number;
+} | null> {
+  noStore();
+  const companyId = await resolveCompanyId();
+  if (!companyId) return null;
+
+  const supabase = createSupabaseServiceClient();
+  const { data, error } = await supabase.rpc('lookup_cafe_customer_by_phone', {
+    p_company_id: companyId,
+    p_phone: phone,
+  });
+
+  if (error || !data?.length) return null;
+
+  const row = data[0] as Record<string, unknown>;
+  return {
+    customerName: String(row.customer_name ?? ''),
+    discountPct: Number(row.discount_pct) || 0,
+    totalSpentLkr: Number(row.total_spent_lkr) || 0,
+    orderCount: Number(row.order_count) || 0,
+  };
+}
+
+export async function getCafeCustomers(): Promise<{
+  customers: CafeCustomerRow[];
+  error?: string;
+}> {
+  noStore();
+  const companyId = await resolveCompanyId();
+  if (!companyId) return { customers: [], error: 'No company context' };
+
+  const supabase = createSupabaseServiceClient();
+  const { data, error } = await supabase
+    .from('cafe_customers')
+    .select(
+      'id, customer_name, phone_normalized, total_spent_lkr, order_count, discount_pct, last_order_at',
+    )
+    .eq('company_id', companyId)
+    .order('total_spent_lkr', { ascending: false });
+
+  if (error) return { customers: [], error: error.message };
+  return { customers: (data ?? []).map((row) => mapCafeCustomerRow(row as Record<string, unknown>)) };
+}
+
+export async function updateCafeCustomerDiscount(input: {
+  customerId: string;
+  discountPct: number;
+}): Promise<{ ok: boolean; error?: string }> {
+  noStore();
+  const companyId = await resolveCompanyId();
+  if (!companyId) return { ok: false, error: 'No company context' };
+
+  const discountPct = Math.min(100, Math.max(0, input.discountPct));
+  const supabase = createSupabaseServiceClient();
+  const { error } = await supabase
+    .from('cafe_customers')
+    .update({ discount_pct: discountPct, updated_at: new Date().toISOString() })
+    .eq('id', input.customerId)
+    .eq('company_id', companyId);
+
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+export type CafeBranchGlance = {
+  id: string;
+  name: string;
+  mtdSales: number;
+  staffCount: number;
+  laborCostMtd: number;
+  wastageMtd: number;
+  expiringSoon: number;
+  lowStock: number;
+  overdueTasks: number;
+  flaggedVoids: number;
+};
+
+export type CafePortfolioGlance = {
+  branches: CafeBranchGlance[];
+  totals: {
+    mtdSales: number;
+    laborCostMtd: number;
+    wastageMtd: number;
+    stockAlerts: number;
+    complianceAlerts: number;
+    staffCount: number;
+  };
+  error?: string;
+};
+
+function countExpiringSoon(ingredients: CafeIngredient[], withinDays = 3): number {
+  const today = todayIso();
+  let count = 0;
+  for (const ing of ingredients) {
+    for (const lot of ing.stockLots ?? []) {
+      if (lot.quantity <= 0) continue;
+      const expiry = lot.expiresOn;
+      if (!expiry) continue;
+      const daysLeft = Math.round(
+        (new Date(`${expiry}T12:00:00`).getTime() - new Date(`${today}T12:00:00`).getTime()) /
+          86_400_000,
+      );
+      if (daysLeft >= 0 && daysLeft <= withinDays) count += 1;
+    }
+  }
+  return count;
+}
+
+function countLowStock(ingredients: CafeIngredient[]): number {
+  return ingredients.filter((ing) => ing.minimumStock > 0 && ing.currentStock < ing.minimumStock)
+    .length;
+}
+
+/** Portfolio-wide café ops metrics for the Executive Vault finance view. */
+export async function fetchCafePortfolioGlance(): Promise<CafePortfolioGlance> {
+  noStore();
+  const emptyTotals = {
+    mtdSales: 0,
+    laborCostMtd: 0,
+    wastageMtd: 0,
+    stockAlerts: 0,
+    complianceAlerts: 0,
+    staffCount: 0,
+  };
+
+  try {
+    const { branches, error: branchError } = await listCafeBranches();
+    if (!branches.length) {
+      return { branches: [], totals: emptyTotals, error: branchError };
+    }
+
+    const companyId = await resolveCompanyId();
+    if (!companyId) return { branches: [], totals: emptyTotals, error: 'No company context' };
+
+    const supabase = createSupabaseServiceClient();
+    const { data: snapRows } = await supabase
+      .from('cafe_dashboard_snapshots')
+      .select('cafe_location_id, payload')
+      .eq('company_id', companyId);
+
+    const salesByLocation = new Map<string, number>();
+    for (const row of snapRows ?? []) {
+      const payload = row.payload as Record<string, unknown> | null;
+      const mtd = Number(payload?.mtdSales ?? payload?.mtd_sales ?? payload?.posTotal ?? 0);
+      const locId = String(row.cafe_location_id ?? '');
+      salesByLocation.set(locId, (salesByLocation.get(locId) ?? 0) + (Number.isFinite(mtd) ? mtd : 0));
+    }
+
+    const branchGlances = await Promise.all(
+      branches.map(async (branch) => {
+        const dashboard = await getCafeDashboard(branch.id);
+        const laborCostMtd = calcPayrollCostLkr(dashboard.staff);
+        const expiringSoon = countExpiringSoon(dashboard.ingredients);
+        const lowStock = countLowStock(dashboard.ingredients);
+        const overdueTasks = dashboard.tasks.filter((t) => t.status === 'OVERDUE').length;
+        const flaggedVoids = dashboard.voids.filter((v) => v.flagged).length;
+        const mtdSales = salesByLocation.get(branch.id) ?? 0;
+
+        return {
+          id: branch.id,
+          name: branch.name,
+          mtdSales,
+          staffCount: dashboard.staff.length,
+          laborCostMtd,
+          wastageMtd: dashboard.mtdWastageCostLkr ?? 0,
+          expiringSoon,
+          lowStock,
+          overdueTasks,
+          flaggedVoids,
+        };
+      }),
+    );
+
+    const totals = branchGlances.reduce(
+      (acc, b) => ({
+        mtdSales: acc.mtdSales + b.mtdSales,
+        laborCostMtd: acc.laborCostMtd + b.laborCostMtd,
+        wastageMtd: acc.wastageMtd + b.wastageMtd,
+        stockAlerts: acc.stockAlerts + b.expiringSoon + b.lowStock,
+        complianceAlerts: acc.complianceAlerts + b.overdueTasks + b.flaggedVoids,
+        staffCount: acc.staffCount + b.staffCount,
+      }),
+      emptyTotals,
+    );
+
+    return { branches: branchGlances, totals };
+  } catch (err) {
+    return {
+      branches: [],
+      totals: emptyTotals,
+      error: err instanceof Error ? err.message : 'Failed to load café portfolio',
+    };
+  }
+}
+
 /** Customer menu checkout → café front office order queue. */
 export async function placeCafeCustomerOrder(input: {
   fulfillmentType: 'dine-in' | 'takeout' | 'delivery';
@@ -1355,6 +1845,7 @@ export async function placeCafeCustomerOrder(input: {
   deliveryAddress?: string;
   items: Array<{ menuItemId?: string; name: string; qty: number; unitPriceLkr: number }>;
   totalLkr: number;
+  paymentMethod?: 'card_online' | 'cash_at_counter';
 }): Promise<{ ok: boolean; orderId?: string; error?: string }> {
   noStore();
   const companyId = await resolveCompanyId();
@@ -1369,6 +1860,7 @@ export async function placeCafeCustomerOrder(input: {
     p_delivery_address: input.deliveryAddress ?? '',
     p_items: input.items,
     p_total_lkr: input.totalLkr,
+    p_payment_method: input.paymentMethod ?? 'card_online',
   });
 
   if (error) return { ok: false, error: error.message };

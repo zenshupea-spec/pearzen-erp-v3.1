@@ -69,5 +69,6 @@ export async function saveBankExportSettings(settings: BankExportSettings) {
   revalidatePath('/executive/settings');
   revalidatePath('/fm/settings');
   revalidatePath('/executive/payroll');
+  revalidatePath('/executive/advance');
   return { success: true as const };
 }

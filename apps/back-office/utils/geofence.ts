@@ -9,26 +9,15 @@ export type UserCoordinates = {
 };
 
 /**
- * Placeholder function that will eventually verify the user's location against
- * the Head Office radius.
- *
- * Executive Override:
- * - If role is 'MD' or 'OD' -> always allow (Global Bypass).
- * Standard staff:
- * - If location check fails -> deny.
+ * Legacy env-based geofence check. Prefer lib/head-office-geofence.ts for HQ portals.
  */
 export function verifyOfficeLocation(
   userIp: string | null,
   userCoordinates: UserCoordinates | null
 ) {
-  const role = userCoordinates?.role ?? null;
-  if (role === "MD" || role === "OD") return true; // Global bypass
-
   const lat = userCoordinates?.lat;
   const lng = userCoordinates?.lng;
 
-  // Placeholder "fail closed" behavior: if we can't determine coordinates,
-  // we treat it as a failed location check for standard staff.
   if (typeof lat !== "number" || typeof lng !== "number") return false;
 
   // Optional placeholder radius check if env is configured.

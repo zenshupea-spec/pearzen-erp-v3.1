@@ -6,7 +6,8 @@ import {
   fetchWithRosterCompanyFallback,
   resolveCompanyIdForSession,
   rosterCompanyId,
-} from '../../../lib/company-context';
+} from '../../../lib/company-context-server';
+import { getOmServiceDb } from '../../../lib/om-service-db';
 import { getOmSiteAllocationData } from './allocation';
 
 export type LiveShiftShort = {
@@ -85,10 +86,11 @@ function mapSeverity(raw: string): LiveFieldIncident['severity'] {
 }
 
 async function fetchSites(companyId: string | null) {
-  const supabase = await createSupabaseServerClient();
+  const supabase = getOmServiceDb();
   let query = supabase
     .from('site_profiles')
     .select('id, site_name, assigned_sm_epf, required_guards, address')
+    .neq('site_status', 'ARCHIVED')
     .order('site_name', { ascending: true });
 
   if (companyId) {
@@ -103,7 +105,7 @@ async function fetchSites(companyId: string | null) {
 const GUARD_GROUPS = ['GUARD', 'GUARD_FIELD'] as const;
 
 async function fetchGuards(companyId: string | null) {
-  const supabase = await createSupabaseServerClient();
+  const supabase = getOmServiceDb();
   let query = supabase
     .from('employees')
     .select('emp_number, full_name, site, group, status')
@@ -120,7 +122,7 @@ async function fetchGuards(companyId: string | null) {
 }
 
 async function fetchManagers(companyId: string | null) {
-  const supabase = await createSupabaseServerClient();
+  const supabase = getOmServiceDb();
   let query = supabase
     .from('employees')
     .select('emp_number, full_name, site')
@@ -186,6 +188,13 @@ export async function getLiveFieldRadar(): Promise<LiveFieldRadarPayload> {
       guardsBySite.set(key, list);
     }
 
+    const guardNameByEpf = new Map<string, string>();
+    for (const guard of guards) {
+      const epf = String(guard.emp_number);
+      const name = (guard.full_name as string | null)?.trim();
+      if (name) guardNameByEpf.set(epf, name);
+    }
+
     const incidentsBySm = new Map<string, number>();
     const fieldIncidents: LiveFieldIncident[] = openIncidents.map((row) => {
       const smEpf = String(row.sm_epf);
@@ -196,7 +205,7 @@ export async function getLiveFieldRadar(): Promise<LiveFieldRadarPayload> {
         timestamp: String(row.created_at),
         site: String(row.site_name ?? 'Unknown site'),
         incidentType: mapIncidentType(String(row.incident_type)),
-        guardName: guardEpf,
+        guardName: guardNameByEpf.get(guardEpf) ?? guardEpf,
         guardEmpNo: guardEpf,
         severity: mapSeverity(String(row.severity)),
         ack: { OM: false, SM: false, MD: false },

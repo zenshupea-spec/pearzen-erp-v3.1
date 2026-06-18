@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Receipt,
   CheckCircle2,
@@ -26,6 +26,13 @@ import {
   Calendar,
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
+import {
+  approveExpenseBill,
+  fetchExpenseBills,
+  rejectExpenseBill,
+  submitExpenseBill,
+  type ExpenseBillRecord,
+} from '../bill-actions';
 import { useMonthYear } from '../month-context';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -34,19 +41,7 @@ type BillStatus  = 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
 type CostCenter  = 'Security' | 'Café' | 'BnB';
 type CompanyKey  = 'ALL' | 'Security' | 'Café Tasha' | 'Shalom Residence';
 
-interface Bill {
-  id: string;
-  date: string;
-  submittedBy: string;
-  costCenter: CostCenter;
-  description: string;
-  amount: number;
-  receiptUrl: string;
-  status: BillStatus;
-  approvedAt?: string;
-  isSplit?: boolean;
-  splitAllocations?: Partial<Record<CostCenter, number>>;
-}
+interface Bill extends ExpenseBillRecord {}
 
 interface SplitAllocation {
   Security: number;
@@ -76,20 +71,6 @@ function purgeDate(dateStr: string) {
   d.setDate(d.getDate() + RECEIPT_AUTO_PURGE_DAYS);
   return d.toLocaleDateString('en-CA');
 }
-
-// ─── Demo data ────────────────────────────────────────────────────────────────
-
-const DEMO_BILLS: Bill[] = [
-  { id: 'B001', date: '2026-05-18', submittedBy: 'Kasuni Perera',   costCenter: 'BnB',      description: 'Shalom Residence — Monthly Electricity (CEB)',   amount: 48_200, receiptUrl: '', status: 'PENDING_APPROVAL' },
-  { id: 'B002', date: '2026-05-17', submittedBy: 'Nirosha Silva',   costCenter: 'Café',     description: 'Café Tasha — Weekly Grocery Restock (Keells)',   amount: 31_750, receiptUrl: '', status: 'PENDING_APPROVAL' },
-  { id: 'B003', date: '2026-05-16', submittedBy: 'Rohan Fernando',  costCenter: 'Security', description: 'HQ — Office Stationery & Printer Cartridges',    amount: 12_400, receiptUrl: '', status: 'PENDING_APPROVAL' },
-  { id: 'B004', date: '2026-05-15', submittedBy: 'Kasuni Perera',   costCenter: 'BnB',      description: 'Shalom — Water Bill (NWSDB)',                    amount:  8_900, receiptUrl: '', status: 'APPROVED', approvedAt: '2026-05-15T14:32:00Z' },
-  { id: 'B005', date: '2026-05-14', submittedBy: 'Nirosha Silva',   costCenter: 'Café',     description: 'Café Tasha — Gas Cylinder Refill ×3',            amount: 15_600, receiptUrl: '', status: 'APPROVED', approvedAt: '2026-05-14T10:11:00Z' },
-  { id: 'B006', date: '2026-05-13', submittedBy: 'Rohan Fernando',  costCenter: 'Security', description: 'Vehicle Fuel — HQ Operations Van',               amount: 22_000, receiptUrl: '', status: 'REJECTED' },
-  { id: 'B007', date: '2026-05-12', submittedBy: 'Priya Wijesinghe',costCenter: 'BnB',      description: 'Shalom — Plumbing Repair (Room 4)',              amount: 34_500, receiptUrl: '', status: 'PENDING_APPROVAL' },
-  // Demo split bill
-  { id: 'B008', date: '2026-05-10', submittedBy: 'Rohan Fernando',  costCenter: 'Security', description: 'Shared Office Lease — HQ (split)', amount: 84_000, receiptUrl: '', status: 'APPROVED', approvedAt: '2026-05-11T09:00:00Z', isSplit: true, splitAllocations: { Security: 50, Café: 30, BnB: 20 } },
-];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -518,15 +499,32 @@ function SubmitBillModal({
 
 export default function AccountsPayablePage() {
   const { label: activeLabel } = useMonthYear();
+  const now = new Date();
+  const defaultFrom = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+  const defaultTo = now.toISOString().slice(0, 10);
 
-  const [bills, setBills]               = useState<Bill[]>(DEMO_BILLS);
+  const [bills, setBills]               = useState<Bill[]>([]);
+  const [loadError, setLoadError]       = useState<string | null>(null);
+  const [billsLoading, setBillsLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<BillStatus | 'ALL'>('ALL');
   const [companyFilter, setCompanyFilter] = useState<CompanyKey>('ALL');
-  const [dateFrom, setDateFrom]           = useState('2026-05-01');
-  const [dateTo,   setDateTo]             = useState('2026-05-31');
+  const [dateFrom, setDateFrom]           = useState(defaultFrom);
+  const [dateTo,   setDateTo]             = useState(defaultTo);
   const [receiptBill, setReceiptBill]     = useState<Bill | null>(null);
   const [submitOpen, setSubmitOpen]       = useState(false);
   const [showStorageInfo, setShowStorageInfo] = useState(false);
+
+  const refreshBills = async () => {
+    setBillsLoading(true);
+    const result = await fetchExpenseBills();
+    setBills(result.bills);
+    setLoadError(result.error ?? null);
+    setBillsLoading(false);
+  };
+
+  useEffect(() => {
+    void refreshBills();
+  }, []);
 
   const pending       = bills.filter((b) => b.status === 'PENDING_APPROVAL');
   const totalApproved = bills.filter((b) => b.status === 'APPROVED').reduce((s, b) => s + b.amount, 0);
@@ -546,11 +544,17 @@ export default function AccountsPayablePage() {
     return bills.filter((b) => b.status === 'PENDING_APPROVAL' && (cc === null || b.costCenter === cc));
   }, [bills, companyFilter]);
 
-  const approve = (id: string) =>
-    setBills((prev) => prev.map((b) => b.id === id ? { ...b, status: 'APPROVED', approvedAt: new Date().toISOString() } : b));
+  const approve = (id: string) => {
+    void approveExpenseBill(id).then((result) => {
+      if (result.success) void refreshBills();
+    });
+  };
 
-  const reject  = (id: string) =>
-    setBills((prev) => prev.map((b) => b.id === id ? { ...b, status: 'REJECTED' } : b));
+  const reject = (id: string) => {
+    void rejectExpenseBill(id).then((result) => {
+      if (result.success) void refreshBills();
+    });
+  };
 
   const handleNewBill = (form: NewBillForm) => {
     const isSplit = form.costCenterMode === 'SPLIT';
@@ -573,7 +577,20 @@ export default function AccountsPayablePage() {
         ? Object.fromEntries(enabledCCs.map((cc) => [cc, form.splitAllocations[cc]])) as Partial<Record<CostCenter, number>>
         : undefined,
     };
-    setBills((prev) => [newBill, ...prev]);
+    void submitExpenseBill({
+      date: newBill.date,
+      description: newBill.description,
+      amount: newBill.amount,
+      costCenter: newBill.costCenter,
+      submittedBy: newBill.submittedBy,
+      isSplit: newBill.isSplit,
+      splitAllocations: newBill.splitAllocations,
+    }).then((result) => {
+      if (result.success) {
+        setSubmitOpen(false);
+        void refreshBills();
+      }
+    });
   };
 
   return (
@@ -611,6 +628,15 @@ export default function AccountsPayablePage() {
         </header>
 
         <div className="px-6 md:px-12 2xl:px-24 space-y-6 pt-8">
+
+          {loadError ? (
+            <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
+              {loadError}
+            </p>
+          ) : null}
+          {billsLoading ? (
+            <p className="text-sm font-semibold text-slate-500">Loading bills from Supabase…</p>
+          ) : null}
 
           {/* ── Summary Cards ── */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">

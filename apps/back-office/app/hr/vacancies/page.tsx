@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { Building2, Home, MapPin, Megaphone, Users } from 'lucide-react';
 
 import { getGuardVacanciesDesk, type GuardRankKey } from './actions';
+import VacancyGpsButton from './VacancyGpsButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -103,6 +104,14 @@ export default async function GuardVacanciesPage() {
                 <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
                 <p className="font-semibold leading-relaxed">{site.address}</p>
               </div>
+
+              <VacancyGpsButton
+                lat={site.lat}
+                lng={site.lng}
+                address={site.address}
+                siteName={site.siteName}
+                needsOmGpsCapture={site.needsOmGpsCapture}
+              />
 
               <div>
                 <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">

@@ -6,9 +6,11 @@ import { usePathname, useSearchParams } from 'next/navigation';
 import {
   Activity,
   Building2,
+  ClipboardList,
   Shirt,
   Trophy,
   UserCheck,
+  Users,
 } from 'lucide-react';
 import {
   commandCenterHref,
@@ -16,35 +18,57 @@ import {
   type CommandCenterTabKey,
 } from '../lib/command-center-tabs';
 
-const ALL_COMMAND_CENTER_TABS: {
+const COMMAND_CENTER_TABS: {
   key: CommandCenterTabKey;
   label: string;
   icon: typeof Activity;
 }[] = [
   { key: 'tactical', label: 'Tactical dashboard', icon: Activity },
-  { key: 'site-allocation', label: 'Site allocation', icon: Building2 },
   { key: 'guard-cards', label: 'Guard cards', icon: Trophy },
 ];
+
+const STAFFING_ROUTES = [
+  {
+    href: '/om/sites/assignments',
+    label: 'Sites → SM',
+    icon: Building2,
+    match: (pathname: string) => pathname.startsWith('/om/sites/assignments'),
+  },
+  {
+    href: '/om/sites/guards',
+    label: 'Guards → sites',
+    icon: Users,
+    match: (pathname: string, tab: CommandCenterTabKey | null) =>
+      pathname.startsWith('/om/sites/guards') ||
+      (pathname === '/om' && tab === 'site-allocation'),
+  },
+  {
+    href: '/om/guards/sm-assignments',
+    label: 'Guards → SM',
+    icon: UserCheck,
+    match: (pathname: string) => pathname.startsWith('/om/guards/sm-assignments'),
+  },
+  {
+    href: '/om/applicants',
+    label: 'Applicants',
+    icon: ClipboardList,
+    match: (pathname: string) => pathname.startsWith('/om/applicants'),
+  },
+] as const;
 
 const OPERATIONS_ROUTES = [
   {
     href: '/om/uniform',
     label: 'Uniform issue',
     icon: Shirt,
-    match: (p: string) => p.startsWith('/om/uniform'),
-  },
-  {
-    href: '/om/sites/assignments',
-    label: 'SM assignments',
-    icon: UserCheck,
-    match: (p: string) => p.startsWith('/om/sites/assignments'),
+    match: (pathname: string) => pathname.startsWith('/om/uniform'),
   },
   {
     href: '/om/sm-visit-caps',
     label: 'SM visit caps',
     icon: Building2,
-    match: (p: string) =>
-      p.startsWith('/om/sm-visit-caps') || p.startsWith('/fm/sm-handler'),
+    match: (pathname: string) =>
+      pathname.startsWith('/om/sm-visit-caps') || pathname.startsWith('/fm/sm-handler'),
   },
 ] as const;
 
@@ -75,9 +99,9 @@ function NavSection({
 type OmSubnavProps = {
   /** Command center base path — default `/om`; use `/executive/operations` in MD vault. */
   commandCenterBase?: string;
-  /** Subset of command center tabs; defaults to all three. */
+  /** Subset of command center tabs; defaults to tactical + guard cards. */
   commandCenterTabs?: CommandCenterTabKey[];
-  /** Show uniform / SM tools links (OM portal only). */
+  /** Show staffing + uniform / SM tools links (OM portal only). */
   showOperationsRoutes?: boolean;
 };
 
@@ -96,39 +120,60 @@ function OmSubnavInner({
     activeCommandTab === 'guard-cards' ||
     pathname.startsWith('/om/guard-cards');
   const tabs = commandCenterTabs
-    ? ALL_COMMAND_CENTER_TABS.filter((t) => commandCenterTabs.includes(t.key))
-    : ALL_COMMAND_CENTER_TABS;
+    ? COMMAND_CENTER_TABS.filter((t) => commandCenterTabs.includes(t.key))
+    : COMMAND_CENTER_TABS;
 
   return (
     <nav
       className="mb-6 overflow-hidden rounded-2xl border border-slate-200/80 bg-white/80 p-2 shadow-sm backdrop-blur-xl sm:mb-8 sm:p-3"
       aria-label="OM portal sections"
     >
-      <NavSection label="Operations">
-        {tabs.map(({ key, label, icon: Icon }) => {
-          const active = key === 'guard-cards' ? guardCardsActive : activeCommandTab === key;
-          return (
-            <Link
-              key={key}
-              href={commandCenterHref(key, commandCenterBase)}
-              className={linkClass(active)}
-            >
-              <Icon className="h-3.5 w-3.5 shrink-0" />
-              {label}
-            </Link>
-          );
-        })}
-        {showOperationsRoutes && OPERATIONS_ROUTES.map((link) => {
-          const Icon = link.icon;
-          const active = link.match(pathname);
-          return (
-            <Link key={link.href} href={link.href} className={linkClass(active)}>
-              <Icon className="h-3.5 w-3.5 shrink-0" />
-              {link.label}
-            </Link>
-          );
-        })}
-      </NavSection>
+      <div className="flex flex-col gap-3">
+        <NavSection label="Operations">
+          {tabs.map(({ key, label, icon: Icon }) => {
+            const active = key === 'guard-cards' ? guardCardsActive : activeCommandTab === key;
+            return (
+              <Link
+                key={key}
+                href={commandCenterHref(key, commandCenterBase)}
+                className={linkClass(active)}
+              >
+                <Icon className="h-3.5 w-3.5 shrink-0" />
+                {label}
+              </Link>
+            );
+          })}
+          {showOperationsRoutes &&
+            OPERATIONS_ROUTES.map((link) => {
+              const Icon = link.icon;
+              return (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  className={linkClass(link.match(pathname))}
+                >
+                  <Icon className="h-3.5 w-3.5 shrink-0" />
+                  {link.label}
+                </Link>
+              );
+            })}
+        </NavSection>
+
+        {showOperationsRoutes ? (
+          <NavSection label="Staffing">
+            {STAFFING_ROUTES.map((link) => {
+              const Icon = link.icon;
+              const active = link.match(pathname, activeCommandTab);
+              return (
+                <Link key={link.href} href={link.href} className={linkClass(active)}>
+                  <Icon className="h-3.5 w-3.5 shrink-0" />
+                  {link.label}
+                </Link>
+              );
+            })}
+          </NavSection>
+        ) : null}
+      </div>
     </nav>
   );
 }

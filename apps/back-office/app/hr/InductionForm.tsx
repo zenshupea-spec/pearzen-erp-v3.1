@@ -1,24 +1,22 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
-import { ShieldCheck } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, Loader2, ShieldAlert, ShieldCheck } from 'lucide-react';
 
 import {
+  findRankPayEntry,
+  isRankValidForCorporateGroup,
   ranksForCorporateGroup,
   type RankPayEntry,
 } from '../../../../packages/rank-pay-matrix';
 import { filterRanksForEditor } from '../../lib/executive-rank-guard';
+import { normalizeEpfNo, sanitizeEpfNoInput } from '../../lib/employee-epf';
 import { HR_DOCUMENT_TYPES } from '../../../../packages/supabase/employee-hr-documents';
 import EmployeeDocumentField from './EmployeeDocumentField';
-
-const SITES = [
-  'Unassigned (Bench)',
-  'Lanka Hospitals',
-  'Commercial Bank HQ',
-  'Cargills HQ',
-  'BOC Main Branch',
-  'Hemas Holdings',
-];
+import { isNicLookupReady } from '../../lib/employee-nic';
+import { checkEpfNoAvailable, lookupPriorRecordsByNic, type PriorEmployeeMatch } from './epf-actions';
+import { ONBOARDING_BENCH_SITE } from './onboarding-types';
+import type { OnboardingGuardSite } from './onboarding-types';
 
 const CORPORATE_GROUPS = [
   { value: 'GUARD', label: 'Guard' },
@@ -40,25 +38,46 @@ const RELIGION_OPTIONS = [
 export default function InductionForm({
   action,
   rankMatrix,
+  guardSites,
+  editorRole = null,
   canManageExecutive = false,
   mergeContext,
 }: {
   action: (formData: FormData) => Promise<void>;
   rankMatrix: RankPayEntry[];
+  guardSites: OnboardingGuardSite[];
+  editorRole?: string | null;
   canManageExecutive?: boolean;
   mergeContext?: { tempId: string; nameHint?: string };
 }) {
   const [selectedGroup, setSelectedGroup] = useState(mergeContext ? 'GUARD' : '');
   const [selectedRank, setSelectedRank] = useState('');
-  const [assignedSite, setAssignedSite] = useState('Unassigned (Bench)');
+  const [assignedSite, setAssignedSite] = useState(ONBOARDING_BENCH_SITE);
   const [salaryType, setSalaryType] = useState('BANK');
+  const [baseSalary, setBaseSalary] = useState('');
+  const [nicValue, setNicValue] = useState('');
+  const [epfValue, setEpfValue] = useState('');
+  const [previousEpfNo, setPreviousEpfNo] = useState('');
+  const [priorMatches, setPriorMatches] = useState<PriorEmployeeMatch[]>([]);
+  const [nicLookupLoading, setNicLookupLoading] = useState(false);
+  const [nicLookupError, setNicLookupError] = useState<string | null>(null);
+  const [epfCheckLoading, setEpfCheckLoading] = useState(false);
+  const [epfUnavailable, setEpfUnavailable] = useState<string | null>(null);
+
+  const selectableRanks = useMemo(
+    () => filterRanksForEditor(rankMatrix, editorRole),
+    [rankMatrix, editorRole],
+  );
 
   const rankOptions = useMemo(() => {
-    const groupRanks = ranksForCorporateGroup(rankMatrix, selectedGroup);
-    return canManageExecutive
-      ? groupRanks
-      : filterRanksForEditor(groupRanks, "HR");
-  }, [rankMatrix, selectedGroup, canManageExecutive]);
+    if (!selectedGroup) return [];
+    return ranksForCorporateGroup(selectableRanks, selectedGroup);
+  }, [selectableRanks, selectedGroup]);
+
+  const siteOptions = useMemo(() => {
+    const names = guardSites.map((s) => s.siteName);
+    return [ONBOARDING_BENCH_SITE, ...names.filter((n) => n !== ONBOARDING_BENCH_SITE)];
+  }, [guardSites]);
 
   const autoRank = useMemo(() => {
     if (!selectedGroup) return '';
@@ -72,19 +91,113 @@ export default function InductionForm({
   const effectiveRank = rankLocked ? autoRank : selectedRank;
   const isGuard = selectedGroup === 'GUARD';
   const isSm = selectedGroup === 'SECTOR_MANAGER';
+  const rankEntry = useMemo(
+    () => findRankPayEntry(rankMatrix, effectiveRank),
+    [rankMatrix, effectiveRank],
+  );
+
+  useEffect(() => {
+    if (!rankEntry) {
+      setBaseSalary('');
+      return;
+    }
+    setBaseSalary(rankEntry.basicPay > 0 ? String(rankEntry.basicPay) : '');
+    setSalaryType(rankEntry.salaryType);
+  }, [rankEntry]);
 
   useEffect(() => {
     setSelectedRank('');
     if (selectedGroup === 'GUARD') {
-      setAssignedSite((prev) => prev || 'Unassigned (Bench)');
+      setAssignedSite((prev) => prev || ONBOARDING_BENCH_SITE);
     } else {
       setAssignedSite('');
     }
   }, [selectedGroup]);
 
   useEffect(() => {
+    if (!selectedRank || !selectedGroup) return;
+    if (!isRankValidForCorporateGroup(rankMatrix, selectedGroup, selectedRank)) {
+      setSelectedRank('');
+    }
+  }, [selectedGroup, selectedRank, rankMatrix]);
+
+  useEffect(() => {
     if (autoRank) setSelectedRank(autoRank);
   }, [autoRank]);
+
+  const lookupNicHistory = useCallback(async (nic: string) => {
+    const trimmed = nic.trim();
+    if (!isNicLookupReady(trimmed)) {
+      setPriorMatches([]);
+      setPreviousEpfNo('');
+      setNicLookupError(null);
+      return;
+    }
+    setNicLookupLoading(true);
+    setNicLookupError(null);
+    try {
+      const { matches } = await lookupPriorRecordsByNic(trimmed);
+      setPriorMatches(matches);
+      setPreviousEpfNo(normalizeEpfNo(matches[0]?.epfNo ?? ''));
+    } catch {
+      setPriorMatches([]);
+      setPreviousEpfNo('');
+      setNicLookupError('Could not search prior records for this NIC. Try again or contact IT.');
+    } finally {
+      setNicLookupLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const trimmed = nicValue.trim();
+    if (!isNicLookupReady(trimmed)) {
+      setPriorMatches([]);
+      setPreviousEpfNo('');
+      setNicLookupError(null);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void lookupNicHistory(trimmed);
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [nicValue, lookupNicHistory]);
+
+  const verifyEpfAvailable = useCallback(async (epf: string) => {
+    const trimmed = epf.trim();
+    if (!trimmed) {
+      setEpfUnavailable(null);
+      return;
+    }
+    if (previousEpfNo && normalizeEpfNo(trimmed) === normalizeEpfNo(previousEpfNo)) {
+      setEpfUnavailable('New EPF must differ from the previous EPF number.');
+      return;
+    }
+    setEpfCheckLoading(true);
+    try {
+      const result = await checkEpfNoAvailable(trimmed);
+      if (result.available) {
+        setEpfUnavailable(null);
+      } else {
+        setEpfUnavailable(
+          result.usedBy
+            ? `Already in use by ${result.usedBy}. EPF numbers are never reused.`
+            : 'EPF number is already in use.',
+        );
+      }
+    } catch {
+      setEpfUnavailable(null);
+    } finally {
+      setEpfCheckLoading(false);
+    }
+  }, [previousEpfNo]);
+
+  useEffect(() => {
+    if (epfValue.trim()) {
+      void verifyEpfAvailable(epfValue);
+    } else {
+      setEpfUnavailable(null);
+    }
+  }, [epfValue, previousEpfNo, verifyEpfAvailable]);
 
   return (
     <form action={action} encType="multipart/form-data" className="p-8 space-y-10">
@@ -118,13 +231,27 @@ export default function InductionForm({
             <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
               NIC Number *
             </label>
-            <input
-              type="text"
-              name="nic"
-              required
-              placeholder="199412345678"
-              className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono placeholder:text-slate-400 focus:ring-2 focus:ring-rose-500 outline-none uppercase"
-            />
+            <div className="relative">
+              <input
+                type="text"
+                name="nic"
+                required
+                value={nicValue}
+                onChange={(e) => setNicValue(e.target.value.toUpperCase())}
+                onBlur={() => void lookupNicHistory(nicValue)}
+                placeholder="199412345678"
+                className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono placeholder:text-slate-400 focus:ring-2 focus:ring-rose-500 outline-none uppercase"
+              />
+              {nicLookupLoading ? (
+                <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-slate-400" />
+              ) : null}
+            </div>
+            {nicLookupError ? (
+              <p className="mt-1 flex items-start gap-1 text-[11px] font-bold text-red-600">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                {nicLookupError}
+              </p>
+            ) : null}
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
@@ -140,7 +267,54 @@ export default function InductionForm({
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        {priorMatches.length > 0 ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-4 py-3 space-y-2">
+            <p className="text-xs font-black uppercase tracking-wide text-amber-900">
+              Prior employment record{priorMatches.length > 1 ? 's' : ''} found for this NIC
+            </p>
+            <ul className="space-y-2">
+              {priorMatches.map((match) => (
+                <li
+                  key={match.id}
+                  className={`rounded-lg border px-3 py-2 text-xs ${
+                    match.isBlacklisted
+                      ? 'border-red-300 bg-red-50'
+                      : 'border-amber-200 bg-white/80'
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-bold text-slate-900">{match.fullName}</span>
+                    <span className="text-slate-500">·</span>
+                    <span className="font-mono text-slate-600">EPF {match.epfNo || '—'}</span>
+                    <span className="text-slate-500">·</span>
+                    <span className="uppercase text-slate-600">{match.status || 'Unknown'}</span>
+                  </div>
+                  {match.isBlacklisted ? (
+                    <p className="mt-1 flex items-center gap-1 font-bold text-red-700">
+                      <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
+                      Blacklisted{match.blacklistReason ? `: ${match.blacklistReason}` : ''}
+                    </p>
+                  ) : null}
+                  {match.guardRating != null ? (
+                    <p className="mt-1 text-slate-600">
+                      Guard score: {match.guardRating.toFixed(1)}
+                      {match.guardTier ? ` (${match.guardTier})` : ''}
+                    </p>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+            <p className="text-[11px] font-bold text-amber-900">
+              Assign a new EPF number below. Prior EPF numbers above are stored for audit and payroll
+              history.
+            </p>
+            <input type="hidden" name="previous_epf_no" value={previousEpfNo} />
+          </div>
+        ) : null}
+
+        <div
+          className={`grid grid-cols-1 gap-5 ${priorMatches.length > 0 ? '' : 'md:grid-cols-2'}`}
+        >
           <div>
             <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
               Passport No
@@ -152,16 +326,56 @@ export default function InductionForm({
               className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono placeholder:text-slate-400 focus:ring-2 focus:ring-rose-500 outline-none uppercase"
             />
           </div>
+          {priorMatches.length === 0 ? (
+            <div>
+              <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
+                Previous EPF No
+              </label>
+              <input
+                type="text"
+                name="previous_epf_no"
+                value={previousEpfNo}
+                readOnly
+                placeholder="Auto-filled when NIC matches a prior record"
+                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-sm text-slate-700 font-mono placeholder:text-slate-400 outline-none"
+              />
+            </div>
+          ) : null}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           <div>
             <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
-              EPF No
+              New EPF No
             </label>
-            <input
-              type="text"
-              name="epf_no"
-              placeholder="EPF membership number"
-              className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono placeholder:text-slate-400 focus:ring-2 focus:ring-rose-500 outline-none"
-            />
+            <div className="relative">
+              <input
+                type="text"
+                name="epf_no"
+                value={epfValue}
+                onChange={(e) => setEpfValue(sanitizeEpfNoInput(e.target.value))}
+                onBlur={() => void verifyEpfAvailable(epfValue)}
+                placeholder="New EPF membership number"
+                className={`w-full bg-white border rounded-lg px-4 py-3 text-sm text-slate-900 font-mono placeholder:text-slate-400 focus:ring-2 outline-none ${
+                  epfUnavailable
+                    ? 'border-red-300 focus:ring-red-400'
+                    : 'border-slate-300 focus:ring-rose-500'
+                }`}
+              />
+              {epfCheckLoading ? (
+                <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-slate-400" />
+              ) : null}
+            </div>
+            {epfUnavailable ? (
+              <p className="mt-1 flex items-start gap-1 text-[11px] font-bold text-red-600">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                {epfUnavailable}
+              </p>
+            ) : (
+              <p className="mt-1 text-[10px] text-slate-500 font-bold">
+                EPF numbers are unique forever — never reuse a resigned employee&apos;s number.
+              </p>
+            )}
           </div>
         </div>
 
@@ -290,8 +504,20 @@ export default function InductionForm({
             {rankLocked && <input type="hidden" name="rank" value={autoRank} />}
             {selectedGroup && rankOptions.length === 0 && (
               <p className="mt-2 text-[10px] font-bold text-amber-800">
-                No ranks for this group in MD Settings → Rank Pay Matrix. Add ranks with the matching
-                operational group, then save the matrix.
+                No ranks for{' '}
+                {CORPORATE_GROUPS.find((g) => g.value === selectedGroup)?.label ?? selectedGroup} in
+                MD Settings → Rank Pay Matrix. Add ranks with the matching operational group, then
+                save the matrix.
+              </p>
+            )}
+            {selectedGroup && rankOptions.length > 0 && (
+              <p className="mt-1.5 text-[10px] font-semibold text-slate-500">
+                Only ranks tagged for this corporate group in the pay matrix are listed.
+              </p>
+            )}
+            {!canManageExecutive && selectedGroup && (
+              <p className="mt-1.5 text-[10px] font-bold text-indigo-800">
+                MD and OD ranks are hidden — only MD or OD can assign executive portal access.
               </p>
             )}
           </div>
@@ -304,11 +530,14 @@ export default function InductionForm({
                 type="text"
                 name="emp_number"
                 required
-                placeholder="e.g. SM-001"
-                className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono placeholder:text-slate-400 focus:ring-2 focus:ring-blue-500 outline-none uppercase"
+                value={epfValue}
+                readOnly
+                placeholder="Auto-filled from New EPF No"
+                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-sm text-slate-700 font-mono placeholder:text-slate-400 outline-none uppercase"
               />
               <p className="mt-1.5 text-[10px] font-semibold text-amber-800">
-                Used for SM portal login. Portal access is provisioned automatically on induction.
+                Matches the new EPF number — used for SM portal login. Access is provisioned
+                automatically on induction.
               </p>
             </div>
           )}
@@ -324,7 +553,7 @@ export default function InductionForm({
                 onChange={(e) => setAssignedSite(e.target.value)}
                 className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono focus:ring-2 focus:ring-blue-500 outline-none uppercase appearance-none"
               >
-                {SITES.map((s) => (
+                {siteOptions.map((s) => (
                   <option key={s} value={s}>
                     {s}
                   </option>
@@ -336,6 +565,12 @@ export default function InductionForm({
                   ? 'Site assignment applies to field guards only'
                   : 'Select Guard as corporate group to assign a site'}
               </div>
+            )}
+            {isGuard && guardSites.length === 0 && (
+              <p className="mt-2 text-[10px] font-bold text-amber-800">
+                No active client sites in the site directory yet. You can bench the guard or add sites
+                in Executive → Sites first.
+              </p>
             )}
           </div>
         </div>
@@ -374,9 +609,18 @@ export default function InductionForm({
             <input
               type="number"
               name="base_salary"
-              placeholder="45000.00"
+              min={0}
+              step={1}
+              value={baseSalary}
+              onChange={(e) => setBaseSalary(e.target.value)}
+              placeholder={rankEntry?.basicPay ? String(rankEntry.basicPay) : '45000.00'}
               className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono focus:ring-2 focus:ring-emerald-500 outline-none"
             />
+            {rankEntry?.basicPay ? (
+              <p className="mt-1.5 text-[10px] font-semibold text-emerald-800">
+                Pre-filled from MD Settings → Rank Pay Matrix ({rankEntry.rankCode}). Edit if needed.
+              </p>
+            ) : null}
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
@@ -391,6 +635,16 @@ export default function InductionForm({
               <option value="NO">NO</option>
             </select>
           </div>
+        </div>
+
+        <div>
+          <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-emerald-700">
+            Fixed Monthly Allowances
+          </p>
+          <p className="text-xs text-slate-500">
+            Site allowance is set by FM in payroll earnings each month. Arrears and performance
+            incentive are added there as well — not at induction.
+          </p>
         </div>
 
         {salaryType === 'BANK' && (

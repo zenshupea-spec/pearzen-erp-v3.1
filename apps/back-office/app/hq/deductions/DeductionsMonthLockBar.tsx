@@ -8,11 +8,6 @@ import {
   type DeductionMonthLockStatus,
 } from './actions';
 import { payrollMonthFirstDay, payrollMonthLabel } from './lib/payroll-month';
-import {
-  getClientDeductionMonthLockedAt,
-  setClientDeductionMonthLock,
-  subscribeDeductionMonthLock,
-} from '../../../lib/deduction-month-lock-storage';
 
 export default function DeductionsMonthLockBar() {
   const [monthInput, setMonthInput] = useState(() => payrollMonthFirstDay().slice(0, 7));
@@ -26,23 +21,13 @@ export default function DeductionsMonthLockBar() {
   const refresh = useCallback(async () => {
     setLoading(true);
     const next = await getDeductionMonthLockStatus(monthInput);
-    const clientLockedAt =
-      !next.locked && (next.isDemo || !next.tableReady)
-        ? getClientDeductionMonthLockedAt(next.payrollMonth)
-        : null;
-    setStatus(
-      clientLockedAt
-        ? { ...next, locked: true, lockedAt: clientLockedAt }
-        : next,
-    );
+    setStatus(next);
     setLoading(false);
   }, [monthInput]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
-
-  useEffect(() => subscribeDeductionMonthLock(() => void refresh()), [refresh]);
 
   const handleLock = () => {
     setMessage(null);
@@ -69,9 +54,6 @@ export default function DeductionsMonthLockBar() {
         if (!res.success) {
           setMessage(res.error ?? 'Lock failed');
           return;
-        }
-        if (res.clientOnly) {
-          setClientDeductionMonthLock(payrollMonth);
         }
         setMessage(`Sent ${label} deductions to FM — payroll lock is now enabled on her desk.`);
         void refresh();

@@ -97,7 +97,10 @@ function ModalShell({
   headerExtra?: React.ReactNode;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-white/98 backdrop-blur-sm">
+    <div
+      className="fixed inset-0 z-50 flex flex-col bg-white/98 backdrop-blur-sm"
+      data-pull-to-refresh-ignore
+    >
       <div className="flex items-start gap-3 border-b border-slate-200 p-4 pt-[max(1rem,env(safe-area-inset-top))]">
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-100">
           {icon}

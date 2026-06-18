@@ -1,6 +1,6 @@
 import { Suspense } from 'react';
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
-import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access';
+import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access-server';
 import { canAccessHqHub } from '../../lib/hq-hub';
 import TmCommandCenter from './TmCommandCenter';
 
@@ -37,7 +37,7 @@ async function TmPageInner() {
 
   return (
     <TmCommandCenter
-      showDemoBanner={!user}
+      showDemoBanner={false}
       showHqHubLink={canAccessHqHub(profile?.role)}
     />
   );

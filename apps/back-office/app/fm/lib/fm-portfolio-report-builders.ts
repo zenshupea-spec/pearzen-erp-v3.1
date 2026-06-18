@@ -1,4 +1,13 @@
 import {
+  calcApit,
+  calcApitBySlab,
+  DEFAULT_APIT_SLABS,
+  DEFAULT_STAMP_DUTY_LKR,
+  formatApitSlabLabel,
+  getMarginalApitSlab,
+  type ApitSlab,
+} from '../../../../../packages/payroll-deductions';
+import {
   FM_PREV_MONTH_STOP_LIST,
   FM_SALARY_MONTH_HALF_HOLD_LIST,
   type RetentionGuardRow,
@@ -62,13 +71,87 @@ export function sumDeductionByType(
   );
 }
 
-export function calculateEmployeeStatutory(gross: number) {
+export function calculateEmployeeStatutory(
+  gross: number,
+  slabs: ApitSlab[] = DEFAULT_APIT_SLABS,
+) {
   const epf = gross * 0.08;
   const etf = gross * 0.03;
-  const apit = gross * 0.02;
-  const stamp = gross >= 30_000 ? 25 : 0;
+  const apit = calcApit(gross, slabs);
+  const stamp = gross >= 30_000 ? DEFAULT_STAMP_DUTY_LKR : 0;
   return { epf, etf, apit, stamp, total: epf + etf + apit + stamp };
 }
+
+export type StatutoryApitBracketSummary = {
+  slab: ApitSlab;
+  label: string;
+  employeeCount: number;
+  totalApit: number;
+};
+
+export type StatutoryApitEmployeeRow = {
+  employee: FmReportEmployee;
+  gross: number;
+  apit: number;
+  marginalSlab: ApitSlab;
+};
+
+export function buildStatutoryApitReport(
+  employees: FmReportEmployee[],
+  slabs: ApitSlab[] = DEFAULT_APIT_SLABS,
+) {
+  const bracketTotals = new Map<
+    number,
+    { slab: ApitSlab; totalApit: number; employeeIds: Set<string> }
+  >();
+  for (const slab of slabs) {
+    if (slab.rate <= 0) continue;
+    bracketTotals.set(slab.id, { slab, totalApit: 0, employeeIds: new Set() });
+  }
+
+  const apitEmployees: StatutoryApitEmployeeRow[] = [];
+
+  for (const emp of employees) {
+    const apit = calcApit(emp.totalGross, slabs);
+    if (apit > 0) {
+      apitEmployees.push({
+        employee: emp,
+        gross: emp.totalGross,
+        apit,
+        marginalSlab: getMarginalApitSlab(emp.totalGross, slabs),
+      });
+    }
+    for (const { slab, amount } of calcApitBySlab(emp.totalGross, slabs)) {
+      const entry = bracketTotals.get(slab.id);
+      if (!entry || amount <= 0) continue;
+      entry.totalApit += amount;
+      entry.employeeIds.add(emp.id);
+    }
+  }
+
+  const bracketSummary: StatutoryApitBracketSummary[] = [...bracketTotals.values()]
+    .sort((a, b) => a.slab.min - b.slab.min)
+    .map((entry) => ({
+      slab: entry.slab,
+      label: formatApitSlabLabel(entry.slab),
+      employeeCount: entry.employeeIds.size,
+      totalApit: entry.totalApit,
+    }));
+
+  const employeesByBracket = new Map<number, StatutoryApitEmployeeRow[]>();
+  for (const row of apitEmployees) {
+    const list = employeesByBracket.get(row.marginalSlab.id) ?? [];
+    list.push(row);
+    employeesByBracket.set(row.marginalSlab.id, list);
+  }
+  for (const list of employeesByBracket.values()) {
+    list.sort((a, b) => a.employee.name.localeCompare(b.employee.name, undefined, { sensitivity: 'base' }));
+  }
+
+  return { bracketSummary, employeesByBracket, apitEmployees };
+}
+
+export { formatApitSlabLabel };
 
 /** Mock AR collection lines aligned to portfolio sites. */
 const CLIENT_BILLING_COLLECTION: Record<
@@ -139,7 +222,7 @@ export function requiresMdApprovalForExport(kind: FmPortfolioReportKind) {
 export function buildTableHtml(
   kind: FmPortfolioReportKind,
   sites: FmReportSite[],
-): { head: string; body: string } {
+): { head: string; body: string; contentHtml?: string } {
   const employees = flattenPortfolioEmployees(sites);
 
   if (kind === 'payroll-cost') {
@@ -197,29 +280,10 @@ export function buildTableHtml(
   }
 
   if (kind === 'statutory') {
-    let total = 0;
-    const bodyRows = employees
-      .map((e) => {
-        const s = calculateEmployeeStatutory(e.totalGross);
-        total += s.total;
-        return `<tr>
-          <td>${e.name}</td><td>${e.empNumber}</td><td>${e.siteName}</td>
-          <td class="num">${lkrPlain(s.epf)}</td><td class="num">${lkrPlain(s.etf)}</td>
-          <td class="num">${lkrPlain(s.apit)}</td><td class="num">${lkrPlain(s.stamp)}</td>
-          <td class="num"><strong>${lkrPlain(s.total)}</strong></td>
-        </tr>`;
-      })
-      .join('');
     return {
-      head: `<tr>
-        <th>Employee</th><th>Emp No.</th><th>Site</th>
-        <th class="num">EPF (8%)</th><th class="num">ETF (3%)</th>
-        <th class="num">APIT</th><th class="num">Stamp</th><th class="num">Total</th>
-      </tr>`,
-      body:
-        bodyRows +
-        `<tr><td colspan="7"><strong>Portfolio Statutory Total</strong></td>
-          <td class="num"><strong>${lkrPlain(total)}</strong></td></tr>`,
+      head: '',
+      body: '',
+      contentHtml: buildStatutoryReportContentHtml(employees),
     };
   }
 
@@ -272,6 +336,123 @@ export function buildTableHtml(
 
 function sumEmpDeduction(emp: FmReportEmployee, type: FmReportEmployee['deductions'][number]['type']) {
   return emp.deductions.filter((d) => d.type === type).reduce((s, d) => s + d.thisMonthAmount, 0);
+}
+
+function employeeNameCellHtml(e: FmReportEmployee) {
+  return `${e.name}<br/><span style="color:#64748b;font-size:9px;">${e.empNumber}</span>`;
+}
+
+export function buildStatutoryReportContentHtml(employees: FmReportEmployee[]): string {
+  const apitReport = buildStatutoryApitReport(employees);
+  let epfTotal = 0;
+  let etfTotal = 0;
+  let stampTotal = 0;
+  let portfolioTotal = 0;
+
+  const epfRows = employees
+    .map((e) => {
+      const s = calculateEmployeeStatutory(e.totalGross);
+      epfTotal += s.epf;
+      etfTotal += s.etf;
+      stampTotal += s.stamp;
+      portfolioTotal += s.total;
+      return `<tr>
+        <td>${employeeNameCellHtml(e)}</td>
+        <td>${e.siteName ?? '—'}</td>
+        <td class="num">${lkrPlain(s.epf)}</td>
+        <td class="num">${lkrPlain(s.etf)}</td>
+        <td class="num">${lkrPlain(s.stamp)}</td>
+        <td class="num"><strong>${lkrPlain(s.epf + s.etf + s.stamp)}</strong></td>
+      </tr>`;
+    })
+    .join('');
+
+  const bracketRows =
+    apitReport.bracketSummary.length > 0
+      ? apitReport.bracketSummary
+          .map(
+            (row) => `<tr>
+          <td>${row.label}</td>
+          <td class="num">${row.slab.rate}%</td>
+          <td class="num">${row.employeeCount}</td>
+          <td class="num"><strong>${lkrPlain(row.totalApit)}</strong></td>
+        </tr>`,
+          )
+          .join('')
+      : `<tr><td colspan="4">No APIT liability in any bracket this period.</td></tr>`;
+
+  const apitTotal = apitReport.bracketSummary.reduce((sum, row) => sum + row.totalApit, 0);
+  const bracketRowsWithTotal =
+    bracketRows +
+    (apitTotal > 0
+      ? `<tr><td colspan="3"><strong>Portfolio APIT Total</strong></td>
+          <td class="num"><strong>${lkrPlain(apitTotal)}</strong></td></tr>`
+      : '');
+
+  const employeeSections =
+    apitReport.apitEmployees.length === 0
+      ? `<p style="margin-top:8px;color:#64748b;">No employees liable for APIT this period.</p>`
+      : apitReport.bracketSummary
+          .filter((row) => (apitReport.employeesByBracket.get(row.slab.id)?.length ?? 0) > 0)
+          .map((row) => {
+            const rows = apitReport.employeesByBracket.get(row.slab.id) ?? [];
+            const body = rows
+              .map(
+                (entry) => `<tr>
+              <td>${employeeNameCellHtml(entry.employee)}</td>
+              <td>${entry.employee.siteName ?? '—'}</td>
+              <td class="num">${lkrPlain(entry.gross)}</td>
+              <td class="num"><strong>${lkrPlain(entry.apit)}</strong></td>
+            </tr>`,
+              )
+              .join('');
+            return `<h3 style="margin:16px 0 8px;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.08em;color:#475569;">${row.label}</h3>
+            <table>
+              <thead><tr>
+                <th>Employee</th><th>Site</th>
+                <th class="num">Gross Salary</th><th class="num">APIT</th>
+              </tr></thead>
+              <tbody>${body}</tbody>
+            </table>`;
+          })
+          .join('');
+
+  return `
+    <h2 style="margin:0 0 8px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.08em;">EPF · ETF · Stamp Duty</h2>
+    <table>
+      <thead><tr>
+        <th>Employee</th><th>Site</th>
+        <th class="num">EPF (8%)</th><th class="num">ETF (3%)</th>
+        <th class="num">Stamp</th><th class="num">Subtotal</th>
+      </tr></thead>
+      <tbody>
+        ${epfRows}
+        <tr><td colspan="2"><strong>Portfolio Subtotal</strong></td>
+          <td class="num"><strong>${lkrPlain(epfTotal)}</strong></td>
+          <td class="num"><strong>${lkrPlain(etfTotal)}</strong></td>
+          <td class="num"><strong>${lkrPlain(stampTotal)}</strong></td>
+          <td class="num"><strong>${lkrPlain(epfTotal + etfTotal + stampTotal)}</strong></td></tr>
+      </tbody>
+    </table>
+
+    <h2 style="margin:20px 0 8px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.08em;">APIT — Bracket Summary</h2>
+    <table>
+      <thead><tr>
+        <th>Bracket</th><th class="num">Rate</th>
+        <th class="num">Employees</th><th class="num">Total APIT</th>
+      </tr></thead>
+      <tbody>${bracketRowsWithTotal}</tbody>
+    </table>
+
+    <h2 style="margin:20px 0 8px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.08em;">APIT — Paying Employees by Bracket</h2>
+    ${employeeSections}
+
+    <table style="margin-top:20px;">
+      <tbody><tr>
+        <td><strong>Portfolio Statutory Total (EPF + ETF + Stamp + APIT)</strong></td>
+        <td class="num"><strong>${lkrPlain(portfolioTotal)}</strong></td>
+      </tr></tbody>
+    </table>`;
 }
 
 export { lkr };

@@ -23,6 +23,15 @@ export type GuardMonthPreviewQty = {
   sat: number;
 };
 
+export type CafeMonthPreviewQty = {
+  std: number;
+  sun: number;
+  poya: number;
+  pubHol: number;
+  statutory: number;
+  sat: number;
+};
+
 export type MdEngineConstants = {
   cafeOtCutoffTime: string;
   invoiceDispatchDay: number;
@@ -47,8 +56,12 @@ export type MdEngineConstants = {
   guardPreviewQty: GuardMonthPreviewQty;
   /** Café month simulation — sample basic salary */
   cafePreviewBasic: number;
+  /** Café month simulation — day-type counts */
+  cafePreviewQty: CafeMonthPreviewQty;
   /** Café month simulation — OT hours in month */
   cafePreviewOtHours: number;
+  /** When true, FM cannot lock payroll until HQ Deductions Admin locks the month. */
+  requireDeductionMonthLock: boolean;
 };
 
 const DEFAULTS: MdEngineConstants = {
@@ -71,7 +84,9 @@ const DEFAULTS: MdEngineConstants = {
   hoPreviewSalary: 180_000,
   guardPreviewQty: { std: 20, sun: 4, poya: 1, pubHol: 0, sat: 4 },
   cafePreviewBasic: 38_000,
+  cafePreviewQty: { std: 20, sun: 4, poya: 1, pubHol: 0, statutory: 0, sat: 4 },
   cafePreviewOtHours: 0,
+  requireDeductionMonthLock: true,
 };
 
 const SM_MODES: SmPayMode[] = ['FIXED_ONLY', 'PER_VISIT_ONLY', 'FIXED_AND_PER_VISIT'];
@@ -106,6 +121,19 @@ function sanitizeGuardPreviewQty(raw: unknown): GuardMonthPreviewQty {
   };
 }
 
+function sanitizeCafePreviewQty(raw: unknown): CafeMonthPreviewQty {
+  const row = raw && typeof raw === 'object' ? (raw as Partial<CafeMonthPreviewQty>) : {};
+  const d = DEFAULTS.cafePreviewQty;
+  return {
+    std: clampQty(row.std, d.std),
+    sun: clampQty(row.sun, d.sun),
+    poya: clampQty(row.poya, d.poya),
+    pubHol: clampQty(row.pubHol, d.pubHol),
+    statutory: clampQty(row.statutory, d.statutory),
+    sat: clampQty(row.sat, d.sat),
+  };
+}
+
 function sanitize(raw: Partial<MdEngineConstants>): MdEngineConstants {
   const mode = SM_MODES.includes(raw.smPayMode as SmPayMode)
     ? (raw.smPayMode as SmPayMode)
@@ -131,7 +159,9 @@ function sanitize(raw: Partial<MdEngineConstants>): MdEngineConstants {
     hoPreviewSalary: Math.min(10_000_000, Math.max(0, Math.round(num(raw.hoPreviewSalary, DEFAULTS.hoPreviewSalary)))),
     guardPreviewQty: sanitizeGuardPreviewQty(raw.guardPreviewQty),
     cafePreviewBasic: Math.min(10_000_000, Math.max(0, Math.round(num(raw.cafePreviewBasic, DEFAULTS.cafePreviewBasic)))),
+    cafePreviewQty: sanitizeCafePreviewQty(raw.cafePreviewQty),
     cafePreviewOtHours: Math.min(200, Math.max(0, Math.round(num(raw.cafePreviewOtHours, DEFAULTS.cafePreviewOtHours)))),
+    requireDeductionMonthLock: raw.requireDeductionMonthLock !== false,
   };
 }
 
@@ -155,5 +185,6 @@ export async function saveMdEngineConstants(settings: MdEngineConstants) {
 
   revalidatePath('/executive/settings');
   revalidatePath('/fm/settings');
+  revalidatePath('/fm');
   return { success: true as const };
 }

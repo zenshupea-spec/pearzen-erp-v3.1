@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   Car,
   Navigation,
@@ -28,172 +28,22 @@ import {
   Trash2,
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-type VehicleStatus = 'ONLINE' | 'PARKED' | 'IDLE';
-type VehicleColor  = 'amber' | 'sky' | 'emerald' | 'violet';
-type TripSeverity  = 'RECKLESS' | 'SPEEDING' | 'AGGRESSIVE';
-
-interface VehicleAsset {
-  id: string;
-  name: string;
-  plate: string;
-  driver: string;
-  status: VehicleStatus;
-  speedKmh: number;
-  location: string;
-  lastPing: string;
-  /** SVG viewBox 0-0-800-420 coordinates */
-  mapX: number;
-  mapY: number;
-  color: VehicleColor;
-}
-
-interface FlaggedTrip {
-  id: string;
-  vehicleId: string;
-  vehicleName: string;
-  driver: string;
-  from: string;
-  to: string;
-  date: string;
-  actualMins: number;
-  expectedMins: number;
-  avgSpeedKmh: number;
-  speedLimitKmh: number;
-  severity: TripSeverity;
-  /** SVG path for route highlight on map */
-  routePath: string;
-}
-
-interface FuelRow {
-  vehicleId: string;
-  vehicleName: string;
-  plate: string;
-  fuelType: 'Petrol' | 'Diesel';
-  /** Assigned km/L — editable */
-  efficiencyKmL: number;
-  gpsKm: number;
-  allowanceLiters: number;
-  allowanceLkr: number;
-}
-
-interface RegisterForm {
-  name: string;
-  plate: string;
-  driver: string;
-  type: string;
-  fuelType: string;
-  trackerType: string;
-  tagId: string;
-}
-
-// ─── Static data ──────────────────────────────────────────────────────────────
-
-const VEHICLES: VehicleAsset[] = [
-  {
-    id: 'V001',
-    name: 'MD Assigned — Peugeot 5008 GT Line',
-    plate: 'CAR-2341',
-    driver: 'Suresh Gunawardena',
-    status: 'ONLINE',
-    speedKmh: 52,
-    location: 'Nawala, Rajagiriya',
-    lastPing: '12 secs ago',
-    mapX: 188,
-    mapY: 95,
-    color: 'amber',
-  },
-  {
-    id: 'V002',
-    name: 'Patrol Van 1',
-    plate: 'WP-GH-8821',
-    driver: 'Nimal Rajapaksa',
-    status: 'ONLINE',
-    speedKmh: 37,
-    location: 'Borella, Colombo 08',
-    lastPing: '8 secs ago',
-    mapX: 352,
-    mapY: 195,
-    color: 'sky',
-  },
-];
-
-/** today / week-start constants used by the D/W/M filter */
-const TODAY      = '2026-05-28';
-const WEEK_START = '2026-05-26';
-
-const FLAGGED_TRIPS: FlaggedTrip[] = [
-  {
-    id: 'FT001',
-    vehicleId: 'V001',
-    vehicleName: 'MD Assigned — Peugeot 5008 GT Line',
-    driver: 'Suresh Gunawardena',
-    from: 'Nawala (HQ Office)',
-    to: 'Galle Face Green, Colombo 03',
-    date: '2026-05-28',
-    actualMins: 18,
-    expectedMins: 32,
-    avgSpeedKmh: 74,
-    speedLimitKmh: 50,
-    severity: 'RECKLESS',
-    routePath: 'M 188,95 Q 160,190 132,298',
-  },
-  {
-    id: 'FT002',
-    vehicleId: 'V002',
-    vehicleName: 'Patrol Van 1',
-    driver: 'Nimal Rajapaksa',
-    from: 'Borella, Colombo 08',
-    to: 'Wellawatte Client Site, Col 06',
-    date: '2026-05-26',
-    actualMins: 12,
-    expectedMins: 22,
-    avgSpeedKmh: 68,
-    speedLimitKmh: 50,
-    severity: 'SPEEDING',
-    routePath: 'M 352,195 Q 280,270 195,355',
-  },
-  {
-    id: 'FT003',
-    vehicleId: 'V001',
-    vehicleName: 'MD Assigned — Peugeot 5008 GT Line',
-    driver: 'Suresh Gunawardena',
-    from: 'Nawala (HQ Office)',
-    to: 'Bambalapitiya, Colombo 04',
-    date: '2026-05-18',
-    actualMins: 15,
-    expectedMins: 28,
-    avgSpeedKmh: 71,
-    speedLimitKmh: 50,
-    severity: 'RECKLESS',
-    routePath: 'M 188,95 Q 200,200 228,318',
-  },
-];
-
-const INITIAL_FUEL: FuelRow[] = [
-  {
-    vehicleId: 'V001',
-    vehicleName: 'Peugeot 5008 GT Line',
-    plate: 'CAR-2341',
-    fuelType: 'Petrol',
-    efficiencyKmL: 12.5,
-    gpsKm: 1240,
-    allowanceLiters: 108,
-    allowanceLkr: 42_000,
-  },
-  {
-    vehicleId: 'V002',
-    vehicleName: 'Patrol Van 1',
-    plate: 'WP-GH-8821',
-    fuelType: 'Diesel',
-    efficiencyKmL: 8.0,
-    gpsKm: 2380,
-    allowanceLiters: 302,
-    allowanceLkr: 92_480,
-  },
-];
+import {
+  getFleetDashboard,
+  registerFleetAsset,
+  removeFleetAsset,
+  updateFleetEfficiency,
+} from './fleet-actions';
+import type {
+  FlaggedTrip,
+  FuelRow,
+  RegisterForm,
+  RouteHistoryEntry,
+  TripSeverity,
+  VehicleAsset,
+  VehicleColor,
+  VehicleStatus,
+} from './fleet-types';
 
 const EMPTY_REGISTER: RegisterForm = {
   name: '',
@@ -205,22 +55,18 @@ const EMPTY_REGISTER: RegisterForm = {
   tagId: '',
 };
 
-/** 60-day route history per vehicle for the individual map modal */
-const VEHICLE_ROUTE_HISTORY: Record<string, { path: string; date: string; label: string; isFlagged?: boolean }[]> = {
-  V001: [
-    { path: 'M 188,95 Q 160,190 132,298',  date: '2026-05-28', label: 'Nawala → Galle Face Green',   isFlagged: true },
-    { path: 'M 188,95 Q 200,200 228,318',  date: '2026-05-18', label: 'Nawala → Bambalapitiya',      isFlagged: true },
-    { path: 'M 188,95 Q 250,145 310,195',  date: '2026-05-17', label: 'Nawala → Borella' },
-    { path: 'M 310,195 Q 260,260 228,318', date: '2026-05-15', label: 'Borella → Bambalapitiya' },
-    { path: 'M 228,318 Q 170,300 132,298', date: '2026-05-13', label: 'Bambalapitiya → Galle Face' },
-  ],
-  V002: [
-    { path: 'M 352,195 Q 280,270 195,355', date: '2026-05-26', label: 'Borella → Wellawatte',       isFlagged: true },
-    { path: 'M 352,195 Q 330,220 310,248', date: '2026-05-18', label: 'Borella → Dehiwala' },
-    { path: 'M 310,248 Q 330,220 352,195', date: '2026-05-16', label: 'Dehiwala → Borella' },
-    { path: 'M 352,195 Q 390,195 420,195', date: '2026-05-14', label: 'Borella → Maradana Junction' },
-  ],
-};
+function tripPeriodBounds(period: 'D' | 'W' | 'M') {
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+  if (period === 'D') return { start: today, end: today };
+  if (period === 'W') {
+    const start = new Date(now);
+    start.setDate(now.getDate() - now.getDay());
+    return { start: start.toISOString().slice(0, 10), end: today };
+  }
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  return { start: start.toISOString().slice(0, 10), end: today };
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -266,10 +112,30 @@ function getVehicleViewBox(v: VehicleAsset): string {
 
 // ─── Register Asset Modal ─────────────────────────────────────────────────────
 
-function RegisterTagModal({ onClose }: { onClose: () => void }) {
+function RegisterTagModal({
+  onClose,
+  onRegister,
+}: {
+  onClose: () => void;
+  onRegister: (form: RegisterForm) => Promise<{ success: boolean; error?: string }>;
+}) {
   const [form, setForm] = useState<RegisterForm>(EMPTY_REGISTER);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const set = <K extends keyof RegisterForm>(k: K, v: RegisterForm[K]) =>
     setForm((p) => ({ ...p, [k]: v }));
+
+  const handleSubmit = async () => {
+    setSaving(true);
+    setError(null);
+    const result = await onRegister(form);
+    setSaving(false);
+    if (result.success) {
+      onClose();
+      return;
+    }
+    setError(result.error ?? 'Could not register asset.');
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -382,21 +248,29 @@ function RegisterTagModal({ onClose }: { onClose: () => void }) {
           </div>
         </div>
 
+        {error ? (
+          <p className="mx-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">
+            {error}
+          </p>
+        ) : null}
+
         <div className="flex items-center gap-3 border-t border-slate-100 px-6 py-4">
           <button
             type="button"
             onClick={onClose}
-            className="flex-1 rounded-xl border border-slate-200/80 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-50 transition-colors"
+            disabled={saving}
+            className="flex-1 rounded-xl border border-slate-200/80 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50"
           >
             Cancel
           </button>
           <button
             type="button"
-            onClick={onClose}
-            className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-emerald-600 py-2.5 text-sm font-black text-white shadow-md shadow-emerald-600/25 hover:bg-emerald-700 transition-colors"
+            onClick={() => void handleSubmit()}
+            disabled={saving}
+            className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-emerald-600 py-2.5 text-sm font-black text-white shadow-md shadow-emerald-600/25 hover:bg-emerald-700 transition-colors disabled:opacity-50"
           >
             <Tag className="h-3.5 w-3.5" />
-            Register Asset
+            {saving ? 'Registering…' : 'Register Asset'}
           </button>
         </div>
       </div>
@@ -408,13 +282,14 @@ function RegisterTagModal({ onClose }: { onClose: () => void }) {
 
 function VehicleMapModal({
   vehicle,
+  routes,
   onClose,
 }: {
   vehicle: VehicleAsset;
+  routes: RouteHistoryEntry[];
   onClose: () => void;
 }) {
   const c       = VEHICLE_COLORS[vehicle.color];
-  const routes  = VEHICLE_ROUTE_HISTORY[vehicle.id] ?? [];
   const viewBox = getVehicleViewBox(vehicle);
 
   return (
@@ -616,13 +491,16 @@ function VehicleMapModal({
 
 function TelematicsMap({
   vehicles,
+  flaggedTrips,
   highlightedTripPath,
   highlightedVehicleId,
 }: {
   vehicles: VehicleAsset[];
+  flaggedTrips: FlaggedTrip[];
   highlightedTripPath: string | null;
   highlightedVehicleId: string | null;
 }) {
+  const onlineCount = vehicles.filter((v) => v.status === 'ONLINE').length;
   return (
     <div className="relative w-full overflow-hidden rounded-2xl border border-white/70 bg-slate-50/80">
       {/* Map background grid */}
@@ -719,7 +597,7 @@ function TelematicsMap({
         )}
 
         {/* ─ Always-visible flagged-trip route ghost ─ */}
-        {!highlightedTripPath && FLAGGED_TRIPS.map((t) => (
+        {!highlightedTripPath && flaggedTrips.map((t) => (
           <path
             key={t.id}
             d={t.routePath}
@@ -777,7 +655,7 @@ function TelematicsMap({
       <div className="absolute left-4 top-4 flex items-center gap-1.5 rounded-full border border-emerald-300/60 bg-white/80 px-2.5 py-1 shadow-sm backdrop-blur-sm">
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.8)]" />
         <span className="text-[9px] font-black uppercase tracking-widest text-emerald-800">Live</span>
-        <span className="text-[9px] text-slate-500">· 2 Active Tags</span>
+        <span className="text-[9px] text-slate-500">· {onlineCount} Active Tag{onlineCount === 1 ? '' : 's'}</span>
       </div>
 
       {/* 60-day purge badge */}
@@ -1181,19 +1059,43 @@ function FuelTable({
 type TripPeriod = 'D' | 'W' | 'M';
 
 export default function FleetPage() {
-  const [vehicles, setVehicles]             = useState<VehicleAsset[]>(VEHICLES);
-  const [fuelRows, setFuelRows]             = useState<FuelRow[]>(INITIAL_FUEL);
+  const [vehicles, setVehicles]             = useState<VehicleAsset[]>([]);
+  const [flaggedTrips, setFlaggedTrips]     = useState<FlaggedTrip[]>([]);
+  const [routeHistory, setRouteHistory]     = useState<Record<string, RouteHistoryEntry[]>>({});
+  const [fuelRows, setFuelRows]             = useState<FuelRow[]>([]);
+  const [fuelPeriodLabel, setFuelPeriodLabel] = useState('');
+  const [loading, setLoading]               = useState(true);
+  const [loadError, setLoadError]           = useState<string | null>(null);
   const [showRegister, setShowRegister]     = useState(false);
   const [highlightedTripId, setHighlight]   = useState<string | null>(null);
   const [mapVehicleId, setMapVehicleId]     = useState<string | null>(null);
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [tripPeriod, setTripPeriod]         = useState<TripPeriod>('M');
 
+  const reloadFleet = useCallback(async () => {
+    setLoadError(null);
+    try {
+      const data = await getFleetDashboard();
+      setVehicles(data.vehicles);
+      setFlaggedTrips(data.flaggedTrips);
+      setRouteHistory(data.routeHistory);
+      setFuelRows(data.fuelRows);
+      setFuelPeriodLabel(data.fuelPeriodLabel);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'Failed to load fleet data.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reloadFleet();
+  }, [reloadFleet]);
+
   const filteredTrips = useMemo(() => {
-    if (tripPeriod === 'D') return FLAGGED_TRIPS.filter((t) => t.date === TODAY);
-    if (tripPeriod === 'W') return FLAGGED_TRIPS.filter((t) => t.date >= WEEK_START && t.date <= TODAY);
-    return FLAGGED_TRIPS;
-  }, [tripPeriod]);
+    const { start, end } = tripPeriodBounds(tripPeriod);
+    return flaggedTrips.filter((t) => t.date >= start && t.date <= end);
+  }, [flaggedTrips, tripPeriod]);
 
   const highlightedTrip = useMemo(
     () => filteredTrips.find((t) => t.id === highlightedTripId) ?? null,
@@ -1205,18 +1107,38 @@ export default function FleetPage() {
     [vehicles, mapVehicleId],
   );
 
-  const handleUpdateEfficiency = useCallback((vehicleId: string, value: number) => {
+  const handleUpdateEfficiency = useCallback(async (vehicleId: string, value: number) => {
+    const result = await updateFleetEfficiency(vehicleId, value);
+    if (!result.success) {
+      setLoadError(result.error);
+      return;
+    }
     setFuelRows((prev) =>
       prev.map((r) => (r.vehicleId === vehicleId ? { ...r, efficiencyKmL: value } : r)),
     );
   }, []);
 
-  const handleRemoveVehicle = useCallback((vehicleId: string) => {
+  const handleRemoveVehicle = useCallback(async (vehicleId: string) => {
+    const result = await removeFleetAsset(vehicleId);
+    if (!result.success) {
+      setLoadError(result.error);
+      return;
+    }
     setVehicles((prev) => prev.filter((v) => v.id !== vehicleId));
     setFuelRows((prev) => prev.filter((r) => r.vehicleId !== vehicleId));
+    setFlaggedTrips((prev) => prev.filter((t) => t.vehicleId !== vehicleId));
     setConfirmRemoveId(null);
     if (mapVehicleId === vehicleId) setMapVehicleId(null);
   }, [mapVehicleId]);
+
+  const handleRegisterAsset = useCallback(async (form: RegisterForm) => {
+    const result = await registerFleetAsset(form);
+    if (result.success) {
+      await reloadFleet();
+      return { success: true };
+    }
+    return { success: false, error: result.error };
+  }, [reloadFleet]);
 
   const onlineCount        = vehicles.filter((v) => v.status === 'ONLINE').length;
   const recklessCount      = filteredTrips.filter((t) => t.severity === 'RECKLESS').length;
@@ -1227,6 +1149,20 @@ export default function FleetPage() {
 
   return (
     <div className="min-h-screen p-6 md:p-8 lg:p-10">
+
+      {loadError ? (
+        <div className="mb-6 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">
+          {loadError}
+        </div>
+      ) : null}
+
+      {loading ? (
+        <div className="rounded-2xl border border-dashed border-slate-200/80 bg-white/30 py-16 text-center">
+          <RefreshCw className="mx-auto mb-3 h-8 w-8 animate-spin text-slate-400" />
+          <p className="text-sm font-bold text-slate-500">Loading fleet data…</p>
+        </div>
+      ) : (
+        <>
 
       {/* ── Page header ── */}
       <div className="mb-8">
@@ -1320,7 +1256,7 @@ export default function FleetPage() {
           {vehicles.map((v) => {
             const c = VEHICLE_COLORS[v.color];
             const isConfirming    = confirmRemoveId === v.id;
-            const vehicleTrips    = FLAGGED_TRIPS.filter((t) => t.vehicleId === v.id);
+            const vehicleTrips    = flaggedTrips.filter((t) => t.vehicleId === v.id);
 
             return (
               <ExecutiveGlassCard key={v.id} className="relative overflow-hidden p-5">
@@ -1348,7 +1284,7 @@ export default function FleetPage() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleRemoveVehicle(v.id)}
+                        onClick={() => void handleRemoveVehicle(v.id)}
                         className="flex-1 rounded-xl bg-red-600 py-2 text-sm font-black text-white hover:bg-red-700 transition-colors"
                       >
                         Confirm
@@ -1480,7 +1416,7 @@ export default function FleetPage() {
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <Droplets className="h-4 w-4 text-sky-600" />
           <p className="text-sm font-black text-slate-700">
-            Fuel Reconciliation — May 2026
+            Fuel Reconciliation — {fuelPeriodLabel || 'Current Month'}
           </p>
           {fuelVarianceAlerts > 0 && (
             <span className="inline-flex items-center gap-1 rounded-full border border-amber-200/70 bg-amber-100/80 px-2 py-0.5 text-[9px] font-black text-amber-800">
@@ -1492,12 +1428,25 @@ export default function FleetPage() {
             Click <Pencil className="inline h-3 w-3" /> to adjust assigned efficiency per vehicle
           </span>
         </div>
-        <FuelTable rows={fuelRows} onUpdateEfficiency={handleUpdateEfficiency} />
+        <FuelTable rows={fuelRows} onUpdateEfficiency={(id, value) => void handleUpdateEfficiency(id, value)} />
       </div>
 
       {/* ── Modals ── */}
-      {showRegister && <RegisterTagModal onClose={() => setShowRegister(false)} />}
-      {mapVehicle   && <VehicleMapModal  vehicle={mapVehicle} onClose={() => setMapVehicleId(null)} />}
+      {showRegister && (
+        <RegisterTagModal
+          onClose={() => setShowRegister(false)}
+          onRegister={handleRegisterAsset}
+        />
+      )}
+      {mapVehicle && (
+        <VehicleMapModal
+          vehicle={mapVehicle}
+          routes={routeHistory[mapVehicle.id] ?? []}
+          onClose={() => setMapVehicleId(null)}
+        />
+      )}
+        </>
+      )}
     </div>
   );
 }

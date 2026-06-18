@@ -5,10 +5,11 @@ import { Flame, Radio, Shield } from 'lucide-react';
 
 import BrandWatermarkBackground from '../../components/portal/BrandWatermarkBackground';
 import GoogleSignInButton from '../GoogleSignInButton';
+import HeadOfficeLoginForm from './HeadOfficeLoginForm';
 
 const HEAD_OFFICE_ROLES = ['MD', 'OD', 'HQ', 'OM', 'TM'];
 
-type Variant = 'head-office' | 'forge' | 'om' | 'tm';
+type Variant = 'head-office' | 'forge' | 'om' | 'tm' | 'md' | 'hq';
 
 const VARIANT_COPY: Record<
   Variant,
@@ -17,15 +18,29 @@ const VARIANT_COPY: Record<
     subtitle: string;
     roles: string[];
     signInHint: string;
-    beam: 'rose' | 'indigo' | 'sky' | 'violet';
+    beam: 'rose' | 'indigo' | 'sky' | 'violet' | 'emerald';
   }
 > = {
   'head-office': {
     title: 'Pearzen ERP',
-    subtitle: 'Sign in with your work Google account',
+    subtitle: 'Staff portal gateway',
     roles: [],
-    signInHint: 'You will be routed to your workspace automatically after sign-in',
+    signInHint: 'Use /login to choose your portal',
     beam: 'rose',
+  },
+  md: {
+    title: 'MD Portal',
+    subtitle: 'Executive vault · finance · enterprise command',
+    roles: ['MD', 'OD'],
+    signInHint: 'Work email + OTP or PIN — MD and OD only',
+    beam: 'indigo',
+  },
+  hq: {
+    title: 'HQ Staff Portal',
+    subtitle: 'HR · finance desk · deductions · hub modules',
+    roles: ['HR', 'FM', 'EA'],
+    signInHint: 'Work email + OTP or PIN — HQ staff and RBAC roles only',
+    beam: 'emerald',
   },
   forge: {
     title: 'SaaS Forge',
@@ -38,14 +53,14 @@ const VARIANT_COPY: Record<
     title: 'OM Command Center',
     subtitle: 'Field Operations & Tactical Deployment',
     roles: ['OM'],
-    signInHint: 'Sign in with your Operations Manager Google workspace account',
+    signInHint: 'Work email + OTP or PIN from OD/MD',
     beam: 'sky',
   },
   tm: {
     title: 'TM Command Center',
     subtitle: 'Territory Oversight & Shift Verification',
     roles: ['TM'],
-    signInHint: 'Sign in with your Territory Manager Google workspace account',
+    signInHint: 'Work email + OTP or PIN from OD/MD',
     beam: 'violet',
   },
 };
@@ -125,6 +140,8 @@ export default function LoginShell({
   const copy = VARIANT_COPY[variant];
   const isForge = variant === 'forge';
   const isFieldPortal = variant === 'om' || variant === 'tm';
+  const isMdPortal = variant === 'md';
+  const isHqPortal = variant === 'hq';
   const displayCompanyName = companyName?.trim() || 'Classic Venture Security';
 
   const beamStyle = armed
@@ -133,12 +150,26 @@ export default function LoginShell({
       ? 'radial-gradient(ellipse 90% 55% at 50% 0%, rgba(14,165,233,0.14), transparent 65%), radial-gradient(ellipse 50% 40% at 100% 100%, rgba(56,189,248,0.09), transparent 55%)'
       : variant === 'tm'
         ? 'radial-gradient(ellipse 90% 55% at 50% 0%, rgba(139,92,246,0.14), transparent 65%), radial-gradient(ellipse 50% 40% at 100% 100%, rgba(167,139,250,0.09), transparent 55%)'
-        : isForge
+        : variant === 'md'
+          ? 'radial-gradient(ellipse 90% 55% at 50% 0%, rgba(99,102,241,0.14), transparent 65%), radial-gradient(ellipse 50% 40% at 100% 100%, rgba(129,140,248,0.09), transparent 55%)'
+          : variant === 'hq'
+            ? 'radial-gradient(ellipse 90% 55% at 50% 0%, rgba(16,185,129,0.14), transparent 65%), radial-gradient(ellipse 50% 40% at 100% 100%, rgba(52,211,153,0.09), transparent 55%)'
+            : isForge
           ? 'radial-gradient(ellipse 90% 55% at 50% 0%, rgba(99,102,241,0.14), transparent 65%), radial-gradient(ellipse 50% 40% at 100% 100%, rgba(129,140,248,0.09), transparent 55%)'
           : 'radial-gradient(ellipse 90% 55% at 50% 0%, rgba(239,68,68,0.14), transparent 65%), radial-gradient(ellipse 50% 40% at 100% 100%, rgba(248,113,113,0.09), transparent 55%)';
 
   const idleAccent =
-    variant === 'om' ? 'sky' : variant === 'tm' ? 'violet' : isForge ? 'indigo' : 'rose';
+    variant === 'om'
+      ? 'sky'
+      : variant === 'tm'
+        ? 'violet'
+        : variant === 'md'
+          ? 'indigo'
+          : variant === 'hq'
+            ? 'emerald'
+            : isForge
+              ? 'indigo'
+              : 'rose';
 
   return (
     <div className="relative min-h-[100dvh] w-full overflow-hidden bg-white text-slate-900 antialiased">
@@ -208,7 +239,11 @@ export default function LoginShell({
                         ? idleAccent === 'sky'
                           ? 'text-sky-900'
                           : 'text-violet-900'
-                        : 'text-rose-900'
+                        : isMdPortal
+                          ? 'text-indigo-900'
+                          : isHqPortal
+                            ? 'text-emerald-900'
+                            : 'text-rose-900'
                   }`}
                 />
               ) : (
@@ -239,22 +274,31 @@ export default function LoginShell({
           ) : null}
 
           <div className="space-y-4 rounded-2xl border border-slate-200/90 bg-white/85 p-6 shadow-sm backdrop-blur-md">
-            {authError ? (
-              <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-center text-xs font-bold text-rose-700">
-                {authError}
-                {authErrorDetail ? (
-                  <span className="mt-1 block font-medium">{authErrorDetail}</span>
+            {variant === 'forge' ? (
+              <>
+                {authError ? (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-center text-xs font-bold text-rose-700">
+                    {authError}
+                    {authErrorDetail ? (
+                      <span className="mt-1 block font-medium">{authErrorDetail}</span>
+                    ) : null}
+                  </div>
                 ) : null}
-              </div>
-            ) : null}
-
-            <p className="text-center text-xs text-slate-500">{copy.signInHint}</p>
-            <GoogleSignInButton
-              armed={armed}
-              onArm={() => setArmed(true)}
-              redirectNext={oauthNext}
-              disabled={signInDisabled}
-            />
+                <p className="text-center text-xs text-slate-500">{copy.signInHint}</p>
+                <GoogleSignInButton
+                  armed={armed}
+                  onArm={() => setArmed(true)}
+                  redirectNext={oauthNext}
+                  disabled={signInDisabled}
+                />
+              </>
+            ) : (
+              <HeadOfficeLoginForm
+                authError={authError}
+                authErrorDetail={authErrorDetail}
+                nextPath={oauthNext}
+              />
+            )}
           </div>
 
           <p className="text-center text-[10px] font-mono text-slate-400">

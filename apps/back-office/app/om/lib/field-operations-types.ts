@@ -4,6 +4,7 @@ export type OmClearanceState = 'valid' | 'expired';
 
 export type OmAssignableGuard = {
   empNo: string;
+  epfNo: string;
   name: string;
   rank: string;
   rankKey: OmRankKey;
@@ -24,6 +25,8 @@ export type OmAllocationSite = {
   siteName: string;
   location: string;
   slots: OmAllocationSlot[];
+  assignedSmEpf?: string | null;
+  assignedSmName?: string | null;
   changeRequest?: string;
   changeRequestDate?: string;
 };

@@ -5,7 +5,9 @@ import { createSupabaseServerClient } from "../../../../packages/supabase/server
 import {
   canAccessHrPortal,
   fetchBackOfficeUserProfile,
-} from "../../lib/hr-portal-access";
+} from "../../lib/hr-portal-access-server";
+import { loginPathForStaffPortal } from "../../lib/portal-isolation";
+
 export default async function HRLayout({ children }: { children: ReactNode }) {
   const supabase = await createSupabaseServerClient();
   const {
@@ -14,12 +16,12 @@ export default async function HRLayout({ children }: { children: ReactNode }) {
   } = await supabase.auth.getUser();
 
   if (authError || !user) {
-    redirect("/login/head-office");
+    redirect(loginPathForStaffPortal("hq"));
   }
 
   const profile = await fetchBackOfficeUserProfile(supabase, user);
-  if (!canAccessHrPortal(profile.role)) {
-    redirect("/login/head-office?error=hr_denied");
+  if (!canAccessHrPortal(profile.role) && !profile.rbacGated) {
+    redirect(`${loginPathForStaffPortal("hq")}?error=hr_denied`);
   }
 
   return (

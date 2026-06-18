@@ -20,7 +20,7 @@ export type HqPortalNavEntry = {
   accent: string;
 };
 
-/** Shared portal list for HQ hub home + sidebar (server-safe — no 'use client'). */
+/** Shared portal list for HQ hub home cards (server-safe — no 'use client'). */
 export const HQ_PORTAL_NAV: readonly HqPortalNavEntry[] = [
   {
     href: '/executive/finance',

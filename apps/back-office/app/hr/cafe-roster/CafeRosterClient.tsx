@@ -199,8 +199,7 @@ export default function CafeRosterClient({ initialData }: { initialData: CafeRos
             No café branches yet
           </h2>
           <p className="mx-auto mt-2 max-w-lg text-sm font-semibold text-slate-500">
-            Register café branches in Sites (MD / FM) and assign café staff to each branch before
-            building the roster here.
+            Add café branches with GPS in MD Settings → Operations, then assign café staff to a branch in HR → MNR before building the roster here.
           </p>
         </div>
       ) : data.staff.length === 0 ? (

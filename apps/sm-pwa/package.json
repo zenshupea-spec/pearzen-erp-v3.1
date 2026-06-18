@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "scripts": {
     "dev": "next dev -p 3003 -H 127.0.0.1",
+    "dev:lan": "next dev -p 3003 -H 0.0.0.0 --experimental-https --experimental-https-key ../../.cursor/lan-certs/key.pem --experimental-https-cert ../../.cursor/lan-certs/cert.pem",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",

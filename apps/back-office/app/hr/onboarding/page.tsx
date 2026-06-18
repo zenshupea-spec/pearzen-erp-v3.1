@@ -7,8 +7,9 @@ import {
   findRankPayEntry,
   isRankValidForCorporateGroup,
 } from '../../../../../packages/rank-pay-matrix';
-import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
-import { resolveCompanyIdForSession } from '../../../lib/company-context';
+import { createSupabaseServerClient, createSupabaseServiceClient } from '../../../../../packages/supabase/server';
+import { resolveCompanyIdForSession } from '../../../lib/company-context-server';
+import { uploadCompressedEmployeeHrDocumentsFromForm } from '../../../lib/hr-document-upload';
 import {
   assertCanAssignRank,
   canManageExecutiveAccess,
@@ -16,15 +17,21 @@ import {
 import {
   assertHrPortalEditor,
   fetchBackOfficeUserProfile,
-} from '../../../lib/hr-portal-access';
+} from '../../../lib/hr-portal-access-server';
 import { getRankPayMatrix } from '../../executive/settings/rank-matrix-actions';
+import { getOnboardingGuardSites } from '../onboarding-actions';
 import HrHubPills from '../HrHubPills';
 import InductionForm from '../InductionForm';
 import { executeRosterMerge } from '../temp-roster/actions';
 import { provisionCafePortalAccess } from '../cafe-portal/actions';
 import { provisionSMPortalAccess } from '../sm-portal/actions';
-import { uploadEmployeeHrDocumentsFromForm } from '../../../../../packages/supabase/employee-hr-documents';
 import { encryptEmployeePiiRecord } from '../../../lib/employee-pii';
+import {
+  assertEpfDiffersFromPrevious,
+  assertEpfNoUnique,
+  friendlyEpfSaveError,
+  normalizeEpfNo,
+} from '../../../lib/employee-epf';
 import { UserPlus, FileSignature, Home } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
@@ -39,6 +46,7 @@ export default async function HROnboardingPage({
     ? { tempId: tempEmpId.trim(), nameHint: tempNameHint?.trim() }
     : undefined;
   const rankMatrix = await getRankPayMatrix();
+  const guardSites = await getOnboardingGuardSites();
   const db = await createSupabaseServerClient();
   const {
     data: { user },
@@ -87,12 +95,25 @@ export default async function HROnboardingPage({
       throw new Error('Employee number is required for Sector Managers (SM portal login ID).');
     }
 
+    const epfNo = normalizeEpfNo((formData.get('epf_no') as string) || '');
+    const previousEpfNo = normalizeEpfNo((formData.get('previous_epf_no') as string) || '');
+
+    assertEpfDiffersFromPrevious(epfNo, previousEpfNo);
+    try {
+      const epfDb = createSupabaseServiceClient();
+      await assertEpfNoUnique(epfDb, epfNo, { companyId });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'EPF number is already in use.';
+      throw new Error(friendlyEpfSaveError(message));
+    }
+
     const insertData = encryptEmployeePiiRecord({
       company_id: companyId,
       full_name: (formData.get('full_name') as string).toUpperCase(),
       nic: (formData.get('nic') as string).toUpperCase(),
       passport_no: (formData.get('passport_no') as string)?.trim().toUpperCase() || null,
-      epf_no: (formData.get('epf_no') as string)?.trim() || null,
+      epf_no: epfNo || null,
+      previous_epf_no: previousEpfNo || null,
       phone: formData.get('phone') as string,
       dob: formData.get('dob') as string || null,
       gender: formData.get('gender') as string || null,
@@ -108,6 +129,15 @@ export default async function HROnboardingPage({
       base_salary: formData.get('base_salary')
         ? parseFloat(formData.get('base_salary') as string)
         : baseFromMatrix,
+      site_allowance_lkr: formData.get('site_allowance_lkr')
+        ? Math.max(0, Math.round(parseFloat(formData.get('site_allowance_lkr') as string)))
+        : 0,
+      meal_allowance_lkr: formData.get('meal_allowance_lkr')
+        ? Math.max(0, Math.round(parseFloat(formData.get('meal_allowance_lkr') as string)))
+        : 0,
+      transport_allowance_lkr: formData.get('transport_allowance_lkr')
+        ? Math.max(0, Math.round(parseFloat(formData.get('transport_allowance_lkr') as string)))
+        : 0,
       salary_type: formData.get('salary_type') as string,
       bank_code: formData.get('bank_code') as string || null,
       branch_code: formData.get('branch_code') as string || null,
@@ -134,11 +164,12 @@ export default async function HROnboardingPage({
 
     if (error) {
       console.error('\n[HR] SUPABASE ERROR:', error.message, '\n');
-      throw new Error(error.message);
+      throw new Error(friendlyEpfSaveError(error.message));
     }
 
     if (inserted?.id) {
-      await uploadEmployeeHrDocumentsFromForm(db, inserted.id, formData);
+      const docsDb = createSupabaseServiceClient();
+      await uploadCompressedEmployeeHrDocumentsFromForm(docsDb, inserted.id, formData);
     }
 
     const shadowTempId = ((formData.get('temp_emp_id') as string) || '').trim();
@@ -152,8 +183,6 @@ export default async function HROnboardingPage({
     if (corporateGroup === 'HEAD_OFFICE') {
       revalidatePath('/executive/settings');
     }
-
-    const epfNo = ((formData.get('epf_no') as string) || '').trim();
 
     if (corporateGroup === 'SECTOR_MANAGER' && empNumber) {
       const provision = await provisionSMPortalAccess(empNumber);
@@ -262,6 +291,8 @@ export default async function HROnboardingPage({
           <InductionForm
             action={onboardEmployee}
             rankMatrix={rankMatrix}
+            guardSites={guardSites}
+            editorRole={editorProfile.role}
             canManageExecutive={canManageExecutive}
             mergeContext={mergeContext}
           />

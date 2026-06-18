@@ -5,6 +5,7 @@ import {
   parseShalomIcalPropertyId,
   SHALOM_ICAL_EXPORT_CHANNELS,
 } from './shalom-ical-export';
+import { readIcalCancellations } from './shalom-ical-cancel';
 
 /** Channels pushed to OTAs — excludes Airbnb/Booking imports to avoid sync loops. */
 export async function serveShalomIcalExport(filename: string): Promise<NextResponse> {
@@ -16,7 +17,7 @@ export async function serveShalomIcalExport(filename: string): Promise<NextRespo
   const db = createSupabaseServiceClient();
   const { data: property, error: propError } = await db
     .from('shalom_properties')
-    .select('id, name')
+    .select('id, name, settings')
     .eq('id', propertyId)
     .maybeSingle();
 
@@ -42,13 +43,21 @@ export async function serveShalomIcalExport(filename: string): Promise<NextRespo
     return new NextResponse('Calendar unavailable', { status: 500 });
   }
 
-  const body = buildShalomIcalFeed(property.name, bookings ?? []);
+  const cancellations = readIcalCancellations(
+    (property.settings as Record<string, unknown> | undefined) ?? undefined,
+  ).map((row) => ({
+    uid: row.uid,
+    check_in: row.checkIn,
+    check_out: row.checkOut,
+  }));
+
+  const body = buildShalomIcalFeed(property.name, bookings ?? [], cancellations);
 
   return new NextResponse(body, {
     status: 200,
     headers: {
       'Content-Type': 'text/calendar; charset=utf-8',
-      'Cache-Control': 'public, max-age=300',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
     },
   });
 }

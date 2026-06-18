@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { DEMO_DISCREPANCIES, isDemoId } from '../../app/om/lib/demo-data';
 import {
   getPendingDiscrepancies,
   resolveDiscrepancy,
@@ -17,8 +16,8 @@ import {
 type SiteProfilesEmbed = { site_name: string } | { site_name: string }[] | null;
 
 type EmployeesEmbed =
-  | { first_name: string; last_name: string; rank_enum: string; basic_salary: number | null }
-  | { first_name: string; last_name: string; rank_enum: string; basic_salary: number | null }[]
+  | { full_name: string; rank: string; basic_salary: number | null }
+  | { full_name: string; rank: string; basic_salary: number | null }[]
   | null;
 
 type GuardEntry = {
@@ -94,15 +93,24 @@ function siteLabel(sp: SiteProfilesEmbed): string {
 
 function employeeNames(emb: EmployeesEmbed) {
   const e = asSingle(emb);
+  const full = String(e?.full_name ?? '').trim();
+  const parts = full.split(/\s+/);
   return {
-    first_name: e?.first_name ?? '—',
-    last_name: e?.last_name ?? '',
-    rank_enum: e?.rank_enum ?? '—',
+    first_name: parts[0] ?? '—',
+    last_name: parts.slice(1).join(' '),
+    rank_enum: e?.rank ?? '—',
     basic_salary: e?.basic_salary ?? 0,
   };
 }
 
 function formatTime(timeStr: string) {
+  if (!timeStr) return '—';
+  if (timeStr.includes('T')) {
+    return new Date(timeStr).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
   return new Date(`1970-01-01T${timeStr}`).toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
@@ -1146,17 +1154,13 @@ export default function DiscrepancyDashboard({
   companyId,
   adminId,
   adminName = 'Admin',
-  useDemoFallback = false,
 }: {
   companyId: string;
   adminId: string;
   adminName?: string;
-  /** When true, show preview rows if the live queue is empty or unavailable. */
-  useDemoFallback?: boolean;
 }) {
   const [logs, setLogs] = useState<Discrepancy[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isDemo, setIsDemo] = useState(false);
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [expandedPlanId, setExpandedPlanId] = useState<string | null>(null);
 
@@ -1168,24 +1172,10 @@ export default function DiscrepancyDashboard({
       try {
         const data = await getPendingDiscrepancies(companyId);
         const rows = (data ?? []) as unknown as Discrepancy[];
-        if (!cancelled) {
-          if (rows.length > 0) {
-            setLogs(rows);
-            setIsDemo(false);
-          } else if (useDemoFallback) {
-            setLogs(DEMO_DISCREPANCIES as unknown as Discrepancy[]);
-            setIsDemo(true);
-          } else {
-            setLogs([]);
-            setIsDemo(false);
-          }
-        }
+        if (!cancelled) setLogs(rows);
       } catch (err) {
         console.error('Failed to load discrepancies', err);
-        if (!cancelled && useDemoFallback) {
-          setLogs(DEMO_DISCREPANCIES as unknown as Discrepancy[]);
-          setIsDemo(true);
-        }
+        if (!cancelled) setLogs([]);
       } finally {
         if (!cancelled) setIsLoading(false);
       }
@@ -1195,16 +1185,12 @@ export default function DiscrepancyDashboard({
     return () => {
       cancelled = true;
     };
-  }, [companyId, useDemoFallback]);
+  }, [companyId]);
 
   const handleResolve = async (
     id: string,
     resolutionType: 'TRUST_FORM' | 'TRUST_CHECK_IN'
   ) => {
-    if (isDemo || isDemoId(id)) {
-      alert('Preview mode — resolution disabled until live discrepancy logs exist.');
-      return;
-    }
     setProcessingId(id);
     try {
       await resolveDiscrepancy(id, resolutionType, adminId);
@@ -1227,12 +1213,6 @@ export default function DiscrepancyDashboard({
   return (
     <div className="rounded-2xl border border-slate-200 bg-slate-950 text-slate-200 p-6 md:p-8 shadow-sm">
       <div className="max-w-7xl mx-auto">
-        {isDemo && (
-          <p className="mb-6 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs font-semibold text-amber-200">
-            Showing preview discrepancy queue — actions are read-only.
-          </p>
-        )}
-
         {logs.length === 0 ? (
           <div className="bg-neutral-900 border border-emerald-900/40 text-emerald-200 p-8 rounded-2xl flex items-center gap-4">
             <span className="text-3xl">✓</span>

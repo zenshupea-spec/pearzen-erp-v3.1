@@ -53,8 +53,8 @@ export function evaluateHrResignationGate(input: {
       requiresDebtClearance: false,
       message:
         netSettlementLkr > 0
-          ? `FM must confirm final net payment of ${formatSettlementAmount(netSettlementLkr)} before HR confirms resignation.`
-          : 'FM must confirm final salary release (netted against recoveries) before HR confirms resignation.',
+          ? `Confirm final net payment of ${formatSettlementAmount(netSettlementLkr)} in this clearance screen before confirming resignation.`
+          : 'Confirm final salary release (netted against recoveries) in this clearance screen before confirming resignation.',
     };
   }
 

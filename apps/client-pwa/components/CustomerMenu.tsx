@@ -1,13 +1,26 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import {
+  CAFE_ORDER_INPUT_CLASS,
+  CAFE_ORDER_LABEL_CLASS,
+  CAFE_ORDER_TEXTAREA_CLASS,
+} from '../../../packages/cafe-customer-order/order-form-styles';
+import { CafeOpenStatusBadge } from '../../../packages/cafe-open-hours/CafeOpenStatusBadge';
+import { coverHeaderBackgroundStyle } from '../lib/cafe-cover-style';
+import { useCafeCustomerPhoneLookup } from '../../../packages/cafe-customer-order/use-cafe-customer-phone';
+import {
+  lookupCafeCustomerByPhone,
   placeCustomerOrder,
+  type CafePaymentMethod,
   type FulfillmentType,
   type PublicMenuBranding,
   type PublicMenuItem,
 } from '../lib/menu-api';
+import { startPayHereCheckout } from '../lib/payhere-client';
+
+type ModalStep = 'choice' | 'payment' | 'details';
 
 type OrderConfirmation = {
   choice: FulfillmentType;
@@ -16,6 +29,7 @@ type OrderConfirmation = {
   address?: string;
   totalLkr: number;
   itemCount: number;
+  paymentMethod: CafePaymentMethod;
 };
 
 const FULFILLMENT_OPTIONS: Array<{ id: FulfillmentType; label: string; hint: string }> = [
@@ -49,10 +63,23 @@ export function CustomerMenu({
 }) {
   const [cart, setCart] = useState<Record<string, number>>({});
   const [showOrderModal, setShowOrderModal] = useState(false);
-  const [modalStep, setModalStep] = useState<'choice' | 'details'>('choice');
+  const [modalStep, setModalStep] = useState<ModalStep>('choice');
   const [pendingChoice, setPendingChoice] = useState<FulfillmentType | null>(null);
-  const [customerName, setCustomerName] = useState('');
-  const [customerPhone, setCustomerPhone] = useState('');
+  const [pendingPayment, setPendingPayment] = useState<CafePaymentMethod | null>(null);
+  const lookupCustomer = useCallback(
+    (phone: string) => (companyId ? lookupCafeCustomerByPhone(companyId, phone) : Promise.resolve(null)),
+    [companyId],
+  );
+  const {
+    customerPhone,
+    setCustomerPhone,
+    customerName,
+    setCustomerName,
+    discountPct,
+    lookupLoading,
+    resetCustomerFields,
+    applyDiscount,
+  } = useCafeCustomerPhoneLookup(lookupCustomer);
   const [deliveryAddress, setDeliveryAddress] = useState('');
   const [orderConfirmed, setOrderConfirmed] = useState<OrderConfirmation | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -96,19 +123,33 @@ export function CustomerMenu({
     setShowOrderModal(false);
     setModalStep('choice');
     setPendingChoice(null);
-    setCustomerName('');
-    setCustomerPhone('');
+    setPendingPayment(null);
+    resetCustomerFields();
     setDeliveryAddress('');
     setSubmitError(null);
   };
 
+  const selectFulfillment = (choice: FulfillmentType) => {
+    setPendingChoice(choice);
+    setPendingPayment(choice === 'delivery' ? 'card_online' : null);
+    setModalStep('payment');
+  };
+
+  const selectPayment = (method: CafePaymentMethod) => {
+    setPendingPayment(method);
+    setModalStep('details');
+  };
+
   const confirmOrderDetails = async () => {
-    if (!pendingChoice || !companyId) return;
+    if (!pendingChoice || !companyId || !pendingPayment) return;
     const name = customerName.trim();
     const phone = customerPhone.trim();
     const address = deliveryAddress.trim();
     if (!name || !phone) return;
     if (pendingChoice === 'delivery' && !address) return;
+
+    const paymentMethod: CafePaymentMethod =
+      pendingChoice === 'delivery' ? 'card_online' : pendingPayment;
 
     const orderItems = Object.entries(cart).map(([id, qty]) => {
       const row = items.find((item) => item.id === id);
@@ -120,6 +161,8 @@ export function CustomerMenu({
       };
     });
 
+    const orderTotal = applyDiscount(cartTotal);
+
     setSubmitting(true);
     setSubmitError(null);
     const result = await placeCustomerOrder({
@@ -129,13 +172,26 @@ export function CustomerMenu({
       customerPhone: phone,
       deliveryAddress: pendingChoice === 'delivery' ? address : undefined,
       items: orderItems,
-      totalLkr: cartTotal,
+      totalLkr: orderTotal,
+      paymentMethod,
     });
-    setSubmitting(false);
 
-    if (!result.ok) {
+    if (!result.ok || !result.orderId) {
+      setSubmitting(false);
       setSubmitError(result.error ?? 'Could not place order. Please try again.');
       return;
+    }
+
+    if (paymentMethod === 'card_online') {
+      const payment = await startPayHereCheckout(result.orderId);
+      setSubmitting(false);
+
+      if (!payment.ok) {
+        setSubmitError(payment.error ?? 'Could not start card payment. Please try again.');
+        return;
+      }
+    } else {
+      setSubmitting(false);
     }
 
     setOrderConfirmed({
@@ -143,8 +199,9 @@ export function CustomerMenu({
       name,
       phone,
       address: pendingChoice === 'delivery' ? address : undefined,
-      totalLkr: cartTotal,
+      totalLkr: orderTotal,
       itemCount: cartCount,
+      paymentMethod,
     });
     setCart({});
     resetOrderModal();
@@ -162,25 +219,20 @@ export function CustomerMenu({
     (pendingChoice !== 'delivery' || deliveryAddress.trim().length > 0);
 
   const headerStyle = branding.coverUrl
-    ? {
-        backgroundImage: `linear-gradient(180deg, rgba(15,23,42,0.35), rgba(15,23,42,0.55)), url(${branding.coverUrl})`,
-        backgroundSize: 'cover',
-        backgroundPosition: 'center',
-      }
+    ? coverHeaderBackgroundStyle(branding.coverUrl, branding.coverTintStrength)
     : {
         background: 'linear-gradient(135deg, #14532d 0%, #166534 50%, #15803d 100%)',
       };
 
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-lg flex-col bg-[#fdfbf7] shadow-xl">
+    <div className="mx-auto flex min-h-screen w-full max-w-lg flex-col bg-[#fdfbf7] text-stone-900 shadow-xl">
       <header className="relative shrink-0 px-5 pb-6 pt-8 text-center" style={headerStyle}>
         <div className="flex justify-end">
-          <span
-            className="rounded-full border border-white/40 bg-white/20 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider backdrop-blur-md"
-            style={{ color: branding.coverTextColor }}
-          >
-            Open now
-          </span>
+          <CafeOpenStatusBadge
+            openStart={branding.cafeOpenStart}
+            openEnd={branding.cafeOpenEnd}
+            coverTextColor={branding.coverTextColor}
+          />
         </div>
         <div className="mx-auto mt-2 flex h-20 w-20 items-center justify-center overflow-hidden rounded-full border-2 border-white/80 bg-white shadow-lg">
           {branding.logoUrl ? (
@@ -223,7 +275,9 @@ export function CustomerMenu({
               <p className="mt-1 text-xs text-emerald-700">{orderConfirmed.address}</p>
             ) : null}
             <p className="mt-2 text-xs text-emerald-700">
-              Your order is in the café queue — staff will confirm payment and start preparing.
+              {orderConfirmed.paymentMethod === 'cash_at_counter'
+                ? `Pay LKR ${orderConfirmed.totalLkr.toLocaleString()} at the counter when you collect.`
+                : 'You\u2019ll be redirected to our secure payment page to complete your order.'}
             </p>
           </div>
         ) : null}
@@ -248,18 +302,20 @@ export function CustomerMenu({
                         className="flex items-center gap-3 px-3 py-3"
                         style={qty > 0 ? { backgroundColor: 'rgba(16,185,129,0.08)' } : undefined}
                       >
-                        {item.imageUrl ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={item.imageUrl}
-                            alt=""
-                            className="h-12 w-12 shrink-0 rounded-lg object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-lg">
-                            ☕
-                          </div>
-                        )}
+                        {branding.showItemImages ? (
+                          item.imageUrl && item.imageUrl !== 'pending' ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={item.imageUrl}
+                              alt=""
+                              className="h-12 w-12 shrink-0 rounded-lg object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-lg">
+                              ☕
+                            </div>
+                          )
+                        ) : null}
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-stone-800">{item.name}</p>
                           <p className="text-sm font-bold text-emerald-800">
@@ -327,7 +383,7 @@ export function CustomerMenu({
           role="presentation"
         >
           <div
-            className="w-full max-w-lg overflow-hidden rounded-2xl border bg-white shadow-2xl"
+            className="w-full max-w-lg overflow-hidden rounded-2xl border bg-white text-stone-900 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
@@ -342,12 +398,22 @@ export function CustomerMenu({
                 ✕
               </button>
               <p className="pr-8 text-sm font-black text-stone-900">
-                {modalStep === 'choice' ? 'How would you like your order?' : 'Your contact details'}
+                {modalStep === 'choice'
+                  ? 'How would you like your order?'
+                  : modalStep === 'payment'
+                    ? 'How would you like to pay?'
+                    : 'Your contact details'}
               </p>
-              <p className="mt-1 text-xs text-stone-500">
+              <p className="mt-1 text-xs text-stone-600">
                 {modalStep === 'choice'
                   ? `Choose dine-in, takeout, or delivery for ${cartCount} item${cartCount === 1 ? '' : 's'}.`
-                  : `Name and phone required${pendingChoice === 'delivery' ? ', plus delivery address' : ''}.`}
+                  : modalStep === 'payment'
+                    ? pendingChoice === 'delivery'
+                      ? `Delivery orders must be paid online · LKR ${cartTotal.toLocaleString()}`
+                      : `Pay at the counter or online · LKR ${cartTotal.toLocaleString()}`
+                    : `LKR ${cartTotal.toLocaleString()} · name and phone required${
+                        pendingChoice === 'delivery' ? ', plus delivery address' : ''
+                      }.`}
               </p>
             </div>
 
@@ -357,10 +423,7 @@ export function CustomerMenu({
                   <button
                     key={opt.id}
                     type="button"
-                    onClick={() => {
-                      setPendingChoice(opt.id);
-                      setModalStep('details');
-                    }}
+                    onClick={() => selectFulfillment(opt.id)}
                     className="rounded-xl border border-stone-200 bg-white px-2 py-3 text-center transition hover:border-emerald-400 hover:bg-emerald-50"
                   >
                     <p className="text-xs font-bold text-stone-900">{opt.label}</p>
@@ -368,40 +431,89 @@ export function CustomerMenu({
                   </button>
                 ))}
               </div>
+            ) : modalStep === 'payment' ? (
+              <div className="space-y-3 p-4">
+                {pendingChoice === 'delivery' ? (
+                  <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    Delivery orders must be paid online before we dispatch your order.
+                  </p>
+                ) : null}
+                <div className={pendingChoice === 'delivery' ? 'grid grid-cols-1 gap-2' : 'grid grid-cols-2 gap-2'}>
+                  {pendingChoice !== 'delivery' ? (
+                    <button
+                      type="button"
+                      onClick={() => selectPayment('cash_at_counter')}
+                      className="rounded-xl border border-stone-200 bg-white px-3 py-4 text-center transition hover:border-emerald-400 hover:bg-emerald-50"
+                    >
+                      <p className="text-xs font-bold uppercase tracking-wide text-stone-500">Cash</p>
+                      <p className="mt-1 text-sm font-bold text-stone-900">Pay at counter</p>
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => selectPayment('card_online')}
+                    className="rounded-xl border border-stone-200 bg-white px-3 py-4 text-center transition hover:border-emerald-400 hover:bg-emerald-50"
+                  >
+                    <p className="text-xs font-bold uppercase tracking-wide text-stone-500">Card</p>
+                    <p className="mt-1 text-sm font-bold text-stone-900">Pay online now</p>
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setModalStep('choice')}
+                  className="w-full rounded-xl border border-stone-300 py-2.5 text-xs font-bold uppercase text-stone-700"
+                >
+                  Back
+                </button>
+              </div>
             ) : (
               <div className="space-y-3 p-4">
+                {pendingChoice && pendingPayment ? (
+                  <p className="rounded-xl bg-emerald-50 px-3 py-1.5 text-center text-xs font-bold uppercase tracking-wide text-emerald-900">
+                    {fulfillmentLabel(pendingChoice)} ·{' '}
+                    {pendingPayment === 'cash_at_counter' ? 'pay at counter' : 'card payment'}
+                  </p>
+                ) : null}
+
                 <label className="block">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-stone-500">
-                    Name
+                  <span className={CAFE_ORDER_LABEL_CLASS}>Phone number</span>
+                  <input
+                    value={customerPhone}
+                    onChange={(e) => setCustomerPhone(e.target.value)}
+                    className={CAFE_ORDER_INPUT_CLASS}
+                    placeholder="e.g. 077 123 4567"
+                    inputMode="tel"
+                    autoFocus
+                  />
+                </label>
+                <label className="block">
+                  <span className={CAFE_ORDER_LABEL_CLASS}>
+                    Your good name
+                    {lookupLoading ? (
+                      <span className="ml-1.5 text-[10px] font-medium normal-case tracking-normal text-stone-400">
+                        looking up…
+                      </span>
+                    ) : null}
                   </span>
                   <input
                     value={customerName}
                     onChange={(e) => setCustomerName(e.target.value)}
-                    className="mt-1 w-full rounded-xl border border-stone-200 px-3 py-2 text-sm"
-                    placeholder="Your name"
+                    className={CAFE_ORDER_INPUT_CLASS}
+                    placeholder="e.g. Sam"
                   />
                 </label>
-                <label className="block">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-stone-500">
-                    Phone
-                  </span>
-                  <input
-                    value={customerPhone}
-                    onChange={(e) => setCustomerPhone(e.target.value)}
-                    className="mt-1 w-full rounded-xl border border-stone-200 px-3 py-2 text-sm"
-                    placeholder="07X XXX XXXX"
-                    inputMode="tel"
-                  />
-                </label>
+                {discountPct > 0 ? (
+                  <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-900">
+                    Loyalty discount: {discountPct}% off · LKR {applyDiscount(cartTotal).toLocaleString()}
+                  </p>
+                ) : null}
                 {pendingChoice === 'delivery' ? (
                   <label className="block">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-stone-500">
-                      Delivery address
-                    </span>
+                    <span className={CAFE_ORDER_LABEL_CLASS}>Delivery address</span>
                     <textarea
                       value={deliveryAddress}
                       onChange={(e) => setDeliveryAddress(e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-stone-200 px-3 py-2 text-sm"
+                      className={CAFE_ORDER_TEXTAREA_CLASS}
                       rows={2}
                       placeholder="Street, area, landmarks"
                     />
@@ -415,18 +527,24 @@ export function CustomerMenu({
                 <div className="flex gap-2 pt-1">
                   <button
                     type="button"
-                    onClick={() => setModalStep('choice')}
-                    className="flex-1 rounded-xl border border-stone-200 py-2.5 text-xs font-bold uppercase text-stone-600"
+                    onClick={() => setModalStep('payment')}
+                    className="flex-1 rounded-xl border border-stone-300 py-2.5 text-xs font-bold uppercase text-stone-700"
                   >
                     Back
                   </button>
                   <button
                     type="button"
                     onClick={() => void confirmOrderDetails()}
-                    disabled={!canConfirmDetails || submitting}
-                    className="flex-1 rounded-xl bg-emerald-700 py-2.5 text-xs font-bold uppercase text-white disabled:bg-stone-300"
+                    disabled={!canConfirmDetails || !pendingPayment || submitting}
+                    className="flex-1 rounded-xl bg-emerald-700 py-2.5 text-xs font-bold uppercase text-white disabled:bg-stone-200 disabled:text-stone-500"
                   >
-                    {submitting ? 'Sending…' : 'Confirm order'}
+                    {submitting
+                      ? pendingPayment === 'cash_at_counter'
+                        ? 'Placing…'
+                        : 'Redirecting…'
+                      : pendingPayment === 'cash_at_counter'
+                        ? 'Place order'
+                        : 'Pay by card'}
                   </button>
                 </div>
               </div>

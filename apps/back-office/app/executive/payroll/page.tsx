@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Lock,
   Download,
@@ -25,12 +25,13 @@ import { LOGO_STORAGE_KEY } from '../../../../../packages/supabase/branding-cons
 import { BANK_EXPORT_FORMAT_LABELS } from '../../../../../packages/bank-export-settings';
 import { getBankExportSettings } from '../settings/bank-export-actions';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
+import { batchIdToGroupId } from '../../../lib/payroll-batch-workflow';
+import FmPayrollMonthSelector from '../../fm/components/FmPayrollMonthSelector';
+import { FM_LIVE_PAYROLL_PERIOD, type PayrollPeriod } from '../../fm/lib/payroll-period';
 import {
-  approvePayrollGroup,
-  batchIdToGroupId,
-  getPayrollWorkflowState,
-  subscribePayrollWorkflow,
-} from '../../../lib/payroll-batch-workflow';
+  approvePayrollGroupRun,
+} from '../../fm/payroll-run-actions';
+import { getMdPayrollAuditBatches, type MdPayrollBatch } from '../payroll-actions';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -41,138 +42,8 @@ interface DeductionLine {
   amount: number; // positive number, treated as a deduction
 }
 
-interface PayslipLine {
-  guardId: string;
-  empNo: string;
-  guardName: string;
-  rank: string;
-  totalShifts: number;
-  basicPay: number;
-  overtimePay: number;
-  deductions: DeductionLine[];
-  threeMonthAvgNet: number;
-}
-
-interface PayrollBatch {
-  id: string;
-  period: string;
-  company: string;
-  submittedBy: string;
-  submittedAt: string;
-  status: BatchStatus;
-  lines: PayslipLine[];
-}
-
-// ─── Demo Data ────────────────────────────────────────────────────────────────
-
-const DEMO_BATCHES: PayrollBatch[] = [
-  {
-    id: 'PR-2605-SEC',
-    period: 'May 2026',
-    company: 'Classic Venture Security',
-    submittedBy: 'Kasun Rathnayake (FM)',
-    submittedAt: '2026-05-19T10:22:00Z',
-    status: 'SUBMITTED_FOR_REVIEW' as BatchStatus,
-    lines: [
-      {
-        guardId: 'G001', empNo: 'G-001', guardName: 'Pradeep Weerasinghe', rank: 'SSO',
-        totalShifts: 26, basicPay: 32000, overtimePay: 12400, threeMonthAvgNet: 44400,
-        deductions: [],
-      },
-      {
-        guardId: 'G002', empNo: 'G-002', guardName: 'Nimal Perera', rank: 'OIC',
-        totalShifts: 24, basicPay: 33000, overtimePay: 8600, threeMonthAvgNet: 34600,
-        deductions: [
-          { label: 'Client Pass-Through Penalty (Lanka Hospitals Sleeping Incident)', amount: 5000 },
-          { label: 'Uniform / Boot Recovery', amount: 2000 },
-        ],
-      },
-      {
-        guardId: 'G003', empNo: 'G-003', guardName: 'Chamara Bandara', rank: 'JSO',
-        totalShifts: 22, basicPay: 30000, overtimePay: 6200, threeMonthAvgNet: 33700,
-        deductions: [
-          { label: 'Disciplinary Fine — Unauthorized Post Abandonment', amount: 2500 },
-        ],
-      },
-      {
-        guardId: 'G004', empNo: 'G-004', guardName: 'Ruwan Silva', rank: 'JSO',
-        totalShifts: 28, basicPay: 30000, overtimePay: 22800, threeMonthAvgNet: 48000,
-        deductions: [],
-      },
-      {
-        guardId: 'G005', empNo: 'G-005', guardName: 'Dinesh Fernando', rank: 'LSO',
-        totalShifts: 20, basicPay: 30000, overtimePay: 4800, threeMonthAvgNet: 29800,
-        deductions: [
-          { label: 'Uniform / Boot Recovery', amount: 2000 },
-          { label: 'Mid-Month Cash Advance', amount: 2000 },
-          { label: 'Disciplinary Fine — Late Reporting', amount: 1000 },
-        ],
-      },
-      {
-        guardId: 'G006', empNo: 'G-006', guardName: 'Asanka Jayawardena', rank: 'CSO',
-        totalShifts: 26, basicPay: 35000, overtimePay: 0, threeMonthAvgNet: 35000,
-        deductions: [],
-      },
-    ],
-  },
-  {
-    id: 'PR-2605-CAF',
-    period: 'May 2026',
-    company: 'Café Tasha',
-    submittedBy: 'Kasun Rathnayake (FM)',
-    submittedAt: '2026-05-19T10:45:00Z',
-    status: 'SUBMITTED_FOR_REVIEW',
-    lines: [
-      {
-        guardId: 'C001', empNo: 'C-001', guardName: 'Nirosha Silva', rank: 'Head Barista',
-        totalShifts: 22, basicPay: 36000, overtimePay: 5400, threeMonthAvgNet: 40500,
-        deductions: [],
-      },
-      {
-        guardId: 'C002', empNo: 'C-002', guardName: 'Chamari Perera', rank: 'Counter Staff',
-        totalShifts: 20, basicPay: 30000, overtimePay: 1500, threeMonthAvgNet: 30000,
-        deductions: [
-          { label: 'Disciplinary Fine — Stock Variance (Café Audit)', amount: 1500 },
-        ],
-      },
-      {
-        guardId: 'C003', empNo: 'C-003', guardName: 'Thilina Bandara', rank: 'Kitchen Assist',
-        totalShifts: 24, basicPay: 28000, overtimePay: 8400, threeMonthAvgNet: 31000,
-        deductions: [],
-      },
-      {
-        guardId: 'C004', empNo: 'C-004', guardName: 'Ayasha Fernando', rank: 'Cashier',
-        totalShifts: 21, basicPay: 32000, overtimePay: 0, threeMonthAvgNet: 32000,
-        deductions: [],
-      },
-    ],
-  },
-  {
-    id: 'PR-2604-SEC',
-    period: 'Apr 2026',
-    company: 'Classic Venture Security',
-    submittedBy: 'Kasun Rathnayake (FM)',
-    submittedAt: '2026-04-20T09:14:00Z',
-    status: 'APPROVED',
-    lines: [
-      {
-        guardId: 'G001', empNo: 'G-001', guardName: 'Pradeep Weerasinghe', rank: 'SSO',
-        totalShifts: 26, basicPay: 32000, overtimePay: 10200, threeMonthAvgNet: 42200,
-        deductions: [],
-      },
-      {
-        guardId: 'G002', empNo: 'G-002', guardName: 'Nimal Perera', rank: 'OIC',
-        totalShifts: 25, basicPay: 33000, overtimePay: 7800, threeMonthAvgNet: 40800,
-        deductions: [],
-      },
-      {
-        guardId: 'G006', empNo: 'G-006', guardName: 'Asanka Jayawardena', rank: 'CSO',
-        totalShifts: 26, basicPay: 35000, overtimePay: 0, threeMonthAvgNet: 35000,
-        deductions: [],
-      },
-    ],
-  },
-];
+type PayrollBatch = MdPayrollBatch;
+type PayslipLine = MdPayrollBatch['lines'][number];
 
 const BANK_FORMATS = [
   'Commercial Bank — CSV',
@@ -239,24 +110,6 @@ function batchTotals(batch: PayrollBatch) {
   const netTrans  = gross - deducts;
   const flagCount = batch.lines.filter(isVarianceFlagged).length;
   return { gross, deducts, netTrans, flagCount };
-}
-
-function batchesFromWorkflow(demoBatches: PayrollBatch[]): PayrollBatch[] {
-  const workflow = getPayrollWorkflowState();
-  return demoBatches
-    .filter((batch) => {
-      const groupId = batchIdToGroupId(batch.id);
-      if (!groupId) return true;
-      const wf = workflow.find((w) => w.groupId === groupId);
-      return !!wf && wf.status !== 'DRAFT';
-    })
-    .map((batch) => {
-      const groupId = batchIdToGroupId(batch.id);
-      if (!groupId) return batch;
-      const wf = workflow.find((w) => w.groupId === groupId);
-      if (!wf) return batch;
-      return { ...batch, status: wf.status as BatchStatus };
-    });
 }
 
 // ─── Deduction Audit Modal ────────────────────────────────────────────────────
@@ -969,15 +822,22 @@ function MasterGuardLedger({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function PayrollAuditPage() {
-  const [batches,      setBatches]      = useState<PayrollBatch[]>(() => batchesFromWorkflow(DEMO_BATCHES));
+  const [payrollPeriod, setPayrollPeriod] = useState<PayrollPeriod>(FM_LIVE_PAYROLL_PERIOD);
+  const [batches,      setBatches]      = useState<PayrollBatch[]>([]);
+  const [loadError,    setLoadError]    = useState<string | null>(null);
   const [confirmBatch, setConfirmBatch] = useState<PayrollBatch | null>(null);
   const [auditGuard,   setAuditGuard]   = useState<PayslipLine | null>(null);
+  const [approveError, setApproveError] = useState<string | null>(null);
+
+  const refreshBatches = useCallback(async () => {
+    const result = await getMdPayrollAuditBatches(payrollPeriod.year, payrollPeriod.month);
+    setBatches(result.batches);
+    setLoadError(result.error ?? null);
+  }, [payrollPeriod]);
 
   useEffect(() => {
-    const sync = () => setBatches(batchesFromWorkflow(DEMO_BATCHES));
-    sync();
-    return subscribePayrollWorkflow(sync);
-  }, []);
+    void refreshBatches();
+  }, [refreshBatches]);
 
   const handleLock = (id: string) => {
     const batch = batches.find((b) => b.id === id);
@@ -987,11 +847,23 @@ export default function PayrollAuditPage() {
   const handleConfirm = () => {
     if (!confirmBatch) return;
     const groupId = batchIdToGroupId(confirmBatch.id);
-    if (groupId) approvePayrollGroup(groupId);
-    setBatches((prev) =>
-      prev.map((b) => b.id === confirmBatch.id ? { ...b, status: 'APPROVED' } : b),
-    );
-    setConfirmBatch(null);
+    setApproveError(null);
+    if (!groupId) {
+      setConfirmBatch(null);
+      return;
+    }
+    void approvePayrollGroupRun(
+      groupId,
+      payrollPeriod.year,
+      payrollPeriod.month,
+    ).then((result) => {
+      if (result.success) {
+        void refreshBatches();
+      } else {
+        setApproveError(result.error ?? 'Approval failed.');
+      }
+      setConfirmBatch(null);
+    });
   };
 
   const pendingBatches  = batches.filter((b) => b.status === 'SUBMITTED_FOR_REVIEW');
@@ -1020,14 +892,23 @@ export default function PayrollAuditPage() {
                 Maker / Checker · MD Approval Lock · Immutable Bank File Generation
               </p>
             </div>
-            <div className="flex items-center gap-2 rounded-2xl border border-amber-200/80 bg-amber-50/80 px-4 py-2">
-              <Clock className="h-4 w-4 text-amber-700" />
-              <span className="text-sm font-black text-amber-800">{pendingBatches.length} batch{pendingBatches.length !== 1 ? 'es' : ''} pending MD approval</span>
+            <div className="flex flex-wrap items-center gap-3">
+              <FmPayrollMonthSelector period={payrollPeriod} onChange={setPayrollPeriod} />
+              <div className="flex items-center gap-2 rounded-2xl border border-amber-200/80 bg-amber-50/80 px-4 py-2">
+                <Clock className="h-4 w-4 text-amber-700" />
+                <span className="text-sm font-black text-amber-800">{pendingBatches.length} batch{pendingBatches.length !== 1 ? 'es' : ''} pending MD approval</span>
+              </div>
             </div>
           </div>
         </header>
 
         <div className="w-full space-y-6 px-6 lg:px-12 2xl:px-24 py-8">
+
+          {approveError && (
+            <div className="rounded-2xl border border-rose-200/80 bg-rose-50/80 px-4 py-3 text-sm font-semibold text-rose-800">
+              {approveError}
+            </div>
+          )}
 
           {/* ── Summary Cards ── */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">

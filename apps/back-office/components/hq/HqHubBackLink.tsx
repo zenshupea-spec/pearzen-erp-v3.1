@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
-import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access';
+import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access-server';
 import { canAccessHqHub } from '../../lib/hq-hub';
 
 type Props = {

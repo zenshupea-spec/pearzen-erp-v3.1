@@ -22,6 +22,10 @@ export async function loadPublicMenuPageData(): Promise<{
     logoUrl: null,
     coverUrl: null,
     coverTextColor: '#ffffff',
+    coverTintStrength: 100,
+    showItemImages: true,
+    cafeOpenStart: '07:00',
+    cafeOpenEnd: '19:00',
   };
 
   if (!companyId) {
@@ -73,6 +77,10 @@ export async function loadPublicMenuPageData(): Promise<{
         logoUrl: brandingRow.logo_url ? String(brandingRow.logo_url) : null,
         coverUrl: brandingRow.cover_url ? String(brandingRow.cover_url) : null,
         coverTextColor: String(brandingRow.cover_text_color || '#ffffff'),
+        coverTintStrength: Number(brandingRow.cover_tint_strength ?? 100) || 100,
+        showItemImages: brandingRow.show_item_images !== false,
+        cafeOpenStart: String(brandingRow.cafe_open_start || '07:00'),
+        cafeOpenEnd: String(brandingRow.cafe_open_end || '19:00'),
       }
     : fallbackBranding;
 

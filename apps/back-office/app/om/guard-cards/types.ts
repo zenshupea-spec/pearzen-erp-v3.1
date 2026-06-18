@@ -4,6 +4,8 @@ export type GuardCardDisplay = GuardRatingRow & {
   employeeId: string;
   fullName: string;
   rank: string | null;
+  sector: string | null;
+  site: string | null;
   idPhotoUrl: string | null;
   isBlacklisted: boolean;
 };

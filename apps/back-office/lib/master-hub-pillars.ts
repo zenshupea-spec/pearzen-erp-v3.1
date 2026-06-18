@@ -14,6 +14,9 @@ export const GUARD_FIELD_PORTAL_ROUTE = 'guard-field-portal';
 /** Café front-line staff portal (EPF login · orders · compliance photos). */
 export const CAFE_FRONT_PORTAL_ROUTE = 'cafe-front-portal';
 
+/** Sector manager field PWA (EPF login · rosters · site visits). */
+export const SM_PORTAL_ROUTE = 'sm-portal';
+
 export type MasterHubPillar = {
   title: string;
   modules: MasterHubModule[];
@@ -40,8 +43,8 @@ export const MASTER_HUB_PILLARS: MasterHubPillar[] = [
         label: 'SM Portal',
         description:
           'Sector manager view — roster assignments, guard performance, and shift handovers.',
-        route: '/hq/sm-proxy',
-        isProxy: true,
+        route: SM_PORTAL_ROUTE,
+        external: true,
       },
       {
         label: 'Check-in App',
@@ -102,6 +105,12 @@ export const MASTER_HUB_PILLARS: MasterHubPillar[] = [
   {
     title: 'Auxiliary & Governance',
     modules: [
+      {
+        label: 'Company Website',
+        description:
+          'Public security services marketing site — manpower and technology positioning for prospective clients.',
+        route: '/security-website',
+      },
       {
         label: 'Café Backoffice',
         description:

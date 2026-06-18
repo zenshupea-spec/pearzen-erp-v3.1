@@ -10,17 +10,19 @@ import {
 } from '../../../lib/site-geofence';
 import {
   activateMasterSite,
+  archiveMasterSite,
   createMasterSite,
   fetchMasterSiteDirectory,
+  restoreMasterSite,
   updateMasterSiteConfig,
   updateMasterSiteRates,
   type InternalStaffOption,
   type MasterSite,
   type SectorManagerOption,
+  type SiteConfigUpdate,
   type SiteRegistrationKind,
 } from '../../actions/site-directory-actions';
 import {
-  ArrowLeft,
   Plus,
   MapPin,
   User,
@@ -44,18 +46,27 @@ import {
   Layers,
   Receipt,
   Trash2,
+  Archive,
+  FolderArchive,
+  ArchiveRestore,
   Camera,
   Fingerprint,
   List,
   Clock,
-  Coffee,
-  Shield,
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
+import { SiteWelfareFields } from '../../../components/site/SiteWelfareFields';
+import {
+  EMPTY_SITE_MEALS,
+  formatSmPhoneDisplay,
+  looksLikeNfcTagId,
+  type SiteMealsProvided,
+} from '../../../lib/site-welfare';
+import FmSubnav from '../components/FmSubnav';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type SiteStatus = 'ACTIVE' | 'SUSPENDED' | 'PENDING';
+type SiteStatus = 'ACTIVE' | 'SUSPENDED' | 'PENDING' | 'ARCHIVED';
 
 interface RankRateEntry {
   qty: number;
@@ -108,8 +119,9 @@ interface RegisterSiteForm {
   assignedStaffEpf: string;
   assignedStaffEpfs: string[];
   perVisitCharge: string;
-  minDwellTime: string;
   rankRows: RankRow[];
+  mealsProvided: SiteMealsProvided;
+  providesAccommodation: boolean;
 }
 
 let _rowId = 0;
@@ -133,8 +145,9 @@ const BLANK_REGISTER_FORM: RegisterSiteForm = {
   assignedStaffEpf: '',
   assignedStaffEpfs: [],
   perVisitCharge: '',
-  minDwellTime: '',
   rankRows: [],
+  mealsProvided: { ...EMPTY_SITE_MEALS },
+  providesAccommodation: false,
 };
 
 // ─── ISO 18788 Verification Mode Types ────────────────────────────────────────
@@ -189,6 +202,7 @@ const STATUS_STYLES: Record<SiteStatus, string> = {
   ACTIVE:    'bg-emerald-100/90 text-emerald-900 border-emerald-200',
   SUSPENDED: 'bg-rose-100/90    text-rose-900    border-rose-200',
   PENDING:   'bg-amber-100/90   text-amber-900   border-amber-200',
+  ARCHIVED:  'bg-slate-100/90   text-slate-600   border-slate-200',
 };
 
 // ─── Register Site & Client Modal ────────────────────────────────────────────
@@ -199,8 +213,7 @@ function RegisterSiteModal({
   onSave,
   parentClients,
   sectorManagers,
-  headOfficeStaff,
-  cafeStaff,
+  existingSiteCodes,
   saving,
   saveError,
 }: {
@@ -209,8 +222,7 @@ function RegisterSiteModal({
   onSave: (f: RegisterSiteForm) => void | Promise<void>;
   parentClients: string[];
   sectorManagers: SectorManagerOption[];
-  headOfficeStaff: InternalStaffOption[];
-  cafeStaff: InternalStaffOption[];
+  existingSiteCodes: string[];
   saving: boolean;
   saveError: string | null;
 }) {
@@ -247,16 +259,11 @@ function RegisterSiteModal({
     'w-full rounded-xl border border-slate-200 bg-white/95 px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 shadow-sm transition-all';
   const labelCls = 'mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-slate-500';
 
-  const isClientSite = form.siteKind === 'client';
-  const isHeadOffice = form.siteKind === 'head_office';
-  const isCafeBranch = form.siteKind === 'cafe_branch';
   const isExisting = form.clientMode === 'existing';
 
-  const clientFilled = !isClientSite
-    ? true
-    : isExisting
-      ? form.existingClientName !== ''
-      : form.newClientName.trim() !== '';
+  const clientFilled = isExisting
+    ? form.existingClientName !== ''
+    : form.newClientName.trim() !== '';
 
   const siteBasicsFilled =
     form.siteCode.trim() !== '' &&
@@ -264,43 +271,31 @@ function RegisterSiteModal({
     form.locationAddress.trim() !== '' &&
     form.contractStart !== '';
 
-  const clientBillingFilled =
-    !isClientSite ||
-    (form.rankRows.length > 0 &&
-      form.perVisitCharge.trim() !== '' &&
-      form.minDwellTime.trim() !== '');
+  const clientBillingFilled = form.rankRows.length > 0;
 
-  const staffFilled = isClientSite || form.assignedStaffEpfs.length > 0;
+  const normalizedSiteCode = form.siteCode.trim().toUpperCase();
+  const siteCodeTaken =
+    normalizedSiteCode !== '' && existingSiteCodes.includes(normalizedSiteCode);
 
   const gpsFilled = form.gpsCoords.trim() !== '';
   const canSubmit =
     siteBasicsFilled &&
     clientFilled &&
     clientBillingFilled &&
-    staffFilled &&
-    (gpsFilled || (isClientSite && form.requestOMGPS));
+    !siteCodeTaken &&
+    (gpsFilled || form.requestOMGPS);
 
   const missingFields: string[] = [];
   if (!clientFilled) missingFields.push(isExisting ? 'Parent client' : 'New parent client name');
   if (!form.siteCode.trim()) missingFields.push('Site code');
-  if (!form.siteName.trim()) missingFields.push(isCafeBranch ? 'Branch name' : 'Site name');
+  if (siteCodeTaken) missingFields.push('Unique site code');
+  if (!form.siteName.trim()) missingFields.push('Site name');
   if (!form.locationAddress.trim()) missingFields.push('Location / address');
   if (!form.contractStart) missingFields.push('Contract start date');
-  if (isClientSite && form.rankRows.length === 0) missingFields.push('At least one guard rank');
-  if (isClientSite && !form.perVisitCharge.trim()) missingFields.push('Per-visit patrol charge');
-  if (isClientSite && !form.minDwellTime.trim()) missingFields.push('Minimum dwell time');
-  if (!staffFilled) {
-    missingFields.push(
-      isCafeBranch
-        ? 'At least one café staff member'
-        : 'At least one head office employee',
-    );
+  if (form.rankRows.length === 0) missingFields.push('At least one guard rank');
+  if (!gpsFilled && !form.requestOMGPS) {
+    missingFields.push('GPS coordinates (or OM field capture)');
   }
-  if (!gpsFilled && !(isClientSite && form.requestOMGPS)) {
-    missingFields.push(isClientSite ? 'GPS coordinates (or OM field capture)' : 'GPS coordinates');
-  }
-
-  const staffOptions = isHeadOffice ? headOfficeStaff : isCafeBranch ? cafeStaff : [];
 
   return (
     <div
@@ -321,13 +316,9 @@ function RegisterSiteModal({
               <h2 className="text-xl font-black uppercase tracking-tight text-slate-900">
                 Register Site Location
               </h2>
-              <p className="mt-0.5 text-xs text-slate-500">
-                {isClientSite
-                  ? 'Client guard site — cluster under an existing or new parent client'
-                  : isCafeBranch
-                    ? 'Café branch — assign café staff and GPS geofence for check-in'
-                    : 'Head office — assign HO staff and GPS geofence'}
-              </p>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Client guard site — cluster under an existing or new parent client
+          </p>
             </div>
             <button
               type="button"
@@ -337,52 +328,10 @@ function RegisterSiteModal({
               <X className="h-4 w-4" />
             </button>
           </div>
-          <div className="bg-slate-900 px-6 py-4 shadow-inner">
-            <p className="mb-3 text-[10px] font-black uppercase tracking-[0.2em] text-slate-300">
-              Step 1 — Choose location type
-            </p>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-              {(
-                [
-                  { value: 'client', label: 'Client Guard Site', Icon: Shield },
-                  { value: 'head_office', label: 'Head Office', Icon: Building2 },
-                  { value: 'cafe_branch', label: 'Café Branch', Icon: Coffee },
-                ] as { value: SiteRegistrationKind; label: string; Icon: React.FC<{ className?: string }> }[]
-              ).map(({ value, label, Icon }) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() =>
-                    setForm((p) => ({
-                      ...p,
-                      siteKind: value,
-                      assignedStaffEpf: '',
-                      assignedStaffEpfs: [],
-                      sectorManagerEpf: '',
-                      requestOMGPS: value === 'client' ? p.requestOMGPS : false,
-                    }))
-                  }
-                  className={`flex items-center justify-center gap-2 rounded-xl border-2 px-3 py-3 text-xs font-black uppercase tracking-wide transition-all ${
-                    form.siteKind === value
-                      ? value === 'client'
-                        ? 'border-indigo-300 bg-indigo-500 text-white shadow-md'
-                        : value === 'head_office'
-                          ? 'border-slate-300 bg-white text-slate-900 shadow-md'
-                          : 'border-amber-300 bg-amber-500 text-white shadow-md'
-                      : 'border-slate-600 bg-slate-800 text-slate-300 hover:border-slate-400 hover:bg-slate-700 hover:text-white'
-                  }`}
-                >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
         </div>
 
         <div className="relative min-h-0 flex-1 overflow-y-auto px-6 py-5">
           <form onSubmit={handleSubmit} className="space-y-5">
-            {isClientSite ? (
             <ExecutiveGlassCard className="p-5">
               <p className="mb-4 text-[10px] font-bold uppercase tracking-widest text-indigo-800">
                 Step 2 — Client Assignment
@@ -457,7 +406,6 @@ function RegisterSiteModal({
                 </div>
               )}
             </ExecutiveGlassCard>
-            ) : null}
 
             <ExecutiveGlassCard className="p-5">
               <p className="mb-4 text-[10px] font-bold uppercase tracking-widest text-emerald-800">
@@ -471,7 +419,11 @@ function RegisterSiteModal({
                       <span className="text-red-500 ml-0.5">*</span>
                     </label>
                     <input
-                      className={inputCls + ' font-mono tracking-widest uppercase'}
+                      className={
+                        inputCls +
+                        ' font-mono tracking-widest uppercase' +
+                        (siteCodeTaken ? ' border-rose-300 ring-1 ring-rose-200' : '')
+                      }
                       placeholder="e.g., LKH-01"
                       value={form.siteCode}
                       onChange={(e) =>
@@ -479,6 +431,11 @@ function RegisterSiteModal({
                       }
                       required
                     />
+                    {siteCodeTaken ? (
+                      <p className="mt-1 text-[10px] font-semibold text-rose-600">
+                        This site code is already assigned to another site.
+                      </p>
+                    ) : null}
                   </div>
                   <div>
                     <label className={labelCls}>
@@ -560,7 +517,7 @@ function RegisterSiteModal({
                         {MAX_GEOFENCE_RADIUS_M}m max
                       </p>
                     </div>
-                    {isClientSite ? (
+                    {(
                       <div className="col-span-2">
                         <label
                           className={`flex cursor-pointer select-none items-start gap-3 rounded-xl border px-4 py-3 transition-all ${
@@ -593,114 +550,27 @@ function RegisterSiteModal({
                           </span>
                         </label>
                       </div>
-                    ) : null}
+                    )}
                     <div className="col-span-2">
-                      <label className={labelCls}>
-                        {isClientSite ? 'Sector Manager' : isCafeBranch ? 'Café Staff' : 'Head Office Staff Contact'}
-                        {!isClientSite ? <span className="text-red-500 ml-0.5">*</span> : null}
-                      </label>
-                      {!isClientSite ? (
-                        <div className="space-y-2">
-                          {form.assignedStaffEpfs.length > 0 ? (
-                            <div className="flex flex-wrap gap-2">
-                              {form.assignedStaffEpfs.map((epf) => {
-                                const person = staffOptions.find((p) => p.epf === epf);
-                                return (
-                                  <button
-                                    key={epf}
-                                    type="button"
-                                    onClick={() =>
-                                      setForm((p) => ({
-                                        ...p,
-                                        assignedStaffEpfs: p.assignedStaffEpfs.filter((id) => id !== epf),
-                                      }))
-                                    }
-                                    className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-bold transition-all hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 ${
-                                      isCafeBranch
-                                        ? 'border-amber-200/80 bg-amber-50/80 text-amber-900'
-                                        : 'border-slate-200/80 bg-slate-50/80 text-slate-900'
-                                    }`}
-                                  >
-                                    {person?.label ?? epf}
-                                    <X className="h-3 w-3" />
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          ) : (
-                            <p className="text-xs font-semibold text-slate-500">
-                              {isCafeBranch
-                                ? 'Select café employees for this branch…'
-                                : 'Select head office employees…'}
-                            </p>
-                          )}
-                          <div className="max-h-40 overflow-y-auto rounded-xl border border-slate-200 bg-white/95 shadow-sm">
-                            {staffOptions.length === 0 ? (
-                              <p className="px-4 py-3 text-xs font-semibold text-amber-700">
-                                {isCafeBranch
-                                  ? 'No active café employees found. Add staff in HR → MNR first.'
-                                  : 'No active head office employees found. Add staff in HR → MNR first.'}
-                              </p>
-                            ) : (
-                              staffOptions.map((person) => {
-                                const selected = form.assignedStaffEpfs.includes(person.epf);
-                                return (
-                                  <label
-                                    key={person.epf}
-                                    className={`flex cursor-pointer items-center gap-3 border-b border-slate-100 px-4 py-2.5 text-sm font-semibold transition-colors last:border-b-0 ${
-                                      selected
-                                        ? isCafeBranch
-                                          ? 'bg-amber-50/80 text-amber-900'
-                                          : 'bg-slate-100/80 text-slate-900'
-                                        : 'text-slate-800 hover:bg-slate-50'
-                                    }`}
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={selected}
-                                      onChange={() =>
-                                        setForm((p) => ({
-                                          ...p,
-                                          assignedStaffEpfs: selected
-                                            ? p.assignedStaffEpfs.filter((id) => id !== person.epf)
-                                            : [...p.assignedStaffEpfs, person.epf],
-                                        }))
-                                      }
-                                      className={`h-4 w-4 rounded ${
-                                        isCafeBranch
-                                          ? 'border-amber-300 accent-amber-500'
-                                          : 'border-slate-300 accent-slate-600'
-                                      }`}
-                                    />
-                                    <User className="h-4 w-4 shrink-0 text-slate-400" />
-                                    <span>{person.label}</span>
-                                  </label>
-                                );
-                              })
-                            )}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="relative">
-                          <User className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                          <select
-                            value={form.sectorManagerEpf}
-                            onChange={set('sectorManagerEpf')}
-                            className="w-full appearance-none rounded-xl border border-slate-200 bg-white/95 py-2.5 pl-9 pr-8 text-sm font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/40 transition-all"
-                          >
-                            <option value="">— Assign later —</option>
-                            {sectorManagers.map((person) => (
-                              <option key={person.epf} value={person.epf}>{person.label}</option>
-                            ))}
-                          </select>
-                          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                        </div>
-                      )}
+                      <label className={labelCls}>Sector Manager</label>
+                      <div className="relative">
+                        <User className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                        <select
+                          value={form.sectorManagerEpf}
+                          onChange={set('sectorManagerEpf')}
+                          className="w-full appearance-none rounded-xl border border-slate-200 bg-white/95 py-2.5 pl-9 pr-8 text-sm font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/40 transition-all"
+                        >
+                          <option value="">— Assign later —</option>
+                          {sectorManagers.map((person) => (
+                            <option key={person.epf} value={person.epf}>{person.label}</option>
+                          ))}
+                        </select>
+                        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                      </div>
                     </div>
                   </div>
                 </div>
 
-                {isClientSite ? (
                 <div>
                   <div className="mb-3 flex items-center justify-between">
                     <label className={labelCls + ' mb-0'}>Guard Rank &amp; Billing Matrix</label>
@@ -867,45 +737,46 @@ function RegisterSiteModal({
                     </div>
                   )}
 
-                  {/* Per-Visit Patrol Charge + Minimum Dwell Time */}
+                  {/* Per-Visit Patrol Charge (optional — patrol-billed sites only) */}
                   <div className="mt-4 pt-3 border-t border-slate-200/60">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className={labelCls}>Per-Visit Patrol Charge (LKR)</label>
-                        <div className="relative">
-                          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-mono font-semibold text-slate-400">
-                            LKR
-                          </span>
-                          <input
-                            type="number"
-                            min="0"
-                            step="100"
-                            placeholder="e.g. 2500"
-                            className={inputCls + ' pl-10 font-mono'}
-                            value={form.perVisitCharge}
-                            onChange={set('perVisitCharge')}
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <label className={labelCls}>Minimum Dwell Time (Minutes)</label>
+                    <div>
+                      <label className={labelCls}>Per-Visit Patrol Charge (LKR) — optional</label>
+                      <div className="relative max-w-xs">
+                        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-mono font-semibold text-slate-400">
+                          LKR
+                        </span>
                         <input
                           type="number"
                           min="0"
-                          step="1"
-                          placeholder="e.g. 30"
-                          className={inputCls}
-                          value={form.minDwellTime}
-                          onChange={set('minDwellTime')}
+                          step="100"
+                          placeholder="Leave blank if shift-rate only"
+                          className={inputCls + ' pl-10 font-mono'}
+                          value={form.perVisitCharge}
+                          onChange={set('perVisitCharge')}
                         />
                       </div>
                     </div>
                     <p className="mt-2 text-[10px] leading-relaxed text-slate-500">
-                      SM must remain inside the site geofence for this duration to trigger the client billing charge.
+                      Only for sites that bill SM patrol visits separately. Shift-rate-only sites can leave this blank — MD fixed shift rates apply regardless.
                     </p>
                   </div>
+
+                  <div className="mt-4 border-t border-slate-200/60 pt-4">
+                    <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-indigo-800">
+                      Guard Welfare on Site
+                    </p>
+                    <SiteWelfareFields
+                      mealsProvided={form.mealsProvided}
+                      providesAccommodation={form.providesAccommodation}
+                      onMealsChange={(mealsProvided) =>
+                        setForm((p) => ({ ...p, mealsProvided }))
+                      }
+                      onAccommodationChange={(providesAccommodation) =>
+                        setForm((p) => ({ ...p, providesAccommodation }))
+                      }
+                    />
+                  </div>
                 </div>
-                ) : null}
               </div>
             </ExecutiveGlassCard>
 
@@ -996,65 +867,84 @@ function blendedRates(matrix: Partial<Record<RankKey, RankRateEntry>>) {
 
 // ─── God-Mode Grid Row ────────────────────────────────────────────────────────
 
-interface SiteConfigUpdate {
-  lat: number;
-  lng: number;
-  contractStart: string;
-  contractEnd: string;
-  sectorManagerEpf: string;
-  smPhone: string;
+function buildDraftConfig(site: Site) {
+  return {
+    siteName: site.siteName,
+    siteCode: site.siteCode,
+    address: site.address,
+    clientName: site.clientName,
+    parentClient: site.parentClient ?? site.clientName,
+    clientBillingAddress: site.clientBillingAddress,
+    perVisitCharge: String(site.perVisitCharge),
+    geofenceRadiusM: String(site.geofenceRadiusM),
+    lat: String(site.lat),
+    lng: String(site.lng),
+    contractStart: site.contractStart,
+    contractEnd: site.contractEnd,
+    sectorManagerEpf: site.sectorManagerEpf ?? '',
+    smPhone: site.smPhone,
+    mealsProvided: { ...site.mealsProvided },
+    providesAccommodation: site.providesAccommodation,
+  };
 }
 
 function SiteRow({
   site,
+  allSites,
   sectorManagers,
   onActivate,
   onUpdateRates,
   onSaveAll,
+  onArchive,
   isGrouped = false,
 }: {
   site: Site;
+  allSites: Site[];
   sectorManagers: SectorManagerOption[];
   onActivate: (id: string, smEpf: string) => void | Promise<void>;
   onUpdateRates: (id: string, matrix: Partial<Record<RankKey, RankRateEntry>>) => void | Promise<void>;
   onSaveAll: (id: string, config: SiteConfigUpdate, matrix: Partial<Record<RankKey, RankRateEntry>>) => void | Promise<void>;
+  onArchive: (id: string) => void | Promise<void>;
   isGrouped?: boolean;
 }) {
   const [expanded,   setExpanded]   = useState(false);
   const [selectedSM, setSelectedSM] = useState(site.sectorManagerEpf ?? sectorManagers[0]?.epf ?? '');
   const [activating, setActivating] = useState(false);
+  const [archiving, setArchiving] = useState(false);
 
   // ── ISO 18788 Verification Mode per-site ──────────────────────────────────
-  const [siteVerificationMode, setSiteVerificationMode] = useState<VerificationMode>('B');
+  const [siteVerificationMode, setSiteVerificationMode] = useState<VerificationMode>(
+    site.verificationMode,
+  );
+  const [draftMealsProvided, setDraftMealsProvided] = useState<SiteMealsProvided>(
+    () => ({ ...site.mealsProvided }),
+  );
+  const [draftProvidesAccommodation, setDraftProvidesAccommodation] = useState(
+    site.providesAccommodation,
+  );
 
-  // ── Edit Configuration mode ────────────────────────────────────────────────
-  const [configMode,  setConfigMode]  = useState(false);
-  const [draftConfig, setDraftConfig] = useState({
-    lat: String(site.lat), lng: String(site.lng),
-    contractStart: site.contractStart, contractEnd: site.contractEnd,
-    sectorManagerEpf: site.sectorManagerEpf ?? '', smPhone: site.smPhone,
-  });
+  // ── Edit Configuration mode (archive + advanced toolbar) ─────────────────────
+  const [configMode, setConfigMode] = useState(false);
+  const [draftConfig, setDraftConfig] = useState(() => buildDraftConfig(site));
   const [configSaved, setConfigSaved] = useState(false);
   const [addRankOpen, setAddRankOpen] = useState(false);
   const [rankToAdd,   setRankToAdd]   = useState<RankKey>('CSO');
 
-  // Sync config draft when site changes (e.g. after save propagates back)
+  // Sync drafts when site changes (e.g. after save propagates back)
   useEffect(() => {
-    setDraftConfig({
-      lat: String(site.lat), lng: String(site.lng),
-      contractStart: site.contractStart, contractEnd: site.contractEnd,
-      sectorManagerEpf: site.sectorManagerEpf ?? '', smPhone: site.smPhone,
-    });
+    setDraftConfig(buildDraftConfig(site));
+    setSiteVerificationMode(site.verificationMode);
+    setDraftMealsProvided({ ...site.mealsProvided });
+    setDraftProvidesAccommodation(site.providesAccommodation);
     setSelectedSM(site.sectorManagerEpf ?? sectorManagers[0]?.epf ?? '');
-  }, [site.lat, site.lng, site.contractStart, site.contractEnd, site.sectorManagerEpf, site.smPhone, sectorManagers]);
+  }, [site, sectorManagers]);
 
   const exitConfigMode = () => {
     setConfigMode(false);
-    setDraftConfig({
-      lat: String(site.lat), lng: String(site.lng),
-      contractStart: site.contractStart, contractEnd: site.contractEnd,
-      sectorManagerEpf: site.sectorManagerEpf ?? '', smPhone: site.smPhone,
-    });
+    setDraftConfig(buildDraftConfig(site));
+    setSiteVerificationMode(site.verificationMode);
+    setDraftMealsProvided({ ...site.mealsProvided });
+    setDraftProvidesAccommodation(site.providesAccommodation);
   };
 
   // ── Draft billing rate matrix ──────────────────────────────────────────────
@@ -1068,28 +958,53 @@ function SiteRow({
   }, [site.rateMatrix]);
 
   // ── Live computed values ───────────────────────────────────────────────────
-  const { liveInv, livePay, liveMarginVal, liveIsProfitable, isDirtyRates, isDirtyConfig, isDirtyAny } = useMemo(() => {
+  const {
+    liveInv,
+    livePay,
+    liveMarginVal,
+    liveIsProfitable,
+    isDirtyRates,
+    isDirtyConfig,
+    isDirtyAny,
+    draftPerVisitCharge,
+  } = useMemo(() => {
     const { inv, pay } = blendedRates(draftMatrix);
-    const liveInv  = inv || site.clientInvoiceRate;
-    const livePay  = pay || site.guardPayRate;
+    const liveInv = inv || site.clientInvoiceRate;
+    const livePay = pay || site.guardPayRate;
+    const draftPerVisitCharge = parseFloat(draftConfig.perVisitCharge) || site.perVisitCharge;
     const liveMarginVal = Math.round(
-      liveInv * site.shiftsCompleted + site.perVisitCharge * site.visitsLogged
+      liveInv * site.shiftsCompleted + draftPerVisitCharge * site.visitsLogged
       - livePay * site.shiftsCompleted - site.deductions,
     );
-    const isDirtyRates  = JSON.stringify(draftMatrix) !== JSON.stringify(site.rateMatrix);
+    const isDirtyRates = JSON.stringify(draftMatrix) !== JSON.stringify(site.rateMatrix);
     const isDirtyConfig =
-      draftConfig.lat           !== String(site.lat)    ||
-      draftConfig.lng           !== String(site.lng)    ||
-      draftConfig.contractStart !== site.contractStart  ||
-      draftConfig.contractEnd   !== site.contractEnd    ||
-      draftConfig.sectorManagerEpf !== (site.sectorManagerEpf ?? '')  ||
-      draftConfig.smPhone       !== site.smPhone;
+      draftConfig.siteName !== site.siteName ||
+      draftConfig.siteCode !== site.siteCode ||
+      draftConfig.address !== site.address ||
+      draftConfig.clientName !== site.clientName ||
+      draftConfig.parentClient !== (site.parentClient ?? site.clientName) ||
+      draftConfig.clientBillingAddress !== site.clientBillingAddress ||
+      draftConfig.perVisitCharge !== String(site.perVisitCharge) ||
+      draftConfig.geofenceRadiusM !== String(site.geofenceRadiusM) ||
+      draftConfig.lat !== String(site.lat) ||
+      draftConfig.lng !== String(site.lng) ||
+      draftConfig.contractStart !== site.contractStart ||
+      draftConfig.contractEnd !== site.contractEnd ||
+      draftConfig.sectorManagerEpf !== (site.sectorManagerEpf ?? '') ||
+      siteVerificationMode !== site.verificationMode ||
+      JSON.stringify(draftMealsProvided) !== JSON.stringify(site.mealsProvided) ||
+      draftProvidesAccommodation !== site.providesAccommodation;
     return {
-      liveInv, livePay, liveMarginVal,
+      liveInv,
+      livePay,
+      liveMarginVal,
       liveIsProfitable: liveMarginVal >= 0,
-      isDirtyRates, isDirtyConfig, isDirtyAny: isDirtyRates || isDirtyConfig,
+      isDirtyRates,
+      isDirtyConfig,
+      isDirtyAny: isDirtyRates || isDirtyConfig,
+      draftPerVisitCharge,
     };
-  }, [draftMatrix, draftConfig, site]);
+  }, [draftMatrix, draftConfig, site, siteVerificationMode, draftMealsProvided, draftProvidesAccommodation]);
 
   // ── Matrix handlers ────────────────────────────────────────────────────────
   const setRankField = (rank: RankKey, field: keyof RankRateEntry, raw: string) => {
@@ -1124,14 +1039,30 @@ function SiteRow({
   };
 
   const handleSaveAll = async () => {
+    const normalizedCode = draftConfig.siteCode.trim().toUpperCase();
+    if (normalizedCode && reservedSiteCodes.includes(normalizedCode)) return;
+
+    const perVisitRaw = draftConfig.perVisitCharge.trim();
     await onSaveAll(site.id, {
-      lat:           parseFloat(draftConfig.lat)  || site.lat,
-      lng:           parseFloat(draftConfig.lng)  || site.lng,
-      contractStart: draftConfig.contractStart    || site.contractStart,
-      contractEnd:   draftConfig.contractEnd      || site.contractEnd,
+      siteName: draftConfig.siteName.trim() || site.siteName,
+      siteCode: normalizedCode,
+      address: draftConfig.address.trim() || site.address,
+      clientName: draftConfig.clientName.trim() || site.clientName,
+      parentClient: draftConfig.parentClient.trim() || draftConfig.clientName.trim() || site.clientName,
+      clientBillingAddress: draftConfig.clientBillingAddress.trim(),
+      lat: parseFloat(draftConfig.lat) || site.lat,
+      lng: parseFloat(draftConfig.lng) || site.lng,
+      contractStart: draftConfig.contractStart || site.contractStart,
+      contractEnd: draftConfig.contractEnd || site.contractEnd,
       sectorManagerEpf: draftConfig.sectorManagerEpf || site.sectorManagerEpf || '',
-      smPhone:       draftConfig.smPhone          || site.smPhone,
+      perVisitCharge: perVisitRaw === '' ? 0 : parseFloat(perVisitRaw) || 0,
+      minDwellTimeMinutes: 0,
+      geofenceRadiusM: clampGeofenceRadiusM(
+        parseInt(draftConfig.geofenceRadiusM, 10) || site.geofenceRadiusM,
+      ),
       verificationMode: siteVerificationMode,
+      mealsProvided: draftMealsProvided,
+      providesAccommodation: draftProvidesAccommodation,
     }, draftMatrix);
     setConfigSaved(true);
     setConfigMode(false);
@@ -1149,8 +1080,37 @@ function SiteRow({
     setTimeout(() => { onActivate(site.id, selectedSM); setActivating(false); }, 500);
   };
 
+  const handleArchive = async () => {
+    if (
+      !window.confirm(
+        `Archive "${site.siteName}"? It will move to the archive folder at the bottom. Sites cannot be deleted.`,
+      )
+    ) {
+      return;
+    }
+    setArchiving(true);
+    try {
+      await onArchive(site.id);
+      setConfigMode(false);
+      setExpanded(false);
+    } finally {
+      setArchiving(false);
+    }
+  };
+
   const smDisplayName = resolveSectorManagerLabel(site, sectorManagers);
   const isClientSiteRow = site.siteKind === 'client';
+  const reservedSiteCodes = useMemo(
+    () =>
+      allSites
+        .filter((s) => s.id !== site.id)
+        .map((s) => s.siteCode.trim().toUpperCase())
+        .filter(Boolean),
+    [allSites, site.id],
+  );
+  const normalizedDraftSiteCode = draftConfig.siteCode.trim().toUpperCase();
+  const siteCodeConflict =
+    normalizedDraftSiteCode !== '' && reservedSiteCodes.includes(normalizedDraftSiteCode);
 
   // Derived rank requirements label from live draft matrix
   const derivedRankReqs = (Object.entries(draftMatrix) as [RankKey, RankRateEntry][])
@@ -1254,20 +1214,33 @@ function SiteRow({
                     </span>
                   )}
                 </div>
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); configMode ? exitConfigMode() : setConfigMode(true); }}
-                  className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-[10px] font-bold transition-all ${
-                    configMode
-                      ? 'border-indigo-200/80 bg-white/80 text-indigo-700 hover:bg-indigo-50/60'
-                      : 'border-slate-200/80 bg-white/70 text-slate-700 hover:bg-white/90'
-                  }`}
-                >
-                  {configMode
-                    ? <><X className="h-3 w-3" />Exit Edit Mode</>
-                    : <><Pencil className="h-3 w-3" />Edit Configuration</>
-                  }
-                </button>
+                <div className="flex items-center gap-2">
+                  {configMode ? (
+                    <button
+                      type="button"
+                      disabled={archiving}
+                      onClick={(e) => { e.stopPropagation(); void handleArchive(); }}
+                      className="flex items-center gap-1.5 rounded-xl border border-amber-200/80 bg-amber-50/80 px-3 py-1.5 text-[10px] font-bold text-amber-900 transition-all hover:bg-amber-100/80 disabled:opacity-50"
+                    >
+                      <Archive className="h-3 w-3" />
+                      {archiving ? 'Archiving…' : 'Archive Site'}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); configMode ? exitConfigMode() : setConfigMode(true); }}
+                    className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-[10px] font-bold transition-all ${
+                      configMode
+                        ? 'border-indigo-200/80 bg-white/80 text-indigo-700 hover:bg-indigo-50/60'
+                        : 'border-slate-200/80 bg-white/70 text-slate-700 hover:bg-white/90'
+                    }`}
+                  >
+                    {configMode
+                      ? <><X className="h-3 w-3" />Exit Edit Mode</>
+                      : <><Pencil className="h-3 w-3" />Edit Configuration</>
+                    }
+                  </button>
+                </div>
               </div>
 
               {/* ── 4-panel grid ── */}
@@ -1290,7 +1263,9 @@ function SiteRow({
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-600">Visit Charges</span>
-                      <span className="font-mono font-bold text-emerald-800">{lkr(site.perVisitCharge * site.visitsLogged)}</span>
+                      <span className={`font-mono font-bold ${isDirtyConfig ? 'text-indigo-700' : 'text-emerald-800'}`}>
+                        {lkr(Math.round(draftPerVisitCharge * site.visitsLogged))}
+                      </span>
                     </div>
                     <div className="flex justify-between border-t border-slate-200/80 pt-1.5">
                       <span className="text-slate-600">Guard Cost</span>
@@ -1310,61 +1285,111 @@ function SiteRow({
                   </div>
                 </div>
 
-                {/* ── Col 2: Contract + GPS ── */}
+                {/* ── Col 2: Site identity, contract & location ── */}
                 <div className="p-4">
-                  <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Contract &amp; Location</p>
-                  {configMode ? (
-                    <div className="space-y-2">
+                  <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Site &amp; Location</p>
+                  <div className="space-y-2">
+                    <div>
+                      <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-400">Site Name</label>
+                      <input type="text" value={draftConfig.siteName}
+                        onChange={(e) => setDraftConfig((p) => ({ ...p, siteName: e.target.value }))}
+                        onClick={(e) => e.stopPropagation()}
+                        className={`${ic} border-slate-200/80 focus:ring-indigo-500/40`} />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-400">Site Code</label>
+                      <input type="text" value={draftConfig.siteCode}
+                        onChange={(e) => setDraftConfig((p) => ({ ...p, siteCode: e.target.value.toUpperCase() }))}
+                        onClick={(e) => e.stopPropagation()}
+                        className={`${ic} border-slate-200/80 font-mono focus:ring-indigo-500/40${siteCodeConflict ? ' border-rose-300 ring-1 ring-rose-200' : ''}`} />
+                      {siteCodeConflict ? (
+                        <p className="mt-1 text-[9px] font-semibold text-rose-600">
+                          Already used by another site.
+                        </p>
+                      ) : null}
+                    </div>
+                    {isClientSiteRow ? (
+                      <>
+                        <div>
+                          <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-400">Client Name</label>
+                          <input type="text" value={draftConfig.clientName}
+                            onChange={(e) => setDraftConfig((p) => ({ ...p, clientName: e.target.value }))}
+                            onClick={(e) => e.stopPropagation()}
+                            className={`${ic} border-slate-200/80 focus:ring-indigo-500/40`} />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-400">Parent Client (grouping)</label>
+                          <input type="text" value={draftConfig.parentClient}
+                            onChange={(e) => setDraftConfig((p) => ({ ...p, parentClient: e.target.value }))}
+                            onClick={(e) => e.stopPropagation()}
+                            className={`${ic} border-slate-200/80 focus:ring-indigo-500/40`} />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-400">Billing Address</label>
+                          <input type="text" value={draftConfig.clientBillingAddress}
+                            onChange={(e) => setDraftConfig((p) => ({ ...p, clientBillingAddress: e.target.value }))}
+                            onClick={(e) => e.stopPropagation()}
+                            className={`${ic} border-slate-200/80 focus:ring-indigo-500/40`} />
+                        </div>
+                      </>
+                    ) : null}
+                    <div>
+                      <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-400">Site Address</label>
+                      <input type="text" value={draftConfig.address}
+                        onChange={(e) => setDraftConfig((p) => ({ ...p, address: e.target.value }))}
+                        onClick={(e) => e.stopPropagation()}
+                        className={`${ic} border-slate-200/80 focus:ring-indigo-500/40`} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-400">Contract Start</label>
                         <input type="date" value={draftConfig.contractStart}
                           onChange={(e) => setDraftConfig((p) => ({ ...p, contractStart: e.target.value }))}
                           onClick={(e) => e.stopPropagation()}
-                          className={`${ic} border-indigo-200/70 focus:ring-indigo-500/40`} />
+                          className={`${ic} border-slate-200/80 focus:ring-indigo-500/40`} />
                       </div>
                       <div>
                         <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-400">Contract End</label>
                         <input type="date" value={draftConfig.contractEnd}
                           onChange={(e) => setDraftConfig((p) => ({ ...p, contractEnd: e.target.value }))}
                           onClick={(e) => e.stopPropagation()}
-                          className={`${ic} border-indigo-200/70 focus:ring-indigo-500/40`} />
+                          className={`${ic} border-slate-200/80 focus:ring-indigo-500/40`} />
                       </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-400">GPS Latitude</label>
+                        <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-400">GPS Lat</label>
                         <input type="number" step="0.0001" placeholder="6.9271" value={draftConfig.lat}
                           onChange={(e) => setDraftConfig((p) => ({ ...p, lat: e.target.value }))}
                           onClick={(e) => e.stopPropagation()}
-                          className={`${ic} border-indigo-200/70 font-mono focus:ring-emerald-500/40`} />
+                          className={`${ic} border-slate-200/80 font-mono focus:ring-emerald-500/40`} />
                       </div>
                       <div>
-                        <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-400">GPS Longitude</label>
+                        <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-400">GPS Lng</label>
                         <input type="number" step="0.0001" placeholder="79.8612" value={draftConfig.lng}
                           onChange={(e) => setDraftConfig((p) => ({ ...p, lng: e.target.value }))}
                           onClick={(e) => e.stopPropagation()}
-                          className={`${ic} border-indigo-200/70 font-mono focus:ring-emerald-500/40`} />
+                          className={`${ic} border-slate-200/80 font-mono focus:ring-emerald-500/40`} />
                       </div>
                     </div>
-                  ) : (
-                    <div className="space-y-2 text-xs">
-                      <div>
-                        <p className="text-slate-500">Contract Period</p>
-                        <p className="font-semibold text-slate-900">{site.contractStart} → {site.contractEnd}</p>
-                      </div>
-                      <div>
-                        <p className="text-slate-500">GPS</p>
-                        <p className="font-mono font-semibold text-slate-900">{site.lat.toFixed(4)}, {site.lng.toFixed(4)}</p>
-                      </div>
-                      <div>
-                        <p className="text-slate-500">Rank Requirements</p>
-                        <p className="font-semibold text-slate-900">{derivedRankReqs}</p>
-                      </div>
-                      <a href={`https://maps.google.com/?q=${site.lat},${site.lng}`} target="_blank" rel="noopener noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="flex items-center gap-1 text-emerald-700 hover:underline">
-                        <MapPin className="h-3 w-3" />View in Maps
-                      </a>
+                    <div>
+                        <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-400">Geofence (m)</label>
+                        <input type="number" min={MIN_GEOFENCE_RADIUS_M} max={MAX_GEOFENCE_RADIUS_M}
+                          value={draftConfig.geofenceRadiusM}
+                          onChange={(e) => setDraftConfig((p) => ({ ...p, geofenceRadiusM: e.target.value }))}
+                          onClick={(e) => e.stopPropagation()}
+                          className={`${ic} border-slate-200/80 font-mono focus:ring-emerald-500/40`} />
                     </div>
-                  )}
+                    <div>
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">Rank Requirements</p>
+                      <p className="text-xs font-semibold text-slate-700">{derivedRankReqs}</p>
+                    </div>
+                    <a href={`https://maps.google.com/?q=${draftConfig.lat},${draftConfig.lng}`} target="_blank" rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="flex items-center gap-1 text-xs text-emerald-700 hover:underline">
+                      <MapPin className="h-3 w-3" />View in Maps
+                    </a>
+                  </div>
                 </div>
 
                 {/* ── Col 3: Billing Rate Matrix (qty + invoice + pay) ── */}
@@ -1451,10 +1476,14 @@ function SiteRow({
                     </div>
                   )}
 
-                  {/* Per-visit charge */}
-                  <div className="mt-2.5 flex justify-between border-t border-slate-200/60 pt-2 text-xs">
-                    <span className="text-slate-500">Per-Visit Charge</span>
-                    <span className="font-mono font-semibold text-slate-700">{lkr(site.perVisitCharge)}</span>
+                  {/* Per-visit charge (optional) */}
+                  <div className="mt-2.5 border-t border-slate-200/60 pt-2">
+                    <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-400">Per-Visit Charge (LKR) — optional</label>
+                    <input type="number" min="0" step="100" placeholder="Shift-rate only — leave blank"
+                      value={draftConfig.perVisitCharge}
+                      onChange={(e) => setDraftConfig((p) => ({ ...p, perVisitCharge: e.target.value }))}
+                      onClick={(e) => e.stopPropagation()}
+                      className={`${ic} border-slate-200/80 font-mono focus:ring-emerald-500/40`} />
                   </div>
 
                   {/* Rate-only save (visible when not in configMode) */}
@@ -1503,33 +1532,58 @@ function SiteRow({
                         </div>
                       </div>
                     </div>
-                  ) : configMode ? (
-                    /* Edit config: SM reassignment */
+                  ) : (
                     <div>
-                      <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-indigo-700">Reassign Manager</p>
+                      <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">Sector Manager</p>
                       <div className="space-y-3">
                         <div>
-                          <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-500">Sector Manager</label>
+                          <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-500">Assigned SM</label>
                           <div className="relative">
                             <User className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-                            <select value={draftConfig.sectorManagerEpf} onChange={(e) => setDraftConfig((p) => ({ ...p, sectorManagerEpf: e.target.value }))} onClick={(e) => e.stopPropagation()}
-                              className="w-full appearance-none rounded-xl border border-indigo-200/60 bg-white/90 py-2 pl-8 pr-8 text-xs font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-all">
+                            <select
+                              value={draftConfig.sectorManagerEpf}
+                              onChange={(e) => {
+                                const epf = e.target.value;
+                                const sm = sectorManagers.find((s) => s.epf === epf);
+                                setDraftConfig((p) => ({
+                                  ...p,
+                                  sectorManagerEpf: epf,
+                                  smPhone: sm?.phone ?? p.smPhone,
+                                }));
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                              className="w-full appearance-none rounded-xl border border-slate-200/80 bg-white/90 py-2 pl-8 pr-8 text-xs font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-all"
+                            >
                               {sectorManagers.map((sm) => <option key={sm.epf} value={sm.epf}>{sm.label}</option>)}
                             </select>
                             <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                           </div>
                         </div>
-                        <div>
-                          <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-500">SM Phone</label>
-                          <div className="relative">
-                            <Phone className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-                            <input type="tel" placeholder="+94 77 000 0000" value={draftConfig.smPhone}
-                              onChange={(e) => setDraftConfig((p) => ({ ...p, smPhone: e.target.value }))} onClick={(e) => e.stopPropagation()}
-                              className="w-full rounded-xl border border-indigo-200/60 bg-white/90 py-2 pl-8 pr-3 text-xs text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-all" />
-                          </div>
+                        <div className="flex items-center gap-1.5 text-xs text-slate-700">
+                          <Phone className="h-3.5 w-3.5 text-slate-400" />
+                          {formatSmPhoneDisplay(draftConfig.smPhone)}
                         </div>
-                        {/* ── ISO 18788 Verification Mode ── */}
-                        <div className="border-t border-indigo-100/80 pt-3">
+                        {(site.nfcTagId || looksLikeNfcTagId(draftConfig.smPhone)) ? (
+                          <div className="rounded-lg border border-emerald-200/70 bg-emerald-50/60 px-2.5 py-2">
+                            <p className="text-[9px] font-bold uppercase tracking-widest text-emerald-800">
+                              NFC Tag ID (Mode C)
+                            </p>
+                            <p className="mt-0.5 break-all font-mono text-[10px] text-emerald-900">
+                              {site.nfcTagId ?? draftConfig.smPhone}
+                            </p>
+                          </div>
+                        ) : null}
+                        <div className="border-t border-slate-200/60 pt-3">
+                          <SiteWelfareFields
+                            compact
+                            mealsProvided={draftMealsProvided}
+                            providesAccommodation={draftProvidesAccommodation}
+                            onMealsChange={setDraftMealsProvided}
+                            onAccommodationChange={setDraftProvidesAccommodation}
+                            onClickStop={(e) => e.stopPropagation()}
+                          />
+                        </div>
+                        <div className="border-t border-slate-200/60 pt-3">
                           <p className="mb-2 text-[9px] font-black uppercase tracking-widest text-indigo-600">
                             ISO 18788 Verification Mode
                           </p>
@@ -1537,7 +1591,7 @@ function SiteRow({
                             <select
                               value={siteVerificationMode}
                               onChange={(e) => setSiteVerificationMode(e.target.value as VerificationMode)}
-                              className="w-full appearance-none rounded-xl border border-indigo-200/60 bg-white/90 py-2 pl-3 pr-8 text-xs font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-all"
+                              className="w-full appearance-none rounded-xl border border-slate-200/80 bg-white/90 py-2 pl-3 pr-8 text-xs font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-all"
                             >
                               <option value="A">Mode A: SM Roster Only</option>
                               <option value="B">Mode B: SM Roster + Edge App (GPS &amp; Live Selfie)</option>
@@ -1551,29 +1605,10 @@ function SiteRow({
                             return (
                               <span className={`mt-1.5 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${meta.badge}`}>
                                 <Icon className="h-3 w-3 flex-shrink-0" />
-                                Mode {siteVerificationMode} Active
+                                Mode {siteVerificationMode}
                               </span>
                             );
                           })()}
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    /* Normal: locked SM info */
-                    <div>
-                      <div className="mb-3 flex items-center gap-2">
-                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Sector Manager</p>
-                        {site.status === 'ACTIVE' && <span title="SM locked — site active"><Lock className="h-3 w-3 text-emerald-600" /></span>}
-                      </div>
-                      <div className="space-y-2 text-xs">
-                        <div className="flex items-center gap-2 rounded-xl border border-emerald-200/60 bg-emerald-50/50 px-3 py-2">
-                          <CheckCircle2 className="h-3.5 w-3.5 flex-shrink-0 text-emerald-600" />
-                          <span className="font-bold text-emerald-900">{smDisplayName}</span>
-                        </div>
-                        <div className="flex items-center gap-1.5 text-slate-700"><Phone className="h-3.5 w-3.5 text-slate-400" />{site.smPhone}</div>
-                        <div className="flex items-center gap-1.5 pt-1">
-                          <MapPin className="h-3.5 w-3.5 text-emerald-600" />
-                          <a href={`https://maps.google.com/?q=${site.lat},${site.lng}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="font-semibold text-emerald-800 hover:underline">Open in Maps</a>
                         </div>
                       </div>
                     </div>
@@ -1595,7 +1630,7 @@ function SiteRow({
                 </p>
 
                 {/* Save All */}
-                <button type="button" disabled={!isDirtyAny}
+                <button type="button" disabled={!isDirtyAny || siteCodeConflict}
                   onClick={(e) => { e.stopPropagation(); handleSaveAll(); }}
                   className={`flex items-center gap-2 rounded-xl px-4 py-2 text-[11px] font-black uppercase tracking-wider transition-all ${
                     isDirtyAny
@@ -1617,20 +1652,102 @@ function SiteRow({
 
 // ─── Parent Client Group Row ──────────────────────────────────────────────────
 
+function ArchivedSitesFolder({
+  sites,
+  onRestore,
+}: {
+  sites: Site[];
+  onRestore: (id: string) => void | Promise<void>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [restoringId, setRestoringId] = useState<string | null>(null);
+
+  const handleRestore = async (id: string, siteName: string) => {
+    if (!window.confirm(`Restore "${siteName}" to the active site directory?`)) return;
+    setRestoringId(id);
+    try {
+      await onRestore(id);
+    } finally {
+      setRestoringId(null);
+    }
+  };
+
+  return (
+    <ExecutiveGlassCard className="overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center justify-between gap-3 border-b border-slate-200/80 bg-slate-100/70 px-5 py-4 text-left transition-colors hover:bg-slate-100/90"
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-300/80 bg-white/80 shadow-sm">
+            <FolderArchive className="h-5 w-5 text-slate-600" />
+          </div>
+          <div>
+            <h2 className="text-xs font-black uppercase tracking-widest text-slate-700">Archive</h2>
+            <p className="text-[10px] text-slate-500">
+              {sites.length} archived site{sites.length !== 1 ? 's' : ''} · Sites are archived, not deleted
+            </p>
+          </div>
+        </div>
+        {expanded ? <ChevronUp className="h-4 w-4 text-slate-500" /> : <ChevronDown className="h-4 w-4 text-slate-500" />}
+      </button>
+
+      {expanded ? (
+        sites.length > 0 ? (
+          <div className="divide-y divide-slate-200/60">
+            {sites.map((site) => (
+              <div
+                key={site.id}
+                className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5 transition-colors hover:bg-slate-50/60"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-slate-200/80 bg-slate-100/80">
+                    <Archive className="h-3.5 w-3.5 text-slate-500" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-bold text-slate-800">{site.siteName}</p>
+                    <p className="truncate text-xs text-slate-500">{site.clientName}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={restoringId === site.id}
+                  onClick={() => void handleRestore(site.id, site.siteName)}
+                  className="flex items-center gap-1.5 rounded-xl border border-emerald-200/80 bg-emerald-50/80 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-emerald-800 transition-all hover:bg-emerald-100/80 disabled:opacity-50"
+                >
+                  <ArchiveRestore className="h-3 w-3" />
+                  {restoringId === site.id ? 'Restoring…' : 'Restore'}
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="px-5 py-4 text-sm text-slate-500">No archived sites. Use Edit Configuration → Archive Site to move a site here.</p>
+        )
+      ) : null}
+    </ExecutiveGlassCard>
+  );
+}
+
 function ParentClientGroupRow({
   parentClient,
   sites,
+  allSites,
   sectorManagers,
   onActivate,
   onUpdateRates,
   onSaveAll,
+  onArchive,
 }: {
   parentClient: string;
   sites: Site[];
+  allSites: Site[];
   sectorManagers: SectorManagerOption[];
   onActivate: (id: string, smEpf: string) => void | Promise<void>;
   onUpdateRates: (id: string, matrix: Partial<Record<RankKey, RankRateEntry>>) => void | Promise<void>;
   onSaveAll: (id: string, config: SiteConfigUpdate, matrix: Partial<Record<RankKey, RankRateEntry>>) => void | Promise<void>;
+  onArchive: (id: string) => void | Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(true);
 
@@ -1692,10 +1809,12 @@ function ParentClientGroupRow({
         <SiteRow
           key={site.id}
           site={site}
+          allSites={allSites}
           sectorManagers={sectorManagers}
           onActivate={onActivate}
           onUpdateRates={onUpdateRates}
           onSaveAll={onSaveAll}
+          onArchive={onArchive}
           isGrouped
         />
       ))}
@@ -1715,17 +1834,21 @@ function ParentClientGroupRow({
 function SectorGroupRow({
   sector,
   sites,
+  allSites,
   sectorManagers,
   onActivate,
   onUpdateRates,
   onSaveAll,
+  onArchive,
 }: {
   sector: string;
   sites: Site[];
+  allSites: Site[];
   sectorManagers: SectorManagerOption[];
   onActivate: (id: string, smEpf: string) => void | Promise<void>;
   onUpdateRates: (id: string, matrix: Partial<Record<RankKey, RankRateEntry>>) => void | Promise<void>;
   onSaveAll: (id: string, config: SiteConfigUpdate, matrix: Partial<Record<RankKey, RankRateEntry>>) => void | Promise<void>;
+  onArchive: (id: string) => void | Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(true);
 
@@ -1785,10 +1908,12 @@ function SectorGroupRow({
         <SiteRow
           key={site.id}
           site={site}
+          allSites={allSites}
           sectorManagers={sectorManagers}
           onActivate={onActivate}
           onUpdateRates={onUpdateRates}
           onSaveAll={onSaveAll}
+          onArchive={onArchive}
           isGrouped
         />
       ))}
@@ -1811,8 +1936,6 @@ function replaceSiteInList(sites: Site[], next: Site): Site[] {
 export default function FMSiteDirectoryPage() {
   const [sites, setSites]                 = useState<Site[]>([]);
   const [sectorManagers, setSectorManagers] = useState<SectorManagerOption[]>([]);
-  const [headOfficeStaff, setHeadOfficeStaff] = useState<InternalStaffOption[]>([]);
-  const [cafeStaff, setCafeStaff] = useState<InternalStaffOption[]>([]);
   const [loading, setLoading]             = useState(true);
   const [loadError, setLoadError]         = useState<string | null>(null);
   const [modalOpen, setModalOpen]         = useState(false);
@@ -1827,8 +1950,6 @@ export default function FMSiteDirectoryPage() {
       const data = await fetchMasterSiteDirectory();
       setSites(data.sites);
       setSectorManagers(data.sectorManagers);
-      setHeadOfficeStaff(data.headOfficeStaff);
-      setCafeStaff(data.cafeStaff);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Failed to load sites.';
       setLoadError(message);
@@ -1841,29 +1962,45 @@ export default function FMSiteDirectoryPage() {
     void loadDirectory();
   }, [loadDirectory]);
 
+  const activeSites = useMemo(
+    () => sites.filter((s) => s.status !== 'ARCHIVED'),
+    [sites],
+  );
+  const archivedSites = useMemo(
+    () => sites.filter((s) => s.status === 'ARCHIVED'),
+    [sites],
+  );
+
   const parentClients = useMemo(
     () =>
       Array.from(
         new Set(
-          sites
+          activeSites
             .map((s) => s.parentClient || s.clientName)
             .filter(Boolean) as string[],
         ),
       ),
+    [activeSites],
+  );
+  const existingSiteCodes = useMemo(
+    () =>
+      sites
+        .map((s) => s.siteCode.trim().toUpperCase())
+        .filter(Boolean),
     [sites],
   );
   const [gridView, setGridView]   = useState<GridViewMode>('client');
   const [sortField, setSortField] = useState<GridSortField | null>(null);
   const [sortDir, setSortDir]     = useState<'asc' | 'desc'>('desc');
 
-  const totalRevenue   = sites.reduce((s, x) => s + x.clientInvoiceRate * x.shiftsCompleted + x.perVisitCharge * x.visitsLogged, 0);
-  const totalCost      = sites.reduce((s, x) => s + x.guardPayRate * x.shiftsCompleted + x.deductions, 0);
+  const totalRevenue   = activeSites.reduce((s, x) => s + x.clientInvoiceRate * x.shiftsCompleted + x.perVisitCharge * x.visitsLogged, 0);
+  const totalCost      = activeSites.reduce((s, x) => s + x.guardPayRate * x.shiftsCompleted + x.deductions, 0);
   const totalMargin    = totalRevenue - totalCost;
-  const unprofitable   = sites.filter((x) => calcMargin(x) < 0).length;
+  const unprofitable   = activeSites.filter((x) => calcMargin(x) < 0).length;
 
   const sectorTotals = useMemo(() => {
     const map = new Map<string, { margin: number; count: number }>();
-    for (const site of sites) {
+    for (const site of activeSites) {
       const key = site.sector || 'Unassigned';
       const prev = map.get(key) ?? { margin: 0, count: 0 };
       map.set(key, { margin: prev.margin + calcMargin(site), count: prev.count + 1 });
@@ -1871,9 +2008,11 @@ export default function FMSiteDirectoryPage() {
     return [...map.entries()]
       .map(([sector, stats]) => ({ sector, ...stats }))
       .sort((a, b) => b.margin - a.margin);
-  }, [sites]);
+  }, [activeSites]);
 
-  const sorted = [...sites].sort((a, b) => {
+  const holidayCalendarIncomplete = true;
+
+  const sorted = [...activeSites].sort((a, b) => {
     if (!sortField) return 0;
     const dir = sortDir === 'desc' ? -1 : 1;
     if (sortField === 'margin') {
@@ -2005,6 +2144,26 @@ export default function FMSiteDirectoryPage() {
     setSites((prev) => replaceSiteInList(prev, result.site));
   };
 
+  const handleArchiveSite = async (id: string) => {
+    setActionError(null);
+    const result = await archiveMasterSite({ siteId: id });
+    if (!result.success) {
+      setActionError(result.error);
+      return;
+    }
+    setSites((prev) => replaceSiteInList(prev, result.site));
+  };
+
+  const handleRestoreSite = async (id: string) => {
+    setActionError(null);
+    const result = await restoreMasterSite({ siteId: id });
+    if (!result.success) {
+      setActionError(result.error);
+      return;
+    }
+    setSites((prev) => replaceSiteInList(prev, result.site));
+  };
+
   const handleSaveSite = async (form: RegisterSiteForm) => {
     setSavingSite(true);
     setSaveSiteError(null);
@@ -2027,13 +2186,16 @@ export default function FMSiteDirectoryPage() {
         assignedStaffEpf: form.assignedStaffEpf,
         assignedStaffEpfs: form.assignedStaffEpfs,
         perVisitCharge: form.perVisitCharge,
-        minDwellTime: form.minDwellTime,
-        rankRows: form.rankRows.map(({ rank, headcount, invoiceRate, payRate }) => ({
+        minDwellTime: '',
+        rankRows: form.rankRows.map(({ rank, shiftType, headcount, invoiceRate, payRate }) => ({
           rank,
+          shiftType,
           headcount,
           invoiceRate,
           payRate,
         })),
+        mealsProvided: form.mealsProvided,
+        providesAccommodation: form.providesAccommodation,
       });
       if (!result.success) {
         setSaveSiteError(result.error);
@@ -2063,8 +2225,7 @@ export default function FMSiteDirectoryPage() {
         onSave={handleSaveSite}
         parentClients={parentClients}
         sectorManagers={sectorManagers}
-        headOfficeStaff={headOfficeStaff}
-        cafeStaff={cafeStaff}
+        existingSiteCodes={existingSiteCodes}
         saving={savingSite}
         saveError={saveSiteError}
       />
@@ -2082,14 +2243,24 @@ export default function FMSiteDirectoryPage() {
 
         <div className="relative z-10 mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
 
+          <FmSubnav holidayCalendarIncomplete={holidayCalendarIncomplete} />
+
           {/* ── Page title bar ── */}
           <div className="mb-8 flex w-full items-center justify-between gap-4">
             <div>
-              <h1 className="text-2xl font-black uppercase tracking-tight text-slate-900">
-                Master Site Directory
+              <div className="mb-2 flex items-center gap-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-blue-200 bg-blue-50">
+                  <Building2 className="h-4 w-4 text-blue-700" />
+                </div>
+                <span className="text-[10px] font-bold uppercase tracking-widest text-blue-600">
+                  Sites & setup
+                </span>
+              </div>
+              <h1 className="text-2xl font-black tracking-tight text-slate-900 sm:text-3xl">
+                Site Directory
               </h1>
-              <p className="text-[10px] font-semibold text-slate-500">
-                Master margin desk and billing configuration. Shared configuration environment for MD and FM.
+              <p className="mt-1 text-sm text-slate-500">
+                Client guard sites — margin desk, billing rates, and sector assignments.
               </p>
             </div>
             <button
@@ -2133,7 +2304,7 @@ export default function FMSiteDirectoryPage() {
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
             <ExecutiveGlassCard className="p-4">
               <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Active Sites</p>
-              <p className="text-3xl font-black text-slate-900">{sites.filter((s) => s.status === 'ACTIVE').length}</p>
+              <p className="text-3xl font-black text-slate-900">{activeSites.filter((s) => s.status === 'ACTIVE').length}</p>
             </ExecutiveGlassCard>
 
             <ExecutiveGlassCard className="bg-gradient-to-br from-white/70 to-emerald-50/60 p-4">
@@ -2174,7 +2345,7 @@ export default function FMSiteDirectoryPage() {
                   God-Mode Site Grid
                 </h2>
                 <p className="mt-0.5 text-[10px] text-slate-500">
-                  <span className="font-semibold text-slate-600">{sites.length} sites</span>
+                  <span className="font-semibold text-slate-600">{activeSites.length} sites</span>
                   <span className="mx-1.5">·</span>
                   Click row to expand margin detail
                 </p>
@@ -2288,29 +2459,35 @@ export default function FMSiteDirectoryPage() {
                         key={item.parentClient}
                         parentClient={item.parentClient}
                         sites={item.sites}
+                        allSites={sites}
                         sectorManagers={sectorManagers}
                         onActivate={handleActivateSite}
                         onUpdateRates={handleUpdateRates}
                         onSaveAll={handleSaveAllConfig}
+                        onArchive={handleArchiveSite}
                       />
                     ) : item.type === 'sectorGroup' ? (
                       <SectorGroupRow
                         key={item.sector}
                         sector={item.sector}
                         sites={item.sites}
+                        allSites={sites}
                         sectorManagers={sectorManagers}
                         onActivate={handleActivateSite}
                         onUpdateRates={handleUpdateRates}
                         onSaveAll={handleSaveAllConfig}
+                        onArchive={handleArchiveSite}
                       />
                     ) : (
                       <SiteRow
                         key={item.site.id}
                         site={item.site}
+                        allSites={sites}
                         sectorManagers={sectorManagers}
                         onActivate={handleActivateSite}
                         onUpdateRates={handleUpdateRates}
                         onSaveAll={handleSaveAllConfig}
+                        onArchive={handleArchiveSite}
                       />
                     )
                   )}
@@ -2335,6 +2512,8 @@ export default function FMSiteDirectoryPage() {
               Red flash = below LKR 0
             </span>
           </div>
+
+          <ArchivedSitesFolder sites={archivedSites} onRestore={handleRestoreSite} />
 
         </div>
         </div>

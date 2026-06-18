@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useEffect, useState, useTransition } from 'react';
 import { KeyRound, RefreshCw, Copy, CheckCircle } from 'lucide-react';
 
-import { provisionCafePortalAccess } from './actions';
+import { clearProvisionFlashCookie, provisionCafePortalAccess } from './actions';
 
 export interface CafeStaffRow {
   epf_number: string;
@@ -29,6 +29,12 @@ export default function CafePortalClient({
   const [generatedOTP, setGeneratedOTP] = useState<GeneratedOTP | null>(initialOtp);
   const [errorMsg, setErrorMsg] = useState('');
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (initialOtp) {
+      void clearProvisionFlashCookie();
+    }
+  }, [initialOtp]);
 
   const handleGenerateOTP = (epf: string) => {
     setErrorMsg('');

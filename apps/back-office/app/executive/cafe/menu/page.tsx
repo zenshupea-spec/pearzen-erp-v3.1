@@ -1,15 +1,15 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { ExecutiveGlassCard } from '../../../../components/executive/ExecutiveVaultShell';
 import {
   fetchExecutiveSessionProfile,
   type ExecutiveSessionProfile,
 } from '../../actions';
-import { getCafeDashboard, saveCafeDashboard, type CafeDashboardPayload } from '../actions';
+import { getCafeDashboard, type CafeDashboardPayload } from '../actions';
 import { CafePortalShell } from '../CafePortalShell';
-import { normalizeIngredient } from '../cafe-ingredient-utils';
+import { normalizeIngredient, type Ingredient } from '../cafe-ingredient-utils';
 import { MenuEngineeringDesk } from '../cafe-menu-panels';
 import {
   MENU_DEFAULT_CATS,
@@ -19,10 +19,20 @@ import {
 } from '../cafe-menu-sync';
 import { isCafeHubView } from '../../../../lib/hq-hub';
 import { reconcilePrepWithMenu, setMenuKitchenTrack, type KitchenTrackKind } from '../prep-menu-sync';
+import { useCafeBranchScope } from '../use-cafe-branch';
+import { useCafeDashboardSave } from '../use-cafe-dashboard-persistence';
 
 export default function CafeMenuPage() {
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const fromHub = searchParams.get('hub') === '1';
+  const {
+    branches,
+    locationId,
+    locationName,
+    setLocationName,
+    handleBranchChange,
+  } = useCafeBranchScope(pathname);
   const [sessionProfile, setSessionProfile] = useState<ExecutiveSessionProfile | null>(null);
   const [dashboard, setDashboard] = useState<CafeDashboardPayload | null>(null);
   const [dashboardReady, setDashboardReady] = useState(false);
@@ -30,13 +40,23 @@ export default function CafeMenuPage() {
 
   const hubView = isCafeHubView(sessionProfile?.rank, fromHub);
 
+  const { saveState, markDirty, resetDirty } = useCafeDashboardSave(
+    dashboard,
+    dashboardReady,
+    locationId,
+  );
+
   useEffect(() => {
     fetchExecutiveSessionProfile().then(setSessionProfile);
   }, []);
 
   useEffect(() => {
-    void getCafeDashboard().then((payload) => {
+    if (!locationId) return;
+    setDashboardReady(false);
+    resetDirty();
+    void getCafeDashboard(locationId).then((payload) => {
       if (payload.error) setLoadError(payload.error);
+      setLocationName(payload.locationName ?? null);
       const loadedIngredients = (payload.ingredients ?? []).map((ing) =>
         normalizeIngredient(ing),
       );
@@ -58,25 +78,9 @@ export default function CafeMenuPage() {
         displayItems: linkedPrep.displayItems,
       });
       setDashboardReady(true);
+      resetDirty();
     });
-  }, []);
-
-  const persistDashboard = useCallback(
-    (next: CafeDashboardPayload) => {
-      if (!dashboardReady) return;
-      setDashboard(next);
-      void saveCafeDashboard(next);
-    },
-    [dashboardReady],
-  );
-
-  useEffect(() => {
-    if (!dashboardReady || !dashboard) return;
-    const timer = window.setTimeout(() => {
-      persistDashboard(dashboard);
-    }, 900);
-    return () => window.clearTimeout(timer);
-  }, [dashboard, dashboardReady, persistDashboard]);
+  }, [locationId, resetDirty, setLocationName]);
 
   const ingredients = (dashboard?.ingredients ?? []).map((ing) => normalizeIngredient(ing));
   const menuItems = (dashboard?.menuItems ?? []) as CafeMenuRecipeItem[];
@@ -87,13 +91,30 @@ export default function CafeMenuPage() {
   const cafeLogoUrl = dashboard?.cafeLogoUrl ?? null;
   const cafeCoverUrl = dashboard?.cafeCoverUrl ?? null;
   const cafeCoverTextColor = dashboard?.cafeCoverTextColor ?? '#ffffff';
+  const cafeCoverTintStrength = dashboard?.cafeCoverTintStrength ?? 100;
   const customerMenuUrl = dashboard?.customerMenuUrl ?? null;
+  const showItemImages = dashboard?.showItemImages !== false;
+  const cafeOpenStart = dashboard?.cafeOpenStart ?? '07:00';
+  const cafeOpenEnd = dashboard?.cafeOpenEnd ?? '19:00';
   const prepItems = dashboard?.prepItems ?? [];
   const displayItems = dashboard?.displayItems ?? [];
 
+  const mutateDashboard = useCallback(
+    (
+      updater: (prev: CafeDashboardPayload) => CafeDashboardPayload,
+      immediate = false,
+    ) => {
+      setDashboard((prev) => {
+        if (!prev) return prev;
+        return updater(prev);
+      });
+      markDirty(immediate);
+    },
+    [markDirty],
+  );
+
   const handleKitchenTrackChange = (menuId: string, track: KitchenTrackKind) => {
-    setDashboard((prev) => {
-      if (!prev) return prev;
+    mutateDashboard((prev) => {
       const menu = (prev.menuItems as CafeMenuRecipeItem[]).find((item) => item.id === menuId);
       if (!menu) return prev;
       const linked = setMenuKitchenTrack(
@@ -106,9 +127,43 @@ export default function CafeMenuPage() {
     });
   };
 
+  const handleCreateIngredientForRecipe = useCallback(
+    (menuId: string, created: Ingredient) => {
+      mutateDashboard((prev) => {
+        const currentIngredients = prev.ingredients.map((ing) => normalizeIngredient(ing));
+        const nextIngredients = currentIngredients.some((i) => i.id === created.id)
+          ? currentIngredients
+          : [...currentIngredients, created];
+        const nextMenu = syncMenuRecipeCosts(
+          (prev.menuItems as CafeMenuRecipeItem[]).map((item) => {
+            if (item.id !== menuId) return item;
+            if (item.recipe.some((line) => line.ingredientId === created.id)) return item;
+            return {
+              ...item,
+              recipe: [...item.recipe, { ingredientId: created.id, quantity: 1 }],
+            };
+          }),
+          nextIngredients,
+        );
+        const linkedPrep = reconcilePrepWithMenu(
+          nextMenu,
+          prev.prepItems ?? [],
+          prev.displayItems ?? [],
+        );
+        return {
+          ...prev,
+          ingredients: nextIngredients,
+          menuItems: nextMenu,
+          prepItems: linkedPrep.prepItems,
+          displayItems: linkedPrep.displayItems,
+        };
+      }, true);
+    },
+    [mutateDashboard],
+  );
+
   const setIngredients: React.Dispatch<React.SetStateAction<typeof ingredients>> = (updater) => {
-    setDashboard((prev) => {
-      if (!prev) return prev;
+    mutateDashboard((prev) => {
       const current = prev.ingredients.map((ing) => normalizeIngredient(ing));
       const nextIngredients = typeof updater === 'function' ? updater(current) : updater;
       const syncedMenu = syncMenuRecipeCosts(prev.menuItems as CafeMenuRecipeItem[], nextIngredients);
@@ -117,12 +172,11 @@ export default function CafeMenuPage() {
         ingredients: nextIngredients,
         menuItems: syncedMenu,
       };
-    });
+    }, true);
   };
 
   const setMenuItems: React.Dispatch<React.SetStateAction<CafeMenuRecipeItem[]>> = (updater) => {
-    setDashboard((prev) => {
-      if (!prev) return prev;
+    mutateDashboard((prev) => {
       const currentMenu = prev.menuItems as CafeMenuRecipeItem[];
       const nextMenu = typeof updater === 'function' ? updater(currentMenu) : updater;
       const normalizedIngredients = prev.ingredients.map((ing) => normalizeIngredient(ing));
@@ -134,12 +188,11 @@ export default function CafeMenuPage() {
         prepItems: linkedPrep.prepItems,
         displayItems: linkedPrep.displayItems,
       };
-    });
+    }, true);
   };
 
   const setMenuCategories: React.Dispatch<React.SetStateAction<string[]>> = (updater) => {
-    setDashboard((prev) => {
-      if (!prev) return prev;
+    mutateDashboard((prev) => {
       const current = prev.menuCategories?.length ? prev.menuCategories : MENU_DEFAULT_CATS;
       const next = typeof updater === 'function' ? updater(current) : updater;
       return { ...prev, menuCategories: next };
@@ -147,8 +200,7 @@ export default function CafeMenuPage() {
   };
 
   const setGlobalOverhead: React.Dispatch<React.SetStateAction<number>> = (updater) => {
-    setDashboard((prev) => {
-      if (!prev) return prev;
+    mutateDashboard((prev) => {
       const current = prev.globalOverhead ?? 20;
       const next = typeof updater === 'function' ? updater(current) : updater;
       return { ...prev, globalOverhead: next };
@@ -156,8 +208,7 @@ export default function CafeMenuPage() {
   };
 
   const setCafeLogoUrl: React.Dispatch<React.SetStateAction<string | null>> = (updater) => {
-    setDashboard((prev) => {
-      if (!prev) return prev;
+    mutateDashboard((prev) => {
       const current = prev.cafeLogoUrl ?? null;
       const next = typeof updater === 'function' ? updater(current) : updater;
       return { ...prev, cafeLogoUrl: next };
@@ -165,8 +216,7 @@ export default function CafeMenuPage() {
   };
 
   const setCafeCoverUrl: React.Dispatch<React.SetStateAction<string | null>> = (updater) => {
-    setDashboard((prev) => {
-      if (!prev) return prev;
+    mutateDashboard((prev) => {
       const current = prev.cafeCoverUrl ?? null;
       const next = typeof updater === 'function' ? updater(current) : updater;
       return { ...prev, cafeCoverUrl: next };
@@ -174,27 +224,46 @@ export default function CafeMenuPage() {
   };
 
   const setCafeCoverTextColor: React.Dispatch<React.SetStateAction<string>> = (updater) => {
-    setDashboard((prev) => {
-      if (!prev) return prev;
+    mutateDashboard((prev) => {
       const current = prev.cafeCoverTextColor ?? '#ffffff';
       const next = typeof updater === 'function' ? updater(current) : updater;
       return { ...prev, cafeCoverTextColor: next };
     });
   };
 
+  const setCafeCoverTintStrength: React.Dispatch<React.SetStateAction<number>> = (updater) => {
+    mutateDashboard((prev) => {
+      const current = prev.cafeCoverTintStrength ?? 100;
+      const next = typeof updater === 'function' ? updater(current) : updater;
+      return { ...prev, cafeCoverTintStrength: next };
+    });
+  };
+
   const setCustomerMenuUrl: React.Dispatch<React.SetStateAction<string | null>> = (updater) => {
-    setDashboard((prev) => {
-      if (!prev) return prev;
+    mutateDashboard((prev) => {
       const current = prev.customerMenuUrl ?? null;
       const next = typeof updater === 'function' ? updater(current) : updater;
       return { ...prev, customerMenuUrl: next };
     });
   };
 
+  const setShowItemImages: React.Dispatch<React.SetStateAction<boolean>> = (updater) => {
+    mutateDashboard((prev) => {
+      const current = prev.showItemImages !== false;
+      const next = typeof updater === 'function' ? updater(current) : updater;
+      return { ...prev, showItemImages: next };
+    }, true);
+  };
+
   return (
     <CafePortalShell
       hubView={hubView}
       subtitle="Menu & pricing · margins and live POS sync"
+      branches={branches}
+      selectedBranchId={locationId}
+      onBranchChange={handleBranchChange}
+      showBranchSelector={!hubView}
+      locationName={locationName}
     >
       {loadError ? (
         <ExecutiveGlassCard className="border-rose-200/80 bg-rose-50/50 p-4">
@@ -223,11 +292,20 @@ export default function CafeMenuPage() {
           setCafeCoverUrl={setCafeCoverUrl}
           cafeCoverTextColor={cafeCoverTextColor}
           setCafeCoverTextColor={setCafeCoverTextColor}
+          cafeCoverTintStrength={cafeCoverTintStrength}
+          setCafeCoverTintStrength={setCafeCoverTintStrength}
           customerMenuUrl={customerMenuUrl}
           setCustomerMenuUrl={setCustomerMenuUrl}
+          showItemImages={showItemImages}
+          setShowItemImages={setShowItemImages}
+          cafeName={locationName ?? 'Café Tasha'}
+          cafeOpenStart={cafeOpenStart}
+          cafeOpenEnd={cafeOpenEnd}
           prepItems={prepItems}
           displayItems={displayItems}
           onKitchenTrackChange={handleKitchenTrackChange}
+          onCreateIngredientForRecipe={handleCreateIngredientForRecipe}
+          saveState={saveState}
         />
       )}
     </CafePortalShell>

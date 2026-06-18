@@ -11,7 +11,7 @@ import {
 import { useRouter } from 'next/navigation';
 import {
   ArrowLeft, CheckCircle2, Users, Building2,
-  ChevronDown, Plus, X, Shield, AlertCircle,
+  ChevronDown, X, Shield, AlertCircle,
   Sun, Moon, CalendarCheck, Clock, AlertTriangle,
   Phone,
 } from 'lucide-react';
@@ -226,14 +226,6 @@ export default function AttendanceConfirmClient({
   /* ── Slot mutations ─────────────────────────────────────────── */
   const updateSlot = useCallback((uid: string, guardEpf: string | null) => {
     setSlots(prev => prev.map(s => s.uid === uid ? { ...s, guardEpf } : s));
-  }, []);
-
-  const removeSlot = useCallback((uid: string) => {
-    setSlots(prev => prev.filter(s => s.uid !== uid));
-  }, []);
-
-  const addSlot = useCallback((siteName: string) => {
-    setSlots(prev => [...prev, { uid: makeUid(), siteName, guardEpf: null }]);
   }, []);
 
   /* ── Derived stats ─────────────────────────────────────────── */
@@ -509,16 +501,6 @@ export default function AttendanceConfirmClient({
                             onChange={epf => updateSlot(slot.uid, epf)}
                           />
                         </div>
-                        {siteSlots.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() => removeSlot(slot.uid)}
-                            className="p-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-400 hover:text-red-600 hover:border-red-500/30 transition-colors shrink-0"
-                            aria-label="Remove slot"
-                          >
-                            <X className="w-4 h-4" />
-                          </button>
-                        )}
                       </div>
                     );
                   })}
@@ -533,15 +515,6 @@ export default function AttendanceConfirmClient({
                     </div>
                   )}
 
-                  {/* Add guard slot */}
-                  <button
-                    type="button"
-                    onClick={() => addSlot(site.value)}
-                    className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-dashed border-slate-200 text-slate-400 hover:text-slate-600 hover:border-slate-300 text-sm font-bold uppercase tracking-wider transition-colors active:scale-[0.98]"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    Add Guard
-                  </button>
                 </div>
               </div>
             );

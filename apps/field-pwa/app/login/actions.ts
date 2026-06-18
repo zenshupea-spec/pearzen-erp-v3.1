@@ -1,7 +1,6 @@
 'use server'
 
 import { createSupabaseServerClient, createSupabaseServiceClient } from '../../../../packages/supabase/server';
-import { redirect } from 'next/navigation';
 import {
   authLocalPartsForEmployee,
   canonicalEpfFromEmployee,
@@ -58,7 +57,7 @@ export async function authenticateGuard(formData: FormData) {
 
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (!error) {
-      redirect('/');
+      return { success: true as const };
     }
     lastError = error.message;
   }

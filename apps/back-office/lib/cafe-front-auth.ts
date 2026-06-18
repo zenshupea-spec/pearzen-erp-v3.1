@@ -11,12 +11,14 @@ export type CafeEmployeeRow = {
   status: string | null;
   group: string | null;
   rank: string | null;
+  site: string | null;
 };
 
 export const CAFE_FRONT_EPF_MAX_LENGTH = 10;
 /** Matches SM portal — Supabase Auth requires at least 6 characters. */
 export const CAFE_FRONT_PIN_LENGTH = 6;
 export const CAFE_FRONT_OTP_MAX_LENGTH = 6;
+export const CAFE_PORTAL_OTP_LIFETIME_MS = 60 * 1000;
 
 export function cafeEmployeeEpfKey(employee: CafeEmployeeRow): string {
   const epf = employee.epf_no ?? employee.epf_num;
@@ -40,13 +42,16 @@ export function cafeFrontAuthPassword(epfOrKey: string): string {
   if (fixed) return fixed;
 
   const template = process.env.FIELD_PWA_AUTH_PASSWORD_TEMPLATE;
+  let password = epfOrKey;
   if (template) {
-    return template
+    password = template
       .replaceAll('{{epfNo}}', epfOrKey)
       .replaceAll('{{empNumber}}', epfOrKey);
   }
 
-  return epfOrKey;
+  // Keep in sync with field-pwa guard-auth (Supabase min password length).
+  if (password.length < 6) return `guard-${password}`;
+  return password;
 }
 
 export function isCafeEmployee(employee: CafeEmployeeRow): boolean {
@@ -66,7 +71,7 @@ export function employeeRosterKey(employee: CafeEmployeeRow): string {
 }
 
 const FULL_EMPLOYEE_SELECT =
-  'id, full_name, emp_number, epf_no, epf_num, status, group, rank';
+  'id, full_name, emp_number, epf_no, epf_num, status, group, rank, site';
 
 function mapEmployeeRow(
   row: Record<string, unknown> | null,
@@ -83,6 +88,7 @@ function mapEmployeeRow(
     status: (row.status as string | null) ?? null,
     group: (row.group as string | null) ?? null,
     rank: (row.rank as string | null) ?? null,
+    site: (row.site as string | null) ?? null,
   };
 }
 
@@ -132,13 +138,15 @@ export async function getCafePortalAuthRecord(
 ): Promise<{
   needs_pin_setup: boolean;
   is_active: boolean;
+  current_otp: string | null;
+  otp_expires_at: string | null;
 } | null> {
   const key = normalizeEpfNo(epf);
   if (!key) return null;
 
   const { data } = await supabase
     .from('cafe_portal_auth')
-    .select('needs_pin_setup, is_active')
+    .select('needs_pin_setup, is_active, current_otp, otp_expires_at')
     .eq('epf_number', key)
     .maybeSingle();
 
@@ -146,7 +154,20 @@ export async function getCafePortalAuthRecord(
   return {
     needs_pin_setup: Boolean(data.needs_pin_setup),
     is_active: Boolean(data.is_active),
+    current_otp: typeof data.current_otp === 'string' ? data.current_otp : null,
+    otp_expires_at:
+      typeof data.otp_expires_at === 'string' ? data.otp_expires_at : null,
   };
+}
+
+export function isCafeOtpValid(
+  authRecord: Pick<
+    NonNullable<Awaited<ReturnType<typeof getCafePortalAuthRecord>>>,
+    'current_otp' | 'otp_expires_at'
+  >,
+): boolean {
+  if (!authRecord?.current_otp || !authRecord.otp_expires_at) return false;
+  return Date.now() < new Date(authRecord.otp_expires_at).getTime();
 }
 
 export async function provisionCafePortalOtp(
@@ -193,6 +214,7 @@ export async function provisionCafePortalOtp(
     {
       epf_number: epf,
       current_otp: otp,
+      otp_expires_at: new Date(Date.now() + CAFE_PORTAL_OTP_LIFETIME_MS).toISOString(),
       needs_pin_setup: true,
       is_active: true,
       updated_at: new Date().toISOString(),

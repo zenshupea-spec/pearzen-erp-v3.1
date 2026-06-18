@@ -1,6 +1,5 @@
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import { redirect } from 'next/navigation';
-import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { ArrowLeft, MapPin, CheckCircle2, Navigation, Clock } from 'lucide-react';
 import { fetchSmAssignedSiteRows } from '../../../lib/sm-portal-db';
@@ -47,21 +46,11 @@ function googleMapsDirectionsUrl(site: SiteRow): string | null {
 }
 
 export default async function SitesToVisitPage() {
-  const cookieStore = await cookies();
-  const isDemo = cookieStore.get('sm_demo_session')?.value === 'SM-001';
-
-  let epf: string;
-
-  if (isDemo) {
-    epf = 'SM-001';
-  } else {
-    const supabase = await createSupabaseServerClient();
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) redirect('/login');
-    epf = session.user.email?.split('@')[0].toUpperCase() ?? '';
-  }
-
   const supabase = await createSupabaseServerClient();
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) redirect('/login');
+  const epf = session.user.email?.split('@')[0].toUpperCase() ?? '';
+
   const today = new Date().toISOString().split('T')[0];
 
   const assignedRaw = await fetchSmAssignedSiteRows(epf);

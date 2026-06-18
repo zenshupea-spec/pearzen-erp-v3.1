@@ -15,12 +15,19 @@ import type { CafeShiftGate } from '../../lib/cafe-front-shift';
 import Link from 'next/link';
 import { CAFE_FRONT_CHECKIN_PATH } from '../../app/cafe-front/cafe-front-nav';
 
-const STATUS_LABEL: Record<string, string> = {
-  PLACED: 'Awaiting payment',
-  PAYMENT_RECEIVED: 'Paid · ready to prep',
-  PREPARING: 'In preparation',
-  READY: 'Ready for pickup',
-};
+function statusLabel(order: CafeFrontOrder): string {
+  if (order.status === 'PLACED' && order.paymentStatus === 'pending') {
+    if (order.paymentMethod === 'cash_at_counter') return 'Pay at counter';
+    return 'Awaiting card payment';
+  }
+  if (order.status === 'PLACED') return 'Awaiting payment';
+  if (order.status === 'PAYMENT_RECEIVED') {
+    return order.paymentMethod === 'cash_at_counter' ? 'Cash received · ready to prep' : 'Card paid · ready to prep';
+  }
+  if (order.status === 'PREPARING') return 'In preparation';
+  if (order.status === 'READY') return 'Ready for pickup';
+  return order.status;
+}
 
 export function OrderQueuePanel({ shiftGate }: { shiftGate: CafeShiftGate }) {
   const [orders, setOrders] = useState<CafeFrontOrder[]>([]);
@@ -99,7 +106,7 @@ export function OrderQueuePanel({ shiftGate }: { shiftGate: CafeShiftGate }) {
                     <p className="mt-1 text-base font-bold text-slate-900">{order.customerName}</p>
                     <p className="text-xs text-slate-500">{order.customerPhone}</p>
                     <p className="mt-1 text-[10px] font-bold uppercase text-indigo-700">
-                      {STATUS_LABEL[order.status] ?? order.status}
+                      {statusLabel(order)}
                     </p>
                     {order.acceptedByName ? (
                       <p className="mt-1 text-[10px] text-slate-500">
@@ -135,7 +142,11 @@ export function OrderQueuePanel({ shiftGate }: { shiftGate: CafeShiftGate }) {
                       className="inline-flex items-center gap-1 rounded-xl border border-emerald-300 bg-emerald-600 px-3 py-2 text-[10px] font-black uppercase text-white"
                     >
                       <CreditCard className="h-3 w-3" />
-                      Payment received
+                      {order.paymentMethod === 'cash_at_counter'
+                        ? 'Cash received'
+                        : order.paymentStatus === 'pending'
+                          ? 'Mark card paid'
+                          : 'Payment received'}
                     </button>
                   ) : null}
                   {['PLACED', 'PAYMENT_RECEIVED'].includes(order.status) ? (

@@ -7,6 +7,12 @@ type IcalBookingRow = {
   notes: string;
 };
 
+export type IcalCancelledEvent = {
+  uid: string;
+  check_in: string;
+  check_out: string;
+};
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -37,7 +43,11 @@ function eventSummary(row: IcalBookingRow): string {
 }
 
 /** Airbnb-compatible minimal feed — blocks/direct only, never OTA imports. */
-export function buildShalomIcalFeed(propertyName: string, bookings: IcalBookingRow[]): string {
+export function buildShalomIcalFeed(
+  propertyName: string,
+  bookings: IcalBookingRow[],
+  cancellations: IcalCancelledEvent[] = [],
+): string {
   const lines = [
     'BEGIN:VCALENDAR',
     'PRODID:-//Pearzen//Shalom Calendar 1.0//EN',
@@ -60,6 +70,23 @@ export function buildShalomIcalFeed(propertyName: string, bookings: IcalBookingR
       `DTEND;VALUE=DATE:${end}`,
       `SUMMARY:${escapeIcalText(eventSummary(row))}`,
       `UID:${row.id}@pearzen-shalom`,
+      'END:VEVENT',
+    );
+  }
+
+  for (const row of cancellations) {
+    const start = icalDate(String(row.check_in));
+    const end = icalDate(String(row.check_out));
+    if (!start || !end || start >= end) continue;
+
+    lines.push(
+      'BEGIN:VEVENT',
+      `DTSTAMP:${stamp}`,
+      `UID:${row.uid}`,
+      `STATUS:CANCELLED`,
+      `DTSTART;VALUE=DATE:${start}`,
+      `DTEND;VALUE=DATE:${end}`,
+      'SUMMARY:Not available',
       'END:VEVENT',
     );
   }

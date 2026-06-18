@@ -7,6 +7,11 @@ export const metadata: Metadata = {
   title: 'Classic Venture — Guard Portal',
   description: 'Authorised guard check-in, geofence verification, and field reporting.',
   manifest: '/manifest.json',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'default',
+    title: 'Guard Portal',
+  },
 };
 
 export const viewport: Viewport = {

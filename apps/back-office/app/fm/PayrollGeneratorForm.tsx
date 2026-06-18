@@ -12,7 +12,7 @@ export default function PayrollGeneratorForm() {
       if (result.success) {
         alert(`✅ Engine Complete: Successfully generated ${result.count} draft payslips.`);
       } else {
-        alert("❌ Payroll generation failed. Check terminal.");
+        alert(result.error ?? '❌ Payroll generation failed. Check terminal.');
       }
     });
   };

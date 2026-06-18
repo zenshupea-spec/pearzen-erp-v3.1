@@ -6,6 +6,9 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[];
 
+/** Curated hand-maintained types. Full generated schema: `./database.generated.ts`. */
+export type { Database as DatabaseGenerated } from './database.generated';
+
 export type Database = {
   public: {
     Tables: {

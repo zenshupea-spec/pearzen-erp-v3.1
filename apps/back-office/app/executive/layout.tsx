@@ -18,96 +18,25 @@ import {
   useExecutiveNavGuardRef,
 } from './executive-nav-guard';
 import {
-  Activity,
-  DollarSign,
-  Receipt,
-  Map,
-  FileText,
-  Home,
-  Coffee,
-  Truck,
-  ClipboardList,
-  Settings,
-  Banknote,
+  ExecutiveVaultLockButton,
+  ExecutiveVaultSessionProvider,
+} from '../../components/executive/ExecutiveVaultSession';
+import ExecutiveMobileNav from './components/ExecutiveMobileNav';
+import {
+  EXECUTIVE_SIDEBAR_NAV,
+  executiveNavIsActive,
+  isExecutiveMobileFocusedPath,
+} from './lib/executive-nav';
+import {
+  ArrowUpRight,
+  Building2,
   ChevronRight,
   Gem,
   PanelLeftClose,
   PanelLeftOpen,
-  Building2,
-  ArrowUpRight,
   LogOut,
 } from 'lucide-react';
-
-// ─── Nav Definition ───────────────────────────────────────────────────────────
-
-const NAV = [
-  {
-    href: '/executive/operations',
-    label: 'CV Operations',
-    sub: 'Live Field Radar',
-    Icon: Activity,
-  },
-  {
-    href: '/executive/finance',
-    label: 'Financial Overview',
-    sub: 'Enterprise Performance',
-    Icon: DollarSign,
-  },
-  {
-    href: '/executive/payroll',
-    label: 'Payroll',
-    sub: 'Compensation Ledger',
-    Icon: Banknote,
-  },
-  {
-    href: '/executive/bills',
-    label: 'Accounts Payable',
-    sub: 'OPEX & Bills Queue',
-    Icon: Receipt,
-  },
-  {
-    href: '/executive/sites',
-    label: 'Site Directory',
-    sub: 'Margin Desk',
-    Icon: Map,
-  },
-  {
-    href: '/executive/invoices',
-    label: 'AR Approval',
-    sub: 'MD · Verify & Confirm Payments',
-    Icon: FileText,
-  },
-  {
-    href: '/executive/shalom',
-    label: 'Shalom Residence',
-    sub: 'Rental Management',
-    Icon: Home,
-  },
-  {
-    href: '/executive/cafe',
-    label: 'Café Auditor',
-    sub: 'Compliance & Float',
-    Icon: Coffee,
-  },
-  {
-    href: '/executive/fleet',
-    label: 'Fleet & Assets',
-    sub: 'Telematics Radar',
-    Icon: Truck,
-  },
-  {
-    href: '/executive/audit',
-    label: 'Audit Ledger',
-    sub: 'Cross-Portal Activity Log',
-    Icon: ClipboardList,
-  },
-  {
-    href: '/executive/settings',
-    label: 'Settings',
-    sub: 'Compensation Config',
-    Icon: Settings,
-  },
-] as const;
+import PortalLoadingScreen from '../../../../packages/pwa-shell/PortalLoadingScreen';
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 
@@ -140,24 +69,27 @@ function ProfileAvatar({
   );
 }
 
-function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+function Sidebar({
+  collapsed,
+  onToggle,
+  sessionProfile,
+}: {
+  collapsed: boolean;
+  onToggle: () => void;
+  sessionProfile: ExecutiveSessionProfile | null;
+}) {
   const pathname = usePathname();
   const router = useRouter();
   const navGuardRef = useExecutiveNavGuardRef();
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const [logoUrl, setLogoUrl] = useState<string>('');
-  const [sessionProfile, setSessionProfile] = useState<ExecutiveSessionProfile | null>(null);
   const [signingOut, setSigningOut] = useState(false);
-
-  useEffect(() => {
-    fetchExecutiveSessionProfile().then(setSessionProfile);
-  }, []);
 
   const handleSignOut = async () => {
     if (signingOut) return;
     setSigningOut(true);
     await supabase.auth.signOut();
-    router.replace('/login/head-office');
+    router.replace('/login/md');
     router.refresh();
   };
 
@@ -178,9 +110,6 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
     return () => window.removeEventListener('storage', loadLocal);
   }, []);
 
-  const isActive = (href: string, exact?: boolean) =>
-    exact ? pathname === href : pathname === href || pathname.startsWith(href + '/');
-
   return (
     <aside className={`flex h-screen flex-shrink-0 flex-col overflow-hidden transition-all duration-300 ${collapsed ? 'w-[60px]' : 'w-64'}`}>
       <div className="flex h-full flex-col border-r border-slate-200 bg-white shadow-[4px_0_24px_-6px_rgba(15,23,42,0.07)]">
@@ -192,13 +121,13 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
               <>
                 <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center overflow-hidden">
                   {logoUrl
-                    ? <img src={logoUrl} alt="Company logo" className="h-full w-full object-contain" />
+                    ? <img src={logoUrl} alt="Company logo" width={36} height={36} className="h-full w-full max-h-9 max-w-9 object-contain" />
                     : <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-indigo-200 bg-indigo-50 shadow-sm">
                         <Gem className="h-[18px] w-[18px] text-indigo-700" />
                       </div>}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-black uppercase tracking-tight text-slate-900">Executive</p>
+                  <p className="text-sm font-black uppercase tracking-tight text-slate-900">MD Portal</p>
                   <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-indigo-600">
                     <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
                     Classic Venture HQ
@@ -209,7 +138,7 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
             {collapsed && (
               <div className="flex h-9 w-9 items-center justify-center overflow-hidden">
                 {logoUrl
-                  ? <img src={logoUrl} alt="Company logo" className="h-full w-full object-contain" />
+                  ? <img src={logoUrl} alt="Company logo" width={36} height={36} className="h-full w-full max-h-9 max-w-9 object-contain" />
                   : <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-indigo-200 bg-indigo-50 shadow-sm">
                       <Gem className="h-[18px] w-[18px] text-indigo-700" />
                     </div>}
@@ -234,10 +163,9 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
         {/* Nav links */}
         <nav className="flex-1 overflow-y-auto px-2 py-3">
           <ul className="space-y-0.5">
-            {NAV.map((item) => {
+            {EXECUTIVE_SIDEBAR_NAV.map((item) => {
               const { href, label, sub, Icon } = item;
-              const exact = 'exact' in item ? (item.exact as boolean) : false;
-              const active = isActive(href, exact);
+              const active = executiveNavIsActive(pathname, href, item.exact);
               return (
                 <li key={href}>
                   <Link
@@ -307,7 +235,7 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
                 event.preventDefault();
               }
             }}
-            className={`group flex items-center gap-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2.5 transition-all hover:bg-blue-100 hover:border-blue-200 ${collapsed ? 'justify-center' : ''}`}
+            className={`group flex items-center gap-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2.5 transition-all hover:border-blue-200 hover:bg-blue-100 ${collapsed ? 'justify-center' : ''}`}
           >
             <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg border border-blue-200 bg-blue-100 shadow-sm">
               <Building2 className="h-3.5 w-3.5 text-blue-700" />
@@ -332,15 +260,20 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
                 <div title={`${sessionProfile.fullName} · ${sessionProfile.rank}`}>
                   <ProfileAvatar profile={sessionProfile} />
                 </div>
-                <button
-                  type="button"
-                  onClick={handleSignOut}
-                  disabled={signingOut}
-                  title="Sign out"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"
-                >
-                  <LogOut className="h-3.5 w-3.5" />
-                </button>
+                <div className="flex items-center gap-1.5">
+                  {(sessionProfile.rank === 'MD' || sessionProfile.rank === 'OD') && (
+                    <ExecutiveVaultLockButton collapsed />
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleSignOut}
+                    disabled={signingOut}
+                    title="Sign out"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"
+                  >
+                    <LogOut className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 shadow-sm">
@@ -358,6 +291,9 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
                     </span>
                   </div>
                 </div>
+                {(sessionProfile.rank === 'MD' || sessionProfile.rank === 'OD') && (
+                  <ExecutiveVaultLockButton />
+                )}
                 <button
                   type="button"
                   onClick={handleSignOut}
@@ -383,25 +319,57 @@ export default function ExecutiveLayout({ children }: { children: ReactNode }) {
   const searchParams = useSearchParams();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sessionProfile, setSessionProfile] = useState<ExecutiveSessionProfile | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(true);
+  const [logoUrl, setLogoUrl] = useState('');
 
   useEffect(() => {
-    fetchExecutiveSessionProfile().then(setSessionProfile);
+    let cancelled = false;
+    fetchExecutiveSessionProfile()
+      .then((profile) => {
+        if (!cancelled) setSessionProfile(profile);
+      })
+      .finally(() => {
+        if (!cancelled) setSessionLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const loadLocal = () => {
+      const stored = localStorage.getItem(LOGO_STORAGE_KEY);
+      setLogoUrl(stored ?? '');
+    };
+    fetchCompanyLogo().then(({ url }) => {
+      if (url) {
+        setLogoUrl(url);
+        localStorage.setItem(LOGO_STORAGE_KEY, url);
+      } else {
+        loadLocal();
+      }
+    });
+    window.addEventListener('storage', loadLocal);
+    return () => window.removeEventListener('storage', loadLocal);
   }, []);
 
   const fromHub = searchParams.get('hub') === '1';
-  const isExecutiveRank =
-    sessionProfile?.rank === 'MD' || sessionProfile?.rank === 'OD';
-  const operationsOnly =
-    pathname.startsWith('/executive/operations') && sessionProfile !== null && !isExecutiveRank;
   const cafeHubView =
     pathname.startsWith('/executive/cafe') &&
     (fromHub || (sessionProfile !== null && isCafeHubView(sessionProfile.rank, false)));
 
-  if (operationsOnly || cafeHubView) {
+  const vaultSessionEnabled =
+    sessionProfile?.rank === 'MD' || sessionProfile?.rank === 'OD';
+  const mobileFocused = isExecutiveMobileFocusedPath(pathname);
+
+  if (cafeHubView) {
     return (
       <ExecutiveNavGuardProvider>
-        <div className="min-h-screen w-full overflow-x-hidden bg-slate-50 text-slate-900 antialiased">
+        <div className="relative min-h-screen w-full overflow-x-hidden bg-slate-50 text-slate-900 antialiased">
           <main className="min-h-screen">{children}</main>
+          {sessionLoading ? (
+            <PortalLoadingScreen accent="indigo" overlay scrim />
+          ) : null}
         </div>
       </ExecutiveNavGuardProvider>
     );
@@ -409,17 +377,36 @@ export default function ExecutiveLayout({ children }: { children: ReactNode }) {
 
   return (
     <ExecutiveNavGuardProvider>
-      <div className="flex h-screen w-full overflow-hidden bg-slate-50 text-slate-900 antialiased">
+      <ExecutiveVaultSessionProvider enabled={vaultSessionEnabled}>
+        <div className="relative flex h-[100dvh] w-full flex-col overflow-hidden bg-slate-50 text-slate-900 antialiased md:h-screen md:flex-row">
 
-        {/* Sidebar */}
-        <div className="hidden md:flex">
-          <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((v) => !v)} />
+          <ExecutiveMobileNav sessionProfile={sessionProfile} logoUrl={logoUrl} />
+
+          {/* Desktop sidebar */}
+          <div className="hidden md:flex">
+            <Sidebar
+              collapsed={sidebarCollapsed}
+              onToggle={() => setSidebarCollapsed((v) => !v)}
+              sessionProfile={sessionProfile}
+            />
+          </div>
+
+          {/* Main content */}
+          <main
+            className={`flex-1 overflow-y-auto overflow-x-hidden ${
+              mobileFocused
+                ? 'max-md:[&_header]:!px-4 max-md:[&_.overflow-x-auto]:-mx-1 max-md:[&_table]:text-xs max-md:[&_th]:px-3 max-md:[&_td]:px-3'
+                : ''
+            }`}
+          >
+            {children}
+          </main>
+
+          {sessionLoading ? (
+            <PortalLoadingScreen accent="indigo" overlay scrim />
+          ) : null}
         </div>
-
-        {/* Main content */}
-        <main className="flex-1 overflow-y-auto">{children}</main>
-
-      </div>
+      </ExecutiveVaultSessionProvider>
     </ExecutiveNavGuardProvider>
   );
 }

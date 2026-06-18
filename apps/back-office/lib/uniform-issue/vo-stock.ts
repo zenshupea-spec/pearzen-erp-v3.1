@@ -4,7 +4,7 @@ import {
   createSupabaseServerClient,
   createSupabaseServiceClient,
 } from '../../../../packages/supabase/server';
-import { resolveCompanyIdForSession } from '../../lib/company-context';
+import { resolveCompanyIdForSession } from '../../lib/company-context-server';
 import {
   fetchUniformVoStockOnHand,
   type UniformVoStockRow,

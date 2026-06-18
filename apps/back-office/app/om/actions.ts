@@ -1,16 +1,25 @@
 "use server";
 
-import { createSupabaseServerClient } from '../../../../packages/supabase/server';
+import { sweepMissedGuardCheckouts } from '../../../../packages/supabase/guard-auto-checkout';
+import { createSupabaseServerClient, createSupabaseServiceClient } from '../../../../packages/supabase/server';
 import { revalidatePath } from 'next/cache';
-import { resolveCompanyIdForSession } from '../../lib/company-context';
+import { resolveCompanyIdForSession } from '../../lib/company-context-server';
+import {
+  fetchAttendanceLogsForVerification,
+  colomboTodayIso,
+  shiftDateFromDeviceTime,
+} from '../../lib/guard-verification-query';
 import { auditStaffAction } from '../../lib/staff-audit';
 import { getShiftSettings } from '../executive/settings/actions';
 import {
   computeShiftTiming,
   deriveAggregateStatus,
-  isOnHold,
+  isOnHoldPanelShift,
   isPhotoVerificationQueue,
+  isReviewableVerificationShift,
+  mergeAttendanceLogIntoShift,
   photoRetentionCutoffDate,
+  reconcileShiftCheckInOut,
   type ShiftAggregateStatus,
   type ShiftTimingSettings,
 } from './shift-verification-utils';
@@ -60,10 +69,6 @@ export type SmVisitVerificationRecord = {
   verificationStatus: 'PENDING' | 'APPROVED' | 'FLAGGED';
 };
 
-function shiftDateFromDeviceTime(deviceTime: string): string {
-  return deviceTime.slice(0, 10);
-}
-
 function toLogRecord(row: Record<string, unknown>): VerificationLogRecord {
   return {
     id: String(row.id),
@@ -74,7 +79,7 @@ function toLogRecord(row: Record<string, unknown>): VerificationLogRecord {
     longitude: row.longitude == null ? null : Number(row.longitude),
     sync_type: row.sync_type == null ? null : String(row.sync_type),
     photo_url: row.photo_url == null ? null : String(row.photo_url),
-    status: row.status == null ? null : String(row.status),
+    status: row.status == null ? 'PENDING' : String(row.status),
   };
 }
 
@@ -86,33 +91,17 @@ export async function getPendingVerificationQueue(
   const timingSettings = (await getShiftSettings()) as ShiftTimingSettings;
   const companyId = await resolveCompanyIdForSession(supabase);
 
-  let query = supabase
-    .from('attendance_logs')
-    .select(
-      'id, emp_number, action_type, device_time, latitude, longitude, sync_type, photo_url, status',
-    )
-    .in('status', ['PENDING', 'FLAGGED', 'APPROVED', 'REJECTED'])
-    .order('device_time', { ascending: false })
-    .limit(300);
-
-  if (companyId) {
-    query = query.eq('company_id', companyId);
+  try {
+    const service = createSupabaseServiceClient();
+    await sweepMissedGuardCheckouts(service, new Date(), companyId);
+  } catch (err) {
+    console.error('guard auto-checkout sweep failed:', err);
   }
 
-  if (date) {
-    query = query
-      .gte('device_time', `${date}T00:00:00`)
-      .lt('device_time', `${date}T23:59:59.999`);
-  }
+  const service = createSupabaseServiceClient();
+  const logs = await fetchAttendanceLogsForVerification(service, companyId, date);
 
-  const { data: logs, error } = await query;
-
-  if (error) {
-    console.error('❌ SUPABASE ERROR (getPendingVerificationQueue):', error.message);
-    return [];
-  }
-
-  if (!logs?.length) return [];
+  if (!logs.length) return [];
 
   const empNumbers = [...new Set(logs.map((l) => l.emp_number))];
   const { data: employees } = await supabase
@@ -161,11 +150,7 @@ export async function getPendingVerificationQueue(
       grouped.set(shiftKey, record);
     }
 
-    if (log.action_type === 'CHECK_IN') {
-      record.checkIn = log;
-    } else if (log.action_type === 'CHECK_OUT') {
-      record.checkOut = log;
-    }
+    mergeAttendanceLogIntoShift(record, log.action_type, log);
 
     if (log.status === 'FLAGGED') {
       record.hasFlagged = true;
@@ -173,6 +158,7 @@ export async function getPendingVerificationQueue(
   }
 
   for (const record of grouped.values()) {
+    reconcileShiftCheckInOut(record);
     record.aggregateStatus = deriveAggregateStatus(
       record.checkIn?.status,
       record.checkOut?.status,
@@ -383,14 +369,15 @@ export async function getGuardVerificationUnclearedDates(
   lookbackDays = 60,
 ): Promise<string[]> {
   const cutoff = photoRetentionCutoffDate();
+  const todayStr = colomboTodayIso();
   const shifts = await getPendingVerificationQueue();
   const dates = new Set<string>();
 
   for (const shift of shifts) {
-    if (shift.shiftDate < cutoff || shift.shiftDate > new Date().toISOString().slice(0, 10)) {
+    if (shift.shiftDate < cutoff || shift.shiftDate > todayStr) {
       continue;
     }
-    if (isPhotoVerificationQueue(shift) || isOnHold(shift)) {
+    if (isPhotoVerificationQueue(shift) || isOnHoldPanelShift(shift) || isReviewableVerificationShift(shift)) {
       dates.add(shift.shiftDate);
     }
   }
@@ -458,6 +445,7 @@ export async function processShiftVerification(
     });
 
     revalidatePath('/om');
+    revalidatePath('/tm');
 
     return { success: true };
   } catch (error: unknown) {
@@ -495,6 +483,7 @@ export async function processSmVisitVerification(
     });
 
     revalidatePath('/om');
+    revalidatePath('/tm');
 
     return { success: true };
   } catch (error: unknown) {

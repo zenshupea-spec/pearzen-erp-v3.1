@@ -3,7 +3,7 @@ import {
   authenticatedLandingPath,
   fetchBackOfficeUserProfile,
   type BackOfficeUserProfile,
-} from './hr-portal-access';
+} from './hr-portal-access-server';
 import {
   getHeadOfficePortalAuthByEmail,
   requiresHeadOfficePortalPin,

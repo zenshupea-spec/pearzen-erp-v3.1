@@ -1,7 +1,13 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Download, FileText, Printer, X } from 'lucide-react';
+import { ArrowDownAZ, ArrowUpDown, Download, FileText, Printer, Search, X } from 'lucide-react';
+import {
+  DEDUCTION_SORT_OPTIONS,
+  filterDeductionRows,
+  sortDeductionRows,
+  type DeductionSortKey,
+} from '../lib/batch-deduction-filter';
 import {
   buildDeductionTableHtml,
   deductionLedgerTotal,
@@ -70,12 +76,31 @@ export default function FmBatchDeductionModal({
   periodLabel = FM_BATCH_PERIOD,
 }: FmBatchDeductionModalProps) {
   const [exporting, setExporting] = useState(false);
+  const [query, setQuery] = useState('');
+  const [sortKey, setSortKey] = useState<DeductionSortKey>('name');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const ledger = rows ?? getDeductionLedger(kind);
   const meta = deductionReportMeta(kind);
   const styles = accentStyles[meta.accent];
 
-  const total = useMemo(() => deductionLedgerTotal(ledger), [ledger]);
-  const printTables = useMemo(() => buildDeductionTableHtml(kind, ledger), [kind, ledger]);
+  const visibleRows = useMemo(() => {
+    const filtered = filterDeductionRows(ledger, query);
+    return sortDeductionRows(filtered, sortKey, sortDir);
+  }, [ledger, query, sortKey, sortDir]);
+
+  const total = useMemo(() => deductionLedgerTotal(visibleRows), [visibleRows]);
+  const printTables = useMemo(
+    () => buildDeductionTableHtml(kind, visibleRows),
+    [kind, visibleRows],
+  );
+
+  const toggleSort = (key: DeductionSortKey) => {
+    if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else {
+      setSortKey(key);
+      setSortDir(key === 'amount' ? 'desc' : 'asc');
+    }
+  };
   const amountHeader = meta.amountColumn.replace(/\s*\(LKR\)\s*$/i, '');
   const footerTotalLabel = kind === 'advance' ? 'Total outstanding' : 'Batch total';
   const tableColumns = [
@@ -93,7 +118,7 @@ export default function FmBatchDeductionModal({
     period: periodLabel,
     tableHeadHtml: printTables.head,
     tableBodyHtml: printTables.body,
-    footerNote: `${ledger.length} employees · ${footerTotalLabel.toLowerCase()} ${lkr(total)}`,
+    footerNote: `${visibleRows.length} employees · ${footerTotalLabel.toLowerCase()} ${lkr(total)}`,
   };
 
   return (
@@ -108,7 +133,12 @@ export default function FmBatchDeductionModal({
             <div>
               <p className="text-sm font-black text-slate-900">{meta.title.replace(' Report', '')}</p>
               <p className="text-[11px] text-slate-500">
-                {periodLabel} · {ledger.length} employees · {lkr(total)}
+                {periodLabel} ·{' '}
+                {visibleRows.length === ledger.length
+                  ? `${ledger.length} employees`
+                  : `${visibleRows.length} of ${ledger.length} employees`}
+                {' · '}
+                {lkr(total)}
               </p>
             </div>
           </div>
@@ -121,31 +151,83 @@ export default function FmBatchDeductionModal({
           </button>
         </div>
 
-        <div className="flex flex-shrink-0 flex-wrap items-center justify-end gap-2 border-b border-slate-100 px-6 py-3">
-          <button
-            type="button"
-            onClick={() => openFmA4Report(reportOpts)}
-            disabled={exporting}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-wider text-slate-700 hover:bg-slate-50"
-          >
-            <Printer className="h-3.5 w-3.5" />
-            Print A4
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setExporting(true);
-              void downloadFmA4Pdf({
-                filename: `fm-${meta.filenameSlug}-${periodLabel.replace(/\s+/g, '-')}.pdf`,
-                ...reportOpts,
-              }).finally(() => setExporting(false));
-            }}
-            disabled={exporting}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-[10px] font-black uppercase tracking-wider text-white ${styles.btn}`}
-          >
-            <Download className="h-3.5 w-3.5" />
-            {exporting ? 'Generating…' : 'Download PDF'}
-          </button>
+        <div className="flex flex-shrink-0 flex-col gap-3 border-b border-slate-100 px-6 py-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+            <div className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search name, emp no, rank, site…"
+                className="w-full rounded-xl border border-slate-200 bg-slate-50/80 py-2 pl-10 pr-10 text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:border-slate-300 focus:bg-white focus:outline-none focus:ring-2 focus:ring-slate-200/80"
+              />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => setQuery('')}
+                  className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100"
+                  aria-label="Clear search"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[9px] font-black uppercase tracking-[0.16em] text-slate-400">
+                Sort
+              </span>
+              {DEDUCTION_SORT_OPTIONS.map((opt) => {
+                const active = sortKey === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => toggleSort(opt.id)}
+                    className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wide transition-colors ${
+                      active
+                        ? 'bg-slate-900 text-white'
+                        : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    {opt.label}
+                    {active &&
+                      (sortDir === 'asc' ? (
+                        <ArrowDownAZ className="h-3 w-3" />
+                      ) : (
+                        <ArrowUpDown className="h-3 w-3" />
+                      ))}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => openFmA4Report(reportOpts)}
+              disabled={exporting || visibleRows.length === 0}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-wider text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Printer className="h-3.5 w-3.5" />
+              Print A4
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setExporting(true);
+                void downloadFmA4Pdf({
+                  filename: `fm-${meta.filenameSlug}-${periodLabel.replace(/\s+/g, '-')}.pdf`,
+                  ...reportOpts,
+                }).finally(() => setExporting(false));
+              }}
+              disabled={exporting || visibleRows.length === 0}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-[10px] font-black uppercase tracking-wider text-white disabled:cursor-not-allowed disabled:opacity-40 ${styles.btn}`}
+            >
+              <Download className="h-3.5 w-3.5" />
+              {exporting ? 'Generating…' : 'Download PDF'}
+            </button>
+          </div>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
@@ -166,7 +248,17 @@ export default function FmBatchDeductionModal({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {ledger.map((r) => (
+                {visibleRows.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={tableColumns.length}
+                      className="px-4 py-10 text-center text-sm font-semibold text-slate-500"
+                    >
+                      No employees match your search.
+                    </td>
+                  </tr>
+                )}
+                {visibleRows.map((r) => (
                   <tr key={r.empNo} className="transition-colors hover:bg-slate-50/80">
                     <td className="px-4 py-3">
                       <p className="text-[12px] font-bold text-slate-900">{r.name}</p>

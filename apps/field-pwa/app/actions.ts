@@ -4,13 +4,27 @@ import { revalidatePath } from 'next/cache';
 import { createSupabaseServiceClient } from '../../../packages/supabase/server';
 import { getDistanceInMeters } from '../lib/geofence';
 import {
-  colomboTodayIso,
+  findOpenCheckIn,
+  maybeAutoCheckoutGuard,
+} from '../../../packages/supabase/guard-auto-checkout';
+import {
+  applyMdSettingsShiftWindow,
+  findActiveEmployeeByRosterKey,
+  fetchSecurityShiftTiming,
   resolveActiveShiftForToday,
+  resolveShiftAtCheckInTime,
   resolveUpcomingShifts,
 } from '../lib/guard-shift-resolver';
 
+/** Normal manual checkout: from shift end until 1h after (e.g. 7:00–8:00 AM). */
+const CHECKOUT_WINDOW_MS = 60 * 60 * 1000;
+
 function checkoutWindowStart(endTimeIso: string): Date {
-  return new Date(new Date(endTimeIso).getTime() - 30 * 60 * 1000);
+  return new Date(endTimeIso);
+}
+
+function checkoutWindowEnd(endTimeIso: string): Date {
+  return new Date(new Date(endTimeIso).getTime() + CHECKOUT_WINDOW_MS);
 }
 
 function resolveLogStatus(
@@ -26,7 +40,8 @@ function resolveLogStatus(
 
   const deviceDate = new Date(deviceTime);
   const windowStart = checkoutWindowStart(plannedEndTime);
-  if (deviceDate < windowStart) return 'FLAGGED';
+  const windowEnd = checkoutWindowEnd(plannedEndTime);
+  if (deviceDate < windowStart || deviceDate > windowEnd) return 'FLAGGED';
 
   return 'PENDING';
 }
@@ -37,29 +52,41 @@ function resolveLogStatus(
 export async function getGuardAttendanceState(empNumber: string) {
   try {
     const supabase = createSupabaseServiceClient();
-    const resolved = await resolveActiveShiftForToday(supabase, empNumber);
+    await maybeAutoCheckoutGuard(supabase, empNumber);
 
-    if (!resolved) {
+    const openCheckIn = await findOpenCheckIn(supabase, empNumber);
+    const employee = await findActiveEmployeeByRosterKey(supabase, empNumber);
+
+    if (!employee) {
       return {
         status: 'IDLE',
         message: 'NO ACTIVE SHIFT SCHEDULED FOR TODAY.',
       };
     }
 
-    const { employee, shift } = resolved;
-    const today = colomboTodayIso();
+    const anchorTime = openCheckIn
+      ? new Date(openCheckIn.device_time)
+      : new Date();
 
-    const { data: lastLog } = await supabase
-      .from('attendance_logs')
-      .select('action_type, device_time')
-      .eq('emp_number', empNumber)
-      .gte('device_time', `${today}T00:00:00+05:30`)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const shift = openCheckIn
+      ? await resolveShiftAtCheckInTime(supabase, employee, anchorTime)
+      : (await resolveActiveShiftForToday(supabase, empNumber, anchorTime))?.shift ?? null;
 
-    const nextAction = lastLog?.action_type === 'CHECK_IN' ? 'CHECK_OUT' : 'CHECK_IN';
-    const checkoutOpensAt = checkoutWindowStart(shift.plannedEndTime).toISOString();
+    if (!shift) {
+      return {
+        status: 'IDLE',
+        message: 'NO ACTIVE SHIFT SCHEDULED FOR TODAY.',
+      };
+    }
+
+    const startTimes = await fetchSecurityShiftTiming(supabase, employee.company_id);
+    const window = applyMdSettingsShiftWindow(shift.shiftDate, shift.shiftType, startTimes);
+    const plannedStartTime = window?.plannedStartTime ?? shift.plannedStartTime;
+    const plannedEndTime = window?.plannedEndTime ?? shift.plannedEndTime;
+
+    const nextAction = openCheckIn ? 'CHECK_OUT' : 'CHECK_IN';
+    const checkoutOpensAt = checkoutWindowStart(plannedEndTime).toISOString();
+    const checkoutClosesAt = checkoutWindowEnd(plannedEndTime).toISOString();
 
     return {
       status: 'READY',
@@ -67,9 +94,10 @@ export async function getGuardAttendanceState(empNumber: string) {
       shiftId: shift.shiftId,
       guardName: employee.full_name,
       locationName: shift.siteName,
-      startTime: shift.plannedStartTime,
-      endTime: shift.plannedEndTime,
+      startTime: plannedStartTime,
+      endTime: plannedEndTime,
       checkoutOpensAt,
+      checkoutClosesAt,
       siteLat: shift.siteLat,
       siteLng: shift.siteLng,
       geofenceRadius: shift.geofenceRadius,
@@ -128,13 +156,36 @@ export async function processLocationPing(payload: ProcessLocationPingInput) {
   const supabase = createSupabaseServiceClient();
   let photo_url = payload.photo_url;
 
-  const resolved = await resolveActiveShiftForToday(supabase, payload.emp_number);
-  if (!resolved) {
+  const openCheckIn = await findOpenCheckIn(supabase, payload.emp_number);
+  const employee = await findActiveEmployeeByRosterKey(supabase, payload.emp_number);
+  if (!employee) {
     return { success: false, error: 'No active shift scheduled for today.' };
   }
 
-  const { shift } = resolved;
+  if (payload.action_type === 'CHECK_OUT' && !openCheckIn) {
+    return { success: false, error: 'No open check-in found for this shift.' };
+  }
+
+  if (payload.action_type === 'CHECK_IN' && openCheckIn) {
+    return { success: false, error: 'You are already checked in. Check out first.' };
+  }
+
+  const shift =
+    payload.action_type === 'CHECK_OUT' && openCheckIn
+      ? await resolveShiftAtCheckInTime(
+          supabase,
+          employee,
+          new Date(openCheckIn.device_time),
+        )
+      : (await resolveActiveShiftForToday(supabase, payload.emp_number))?.shift ?? null;
+
+  if (!shift) {
+    return { success: false, error: 'No active shift scheduled for today.' };
+  }
   const verificationMode = shift.verificationMode;
+  const startTimes = await fetchSecurityShiftTiming(supabase, employee.company_id);
+  const window = applyMdSettingsShiftWindow(shift.shiftDate, shift.shiftType, startTimes);
+  const plannedEndTime = window?.plannedEndTime ?? shift.plannedEndTime;
 
   if (verificationMode === 'A') {
     return { success: false, error: 'This site uses roster-only verification. Contact your sector manager.' };
@@ -167,8 +218,19 @@ export async function processLocationPing(payload: ProcessLocationPingInput) {
   }
 
   if (payload.action_type === 'CHECK_OUT') {
-    const windowStart = checkoutWindowStart(shift.plannedEndTime);
+    const windowStart = checkoutWindowStart(plannedEndTime);
+    const windowEnd = checkoutWindowEnd(plannedEndTime);
     const deviceDate = new Date(payload.device_time);
+
+    if (deviceDate > windowEnd) {
+      await maybeAutoCheckoutGuard(supabase, payload.emp_number, deviceDate);
+      return {
+        success: false,
+        error: 'CHECKOUT_WINDOW_CLOSED',
+        checkoutClosesAt: windowEnd.toISOString(),
+      };
+    }
+
     if (deviceDate < windowStart && payload.checkout_flag !== 'EARLY') {
       return {
         success: false,
@@ -199,7 +261,7 @@ export async function processLocationPing(payload: ProcessLocationPingInput) {
   const logStatus = resolveLogStatus(
     payload.action_type,
     payload.device_time,
-    shift.plannedEndTime,
+    plannedEndTime,
     payload.checkout_flag,
   );
 
@@ -212,6 +274,7 @@ export async function processLocationPing(payload: ProcessLocationPingInput) {
     sync_type: payload.sync_type,
     photo_url,
     status: logStatus,
+    company_id: employee.company_id,
   };
 
   const { error } = await supabase.from('attendance_logs').insert([row]);

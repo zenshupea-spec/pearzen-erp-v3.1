@@ -33,7 +33,6 @@ export default async function CafePortalManagementPage() {
     } catch {
       /* ignore malformed flash */
     }
-    jar.set(PROVISION_FLASH_COOKIE, '', { maxAge: 0, path: '/' });
   }
 
   return (

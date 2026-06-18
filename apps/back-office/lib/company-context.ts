@@ -5,7 +5,7 @@ import {
   CVS_COMPANY_ID,
   CVS_TENANT_SLUG,
 } from './company-ids';
-import { getTenantSlugFromRequest, resolveTenantCompany } from './tenant-context';
+import { resolveTenantCompany } from './tenant-context';
 
 export {
   CLASSIC_VENTURE_COMPANY_ID,
@@ -48,8 +48,8 @@ export async function fetchWithRosterCompanyFallback<T>(
  */
 export async function resolveCompanyIdForSession(
   supabase: SupabaseClient,
+  tenantSlug?: string | null,
 ): Promise<string | null> {
-  const tenantSlug = await getTenantSlugFromRequest();
   if (tenantSlug) {
     const tenant = await resolveTenantCompany(tenantSlug);
     if (tenant?.id) return tenant.id;

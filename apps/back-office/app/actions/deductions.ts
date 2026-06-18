@@ -8,7 +8,7 @@ import {
 import {
   CLASSIC_VENTURE_COMPANY_ID,
   resolveCompanyIdForSession,
-} from '../../lib/company-context';
+} from '../../lib/company-context-server';
 
 export type DeductionGuardOption = {
   id: string;

@@ -38,6 +38,12 @@ const REASON_META: Record<
     icon: LogOut,
     hint: 'Blocked from payroll until OM clears the timing exception.',
   },
+  missed_checkout: {
+    label: 'Missed manual checkout',
+    icon: LogOut,
+    hint:
+      'Guard was auto checked out 1h after shift end. Review on the TM command center before payroll.',
+  },
 };
 
 function HoldCard({
@@ -77,6 +83,11 @@ function HoldCard({
               {shift.earlyMinutes} min before MD {shift.shiftType === 'NIGHT' ? 'night' : 'day'} end
             </p>
           )}
+          {reason === 'missed_checkout' && (
+            <p className="mt-2 text-xs font-semibold text-rose-800">
+              System check-out · no guard selfie at shift end
+            </p>
+          )}
           {reason === 'missing_photo' && (
             <p className="mt-2 text-xs text-slate-600">
               {!shift.checkIn?.photo_url && 'Missing check-in · '}
@@ -108,6 +119,7 @@ export default function GuardHoldPanel({
 }) {
   const [clearingKey, setClearingKey] = useState<string | null>(null);
 
+  const missed = shifts.filter((s) => getOnHoldReason(s) === 'missed_checkout');
   const missing = shifts.filter((s) => getOnHoldReason(s) === 'missing_photo');
   const late = shifts.filter((s) => getOnHoldReason(s) === 'late_start');
   const early = shifts.filter((s) => getOnHoldReason(s) === 'early_checkout');
@@ -145,6 +157,7 @@ export default function GuardHoldPanel({
     items: ShiftVerificationRecord[];
     clearable: boolean;
   }[] = [
+    { key: 'missed_checkout', items: missed, clearable: false },
     { key: 'missing_photo', items: missing, clearable: false },
     { key: 'late_start', items: late, clearable: true },
     { key: 'early_checkout', items: early, clearable: true },

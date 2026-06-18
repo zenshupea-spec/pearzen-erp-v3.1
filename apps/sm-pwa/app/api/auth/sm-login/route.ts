@@ -11,13 +11,6 @@ export async function POST(req: NextRequest) {
 
   const epf = epfNumber.toUpperCase().trim();
 
-  // Dummy bypass for development/testing
-  if (epf === 'SM-001' && password === '000000') {
-    const res = NextResponse.json({ success: true, needsPinSetup: false, smName: 'Demo Manager' });
-    res.cookies.set('sm_demo_session', 'SM-001', { path: '/', httpOnly: true, sameSite: 'lax' });
-    return res;
-  }
-
   // Collect cookies to forward to the response
   const pendingCookies: Array<{ name: string; value: string; options: Record<string, unknown> }> = [];
 
@@ -53,7 +46,7 @@ export async function POST(req: NextRequest) {
   const admin = createSupabaseServiceClient();
   const { data: authRecord } = await admin
     .from('sm_portal_auth')
-    .select('needs_pin_setup, is_active, current_otp')
+    .select('needs_pin_setup, is_active, current_otp, otp_expires_at')
     .eq('epf_number', epf)
     .single();
 
@@ -62,6 +55,20 @@ export async function POST(req: NextRequest) {
       { error: 'Portal access not provisioned. Contact HR.' },
       { status: 403 }
     );
+  }
+
+  if (authRecord.needs_pin_setup) {
+    if (
+      !authRecord.current_otp ||
+      password !== authRecord.current_otp ||
+      !authRecord.otp_expires_at ||
+      Date.now() >= new Date(String(authRecord.otp_expires_at)).getTime()
+    ) {
+      return NextResponse.json(
+        { error: 'Invalid or expired OTP. Ask HR for a new one.' },
+        { status: 401 },
+      );
+    }
   }
 
   // Attempt Supabase Auth sign-in

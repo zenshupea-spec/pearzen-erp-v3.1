@@ -2,17 +2,11 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import {
-  AlertTriangle,
-  Download,
-  FileText,
-  Lock,
-  Printer,
-  X,
-} from 'lucide-react';
+import { Download, FileText, Lock, Printer, X } from 'lucide-react';
 import type { PayrollWorkflowStatus } from '../../../lib/payroll-batch-workflow';
 import {
   buildClientBillingRows,
+  buildStatutoryApitReport,
   buildTableHtml,
   calculateEmployeeStatutory,
   flattenPortfolioEmployees,
@@ -24,10 +18,10 @@ import {
   lkr,
 } from '../lib/fm-portfolio-report-builders';
 import { downloadFmA4Pdf, openFmA4Report } from '../lib/fm-report-print';
+import FmRetentionListTable from './FmRetentionListTable';
 import {
   FM_PREV_MONTH_STOP_LIST,
   FM_SALARY_MONTH_HALF_HOLD_LIST,
-  type RetentionGuardRow,
 } from '../lib/retention-lists';
 
 type FmPortfolioReportModalProps = {
@@ -48,7 +42,7 @@ function exportGateMessage(status: PayrollWorkflowStatus) {
   if (status === 'SUBMITTED_FOR_REVIEW') {
     return 'Print and PDF export unlock after MD approves the payroll batch you locked and sent for review.';
   }
-  return 'Lock payroll and send to MD for review (Batch Payroll), then export unlocks once MD approves.';
+  return 'Lock payroll and send to MD for review from the Payroll Ledger, then export unlocks once MD approves.';
 }
 
 export default function FmPortfolioReportModal({
@@ -77,6 +71,7 @@ export default function FmPortfolioReportModal({
       period: periodLabel,
       tableHeadHtml: printTables.head,
       tableBodyHtml: printTables.body,
+      contentHtml: printTables.contentHtml,
       footerNote: needsApproval
         ? 'Released after MD approval of locked security payroll batch.'
         : undefined,
@@ -94,6 +89,7 @@ export default function FmPortfolioReportModal({
         period: periodLabel,
         tableHeadHtml: printTables.head,
         tableBodyHtml: printTables.body,
+        contentHtml: printTables.contentHtml,
       });
     } finally {
       setExporting(false);
@@ -133,10 +129,10 @@ export default function FmPortfolioReportModal({
               <p className="text-[11px] font-bold text-amber-900">Export locked until MD approval</p>
               <p className="mt-0.5 text-[11px] text-amber-800">{gateMsg}</p>
               <Link
-                href="/fm/batch"
+                href="/fm"
                 className="mt-1 inline-block text-[11px] font-bold text-amber-900 underline"
               >
-                Open Batch Payroll →
+                Open Payroll Ledger →
               </Link>
             </div>
           </div>
@@ -187,10 +183,10 @@ export default function FmPortfolioReportModal({
           {kind === 'statutory' && <StatutoryTable employees={employees} />}
           {kind === 'deductions' && <DeductionsTable employees={employees} />}
           {kind === 'stop-list' && (
-            <RetentionTable rows={[...FM_PREV_MONTH_STOP_LIST]} variant="stop" />
+            <FmRetentionListTable rows={[...FM_PREV_MONTH_STOP_LIST]} variant="stop" />
           )}
           {kind === 'half-hold' && (
-            <RetentionTable rows={[...FM_SALARY_MONTH_HALF_HOLD_LIST]} variant="half" />
+            <FmRetentionListTable rows={[...FM_SALARY_MONTH_HALF_HOLD_LIST]} variant="half" />
           )}
         </div>
 
@@ -261,25 +257,118 @@ function ClientBillingTable({
 }
 
 function StatutoryTable({ employees }: { employees: ReturnType<typeof flattenPortfolioEmployees> }) {
+  const apitReport = useMemo(() => buildStatutoryApitReport(employees), [employees]);
+  const epfRows = employees.map((e) => {
+    const s = calculateEmployeeStatutory(e.totalGross);
+    return [
+      <span key="n">
+        <span className="font-bold text-slate-900">{e.name}</span>
+        <span className="mt-0.5 block font-mono text-[11px] text-slate-400">{e.empNumber}</span>
+      </span>,
+      e.siteName,
+      lkr(s.epf),
+      lkr(s.etf),
+      lkr(s.stamp),
+      lkr(s.epf + s.etf + s.stamp),
+    ];
+  });
+  const epfTotals = employees.reduce(
+    (acc, e) => {
+      const s = calculateEmployeeStatutory(e.totalGross);
+      acc.epf += s.epf;
+      acc.etf += s.etf;
+      acc.stamp += s.stamp;
+      acc.total += s.total;
+      return acc;
+    },
+    { epf: 0, etf: 0, stamp: 0, total: 0 },
+  );
+  const apitTotal = apitReport.bracketSummary.reduce((sum, row) => sum + row.totalApit, 0);
+
   return (
-    <ReportTable
-      columns={['Employee', 'Site', 'EPF (8%)', 'ETF (3%)', 'APIT', 'Stamp', 'Total Statutory']}
-      rows={employees.map((e) => {
-        const s = calculateEmployeeStatutory(e.totalGross);
-        return [
-          <span key="n">
-            <span className="font-bold text-slate-900">{e.name}</span>
-            <span className="mt-0.5 block font-mono text-[11px] text-slate-400">{e.empNumber}</span>
-          </span>,
-          e.siteName,
-          lkr(s.epf),
-          lkr(s.etf),
-          lkr(s.apit),
-          lkr(s.stamp),
-          lkr(s.total),
-        ];
-      })}
-    />
+    <div className="space-y-8">
+      <section>
+        <h3 className="mb-3 text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">
+          EPF · ETF · Stamp Duty
+        </h3>
+        <ReportTable
+          columns={['Employee', 'Site', 'EPF (8%)', 'ETF (3%)', 'Stamp', 'Subtotal']}
+          rows={epfRows}
+        />
+        <p className="mt-3 text-right font-mono text-[11px] font-bold text-slate-600">
+          Portfolio subtotal — EPF {lkr(epfTotals.epf)} · ETF {lkr(epfTotals.etf)} · Stamp{' '}
+          {lkr(epfTotals.stamp)}
+        </p>
+      </section>
+
+      <section>
+        <h3 className="mb-3 text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">
+          APIT — Bracket Summary
+        </h3>
+        <ReportTable
+          columns={['Bracket', 'Rate', 'Employees', 'Total APIT']}
+          rows={
+            apitReport.bracketSummary.length > 0
+              ? apitReport.bracketSummary.map((row) => [
+                  row.label,
+                  `${row.slab.rate}%`,
+                  row.employeeCount.toLocaleString('en-LK'),
+                  lkr(row.totalApit),
+                ])
+              : [['No APIT liability in any bracket this period.', '—', '—', '—']]
+          }
+        />
+        {apitTotal > 0 && (
+          <p className="mt-3 text-right font-mono text-[11px] font-bold text-violet-700">
+            Portfolio APIT total — {lkr(apitTotal)}
+          </p>
+        )}
+      </section>
+
+      <section>
+        <h3 className="mb-3 text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">
+          APIT — Paying Employees by Bracket
+        </h3>
+        {apitReport.apitEmployees.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm font-semibold text-slate-500">
+            No employees liable for APIT this period.
+          </p>
+        ) : (
+          <div className="space-y-6">
+            {apitReport.bracketSummary
+              .filter((row) => (apitReport.employeesByBracket.get(row.slab.id)?.length ?? 0) > 0)
+              .map((row) => {
+                const rows = apitReport.employeesByBracket.get(row.slab.id) ?? [];
+                return (
+                  <div key={row.slab.id}>
+                    <p className="mb-2 text-[10px] font-black uppercase tracking-[0.14em] text-violet-700">
+                      {row.label}
+                    </p>
+                    <ReportTable
+                      columns={['Employee', 'Site', 'Gross Salary', 'APIT']}
+                      rows={rows.map((entry) => [
+                        <span key="n">
+                          <span className="font-bold text-slate-900">{entry.employee.name}</span>
+                          <span className="mt-0.5 block font-mono text-[11px] text-slate-400">
+                            {entry.employee.empNumber}
+                          </span>
+                        </span>,
+                        entry.employee.siteName,
+                        lkr(entry.gross),
+                        lkr(entry.apit),
+                      ])}
+                    />
+                  </div>
+                );
+              })}
+          </div>
+        )}
+      </section>
+
+      <p className="border-t border-slate-200 pt-4 text-right font-mono text-[11px] font-black text-slate-800">
+        Portfolio statutory total — {lkr(epfTotals.total)}
+      </p>
+    </div>
   );
 }
 
@@ -319,48 +408,6 @@ function DeductionsTable({ employees }: { employees: ReturnType<typeof flattenPo
         {lkr(totals.advances)} · Penalties {lkr(totals.penalties)}
       </p>
     </>
-  );
-}
-
-function RetentionTable({
-  rows,
-  variant,
-}: {
-  rows: RetentionGuardRow[];
-  variant: 'stop' | 'half';
-}) {
-  return (
-    <ReportTable
-      columns={[
-        'Employee',
-        'Shifts Here',
-        'Total Gross (All Sites)',
-        'Total Deductions',
-        'Net Take-Home',
-        'Actions',
-      ]}
-      rows={rows.map((g) => [
-        <span key="n">
-          <span className="font-bold text-slate-900">{g.name}</span>
-          <span className="mt-0.5 block font-mono text-[11px] text-slate-400">{g.empNo}</span>
-        </span>,
-        String(g.shiftsHere),
-        g.totalGross > 0 ? lkr(g.totalGross) : '—',
-        g.totalDeductions > 0 ? `− ${lkr(g.totalDeductions)}` : '—',
-        g.netTakeHome > 0 ? lkr(g.netTakeHome) : '—',
-        <span
-          key="act"
-          className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[10px] font-bold uppercase tracking-wider ${
-            variant === 'stop'
-              ? 'border-rose-200 bg-rose-50 text-rose-700'
-              : 'border-amber-200 bg-amber-50 text-amber-800'
-          }`}
-        >
-          <AlertTriangle className="h-2.5 w-2.5" />
-          {variant === 'stop' ? 'Payment halted' : 'Half salary'}
-        </span>,
-      ])}
-    />
   );
 }
 

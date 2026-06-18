@@ -2,9 +2,11 @@
 
 import { authenticateGuard } from './actions';
 import { useTransition, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Shield, Radio } from 'lucide-react';
 
 export default function FieldLoginForm({ logoUrl }: { logoUrl: string | null }) {
+  const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -12,6 +14,11 @@ export default function FieldLoginForm({ logoUrl }: { logoUrl: string | null }) 
     setErrorMsg('');
     startTransition(async () => {
       const result = await authenticateGuard(formData);
+      if (result?.success) {
+        router.replace('/');
+        router.refresh();
+        return;
+      }
       if (result?.error) {
         setErrorMsg(result.error);
       }

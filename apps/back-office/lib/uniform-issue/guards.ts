@@ -1,5 +1,5 @@
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
-import { resolveCompanyIdForSession } from '../../lib/company-context';
+import { resolveCompanyIdForSession } from '../../lib/company-context-server';
 import type { UniformGuardOption } from './types';
 
 function guardLabel(empNumber: string, fullName: string | null) {

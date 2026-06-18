@@ -28,7 +28,7 @@ import { getRankPayMatrix } from '../../executive/settings/rank-matrix-actions';
 import {
   assertHrPortalEditor,
   fetchBackOfficeUserProfile,
-} from '../../../lib/hr-portal-access';
+} from '../../../lib/hr-portal-access-server';
 import type {
   ClearanceShiftRow,
   EmployeeClearanceSnapshot,
@@ -439,7 +439,7 @@ export async function getEmployeeClearance(
   };
 }
 
-export async function sendOffboardingToFm(employeeId: string) {
+export async function confirmOffboardingPayment(employeeId: string) {
   const { supabase, userId } = await requireHrRole();
   const snapshot = await getEmployeeClearance(employeeId);
 
@@ -448,64 +448,52 @@ export async function sendOffboardingToFm(employeeId: string) {
   }
 
   if (snapshot.fmOffboardingPaymentConfirmed) {
-    throw new Error('Finance has already confirmed final payment for this employee.');
+    throw new Error('Final payment was already confirmed for this employee.');
   }
 
-  if (snapshot.hrOffboardingSentToFm) {
-    throw new Error('This case is already in the Finance offboarding queue.');
-  }
-
-  const { finalPayLkr, gratuityLkr, recoveryLkr } = snapshot.settlement;
-  if (finalPayLkr <= 0 && gratuityLkr <= 0 && recoveryLkr <= 0) {
-    throw new Error(
-      'No final pay, gratuity, or recoveries on file — nothing to send to Finance.',
-    );
+  const payable = snapshot.settlement.finalPayLkr + snapshot.settlement.gratuityLkr;
+  if (payable <= 0) {
+    throw new Error('No final payment is due — payment confirmation is not required.');
   }
 
   if (snapshot.hrResignationGate.requiresDebtClearance) {
     throw new Error(snapshot.hrResignationGate.message);
   }
 
+  if (snapshot.settlement.netSettlementLkr < 0) {
+    throw new Error(
+      'Employee owes a net balance to the company. Settle all pending recoveries before confirming payment.',
+    );
+  }
+
   const { error } = await supabase
     .from('employees')
     .update({
-      hr_offboarding_sent_to_fm_at: new Date().toISOString(),
-      hr_offboarding_sent_to_fm_by: userId,
+      fm_offboarding_payment_confirmed_at: new Date().toISOString(),
+      fm_offboarding_payment_confirmed_by: userId,
     })
     .eq('id', employeeId);
 
-  if (error?.message?.includes('hr_offboarding_sent_to_fm')) {
-    throw new Error(
-      'Offboarding queue is not available yet. Apply database migration 20260604230000_employees_hr_offboarding_sent_fm.sql.',
-    );
-  }
   if (error) throw new Error(error.message);
 
   await auditStaffAction({
     supabase,
     portal: 'hr',
-    action: 'Send Offboarding to Finance',
+    action: 'Confirm Offboarding Payment',
     targetEntity: `Employee ${employeeId}`,
     details: {
       finalPayLkr: snapshot.settlement.finalPayLkr,
       gratuityLkr: snapshot.settlement.gratuityLkr,
       recoveryLkr: snapshot.settlement.recoveryLkr,
+      netSettlementLkr: snapshot.settlement.netSettlementLkr,
     },
   });
 
   revalidatePath('/hr/mnr');
-  revalidatePath('/fm/offboarding');
 }
 
 export async function assertHrCanConfirmResignation(employeeId: string): Promise<void> {
   const snapshot = await getEmployeeClearance(employeeId);
-  const payable =
-    snapshot.settlement.finalPayLkr + snapshot.settlement.gratuityLkr;
-  if (payable > 0 && !snapshot.hrOffboardingSentToFm) {
-    throw new Error(
-      'Send this employee to Finance → Offboarding settlements before confirming resignation.',
-    );
-  }
   if (!snapshot.hrResignationGate.ok) {
     throw new Error(snapshot.hrResignationGate.message);
   }

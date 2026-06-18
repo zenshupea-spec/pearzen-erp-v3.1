@@ -12,11 +12,10 @@ import {
   CheckCircle2,
   Loader2,
   FileText,
-  Send,
 } from "lucide-react";
 
 import { terminateEmployee } from "../../actions/mnrActions";
-import { getEmployeeClearance, sendOffboardingToFm } from "./clearance-actions";
+import { confirmOffboardingPayment, getEmployeeClearance } from "./clearance-actions";
 
 function isResignedEmployee(emp) {
   return (emp?.status || "").trim().toLowerCase() === "resigned";
@@ -73,7 +72,7 @@ export default function ClearanceModal({
   const [error, setError] = useState("");
   const [data, setData] = useState(null);
   const [confirming, setConfirming] = useState(false);
-  const [sendingToFm, setSendingToFm] = useState(false);
+  const [confirmingPayment, setConfirmingPayment] = useState(false);
   const [actionError, setActionError] = useState("");
 
   const load = useCallback(async () => {
@@ -104,38 +103,37 @@ export default function ClearanceModal({
     canConfirm && !alreadyResigned && !loading && !error && resignationReady;
   const payableToEmployee =
     (data?.settlement?.finalPayLkr ?? 0) + (data?.settlement?.gratuityLkr ?? 0);
-  const needsFmHandoff =
+  const needsPaymentConfirm =
     payableToEmployee > 0 &&
     !data?.fmOffboardingPaymentConfirmed &&
     !data?.hrResignationGate?.requiresDebtClearance;
-  const canSendToFm =
+  const canConfirmPayment =
     canConfirm &&
     !alreadyResigned &&
     !loading &&
     !error &&
-    needsFmHandoff &&
-    !data?.hrOffboardingSentToFm;
+    needsPaymentConfirm;
 
-  async function handleSendToFm() {
-    if (!employee?.id || !canSendToFm) return;
+  async function handleConfirmPayment() {
+    if (!employee?.id || !canConfirmPayment) return;
     const name = employee.full_name || "this employee";
     const net = data?.settlement?.netSettlementLkr ?? 0;
     if (
       !window.confirm(
-        `Send ${name} to Finance for offboarding settlement?\n\nNet payable (after recoveries): ${formatLKR(Math.abs(net))}\n\nFinance must confirm payment before you can confirm resignation.`
+        `Confirm final offboarding payment for ${name}?\n\nNet payable (after recoveries): ${formatLKR(Math.abs(net))}\n\nYou can confirm resignation after this.`
       )
     ) {
       return;
     }
-    setSendingToFm(true);
+    setConfirmingPayment(true);
     setActionError("");
     try {
-      await sendOffboardingToFm(employee.id);
+      await confirmOffboardingPayment(employee.id);
       await load();
     } catch (err) {
-      setActionError(err?.message || "Failed to send to Finance.");
+      setActionError(err?.message || "Failed to confirm payment.");
     } finally {
-      setSendingToFm(false);
+      setConfirmingPayment(false);
     }
   }
 
@@ -269,7 +267,7 @@ export default function ClearanceModal({
                     tone="violet"
                   />
                   <SummaryTile
-                    label="FM payment"
+                    label="Final payment"
                     value={data.fmOffboardingPaymentConfirmed ? "Confirmed" : "Not confirmed"}
                     sub={
                       data.fmOffboardingPaymentConfirmedAt
@@ -445,33 +443,21 @@ export default function ClearanceModal({
                 {data.fmOffboardingPaymentConfirmed ? (
                   <p className="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-center gap-2">
                     <CheckCircle2 className="w-4 h-4 shrink-0" />
-                    FM confirmed final payment
+                    Final payment confirmed
                     {data.fmOffboardingPaymentConfirmedAt && (
                       <span className="text-[10px] font-bold text-emerald-600/80 normal-case">
                         · {new Date(data.fmOffboardingPaymentConfirmedAt).toLocaleString("en-LK")}
                       </span>
                     )}
                   </p>
-                ) : !summaryMode && data.hrOffboardingSentToFm ? (
-                  <p className="text-xs font-bold text-sky-800 bg-sky-50 border border-sky-200 rounded-xl px-4 py-3 flex items-center gap-2">
-                    <Send className="w-4 h-4 shrink-0" />
-                    Sent to Finance
-                    {data.hrOffboardingSentToFmAt && (
-                      <span className="text-[10px] font-bold text-sky-600/90 normal-case">
-                        · {new Date(data.hrOffboardingSentToFmAt).toLocaleString("en-LK")}
-                      </span>
-                    )}
-                    {!data.fmOffboardingPaymentConfirmed &&
-                      " — awaiting FM payment confirmation on Offboarding settlements."}
-                  </p>
-                ) : !summaryMode && needsFmHandoff ? (
+                ) : !summaryMode && needsPaymentConfirm ? (
                   <p className="text-xs font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
-                    Send this case to Finance → Offboarding settlements. FM must confirm final
-                    payment after pending recoveries are settled before HR can confirm resignation.
+                    Confirm final payment here after pending recoveries are settled, then confirm
+                    resignation.
                   </p>
                 ) : summaryMode && !data.fmOffboardingPaymentConfirmed ? (
                   <p className="text-xs font-bold text-slate-600 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
-                    FM payment was not marked confirmed on file at the time this summary was loaded.
+                    Final payment was not marked confirmed on file at the time this summary was loaded.
                   </p>
                 ) : null}
 
@@ -557,27 +543,27 @@ export default function ClearanceModal({
             <button
               type="button"
               onClick={onClose}
-              disabled={confirming || sendingToFm}
+              disabled={confirming || confirmingPayment}
               className="px-5 py-2.5 text-xs font-black uppercase tracking-wide rounded-xl bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 disabled:opacity-50"
             >
               {summaryMode ? "Close summary" : "Close"}
             </button>
-            {canSendToFm && (
+            {canConfirmPayment && (
               <button
                 type="button"
-                onClick={handleSendToFm}
-                disabled={sendingToFm || confirming}
+                onClick={handleConfirmPayment}
+                disabled={confirmingPayment || confirming}
                 className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-black uppercase tracking-wide rounded-xl bg-sky-600 text-white hover:bg-sky-700 disabled:opacity-50"
               >
-                {sendingToFm ? (
+                {confirmingPayment ? (
                   <>
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    Sending…
+                    Confirming…
                   </>
                 ) : (
                   <>
-                    <Send className="w-3.5 h-3.5" />
-                    Send to Finance
+                    <Wallet className="w-3.5 h-3.5" />
+                    Confirm final payment
                   </>
                 )}
               </button>
@@ -586,7 +572,7 @@ export default function ClearanceModal({
               <button
                 type="button"
                 onClick={handleConfirmResignation}
-                disabled={!canConfirmResignation || confirming || sendingToFm}
+                disabled={!canConfirmResignation || confirming || confirmingPayment}
                 title={!resignationReady && data ? data.hrResignationGate.message : undefined}
                 className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-black uppercase tracking-wide rounded-xl bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
               >

@@ -9,12 +9,23 @@ import {
   type HeadOfficeRbacStaffRow,
   type PortalRbacMatrix,
 } from '../../../../../packages/portal-rbac';
+import {
+  fetchWithRosterCompanyFallback,
+  resolveCompanyIdForSession,
+  rosterCompanyId,
+} from '../../../lib/company-context-server';
+import { fetchHeadOfficeCorporateStaffForCompany } from '../../../lib/head-office-corporate-staff';
+import {
+  getHeadOfficePortalAuthStatusesForEmployees,
+  type HeadOfficePortalAuthStatus,
+} from '../../../lib/head-office-portal-auth';
 import { readPortalRbacMatrixForCompany } from '../../../lib/portal-rbac-store';
 import {
   isMissingColumnError,
   MD_SETTINGS_ENVELOPE_KEYS,
   mergeSettingEnvelope,
 } from '../../../../../packages/supabase/md-settings-envelope';
+import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import {
   getExecutiveMdSettingsContext,
   getMdSettingsDb,
@@ -25,35 +36,35 @@ import { writeSettingsAuditLog } from './settings-audit';
 export type RbacMatrixPayload = {
   staff: HeadOfficeRbacStaffRow[];
   matrix: PortalRbacMatrix;
+  portalAuthByEmployeeId: Record<string, HeadOfficePortalAuthStatus>;
 };
 
-async function fetchHeadOfficeStaff(companyId: string): Promise<HeadOfficeRbacStaffRow[]> {
-  const supabase = getMdSettingsDb();
-  const { data, error } = await supabase
-    .from('employees')
-    .select('id, full_name, rank, email, status, group')
-    .eq('company_id', companyId)
-    .eq('group', 'HEAD_OFFICE')
-    .eq('status', 'ACTIVE')
-    .order('full_name', { ascending: true });
+async function loadHeadOfficeStaffBundle(): Promise<{
+  companyId: string;
+  staff: HeadOfficeRbacStaffRow[];
+}> {
+  const session = await createSupabaseServerClient();
+  const sessionCompanyId = await resolveCompanyIdForSession(session);
+  const companyId =
+    rosterCompanyId(sessionCompanyId) ?? (await resolveExecutiveCompanyId(session));
 
-  if (error) {
-    console.error('fetchHeadOfficeStaff:', error.message);
-    return [];
+  let staff = await fetchWithRosterCompanyFallback(
+    fetchHeadOfficeCorporateStaffForCompany,
+    sessionCompanyId,
+  );
+
+  if (!staff.length) {
+    staff = await fetchHeadOfficeCorporateStaffForCompany(companyId);
+  }
+  if (!staff.length) {
+    staff = await fetchHeadOfficeCorporateStaffForCompany(null);
   }
 
-  return (data ?? []).map((row) => ({
-    id: String(row.id),
-    fullName: typeof row.full_name === 'string' ? row.full_name.trim() : 'Unnamed staff',
-    rank: typeof row.rank === 'string' ? row.rank.trim().toUpperCase() : null,
-    email: typeof row.email === 'string' ? row.email.trim() : null,
-    status: typeof row.status === 'string' ? row.status.trim().toUpperCase() : 'ACTIVE',
-  }));
+  return { companyId, staff };
 }
 
 export async function getRbacMatrixPayload(): Promise<RbacMatrixPayload> {
-  const companyId = await resolveExecutiveCompanyId();
-  const staff = await fetchHeadOfficeStaff(companyId);
+  const { companyId, staff } = await loadHeadOfficeStaffBundle();
   const saved = await readPortalRbacMatrixForCompany(companyId);
   const matrix = mergeStaffWithPortalRbac(staff, saved);
 
@@ -64,13 +75,16 @@ export async function getRbacMatrixPayload(): Promise<RbacMatrixPayload> {
     }
   }
 
-  return { staff, matrix };
+  const portalAuthByEmployeeId = await getHeadOfficePortalAuthStatusesForEmployees(
+    staff.map((person) => person.id),
+  );
+
+  return { staff, matrix, portalAuthByEmployeeId };
 }
 
 export async function savePortalRbacMatrix(matrix: PortalRbacMatrix) {
-  const companyId = await resolveExecutiveCompanyId();
+  const { companyId, staff } = await loadHeadOfficeStaffBundle();
   const supabase = getMdSettingsDb();
-  const staff = await fetchHeadOfficeStaff(companyId);
   const staffIds = new Set(staff.map((s) => s.id));
 
   const sanitized: PortalRbacMatrix = {};
@@ -122,4 +136,3 @@ export async function savePortalRbacMatrix(matrix: PortalRbacMatrix) {
   revalidatePath('/fm/settings');
   return { success: true };
 }
-

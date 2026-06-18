@@ -167,6 +167,7 @@ export function timingHoldCleared(shift: ShiftVerificationRecord) {
 /** Payroll blocked until photos uploaded or timing exception cleared. */
 export function isOnHold(shift: ShiftVerificationRecord) {
   if (!isActiveForVerification(shift.aggregateStatus)) return false;
+  if (isMissedManualCheckout(shift)) return true;
   if (hasMissingFieldPhoto(shift)) return true;
   if (
     (shift.isLateStart || shift.isEarlyCheckout) &&
@@ -195,9 +196,73 @@ export function isPhotoVerificationQueue(shift: ShiftVerificationRecord) {
   return true;
 }
 
-export type OnHoldReason = 'missing_photo' | 'late_start' | 'early_checkout';
+/** Shifts TM/OM can action in the active verification grid (includes flagged auto check-outs). */
+export function isReviewableVerificationShift(shift: ShiftVerificationRecord) {
+  if (!shift.checkIn) return false;
+  if (!isActiveForVerification(shift.aggregateStatus)) return false;
+  if (isPhotoVerificationQueue(shift)) return true;
+  if (isMissedManualCheckout(shift)) return true;
+  if (shift.aggregateStatus === 'FLAGGED' && shift.checkOut) return true;
+  // Open shift: show live check-in selfies while the guard is still on site.
+  if (!shift.checkOut && shift.checkIn.photo_url) return true;
+  return false;
+}
+
+/** Keep the latest check-in/out when multiple logs share the same guard + shift date. */
+export function mergeAttendanceLogIntoShift<
+  T extends { device_time: string },
+>(
+  record: { checkIn: T | null; checkOut: T | null },
+  actionType: string,
+  log: T,
+) {
+  if (actionType === 'CHECK_IN') {
+    if (!record.checkIn || log.device_time > record.checkIn.device_time) {
+      record.checkIn = log;
+    }
+    return;
+  }
+  if (actionType === 'CHECK_OUT') {
+    if (!record.checkOut || log.device_time > record.checkOut.device_time) {
+      record.checkOut = log;
+    }
+  }
+}
+
+/** Drop a check-out that belongs to an earlier session on the same calendar day. */
+export function reconcileShiftCheckInOut<
+  T extends { device_time: string },
+>(record: { checkIn: T | null; checkOut: T | null }) {
+  if (
+    record.checkIn &&
+    record.checkOut &&
+    record.checkOut.device_time < record.checkIn.device_time
+  ) {
+    record.checkOut = null;
+  }
+}
+
+/** On-hold panel — timing/missing-photo holds not already in the review grid. */
+export function isOnHoldPanelShift(shift: ShiftVerificationRecord) {
+  if (!isOnHold(shift)) return false;
+  if (isReviewableVerificationShift(shift)) return false;
+  return true;
+}
+
+export type OnHoldReason =
+  | 'missing_photo'
+  | 'late_start'
+  | 'early_checkout'
+  | 'missed_checkout';
+
+export const AUTO_CHECKOUT_SYNC_TYPE = 'AUTO_CHECKOUT';
+
+export function isMissedManualCheckout(shift: ShiftVerificationRecord) {
+  return shift.checkOut?.sync_type === AUTO_CHECKOUT_SYNC_TYPE;
+}
 
 export function getOnHoldReason(shift: ShiftVerificationRecord): OnHoldReason {
+  if (isMissedManualCheckout(shift)) return 'missed_checkout';
   if (hasMissingFieldPhoto(shift)) return 'missing_photo';
   if (shift.isLateStart) return 'late_start';
   return 'early_checkout';

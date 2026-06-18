@@ -1,12 +1,15 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
+import {
+  createSupabaseServerClient,
+} from '../../../../../packages/supabase/server';
 import {
   fetchWithRosterCompanyFallback,
   resolveCompanyIdForSession,
   rosterCompanyId,
-} from '../../../lib/company-context';
+} from '../../../lib/company-context-server';
+import { getOmServiceDb, normalizeSmEpf } from '../../../lib/om-service-db';
 import { auditStaffAction } from '../../../lib/staff-audit';
 import type {
   OmAllocationSite,
@@ -22,9 +25,16 @@ import type {
 const RANK_KEYS: OmRankKey[] = ['CSO', 'OIC', 'SSO', 'JSO', 'LSO'];
 const GUARD_GROUPS = new Set(['GUARD', 'GUARD_FIELD']);
 
+/** Service-role DB — OM sessions fail site_profiles RLS (same as executive site directory). */
+function getOmAllocationDb() {
+  return getOmServiceDb();
+}
+
 type EmployeeRow = {
   id: string;
-  emp_number: string;
+  emp_number: string | null;
+  epf_no: string | null;
+  epf_num: string | number | null;
   full_name: string | null;
   rank: string | null;
   group: string | null;
@@ -37,6 +47,24 @@ type EmployeeRow = {
   base_salary: number | null;
   basic_salary: number | null;
 };
+
+function guardEpfKey(row: Pick<EmployeeRow, 'id' | 'emp_number' | 'epf_no' | 'epf_num'>): string {
+  const emp = row.emp_number != null ? String(row.emp_number).trim() : '';
+  if (emp) return emp;
+  const epf =
+    (row.epf_no != null ? String(row.epf_no).trim() : '') ||
+    (row.epf_num != null ? String(row.epf_num).trim() : '');
+  if (epf) return epf;
+  return row.id;
+}
+
+function guardEpfDisplay(row: Pick<EmployeeRow, 'emp_number' | 'epf_no' | 'epf_num'>): string {
+  const epf =
+    (row.epf_no != null ? String(row.epf_no).trim() : '') ||
+    (row.epf_num != null ? String(row.epf_num).trim() : '') ||
+    (row.emp_number != null ? String(row.emp_number).trim() : '');
+  return epf || '—';
+}
 
 type SiteRow = {
   id: string;
@@ -103,7 +131,7 @@ function buildSlotsForSite(
       rank: emp ? normalizeRankKey(emp.rank) : defaultSlotRank(index, count),
       shiftType: slotShiftType(index, count),
       label: emp?.full_name?.trim() || `Open slot ${index + 1}`,
-      currentEmpNo: emp ? String(emp.emp_number) : null,
+      currentEmpNo: emp ? guardEpfKey(emp) : null,
     };
   });
 }
@@ -111,8 +139,9 @@ function buildSlotsForSite(
 function mapAssignableGuard(emp: EmployeeRow): OmAssignableGuard {
   const rankKey = normalizeRankKey(emp.rank);
   return {
-    empNo: String(emp.emp_number),
-    name: String(emp.full_name ?? emp.emp_number),
+    empNo: guardEpfKey(emp),
+    epfNo: guardEpfDisplay(emp),
+    name: String(emp.full_name ?? guardEpfDisplay(emp)),
     rank: rankKey,
     rankKey,
     clearance: vettingClearance(emp.mod_expiry, emp.police_expiry),
@@ -122,8 +151,8 @@ function mapAssignableGuard(emp: EmployeeRow): OmAssignableGuard {
 function mapGuardProfile(emp: EmployeeRow): OmGuardProfile {
   const salary = Number(emp.base_salary ?? emp.basic_salary ?? 0);
   return {
-    empNo: String(emp.emp_number),
-    name: String(emp.full_name ?? emp.emp_number),
+    empNo: guardEpfKey(emp),
+    name: String(emp.full_name ?? guardEpfDisplay(emp)),
     rank: normalizeRankKey(emp.rank),
     basicSalary: Number.isFinite(salary) ? salary : 0,
     unpaidShiftsLastMonth: 22,
@@ -132,8 +161,8 @@ function mapGuardProfile(emp: EmployeeRow): OmGuardProfile {
 
 function mapNearbyBench(emp: EmployeeRow): Omit<OmNearbyGuard, 'distanceKm'> {
   return {
-    guardId: String(emp.emp_number),
-    name: String(emp.full_name ?? emp.emp_number),
+    guardId: guardEpfKey(emp),
+    name: String(emp.full_name ?? guardEpfDisplay(emp)),
     rank: normalizeRankKey(emp.rank),
     contact: emp.phone?.trim() || '—',
     homeAddress: emp.home_address?.trim() || 'Address not on file',
@@ -168,10 +197,23 @@ function buildTacticalShort(
   };
 }
 
+function resolveAssignedSm(
+  smEpf: string | null | undefined,
+  smNameByEpf: Map<string, string>,
+): { assignedSmEpf: string | null; assignedSmName: string | null } {
+  const epf = normalizeSmEpf(smEpf);
+  if (!epf) return { assignedSmEpf: null, assignedSmName: null };
+  return {
+    assignedSmEpf: epf,
+    assignedSmName: smNameByEpf.get(epf) ?? epf,
+  };
+}
+
 function buildAllocationSites(
   sites: SiteRow[],
   guards: EmployeeRow[],
   companyName: string | null,
+  smNameByEpf: Map<string, string>,
 ): { unassignedSites: OmAllocationSite[]; allocatedSites: OmAllocationSite[] } {
   const guardsBySite = new Map<string, EmployeeRow[]>();
   for (const guard of guards) {
@@ -197,6 +239,7 @@ function buildAllocationSites(
       siteName: site.site_name,
       location: site.address?.trim() || 'Address not on file',
       slots: buildSlotsForSite(site.id, required, assigned),
+      ...resolveAssignedSm(site.assigned_sm_epf, smNameByEpf),
     };
 
     if (assigned.length === 0) {
@@ -213,12 +256,12 @@ function buildAllocationSites(
 }
 
 async function fetchGuardEmployees(companyId: string | null): Promise<EmployeeRow[]> {
-  const supabase = await createSupabaseServerClient();
+  const supabase = getOmAllocationDb();
 
   let query = supabase
     .from('employees')
     .select(
-      'id, emp_number, full_name, rank, group, status, site, mod_expiry, police_expiry, phone, home_address, base_salary, basic_salary',
+      'id, emp_number, epf_no, epf_num, full_name, rank, group, status, site, mod_expiry, police_expiry, phone, home_address, base_salary, basic_salary',
     )
     .eq('status', 'ACTIVE')
     .in('group', [...GUARD_GROUPS])
@@ -239,13 +282,14 @@ async function fetchGuardEmployees(companyId: string | null): Promise<EmployeeRo
 }
 
 async function fetchSiteProfiles(companyId: string | null): Promise<SiteRow[]> {
-  const supabase = await createSupabaseServerClient();
+  const supabase = getOmAllocationDb();
 
   let query = supabase
     .from('site_profiles')
     .select(
       'id, site_name, address, required_guards, assigned_sm_epf, latitude, longitude',
     )
+    .neq('site_status', 'ARCHIVED')
     .order('site_name', { ascending: true });
 
   if (companyId) {
@@ -274,11 +318,18 @@ async function fetchCompanyName(companyId: string | null): Promise<string | null
 
 async function fetchSmManagers(
   companyId: string | null,
-): Promise<{ emp_number: string; full_name: string | null }[]> {
-  const supabase = await createSupabaseServerClient();
+): Promise<
+  {
+    emp_number: string;
+    full_name: string | null;
+    epf_no: string | null;
+    epf_num: string | number | null;
+  }[]
+> {
+  const supabase = getOmAllocationDb();
   let query = supabase
     .from('employees')
-    .select('emp_number, full_name')
+    .select('emp_number, epf_no, epf_num, full_name')
     .eq('group', 'SECTOR_MANAGER')
     .eq('status', 'ACTIVE');
 
@@ -291,15 +342,35 @@ async function fetchSmManagers(
     console.error('[OM allocation] sector managers:', error.message);
     return [];
   }
-  return (data ?? []) as { emp_number: string; full_name: string | null }[];
+  return (data ?? []) as {
+    emp_number: string;
+    full_name: string | null;
+    epf_no: string | null;
+    epf_num: string | number | null;
+  }[];
 }
 
 function smRowsToNameMap(
-  rows: { emp_number: string; full_name: string | null }[],
+  rows: {
+    emp_number: string;
+    full_name: string | null;
+    epf_no: string | null;
+    epf_num: string | number | null;
+  }[],
 ): Map<string, string> {
   const map = new Map<string, string>();
   for (const row of rows) {
-    map.set(String(row.emp_number), String(row.full_name ?? row.emp_number));
+    const name = String(row.full_name ?? row.emp_number);
+    const keys = [
+      row.emp_number,
+      row.epf_no,
+      row.epf_num != null ? String(row.epf_num) : '',
+    ]
+      .map((key) => String(key).trim().toUpperCase())
+      .filter(Boolean);
+    for (const key of keys) {
+      map.set(key, name);
+    }
   }
   return map;
 }
@@ -318,7 +389,7 @@ export async function getOmSiteAllocationData(): Promise<OmSiteAllocationPayload
 
   const guardPoolLive = guards.map(mapAssignableGuard);
   const { unassignedSites: unassignedLive, allocatedSites: allocatedLive } =
-    buildAllocationSites(sites, guards, companyName);
+    buildAllocationSites(sites, guards, companyName, smNames);
 
   const tacticalLive = sites
     .map((site) => {
@@ -372,21 +443,37 @@ export async function saveOmSiteSlotAssignments(input: {
   }
 
   try {
-    const supabase = await createSupabaseServerClient();
-    const companyId = await resolveCompanyIdForSession(supabase);
+    const session = await createSupabaseServerClient();
+    const companyId = await resolveCompanyIdForSession(session);
+    const supabase = getOmAllocationDb();
 
     const toAssign = input.assignments.filter((a) => a.empNo);
     const toClear = input.assignments
       .filter((a) => a.previousEmpNo && a.previousEmpNo !== a.empNo)
       .map((a) => a.previousEmpNo as string);
 
-    const patchSite = async (empNo: string, site: string | null) => {
-      let query = supabase.from('employees').update({ site }).eq('emp_number', empNo);
-      if (companyId) {
-        query = query.eq('company_id', companyId);
+    const patchSite = async (epfKey: string, site: string | null) => {
+      const key = epfKey.trim();
+      if (!key) return;
+
+      const matchColumns: ('emp_number' | 'epf_no' | 'epf_num' | 'id')[] = [
+        'emp_number',
+        'epf_no',
+        'epf_num',
+        'id',
+      ];
+
+      for (const column of matchColumns) {
+        let query = supabase.from('employees').update({ site }).eq(column, key);
+        if (companyId) {
+          query = query.eq('company_id', companyId);
+        }
+        const { data, error } = await query.select('id').maybeSingle();
+        if (error) throw error;
+        if (data?.id) return;
       }
-      const { error } = await query;
-      if (error) throw error;
+
+      throw new Error(`Guard not found for EPF/key "${key}".`);
     };
 
     for (const empNo of toClear) {
@@ -394,6 +481,31 @@ export async function saveOmSiteSlotAssignments(input: {
     }
     for (const row of toAssign) {
       await patchSite(row.empNo, siteName);
+    }
+
+    const { data: siteRow } = await supabase
+      .from('site_profiles')
+      .select('assigned_sm_epf')
+      .eq('id', input.siteId)
+      .maybeSingle();
+    const smEpf = normalizeSmEpf(siteRow?.assigned_sm_epf);
+
+    if (smEpf) {
+      for (const clearedEpf of toClear) {
+        await supabase
+          .from('sm_guard_assignments')
+          .delete()
+          .eq('sm_epf', smEpf)
+          .eq('guard_epf', clearedEpf.trim());
+      }
+      for (const row of toAssign) {
+        const guardEpf = row.empNo.trim();
+        if (!guardEpf) continue;
+        await supabase.from('sm_guard_assignments').upsert(
+          { sm_epf: smEpf, guard_epf: guardEpf },
+          { onConflict: 'sm_epf,guard_epf' },
+        );
+      }
     }
 
     await auditStaffAction({
@@ -409,6 +521,8 @@ export async function saveOmSiteSlotAssignments(input: {
     });
 
     revalidatePath('/om');
+    revalidatePath('/om/sites/guards');
+    revalidatePath('/om/guards/sm-assignments');
     revalidatePath('/hr/mnr');
     return { success: true };
   } catch (error: unknown) {

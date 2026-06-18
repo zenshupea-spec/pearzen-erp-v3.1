@@ -7,12 +7,12 @@ import { createSupabaseServiceClient } from '../../../../../packages/supabase/se
 import {
   resolveCompanyIdForSession,
   rosterCompanyId,
-} from '../../../lib/company-context';
+} from '../../../lib/company-context-server';
 import { assertCanChangeEmployeeStatus } from '../../../lib/executive-rank-guard';
 import {
   assertHrPortalEditor,
   fetchBackOfficeUserProfile,
-} from '../../../lib/hr-portal-access';
+} from '../../../lib/hr-portal-access-server';
 import { auditStaffAction } from '../../../lib/staff-audit';
 import { getGuardRatingMapByEmployeeId } from '../../om/guard-cards/actions';
 

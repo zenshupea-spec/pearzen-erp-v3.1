@@ -1,12 +1,10 @@
 'use server'
 
-import { cookies } from 'next/headers';
-import { redirect } from 'next/navigation';
 import {
   createSupabaseServerClient,
   createSupabaseServiceClient,
 } from '../../../../../../packages/supabase/server';
-import { resolveCanonicalSmEpf } from '../../../../lib/sm-portal-db';
+import { resolveSmSessionEpf } from '../../../../lib/sm-assignments';
 import {
   colomboTodayIso,
   isShiftDateSubmittable,
@@ -20,15 +18,7 @@ export type ExistingAttendanceEntry = {
 };
 
 async function resolveEpf(): Promise<string> {
-  const cookieStore = await cookies();
-  const demo = cookieStore.get('sm_demo_session')?.value;
-  if (demo) return demo.toUpperCase();
-
-  const supabase = await createSupabaseServerClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) redirect('/login');
-  const loginEpf = session.user.email?.split('@')[0].toUpperCase() ?? '';
-  return resolveCanonicalSmEpf(loginEpf);
+  return resolveSmSessionEpf();
 }
 
 async function fetchShiftTimingSettings() {
@@ -96,6 +86,34 @@ export async function submitGuardAttendanceAction(
   const guardEpfs = entries.map((e) => e.guardEpf);
   if (new Set(guardEpfs).size !== guardEpfs.length) {
     return { error: 'A guard cannot be assigned to multiple sites.' };
+  }
+
+  if (guardEpfs.length > 0) {
+    const { data: crossSiteRows, error: crossSiteError } = await supabase
+      .from('sm_guard_attendance')
+      .select('guard_epf, site_name, sm_epf')
+      .eq('shift_date', shiftDate)
+      .eq('shift_type', shiftType)
+      .neq('status', 'CANCELLED')
+      .in('guard_epf', guardEpfs);
+
+    if (crossSiteError) {
+      console.error('[Guard Attendance] Cross-site lookup error:', crossSiteError.message);
+      return { error: 'Failed to save. Please try again.' };
+    }
+
+    for (const entry of entries) {
+      const conflict = (crossSiteRows ?? []).find(
+        (row) =>
+          row.guard_epf === entry.guardEpf &&
+          normalizeSiteKey(row.site_name) !== normalizeSiteKey(entry.siteName),
+      );
+      if (conflict) {
+        return {
+          error: `${entry.guardEpf} is already rostered at ${conflict.site_name} for this shift.`,
+        };
+      }
+    }
   }
 
   const { data: existingRows, error: existingError } = await supabase

@@ -2,8 +2,13 @@
 
 import { revalidatePath } from 'next/cache';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
-import { fetchBackOfficeUserProfile } from '../../../lib/hr-portal-access';
-import { resolveCompanyIdForSession } from '../../../lib/company-context';
+import { resolveGuardRosterKey } from '../../../lib/employee-epf';
+import { fetchBackOfficeUserProfile } from '../../../lib/hr-portal-access-server';
+import {
+  fetchWithRosterCompanyFallback,
+  resolveCompanyIdForSession,
+  rosterCompanyId,
+} from '../../../lib/company-context-server';
 import { auditStaffAction } from '../../../lib/staff-audit';
 import { getShiftSettings } from '../../executive/settings/actions';
 import {
@@ -20,6 +25,134 @@ import type { BlacklistedGuardEntry, GuardCardDisplay } from './types';
 export type { BlacklistedGuardEntry, BlacklistVaultEntry, GuardCardDisplay } from './types';
 
 const ROLLING_MONTHS = 12;
+const GUARD_GROUPS = ['GUARD', 'GUARD_FIELD'] as const;
+
+type GuardEmployeeRow = {
+  id: string;
+  company_id: string | null;
+  emp_number: string | null;
+  epf_no: string | null;
+  epf_num: string | number | null;
+  full_name: string | null;
+  rank: string | null;
+  id_photo_url: string | null;
+  status: string | null;
+  group: string | null;
+  site: string | null;
+};
+
+function normalizeSiteKey(value: string | null | undefined): string {
+  return (value ?? '').trim().toLowerCase();
+}
+
+function normalizeSmEpf(value: unknown): string | null {
+  const raw = value == null ? '' : String(value).trim().toUpperCase();
+  return raw || null;
+}
+
+async function fetchGuardSectorContext(companyId: string | null): Promise<{
+  guardSmLinks: Map<string, string>;
+  smSectorByEpf: Map<string, string>;
+  siteSmByKey: Map<string, string>;
+}> {
+  const supabase = await createSupabaseServerClient();
+
+  let siteQuery = supabase
+    .from('site_profiles')
+    .select('site_name, assigned_sm_epf')
+    .neq('site_status', 'ARCHIVED');
+  if (companyId) siteQuery = siteQuery.eq('company_id', companyId);
+
+  let smQuery = supabase
+    .from('employees')
+    .select('emp_number, epf_no, epf_num, site')
+    .eq('group', 'SECTOR_MANAGER')
+    .eq('status', 'ACTIVE');
+  if (companyId) smQuery = smQuery.eq('company_id', companyId);
+
+  const [linksRes, siteRes, smRes] = await Promise.all([
+    supabase.from('sm_guard_assignments').select('sm_epf, guard_epf'),
+    siteQuery,
+    smQuery,
+  ]);
+
+  const guardSmLinks = new Map<string, string>();
+  for (const row of linksRes.data ?? []) {
+    const guardEpf = String(row.guard_epf).trim().toUpperCase();
+    const smEpf = normalizeSmEpf(row.sm_epf);
+    if (!guardEpf || !smEpf) continue;
+    guardSmLinks.set(guardEpf, smEpf);
+  }
+
+  const siteSmByKey = new Map<string, string>();
+  for (const row of siteRes.data ?? []) {
+    const smEpf = normalizeSmEpf(row.assigned_sm_epf);
+    if (!smEpf) continue;
+    siteSmByKey.set(normalizeSiteKey(String(row.site_name)), smEpf);
+  }
+
+  const smSectorByEpf = new Map<string, string>();
+  for (const row of smRes.data ?? []) {
+    const sector = String(row.site ?? '').trim();
+    if (!sector) continue;
+    for (const key of [row.emp_number, row.epf_no, row.epf_num != null ? String(row.epf_num) : '']) {
+      const normalized = String(key).trim().toUpperCase();
+      if (normalized) smSectorByEpf.set(normalized, sector);
+    }
+  }
+
+  return { guardSmLinks, smSectorByEpf, siteSmByKey };
+}
+
+function resolveGuardSector(
+  guard: GuardEmployeeRow,
+  context: {
+    guardSmLinks: Map<string, string>;
+    smSectorByEpf: Map<string, string>;
+    siteSmByKey: Map<string, string>;
+  },
+): string | null {
+  const rosterKey = resolveGuardRosterKey(guard);
+  const linkedSmEpf = rosterKey ? context.guardSmLinks.get(rosterKey) : null;
+  if (linkedSmEpf) {
+    const linkedSector = context.smSectorByEpf.get(linkedSmEpf);
+    if (linkedSector) return linkedSector;
+  }
+
+  const siteName = guard.site?.trim() || null;
+  if (siteName) {
+    const siteSmEpf = context.siteSmByKey.get(normalizeSiteKey(siteName));
+    if (siteSmEpf) {
+      const siteSector = context.smSectorByEpf.get(siteSmEpf);
+      if (siteSector) return siteSector;
+    }
+  }
+
+  return null;
+}
+
+async function fetchActiveGuardRows(companyId: string | null): Promise<GuardEmployeeRow[]> {
+  const supabase = await createSupabaseServerClient();
+  let query = supabase
+    .from('employees')
+    .select(
+      'id, company_id, emp_number, epf_no, epf_num, full_name, rank, id_photo_url, status, group, site',
+    )
+    .in('group', [...GUARD_GROUPS])
+    .eq('status', 'ACTIVE')
+    .order('full_name', { ascending: true });
+
+  if (companyId) query = query.eq('company_id', companyId);
+
+  const { data, error } = await query;
+  if (error) {
+    console.error('[GuardCards] employees:', error.message);
+    return [];
+  }
+
+  const { decryptEmployeePiiRecord } = await import('../../../lib/employee-pii');
+  return (data ?? []).map((row) => decryptEmployeePiiRecord(row)) as GuardEmployeeRow[];
+}
 
 function rollingCutoffIso() {
   const d = new Date();
@@ -80,45 +213,44 @@ export async function getGuardCardLeaderboard(): Promise<{
   error?: string;
 }> {
   const supabase = await createSupabaseServerClient();
-  const companyId = await resolveCompanyIdForSession(supabase);
-  if (!companyId) {
+  const sessionCompanyId = await resolveCompanyIdForSession(supabase);
+  if (!sessionCompanyId) {
     return { cards: [], companyId: null, isDemo: false, error: 'No company context' };
   }
 
   const cutoff = rollingCutoffIso();
   const cutoffDate = cutoff.slice(0, 10);
 
-  const { data: guards, error: guardError } = await supabase
-    .from('employees')
-    .select('id, emp_number, full_name, rank, id_photo_url, status, group')
-    .eq('company_id', companyId)
-    .eq('group', 'GUARD')
-    .eq('status', 'ACTIVE')
-    .order('emp_number', { ascending: true });
+  const guards = await fetchWithRosterCompanyFallback(fetchActiveGuardRows, sessionCompanyId);
 
-  if (guardError) {
-    console.error('[GuardCards] employees:', guardError.message);
-    return { cards: [], companyId, error: guardError.message };
+  if (!guards.length) {
+    return { cards: [], companyId: sessionCompanyId, isDemo: false };
   }
 
-  if (!guards?.length) {
-    return { cards: [], companyId, isDemo: false };
-  }
-
-  const empNumbers = guards.map((g) => g.emp_number as string);
-  const employeeIds = guards.map((g) => g.id as string);
+  const rosterCompany =
+    guards.find((g) => g.company_id)?.company_id ?? rosterCompanyId(sessionCompanyId);
+  const sectorContext = await fetchGuardSectorContext(rosterCompany);
 
   const { data: blacklistRows } = await supabase
     .from('guard_blacklist_vault')
     .select('employee_id')
-    .eq('company_id', companyId)
+    .eq('company_id', rosterCompany)
     .eq('status', 'ACTIVE');
 
   const blacklistedIds = new Set(
     (blacklistRows ?? []).map((r) => r.employee_id as string),
   );
 
-  const activeGuards = guards.filter((g) => !blacklistedIds.has(g.id as string));
+  const activeGuards = guards.filter(
+    (g) => !blacklistedIds.has(g.id) && Boolean(resolveGuardRosterKey(g)),
+  );
+
+  if (!activeGuards.length) {
+    return { cards: [], companyId: sessionCompanyId, isDemo: false };
+  }
+
+  const activeRosterKeys = activeGuards.map((g) => resolveGuardRosterKey(g));
+  const activeEmployeeIds = activeGuards.map((g) => g.id);
 
   const [
     penaltiesRes,
@@ -130,26 +262,26 @@ export async function getGuardCardLeaderboard(): Promise<{
     supabase
       .from('sm_guard_penalties')
       .select('guard_epf, deduction_amount, created_at')
-      .in('guard_epf', empNumbers)
+      .in('guard_epf', activeRosterKeys)
       .gte('created_at', cutoff),
     supabase
       .from('payroll_deductions')
       .select('guard_id, amount, created_at')
-      .eq('company_id', companyId)
-      .in('guard_id', employeeIds)
+      .eq('company_id', rosterCompany)
+      .in('guard_id', activeEmployeeIds)
       .gte('created_at', cutoff),
     supabase
       .from('attendance_logs')
       .select('emp_number, action_type, device_time, sync_type')
-      .eq('company_id', companyId)
-      .in('emp_number', empNumbers)
+      .eq('company_id', rosterCompany)
+      .in('emp_number', activeRosterKeys)
       .gte('device_time', cutoff)
       .order('device_time', { ascending: true }),
     supabase
       .from('time_rosters')
       .select('employee_id, shift_date')
-      .eq('company_id', companyId)
-      .in('employee_id', employeeIds)
+      .eq('company_id', rosterCompany)
+      .in('employee_id', activeEmployeeIds)
       .eq('status', 'ACTIVE')
       .gte('shift_date', cutoffDate),
     getShiftSettings() as Promise<ShiftTimingSettings>,
@@ -256,8 +388,8 @@ export async function getGuardCardLeaderboard(): Promise<{
   }
 
   const rawMetrics: GuardRawMetrics[] = activeGuards.map((g) => {
-    const epf = g.emp_number as string;
-    const eid = g.id as string;
+    const epf = resolveGuardRosterKey(g);
+    const eid = g.id;
     const pen = penaltyByEpf.get(epf) ?? { count: 0, amount: 0 };
     const attended = attendedDatesByEpf.get(epf) ?? new Set<string>();
     const rosterDates = rosterDatesByEmployeeId.get(eid) ?? [];
@@ -277,21 +409,28 @@ export async function getGuardCardLeaderboard(): Promise<{
   });
 
   const rated = computeGuardRatings(rawMetrics);
-  const guardByEpf = new Map(activeGuards.map((g) => [g.emp_number as string, g]));
+  const ratedByEpf = new Map(rated.map((row) => [row.empNumber, row]));
 
-  const cards: GuardCardDisplay[] = rated.map((row) => {
-    const g = guardByEpf.get(row.empNumber)!;
-    return {
-      ...row,
-      employeeId: g.id as string,
-      fullName: (g.full_name as string) ?? row.empNumber,
-      rank: (g.rank as string | null) ?? null,
-      idPhotoUrl: (g.id_photo_url as string | null) ?? null,
-      isBlacklisted: false,
-    };
-  });
+  const cards: GuardCardDisplay[] = activeGuards
+    .map((g) => {
+      const rosterKey = resolveGuardRosterKey(g);
+      const row = ratedByEpf.get(rosterKey);
+      if (!row) return null;
+      return {
+        ...row,
+        employeeId: g.id,
+        fullName: (g.full_name as string) ?? rosterKey,
+        rank: (g.rank as string | null) ?? null,
+        sector: resolveGuardSector(g, sectorContext),
+        site: g.site?.trim() || null,
+        idPhotoUrl: (g.id_photo_url as string | null) ?? null,
+        isBlacklisted: false,
+      };
+    })
+    .filter((card): card is GuardCardDisplay => card != null)
+    .sort((a, b) => b.rating - a.rating);
 
-  return { cards, companyId };
+  return { cards, companyId: sessionCompanyId };
 }
 
 /** Rolling 12-month guard score for specific employees (includes resigned guards). */
@@ -308,15 +447,14 @@ export async function getGuardRatingMapByEmployeeId(
 
   const { data: guards, error: guardError } = await supabase
     .from('employees')
-    .select('id, emp_number, full_name, rank, status, group')
+    .select('id, emp_number, epf_no, epf_num, full_name, rank, status, group')
     .eq('company_id', companyId)
-    .eq('group', 'GUARD')
-    .not('emp_number', 'is', null);
+    .in('group', [...GUARD_GROUPS]);
 
   if (guardError || !guards?.length) return {};
 
-  const cohort = guards.filter((g) => g.emp_number);
-  const empNumbers = cohort.map((g) => g.emp_number as string);
+  const cohort = guards.filter((g) => resolveGuardRosterKey(g));
+  const rosterKeys = cohort.map((g) => resolveGuardRosterKey(g));
   const employeeIds = cohort.map((g) => g.id as string);
 
   const cutoff = rollingCutoffIso();
@@ -326,7 +464,7 @@ export async function getGuardRatingMapByEmployeeId(
     supabase
       .from('sm_guard_penalties')
       .select('guard_epf, deduction_amount, created_at')
-      .in('guard_epf', empNumbers)
+      .in('guard_epf', rosterKeys)
       .gte('created_at', cutoff),
     supabase
       .from('payroll_deductions')
@@ -338,7 +476,7 @@ export async function getGuardRatingMapByEmployeeId(
       .from('attendance_logs')
       .select('emp_number, action_type, device_time, sync_type')
       .eq('company_id', companyId)
-      .in('emp_number', empNumbers)
+      .in('emp_number', rosterKeys)
       .gte('device_time', cutoff)
       .order('device_time', { ascending: true }),
     supabase
@@ -452,7 +590,7 @@ export async function getGuardRatingMapByEmployeeId(
   }
 
   const rawMetrics: GuardRawMetrics[] = cohort.map((g) => {
-    const epf = g.emp_number as string;
+    const epf = resolveGuardRosterKey(g);
     const eid = g.id as string;
     const pen = penaltyByEpf.get(epf) ?? { count: 0, amount: 0 };
     const attended = attendedDatesByEpf.get(epf) ?? new Set<string>();
@@ -473,7 +611,7 @@ export async function getGuardRatingMapByEmployeeId(
   });
 
   const rated = computeGuardRatings(rawMetrics);
-  const guardByEpf = new Map(cohort.map((g) => [g.emp_number as string, g]));
+  const guardByEpf = new Map(cohort.map((g) => [resolveGuardRosterKey(g), g]));
   const result: Record<string, { rating: number; tier: ReturnType<typeof ratingTier> }> = {};
 
   for (const row of rated) {
@@ -566,7 +704,9 @@ export async function blacklistGuard(employeeId: string, reason: string) {
     .maybeSingle();
 
   if (empError || !employee) return { error: 'Guard not found.' };
-  if (employee.group !== 'GUARD') return { error: 'Only field guards can be blacklisted.' };
+  if (!GUARD_GROUPS.includes(employee.group as (typeof GUARD_GROUPS)[number])) {
+    return { error: 'Only field guards can be blacklisted.' };
+  }
 
   const { userId, name } = await resolveActorName(supabase);
 

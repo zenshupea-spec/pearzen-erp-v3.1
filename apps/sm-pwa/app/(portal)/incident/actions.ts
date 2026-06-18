@@ -1,8 +1,7 @@
 'use server'
 
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
-import { redirect } from 'next/navigation';
-import { getCurrentSmEpf, getSMAssignments } from '../../../lib/sm-assignments';
+import { getSMAssignments, resolveSmSessionEpf } from '../../../lib/sm-assignments';
 
 const BUCKET = 'incident-recordings';
 
@@ -25,19 +24,13 @@ async function uploadAudio(
 
 export async function reportIncidentAction(formData: FormData) {
   const supabase = await createSupabaseServerClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) redirect('/login');
-
-  const epf = session.user.email?.split('@')[0].toUpperCase() ?? '';
+  const epf = await resolveSmSessionEpf();
   const ts = Date.now();
 
   const siteName = (formData.get('site_name') as string)?.trim();
   const incidentType = formData.get('incident_type') as string;
   const severity = formData.get('severity') as string;
   const guardsRaw = (formData.get('guards_involved') as string)?.trim();
-
-  const smEpf = await getCurrentSmEpf();
-  if (!smEpf || smEpf !== epf) redirect('/login');
 
   const { sites: allowedSites, guards: allowedGuards } = await getSMAssignments(epf);
   const allowedSiteNames = new Set(allowedSites.map(s => s.value));

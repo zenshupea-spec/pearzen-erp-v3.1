@@ -11,7 +11,7 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export const metadata = {
-  title: 'SM Site Assignments | OM Portal',
+  title: 'Sites → SM | OM Portal',
 };
 
 export default async function OmSiteAssignmentsPage() {
@@ -22,8 +22,8 @@ export default async function OmSiteAssignmentsPage() {
   ]);
   return (
     <OmCommandShell
-      title="Sector manager site assignments"
-      subtitle="Assign pending sites to SMs or reassign existing ownership"
+      title="Sites → Sector Manager"
+      subtitle="Assign pending sites to SMs or reassign existing site ownership"
       icon={UserCheck}
       accent="indigo"
       maxWidth="6xl"

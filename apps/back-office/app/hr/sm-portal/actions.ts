@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
 import { revalidatePath } from 'next/cache';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import { auditStaffAction } from '../../../lib/staff-audit';
@@ -15,6 +16,15 @@ function getAdminClient() {
 
 function generateOTP(): string {
   return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+const SM_PORTAL_OTP_LIFETIME_MS = 60 * 1000;
+
+const PROVISION_FLASH_COOKIE = 'sm_portal_provision_flash';
+
+export async function clearProvisionFlashCookie() {
+  const jar = await cookies();
+  jar.set(PROVISION_FLASH_COOKIE, '', { maxAge: 0, path: '/' });
 }
 
 export async function provisionSMPortalAccess(epfNumber: string) {
@@ -62,6 +72,7 @@ export async function provisionSMPortalAccess(epfNumber: string) {
     .upsert({
       epf_number: epf,
       current_otp: otp,
+      otp_expires_at: new Date(Date.now() + SM_PORTAL_OTP_LIFETIME_MS).toISOString(),
       needs_pin_setup: true,
       is_active: true,
       updated_at: new Date().toISOString(),
@@ -91,20 +102,38 @@ export async function provisionSMPortalAccess(epfNumber: string) {
 export async function getActiveSectorManagers() {
   const admin = getAdminClient();
 
-  const { data: employees, error } = await admin
-    .from('employees')
-    .select('emp_number, full_name, site')
-    .eq('group', 'SECTOR_MANAGER')
-    .eq('status', 'ACTIVE')
-    .order('full_name', { ascending: true });
+  const [{ data: employees, error }, { data: authRecords }] = await Promise.all([
+    admin
+      .from('employees')
+      .select('emp_number, full_name, site')
+      .eq('group', 'SECTOR_MANAGER')
+      .eq('status', 'ACTIVE')
+      .order('full_name', { ascending: true }),
+    admin
+      .from('sm_portal_auth')
+      .select('epf_number, current_otp')
+      .eq('is_active', true)
+      .not('current_otp', 'is', null),
+  ]);
 
   if (error || !employees) return [];
 
-  return employees.map((e) => ({
-    epf_number: String(e.emp_number),
-    full_name: String(e.full_name ?? e.emp_number),
-    site: String(e.site ?? '—'),
-  }));
+  const pendingOtpByEpf = new Map(
+    (authRecords ?? []).map((row) => [
+      String(row.epf_number).toUpperCase().trim(),
+      String(row.current_otp),
+    ]),
+  );
+
+  return employees.map((e) => {
+    const epf = String(e.emp_number);
+    return {
+      epf_number: epf,
+      full_name: String(e.full_name ?? e.emp_number),
+      site: String(e.site ?? '—'),
+      pending_otp: pendingOtpByEpf.get(epf.toUpperCase().trim()) ?? null,
+    };
+  });
 }
 
 export async function deactivateSMAccess(epfNumber: string) {

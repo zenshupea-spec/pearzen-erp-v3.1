@@ -2,10 +2,11 @@
 
 import { revalidatePath } from 'next/cache';
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
+import { createSupabaseServiceClient } from '../../../../packages/supabase/service';
 
 /** Pending rows for the OM Integrity & Discrepancy queue (45-minute / overlap rule). */
 export async function getPendingDiscrepancies(companyId: string) {
-  const supabase = await createSupabaseServerClient();
+  const supabase = createSupabaseServiceClient();
 
   const { data, error } = await supabase
     .from('attendance_logs')
@@ -17,9 +18,9 @@ export async function getPendingDiscrepancies(companyId: string) {
       rostered_start,
       biometric_check_in,
       is_overlap_conflict,
-      employees ( first_name, last_name, rank_enum, basic_salary ),
+      employees ( full_name, rank, basic_salary ),
       site_profiles ( site_name )
-    `
+    `,
     )
     .eq('company_id', companyId)
     .eq('status', 'PENDING_RESOLUTION')
@@ -36,22 +37,25 @@ export async function getPendingDiscrepancies(companyId: string) {
 export async function resolveDiscrepancy(
   logId: string,
   resolutionType: 'TRUST_FORM' | 'TRUST_CHECK_IN',
-  adminId: string
+  adminId: string,
 ) {
-  const supabase = await createSupabaseServerClient();
+  const supabase = createSupabaseServiceClient();
+  const authClient = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await authClient.auth.getUser();
+  const actorEmail = user?.email ?? adminId;
 
   const { data: log, error: fetchError } = await supabase
     .from('attendance_logs')
-    .select('rostered_start, biometric_check_in, guard_id')
+    .select('rostered_start, biometric_check_in, guard_id, company_id')
     .eq('id', logId)
     .single();
 
   if (fetchError || !log) throw new Error('Log not found');
 
   const finalTime =
-    resolutionType === 'TRUST_FORM'
-      ? log.rostered_start
-      : log.biometric_check_in;
+    resolutionType === 'TRUST_FORM' ? log.rostered_start : log.biometric_check_in;
 
   const { error: updateError } = await supabase
     .from('attendance_logs')
@@ -66,11 +70,13 @@ export async function resolveDiscrepancy(
   if (updateError) throw new Error(updateError.message);
 
   await supabase.from('executive_audit_logs').insert({
+    company_id: log.company_id,
+    actor_email: actorEmail,
     action_type: 'TIME_DISCREPANCY_OVERRIDE',
-    admin_id: adminId,
-    target_guard_id: log.guard_id,
+    entity: 'ATTENDANCE_LOG',
     details: {
       summary: `Resolved conflict for Log ${logId}. Action: ${resolutionType}. Final Time: ${finalTime}`,
+      target_guard_id: log.guard_id,
     },
   });
 
@@ -81,7 +87,7 @@ export async function resolveDiscrepancy(
 
 /** Fetch the active recovery plan for a specific attendance log, if any. */
 export async function getActiveRecoveryPlan(attendanceLogId: string) {
-  const supabase = await createSupabaseServerClient();
+  const supabase = createSupabaseServiceClient();
 
   const { data, error } = await supabase
     .from('discrepancy_recovery_plans')
@@ -96,7 +102,7 @@ export async function getActiveRecoveryPlan(attendanceLogId: string) {
 
 /** Fetch all recovery plans for a log (history view). */
 export async function getRecoveryPlanHistory(attendanceLogId: string) {
-  const supabase = await createSupabaseServerClient();
+  const supabase = createSupabaseServiceClient();
 
   const { data, error } = await supabase
     .from('discrepancy_recovery_plans')
@@ -110,22 +116,29 @@ export async function getRecoveryPlanHistory(attendanceLogId: string) {
 
 /** Fetch all active employees for a company — used by guard selector in recovery plans. */
 export async function getCompanyEmployees(companyId: string) {
-  const supabase = await createSupabaseServerClient();
+  const supabase = createSupabaseServiceClient();
 
   const { data, error } = await supabase
     .from('employees')
-    .select('id, first_name, last_name, rank_enum, basic_salary')
+    .select('id, full_name, rank, basic_salary')
     .eq('company_id', companyId)
-    .order('first_name');
+    .eq('status', 'ACTIVE')
+    .order('full_name');
 
   if (error) throw new Error(error.message);
-  return (data ?? []) as {
-    id: string;
-    first_name: string;
-    last_name: string;
-    rank_enum: string;
-    basic_salary: number;
-  }[];
+
+  return (data ?? []).map((row) => {
+    const parts = String(row.full_name ?? '').trim().split(/\s+/);
+    const first_name = parts[0] ?? '';
+    const last_name = parts.slice(1).join(' ');
+    return {
+      id: row.id as string,
+      first_name,
+      last_name,
+      rank_enum: String(row.rank ?? 'JSO'),
+      basic_salary: Number(row.basic_salary ?? 0),
+    };
+  });
 }
 
 /**
@@ -135,11 +148,11 @@ export async function getCompanyEmployees(companyId: string) {
  * Falls back to Sri Lanka Wages Boards Ordinance defaults (26 days, 20%).
  */
 export async function getComplianceSettings(companyId: string) {
-  const supabase = await createSupabaseServerClient();
+  const supabase = createSupabaseServiceClient();
 
   const { data } = await supabase
     .from('md_settings')
-    .select('*')
+    .select('wb_working_days, max_deduction_pct, statutory_takehome_floor')
     .eq('company_id', companyId)
     .maybeSingle();
 
@@ -190,9 +203,8 @@ export async function saveRecoveryPlan({
   editorId: string;
   editorName: string;
 }) {
-  const supabase = await createSupabaseServerClient();
+  const supabase = createSupabaseServiceClient();
 
-  // Mark any existing ACTIVE plan for this log as SUPERSEDED
   await supabase
     .from('discrepancy_recovery_plans')
     .update({
@@ -204,26 +216,29 @@ export async function saveRecoveryPlan({
     .eq('attendance_log_id', attendanceLogId)
     .eq('status', 'ACTIVE');
 
-  // Insert the new active plan
-  const { error } = await supabase
-    .from('discrepancy_recovery_plans')
-    .insert({
-      attendance_log_id: attendanceLogId,
-      company_id: companyId,
-      guard_id: guardId,
-      deduction_method: deductionMethod,
-      recovery_amount_lkr: recoveryAmountLkr,
-      months_to_recover: monthsToRecover,
-      shifts_per_month: shiftsPerMonth ?? 1,
-      per_shift_value_lkr: perShiftValueLkr ?? 0,
-      guard_configs: guardConfigs ?? [],
-      notes: notes ?? null,
-      status: 'ACTIVE',
-      created_by: editorId,
-      created_by_name: editorName,
-    });
+  const { error } = await supabase.from('discrepancy_recovery_plans').insert({
+    attendance_log_id: attendanceLogId,
+    company_id: companyId,
+    guard_id: guardId,
+    deduction_method: deductionMethod,
+    recovery_amount_lkr: recoveryAmountLkr,
+    months_to_recover: monthsToRecover,
+    shifts_per_month: shiftsPerMonth ?? 1,
+    per_shift_value_lkr: perShiftValueLkr ?? 0,
+    guard_configs: guardConfigs ?? [],
+    notes: notes ?? null,
+    status: 'ACTIVE',
+    created_by: editorId,
+    created_by_name: editorName,
+  });
 
   if (error) throw new Error('Failed to save recovery plan: ' + error.message);
+
+  const authClient = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await authClient.auth.getUser();
+  const actorEmail = user?.email ?? editorId;
 
   const guardSummary =
     guardConfigs && guardConfigs.length > 1
@@ -231,11 +246,13 @@ export async function saveRecoveryPlan({
       : editorName;
 
   await supabase.from('executive_audit_logs').insert({
+    company_id: companyId,
+    actor_email: actorEmail,
     action_type: 'RECOVERY_PLAN_SAVED',
-    admin_id: editorId,
-    target_guard_id: guardId,
+    entity: 'DISCREPANCY_RECOVERY_PLAN',
     details: {
       summary: `Recovery plan saved for Log ${attendanceLogId}. Method: ${deductionMethod}. Amount: LKR ${recoveryAmountLkr}. Spread over ${monthsToRecover} month(s). Guards: ${guardSummary}.`,
+      target_guard_id: guardId,
     },
   });
 

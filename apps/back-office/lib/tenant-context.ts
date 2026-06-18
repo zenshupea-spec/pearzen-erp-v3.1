@@ -1,12 +1,6 @@
-import { cookies, headers } from "next/headers";
-
 import { createSupabaseServiceClient } from "../../../packages/supabase/service";
 
-import {
-  TENANT_SLUG_COOKIE,
-  TENANT_SLUG_HEADER,
-  normalizeTenantSlug,
-} from "./tenant-host";
+import { normalizeTenantSlug } from "./tenant-host";
 
 export type TenantCompany = {
   id: string;
@@ -14,15 +8,6 @@ export type TenantCompany = {
   slug: string;
   isSuspended: boolean;
 };
-
-export async function getTenantSlugFromRequest(): Promise<string | null> {
-  const hdrs = await headers();
-  const fromHeader = normalizeTenantSlug(hdrs.get(TENANT_SLUG_HEADER));
-  if (fromHeader) return fromHeader;
-
-  const cookieStore = await cookies();
-  return normalizeTenantSlug(cookieStore.get(TENANT_SLUG_COOKIE)?.value);
-}
 
 /** Service-role lookup — works on public login pages before auth. */
 export async function resolveTenantCompany(
@@ -48,8 +33,3 @@ export async function resolveTenantCompany(
   };
 }
 
-export async function resolveTenantCompanyFromRequest(): Promise<TenantCompany | null> {
-  const slug = await getTenantSlugFromRequest();
-  if (!slug) return null;
-  return resolveTenantCompany(slug);
-}

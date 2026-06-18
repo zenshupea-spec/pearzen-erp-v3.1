@@ -1,0 +1,2 @@
+-- Head office and café branch GPS are stored in md_settings.setting_value._internalWorkLocations
+-- (configured in MD Settings → Operations). Site Directory is client guard sites only.

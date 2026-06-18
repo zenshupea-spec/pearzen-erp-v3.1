@@ -59,3 +59,46 @@ export function calcApit(gross: number, slabs: ApitSlab[]): number {
   }
   return Math.round(tax);
 }
+
+export function formatApitSlabLabel(slab: ApitSlab): string {
+  if (slab.rate === 0) {
+    const cap = slab.max !== null ? ` up to LKR ${slab.max.toLocaleString('en-LK')}` : '';
+    return `Exempt${cap}`;
+  }
+  const from = (slab.min + 1).toLocaleString('en-LK');
+  const range =
+    slab.max !== null
+      ? `LKR ${from} – ${slab.max.toLocaleString('en-LK')}`
+      : `Above LKR ${slab.min.toLocaleString('en-LK')}`;
+  return `${range} @ ${slab.rate}%`;
+}
+
+/** Highest IRD slab reached by monthly gross (used to bucket APIT-paying staff). */
+export function getMarginalApitSlab(gross: number, slabs: ApitSlab[] = DEFAULT_APIT_SLABS): ApitSlab {
+  const sorted = [...slabs].sort((a, b) => a.min - b.min);
+  if (gross <= 0) return sorted[0] ?? DEFAULT_APIT_SLABS[0];
+  let marginal = sorted[0];
+  for (const slab of sorted) {
+    if (gross > slab.min) marginal = slab;
+  }
+  return marginal;
+}
+
+/** Per-slab APIT amounts for one employee (progressive breakdown). */
+export function calcApitBySlab(
+  gross: number,
+  slabs: ApitSlab[] = DEFAULT_APIT_SLABS,
+): { slab: ApitSlab; amount: number }[] {
+  if (gross <= 0) return [];
+  const sorted = [...slabs].sort((a, b) => a.min - b.min);
+  const result: { slab: ApitSlab; amount: number }[] = [];
+  for (const slab of sorted) {
+    if (gross <= slab.min) break;
+    const slabTop = slab.max !== null ? slab.max : Infinity;
+    const taxable = Math.min(gross, slabTop) - slab.min;
+    if (taxable > 0 && slab.rate > 0) {
+      result.push({ slab, amount: Math.round((taxable * slab.rate) / 100) });
+    }
+  }
+  return result;
+}

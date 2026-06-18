@@ -64,39 +64,34 @@ export function isHrDocumentType(value: string): value is HrDocumentType {
   return (HR_DOCUMENT_TYPES as readonly string[]).includes(value);
 }
 
-export async function uploadEmployeeHrDocumentFile(
+export async function uploadEmployeeHrDocumentBuffer(
   supabase: SupabaseClient,
   employeeId: string,
   docType: HrDocumentType,
-  file: File,
-): Promise<{ success: boolean; url?: string; error?: string }> {
+  args: {
+    buffer: Buffer;
+    contentType: string;
+    ext: string;
+    storedBytes: number;
+  },
+): Promise<{ success: boolean; url?: string; storedBytes?: number; error?: string }> {
   if (!employeeId?.trim()) {
     return { success: false, error: 'Employee id is required.' };
   }
-  if (!file || file.size === 0) {
+  if (!args.buffer?.length) {
     return { success: false, error: 'Choose a file to upload.' };
   }
-  if (file.size > MAX_HR_DOC_BYTES) {
-    return { success: false, error: 'File must be 5MB or smaller.' };
-  }
-
-  const mime = file.type || 'application/octet-stream';
-  const ext = extensionForMime(mime);
-  if (!ext) {
-    return {
-      success: false,
-      error: 'Use PDF, JPEG, PNG, or WebP.',
-    };
+  if (args.storedBytes > MAX_HR_DOC_BYTES) {
+    return { success: false, error: 'File must be 5MB or smaller after compression.' };
   }
 
   const meta = HR_DOCUMENT_META[docType];
-  const path = `${employeeId}/${docType}.${ext}`;
-  const buffer = Buffer.from(await file.arrayBuffer());
+  const path = `${employeeId}/${docType}.${args.ext}`;
 
   const { error: uploadError } = await supabase.storage
     .from(EMPLOYEE_HR_DOCS_BUCKET)
-    .upload(path, buffer, {
-      contentType: mime,
+    .upload(path, args.buffer, {
+      contentType: args.contentType,
       upsert: true,
     });
 
@@ -116,7 +111,41 @@ export async function uploadEmployeeHrDocumentFile(
     return { success: false, error: updateError.message };
   }
 
-  return { success: true, url: publicUrl };
+  return { success: true, url: publicUrl, storedBytes: args.storedBytes };
+}
+
+export async function uploadEmployeeHrDocumentFile(
+  supabase: SupabaseClient,
+  employeeId: string,
+  docType: HrDocumentType,
+  file: File,
+): Promise<{ success: boolean; url?: string; storedBytes?: number; error?: string }> {
+  if (!employeeId?.trim()) {
+    return { success: false, error: 'Employee id is required.' };
+  }
+  if (!file || file.size === 0) {
+    return { success: false, error: 'Choose a file to upload.' };
+  }
+  if (file.size > MAX_HR_DOC_BYTES) {
+    return { success: false, error: 'File must be 5MB or smaller.' };
+  }
+
+  const mime = file.type || 'application/octet-stream';
+  const ext = extensionForMime(mime);
+  if (!ext) {
+    return {
+      success: false,
+      error: 'Use PDF, JPEG, PNG, or WebP.',
+    };
+  }
+
+  const buffer = Buffer.from(await file.arrayBuffer());
+  return uploadEmployeeHrDocumentBuffer(supabase, employeeId, docType, {
+    buffer,
+    contentType: mime,
+    ext,
+    storedBytes: buffer.length,
+  });
 }
 
 export async function uploadEmployeeHrDocumentsFromForm(

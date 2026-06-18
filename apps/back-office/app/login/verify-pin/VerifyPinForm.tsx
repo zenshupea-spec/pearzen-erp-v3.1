@@ -1,12 +1,15 @@
 'use client';
 
-import { useState, useTransition } from 'react';
-import { Eye, EyeOff, Shield } from 'lucide-react';
+import { useCallback, useState, useTransition } from 'react';
+import { Eye, EyeOff, MapPin, Radio, Shield } from 'lucide-react';
 
 import BrandWatermarkBackground from '../../../components/portal/BrandWatermarkBackground';
+import { readDeviceGeolocationWithRetry } from '../../../lib/device-geolocation';
 import {
-  HO_PORTAL_PIN_LENGTH,
-} from '../../../lib/head-office-portal-auth';
+  HO_PORTAL_OTP_LENGTH,
+  HO_PORTAL_PASSWORD_HINT,
+  HO_PORTAL_PASSWORD_MIN_LENGTH,
+} from '../../../lib/head-office-portal-password';
 import { verifyHeadOfficePinAction } from './actions';
 
 export default function VerifyPinForm({
@@ -22,21 +25,43 @@ export default function VerifyPinForm({
 }) {
   const [isPending, startTransition] = useTransition();
   const [errorMsg, setErrorMsg] = useState(authError ?? '');
+  const [locationHint, setLocationHint] = useState<string | null>(null);
+  const [locating, setLocating] = useState(false);
   const [code, setCode] = useState('');
   const [showCode, setShowCode] = useState(false);
 
-  const handleSubmit = (event: React.FormEvent) => {
-    event.preventDefault();
-    setErrorMsg('');
-    if (code.length !== HO_PORTAL_PIN_LENGTH) {
-      setErrorMsg(`Enter all ${HO_PORTAL_PIN_LENGTH} digits.`);
-      return;
-    }
-    startTransition(async () => {
-      const result = await verifyHeadOfficePinAction(code);
-      if (result?.error) setErrorMsg(result.error);
-    });
-  };
+  const handleSubmit = useCallback(
+    (event: React.FormEvent) => {
+      event.preventDefault();
+      setErrorMsg('');
+      setLocationHint(null);
+
+      if (needsSetup && code.length !== HO_PORTAL_OTP_LENGTH) {
+        setErrorMsg(`Enter the ${HO_PORTAL_OTP_LENGTH}-digit OTP.`);
+        return;
+      }
+      if (!needsSetup && code.length < HO_PORTAL_PASSWORD_MIN_LENGTH) {
+        setErrorMsg(`Enter your ${HO_PORTAL_PASSWORD_MIN_LENGTH}+ character password.`);
+        return;
+      }
+
+      setLocating(true);
+      startTransition(async () => {
+        const geo = await readDeviceGeolocationWithRetry();
+        setLocating(false);
+
+        if (!geo.ok) {
+          setLocationHint(geo.error);
+          setErrorMsg('Could not verify your location.');
+          return;
+        }
+
+        const result = await verifyHeadOfficePinAction(code, geo.latitude, geo.longitude);
+        if (result?.error) setErrorMsg(result.error);
+      });
+    },
+    [code, needsSetup],
+  );
 
   const displayCompanyName = companyName?.trim() || 'Classic Venture Security';
 
@@ -65,7 +90,7 @@ export default function VerifyPinForm({
                 Pearzen ERP
               </h1>
               <p className="mt-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
-                {needsSetup ? 'Enter your one-time password' : 'Enter your portal PIN'}
+                {needsSetup ? 'Enter your one-time password' : 'Enter your portal password'}
               </p>
             </div>
           </div>
@@ -77,13 +102,21 @@ export default function VerifyPinForm({
             {errorMsg ? (
               <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-center text-xs font-bold text-rose-700">
                 {errorMsg}
+                {locationHint ? (
+                  <span className="mt-1 block font-medium">{locationHint}</span>
+                ) : null}
               </div>
             ) : null}
 
+            <div className="flex items-center justify-center gap-2 rounded-xl border border-sky-100 bg-sky-50/80 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-sky-800">
+              <MapPin className="h-3.5 w-3.5 shrink-0" />
+              GPS required — HQ geofence
+            </div>
+
             <p className="text-center text-xs text-slate-500">
               {needsSetup
-                ? 'Use the OTP from your Managing Director to continue, then choose your own PIN.'
-                : 'Enter the 6-digit PIN you set on first login.'}
+                ? 'Use the OTP from OD or MD to continue, then choose your permanent password.'
+                : HO_PORTAL_PASSWORD_HINT}
             </p>
 
             <div className="relative">
@@ -91,13 +124,17 @@ export default function VerifyPinForm({
                 type={showCode ? 'text' : 'password'}
                 value={code}
                 onChange={(e) =>
-                  setCode(e.target.value.replace(/\D/g, '').slice(0, HO_PORTAL_PIN_LENGTH))
+                  setCode(
+                    needsSetup
+                      ? e.target.value.replace(/\D/g, '').slice(0, HO_PORTAL_OTP_LENGTH)
+                      : e.target.value,
+                  )
                 }
-                inputMode="numeric"
-                maxLength={HO_PORTAL_PIN_LENGTH}
-                autoComplete="one-time-code"
-                placeholder={needsSetup ? '6-digit OTP' : '6-digit PIN'}
-                className="w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-4 py-4 pr-12 text-center font-mono text-2xl font-black tracking-[0.5em] text-slate-900 shadow-inner transition-all placeholder:text-base placeholder:tracking-normal placeholder:text-slate-400 focus:border-rose-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-rose-500/10"
+                inputMode={needsSetup ? 'numeric' : 'text'}
+                maxLength={needsSetup ? HO_PORTAL_OTP_LENGTH : 128}
+                autoComplete={needsSetup ? 'one-time-code' : 'current-password'}
+                placeholder={needsSetup ? '6-digit OTP' : 'Portal password'}
+                className="w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-4 py-4 pr-12 text-sm font-semibold text-slate-900 shadow-inner transition-all placeholder:text-slate-400 focus:border-rose-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-rose-500/10"
               />
               <button
                 type="button"
@@ -110,15 +147,30 @@ export default function VerifyPinForm({
 
             <button
               type="submit"
-              disabled={isPending || code.length !== HO_PORTAL_PIN_LENGTH}
-              className="w-full rounded-xl bg-slate-900 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-md shadow-slate-900/25 transition-all hover:bg-slate-800 active:scale-[0.98] disabled:opacity-50"
+              disabled={
+                isPending ||
+                locating ||
+                (needsSetup
+                  ? code.length !== HO_PORTAL_OTP_LENGTH
+                  : code.length < HO_PORTAL_PASSWORD_MIN_LENGTH)
+              }
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-md shadow-slate-900/25 transition-all hover:bg-slate-800 active:scale-[0.98] disabled:opacity-50"
             >
-              {isPending ? 'Verifying…' : 'Continue'}
+              {locating ? (
+                <>
+                  <Radio className="h-4 w-4 animate-pulse" />
+                  Locating…
+                </>
+              ) : isPending ? (
+                'Verifying…'
+              ) : (
+                'Continue'
+              )}
             </button>
           </form>
 
           <p className="text-center text-[10px] font-mono text-slate-400">
-            Forgot your PIN? Ask MD to issue a new OTP or reset access.
+            Forgot your password? Ask OD or MD to issue a new OTP or reset access.
           </p>
         </div>
       </main>

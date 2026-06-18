@@ -1,6 +1,5 @@
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import { redirect } from 'next/navigation';
-import { cookies } from 'next/headers';
 import Link from 'next/link';
 import {
   MapPin,
@@ -18,104 +17,83 @@ import DashboardStatsClient from './DashboardStatsClient';
 export const dynamic = 'force-dynamic';
 
 export default async function SMDashboard() {
-  const cookieStore = await cookies();
-  const isDemo = cookieStore.get('sm_demo_session')?.value === 'SM-001';
+  const supabase = await createSupabaseServerClient();
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) redirect('/login');
 
-  let epf: string;
-  let smName: string;
-  let smSite: string;
-  let todayVisits: number;
-  let openIncidents: number;
-  let sitesToVisit: number;
+  const epf = session.user.email?.split('@')[0].toUpperCase() ?? '';
 
-  if (isDemo) {
-    epf = 'SM-001';
-    smName = 'Demo Manager';
-    smSite = 'Demo Site';
-    todayVisits = 0;
-    openIncidents = 2;
-    sitesToVisit = 5;
-  } else {
-    const supabase = await createSupabaseServerClient();
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) redirect('/login');
+  const { data: authRecord } = await supabase
+    .from('sm_portal_auth')
+    .select('needs_pin_setup')
+    .eq('epf_number', epf)
+    .single();
 
-    epf = session.user.email?.split('@')[0].toUpperCase() ?? '';
+  if (authRecord?.needs_pin_setup) redirect('/set-pin');
 
-    const { data: authRecord } = await supabase
-      .from('sm_portal_auth')
-      .select('needs_pin_setup')
-      .eq('epf_number', epf)
-      .single();
+  const { data: sm } = await supabase
+    .from('employees')
+    .select('full_name, rank, site')
+    .eq('emp_number', epf)
+    .single();
 
-    if (authRecord?.needs_pin_setup) redirect('/set-pin');
+  const smName = sm?.full_name ?? epf;
+  const smSite = sm?.site ?? 'Unassigned';
 
-    const { data: sm } = await supabase
-      .from('employees')
-      .select('full_name, rank, site')
-      .eq('emp_number', epf)
-      .single();
+  const today = new Date().toISOString().split('T')[0];
+  const { count: visits } = await supabase
+    .from('sm_visit_logs')
+    .select('*', { count: 'exact', head: true })
+    .eq('sm_epf', epf)
+    .gte('created_at', `${today}T00:00:00`)
+    .eq('visit_type', 'VISIT');
 
-    smName = sm?.full_name ?? epf;
-    smSite = sm?.site ?? 'Unassigned';
+  const { data: ownIncidents } = await supabase
+    .from('sm_incident_reports')
+    .select('id, ack_sm, status')
+    .eq('sm_epf', epf);
 
-    const today = new Date().toISOString().split('T')[0];
-    const { count: visits } = await supabase
-      .from('sm_visit_logs')
-      .select('*', { count: 'exact', head: true })
-      .eq('sm_epf', epf)
-      .gte('created_at', `${today}T00:00:00`)
-      .eq('visit_type', 'VISIT');
+  const assignedSites = await fetchSmAssignedSites(epf);
+  const siteNamesForIncidents = assignedSites.map((site) => site.site_name);
 
-    const { data: ownIncidents } = await supabase
-      .from('sm_incident_reports')
-      .select('id, ack_sm, status')
-      .eq('sm_epf', epf);
+  const { data: siteIncidents } =
+    siteNamesForIncidents.length > 0
+      ? await supabase
+          .from('sm_incident_reports')
+          .select('id, ack_sm, status')
+          .in('site_name', siteNamesForIncidents)
+      : { data: [] };
 
-    const assignedSites = await fetchSmAssignedSites(epf);
-    const siteNamesForIncidents = assignedSites.map((site) => site.site_name);
+  const incidentIds = new Set<string>();
+  const incidentRows = [...(ownIncidents ?? []), ...(siteIncidents ?? [])].filter(
+    (row: { id: string; ack_sm?: boolean; status: string }) => {
+      if (incidentIds.has(row.id)) return false;
+      incidentIds.add(row.id);
+      return true;
+    },
+  );
 
-    const { data: siteIncidents } =
-      siteNamesForIncidents.length > 0
-        ? await supabase
-            .from('sm_incident_reports')
-            .select('id, ack_sm, status')
-            .in('site_name', siteNamesForIncidents)
-        : { data: [] };
+  const assignedSiteNames = assignedSites.map((site) => site.site_name);
 
-    const incidentIds = new Set<string>();
-    const incidentRows = [...(ownIncidents ?? []), ...(siteIncidents ?? [])].filter(
-      (row: { id: string; ack_sm?: boolean; status: string }) => {
-        if (incidentIds.has(row.id)) return false;
-        incidentIds.add(row.id);
-        return true;
-      },
-    );
+  const { data: visitedTodayData } = await supabase
+    .from('sm_visit_logs')
+    .select('site_name')
+    .eq('sm_epf', epf)
+    .eq('visit_type', 'VISIT')
+    .gte('created_at', `${today}T00:00:00`);
 
-    const assignedSiteNames = assignedSites.map((site) => site.site_name);
+  const visitedTodaySet = new Set((visitedTodayData ?? []).map((v: { site_name: string }) => v.site_name));
+  const remaining = assignedSiteNames.filter((s: string) => !visitedTodaySet.has(s));
 
-    const { data: visitedTodayData } = await supabase
-      .from('sm_visit_logs')
-      .select('site_name')
-      .eq('sm_epf', epf)
-      .eq('visit_type', 'VISIT')
-      .gte('created_at', `${today}T00:00:00`);
-
-    const visitedTodaySet = new Set((visitedTodayData ?? []).map((v: { site_name: string }) => v.site_name));
-    const remaining = assignedSiteNames.filter((s: string) => !visitedTodaySet.has(s));
-
-    todayVisits = visits ?? 0;
-    openIncidents = incidentRows.filter(
-      (row: { ack_sm?: boolean; status: string }) =>
-        row.ack_sm === false || (row.ack_sm === undefined && row.status === 'OPEN'),
-    ).length;
-    sitesToVisit = remaining.length;
-  }
+  const todayVisits = visits ?? 0;
+  const openIncidents = incidentRows.filter(
+    (row: { ack_sm?: boolean; status: string }) =>
+      row.ack_sm === false || (row.ack_sm === undefined && row.status === 'OPEN'),
+  ).length;
+  const sitesToVisit = remaining.length;
 
   async function handleLogout() {
     'use server';
-    const cookieJar = await cookies();
-    cookieJar.delete('sm_demo_session');
     const db = await createSupabaseServerClient();
     await db.auth.signOut();
     redirect('/login');

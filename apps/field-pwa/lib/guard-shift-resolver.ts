@@ -16,6 +16,7 @@ export type ResolvedGuardShift = {
   shiftId: string;
   source: 'time_rosters' | 'sm_guard_attendance';
   shiftDate: string;
+  shiftType: ShiftType;
   plannedStartTime: string;
   plannedEndTime: string;
   siteName: string;
@@ -211,28 +212,68 @@ function isNowWithinShiftWindow(
   return now >= start && now <= end;
 }
 
-export async function fetchSecurityShiftTiming(
-  supabase: SupabaseClient,
-): Promise<ShiftStartTimes> {
-  const { data } = await supabase
-    .from('md_settings')
-    .select('security_day_start, security_day_end, security_night_start, security_night_end')
-    .limit(1)
-    .maybeSingle();
+/** Infer DAY vs NIGHT by whichever md_settings start time is closest to the roster anchor. */
+export function inferShiftTypeFromStart(
+  plannedStartIso: string,
+  startTimes: ShiftStartTimes,
+): ShiftType {
+  const checkIn = new Date(plannedStartIso);
+  const shiftDate = plannedStartIso.slice(0, 10);
+  const dayStart = getShiftStartUTC(shiftDate, 'DAY', startTimes);
+  const nightStart = getShiftStartUTC(shiftDate, 'NIGHT', startTimes);
+  if (!dayStart || !nightStart) return 'DAY';
 
-  const row = data as {
-    security_day_start?: string | null;
-    security_day_end?: string | null;
-    security_night_start?: string | null;
-    security_night_end?: string | null;
-  } | null;
+  const toDay = Math.abs(checkIn.getTime() - dayStart.getTime());
+  const toNight = Math.abs(checkIn.getTime() - nightStart.getTime());
+  return toDay <= toNight ? 'DAY' : 'NIGHT';
+}
 
+export function applyMdSettingsShiftWindow(
+  shiftDate: string,
+  shiftType: ShiftType,
+  startTimes: ShiftStartTimes,
+): { plannedStartTime: string; plannedEndTime: string } | null {
+  const start = getShiftStartUTC(shiftDate, shiftType, startTimes);
+  const end = getShiftEndUTC(shiftDate, shiftType, startTimes);
+  if (!start || !end) return null;
+  return {
+    plannedStartTime: start.toISOString(),
+    plannedEndTime: end.toISOString(),
+  };
+}
+
+function parseMdShiftRow(row: {
+  security_day_start?: string | null;
+  security_day_end?: string | null;
+  security_night_start?: string | null;
+  security_night_end?: string | null;
+} | null): ShiftStartTimes {
   return {
     DAY: row?.security_day_start ?? '07:00',
     NIGHT: row?.security_night_start ?? '19:00',
     dayEnd: row?.security_day_end ?? '19:00',
     nightEnd: row?.security_night_end ?? '07:00',
   };
+}
+
+export async function fetchSecurityShiftTiming(
+  supabase: SupabaseClient,
+  companyId?: string | null,
+): Promise<ShiftStartTimes> {
+  const select =
+    'security_day_start, security_day_end, security_night_start, security_night_end';
+
+  if (companyId) {
+    const { data } = await supabase
+      .from('md_settings')
+      .select(select)
+      .eq('company_id', companyId)
+      .maybeSingle();
+    if (data) return parseMdShiftRow(data);
+  }
+
+  const { data } = await supabase.from('md_settings').select(select).limit(1).maybeSingle();
+  return parseMdShiftRow(data);
 }
 
 async function fetchSiteProfileByName(
@@ -254,10 +295,41 @@ async function fetchSiteProfileByName(
   return parseSiteProfile(data as SiteProfileRow | null);
 }
 
+function buildResolvedShiftFromRosterRow(
+  shift: {
+    id: string;
+    shift_date: string;
+    planned_start_time: string;
+    site_profiles?: SiteProfileRow | SiteProfileRow[];
+  },
+  startTimes: ShiftStartTimes,
+): ResolvedGuardShift | null {
+  const siteInfo = parseSiteProfile(shift.site_profiles);
+  const shiftType = inferShiftTypeFromStart(shift.planned_start_time, startTimes);
+  const window = applyMdSettingsShiftWindow(shift.shift_date, shiftType, startTimes);
+  if (!window) return null;
+
+  return {
+    shiftId: shift.id,
+    source: 'time_rosters',
+    shiftDate: shift.shift_date,
+    shiftType,
+    plannedStartTime: window.plannedStartTime,
+    plannedEndTime: window.plannedEndTime,
+    siteName: siteInfo.siteName,
+    siteLat: siteInfo.siteLat,
+    siteLng: siteInfo.siteLng,
+    geofenceRadius: siteInfo.geofenceRadius,
+    verificationMode: siteInfo.verificationMode,
+    nfcTagId: siteInfo.nfcTagId,
+  };
+}
+
 async function resolveFromTimeRosters(
   supabase: SupabaseClient,
   employeeId: string,
   today: string,
+  startTimes: ShiftStartTimes,
 ): Promise<ResolvedGuardShift | null> {
   const { data: rows, error } = await supabase
     .from('time_rosters')
@@ -285,24 +357,7 @@ async function resolveFromTimeRosters(
 
   if (error || !rows?.length) return null;
 
-  const shift = rows[0];
-  const siteInfo = parseSiteProfile(
-    (shift as { site_profiles?: SiteProfileRow | SiteProfileRow[] }).site_profiles,
-  );
-
-  return {
-    shiftId: shift.id,
-    source: 'time_rosters',
-    shiftDate: shift.shift_date,
-    plannedStartTime: shift.planned_start_time,
-    plannedEndTime: shift.planned_end_time,
-    siteName: siteInfo.siteName,
-    siteLat: siteInfo.siteLat,
-    siteLng: siteInfo.siteLng,
-    geofenceRadius: siteInfo.geofenceRadius,
-    verificationMode: siteInfo.verificationMode,
-    nfcTagId: siteInfo.nfcTagId,
-  };
+  return buildResolvedShiftFromRosterRow(rows[0], startTimes);
 }
 
 type SmAttendanceRow = {
@@ -369,6 +424,7 @@ async function resolveFromSmGuardAttendance(
     shiftId: `sm:${row.id}`,
     source: 'sm_guard_attendance',
     shiftDate: row.shift_date,
+    shiftType,
     plannedStartTime: start.toISOString(),
     plannedEndTime: end.toISOString(),
     siteName: siteInfo.siteName !== 'UNKNOWN SITE' ? siteInfo.siteName : row.site_name,
@@ -380,6 +436,112 @@ async function resolveFromSmGuardAttendance(
   };
 }
 
+async function resolveFromSmGuardAttendanceAtTime(
+  supabase: SupabaseClient,
+  employee: GuardEmployeeRow,
+  anchorTime: Date,
+  startTimes: ShiftStartTimes,
+): Promise<ResolvedGuardShift | null> {
+  const epfKeys = guardEpfKeys(employee);
+  if (epfKeys.length === 0) return null;
+
+  const anchorDate = colomboTodayIso(anchorTime);
+  const dates = [anchorDate, addCalendarDays(anchorDate, -1)];
+
+  const { data: rows, error } = await supabase
+    .from('sm_guard_attendance')
+    .select('id, shift_date, shift_type, site_name')
+    .in('guard_epf', epfKeys)
+    .in('shift_date', dates)
+    .neq('status', 'CANCELLED');
+
+  if (error || !rows?.length) return null;
+
+  for (const row of rows as SmAttendanceRow[]) {
+    const shiftType = (row.shift_type === 'NIGHT' ? 'NIGHT' : 'DAY') as ShiftType;
+    const start = getShiftStartUTC(row.shift_date, shiftType, startTimes);
+    const end = getShiftEndUTC(row.shift_date, shiftType, startTimes);
+    if (!start || !end) continue;
+    if (anchorTime < start || anchorTime > end) continue;
+
+    const siteInfo = await fetchSiteProfileByName(
+      supabase,
+      row.site_name,
+      employee.company_id,
+    );
+
+    return {
+      shiftId: `sm:${row.id}`,
+      source: 'sm_guard_attendance',
+      shiftDate: row.shift_date,
+      shiftType,
+      plannedStartTime: start.toISOString(),
+      plannedEndTime: end.toISOString(),
+      siteName: siteInfo.siteName !== 'UNKNOWN SITE' ? siteInfo.siteName : row.site_name,
+      siteLat: siteInfo.siteLat,
+      siteLng: siteInfo.siteLng,
+      geofenceRadius: siteInfo.geofenceRadius,
+      verificationMode: siteInfo.verificationMode,
+      nfcTagId: siteInfo.nfcTagId,
+    };
+  }
+
+  return null;
+}
+
+/** Resolve the shift a guard was on when they checked in (handles night shifts past midnight). */
+export async function resolveShiftAtCheckInTime(
+  supabase: SupabaseClient,
+  employee: GuardEmployeeRow,
+  checkInTime: Date,
+): Promise<ResolvedGuardShift | null> {
+  const startTimes = await fetchSecurityShiftTiming(supabase, employee.company_id);
+  const shiftDate = colomboTodayIso(checkInTime);
+  const rosterDates = [shiftDate, addCalendarDays(shiftDate, -1)];
+
+  const { data: rosterRows } = await supabase
+    .from('time_rosters')
+    .select(`
+      id,
+      shift_date,
+      planned_start_time,
+      planned_end_time,
+      site_profiles (
+        site_name,
+        latitude,
+        longitude,
+        lat,
+        lng,
+        geofence_radius,
+        radius_meters,
+        verification_mode,
+        nfc_tag_id
+      )
+    `)
+    .eq('employee_id', employee.id)
+    .in('shift_date', rosterDates)
+    .eq('status', 'ACTIVE')
+    .order('shift_date', { ascending: false })
+    .order('planned_start_time', { ascending: true });
+
+  for (const row of rosterRows ?? []) {
+    const shiftType = inferShiftTypeFromStart(row.planned_start_time, startTimes);
+    const start = getShiftStartUTC(row.shift_date, shiftType, startTimes);
+    const end = getShiftEndUTC(row.shift_date, shiftType, startTimes);
+    if (!start || !end) continue;
+    if (checkInTime >= start && checkInTime <= end) {
+      return buildResolvedShiftFromRosterRow(row, startTimes);
+    }
+  }
+
+  return resolveFromSmGuardAttendanceAtTime(
+    supabase,
+    employee,
+    checkInTime,
+    startTimes,
+  );
+}
+
 export async function resolveActiveShiftForToday(
   supabase: SupabaseClient,
   rosterKey: string,
@@ -389,10 +551,8 @@ export async function resolveActiveShiftForToday(
   if (!employee) return null;
 
   const today = colomboTodayIso(now);
-  const rosterShift = await resolveFromTimeRosters(supabase, employee.id, today);
-  if (rosterShift) return { employee, shift: rosterShift };
+  const startTimes = await fetchSecurityShiftTiming(supabase, employee.company_id);
 
-  const startTimes = await fetchSecurityShiftTiming(supabase);
   const smShift = await resolveFromSmGuardAttendance(
     supabase,
     employee,
@@ -401,6 +561,9 @@ export async function resolveActiveShiftForToday(
     now,
   );
   if (smShift) return { employee, shift: smShift };
+
+  const rosterShift = await resolveFromTimeRosters(supabase, employee.id, today, startTimes);
+  if (rosterShift) return { employee, shift: rosterShift };
 
   return null;
 }
@@ -414,7 +577,7 @@ export async function resolveUpcomingShifts(
   if (!employee) return [];
 
   const today = colomboTodayIso();
-  const startTimes = await fetchSecurityShiftTiming(supabase);
+  const startTimes = await fetchSecurityShiftTiming(supabase, employee.company_id);
   const shifts: ResolvedGuardShift[] = [];
 
   const { data: rosterRows } = await supabase
@@ -447,12 +610,17 @@ export async function resolveUpcomingShifts(
     const siteInfo = parseSiteProfile(
       (shift as { site_profiles?: SiteProfileRow | SiteProfileRow[] }).site_profiles,
     );
+    const shiftType = inferShiftTypeFromStart(shift.planned_start_time, startTimes);
+    const window = applyMdSettingsShiftWindow(shift.shift_date, shiftType, startTimes);
+    if (!window) continue;
+
     shifts.push({
       shiftId: shift.id,
       source: 'time_rosters',
       shiftDate: shift.shift_date,
-      plannedStartTime: shift.planned_start_time,
-      plannedEndTime: shift.planned_end_time,
+      shiftType,
+      plannedStartTime: window.plannedStartTime,
+      plannedEndTime: window.plannedEndTime,
       siteName: siteInfo.siteName,
       siteLat: siteInfo.siteLat,
       siteLng: siteInfo.siteLng,
@@ -490,6 +658,7 @@ export async function resolveUpcomingShifts(
         shiftId: `sm:${row.id}`,
         source: 'sm_guard_attendance',
         shiftDate: row.shift_date,
+        shiftType,
         plannedStartTime: start.toISOString(),
         plannedEndTime: end.toISOString(),
         siteName: siteInfo.siteName !== 'UNKNOWN SITE' ? siteInfo.siteName : row.site_name,

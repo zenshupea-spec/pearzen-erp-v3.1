@@ -3,17 +3,19 @@
 import { revalidatePath } from 'next/cache';
 
 import { fetchMasterSiteDirectory } from '../../actions/site-directory-actions';
+import { loadInternalWorkLocationsForCompany } from '../../../lib/internal-work-locations';
+import { listCafeBranchOptions } from '../../../lib/cafe-front-checkin';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import { createSupabaseServiceClient } from '../../../../../packages/supabase/service';
 import {
   resolveCompanyIdForSession,
   rosterCompanyId,
-} from '../../../lib/company-context';
+} from '../../../lib/company-context-server';
 import {
   assertHrPortalEditor,
   fetchBackOfficeUserProfile,
   formatHrPortalEditorLabel,
-} from '../../../lib/hr-portal-access';
+} from '../../../lib/hr-portal-access-server';
 import { normalizeEpfNo } from '../../../lib/cafe-front-auth';
 import { loadCafeOpenHours } from '../../../lib/cafe-front-checkin';
 import {
@@ -175,9 +177,22 @@ async function fetchPendingCafeCheckinVerifications(
   });
 }
 
-async function fetchCafeBranchSites(): Promise<CafeBranchSite[]> {
-  const { sites } = await fetchMasterSiteDirectory();
+async function fetchCafeBranchSites(companyId: string | null): Promise<CafeBranchSite[]> {
+  if (!companyId) return [];
+  const db = createSupabaseServiceClient();
+  const settings = await loadInternalWorkLocationsForCompany(db, companyId);
+  const configured = listCafeBranchOptions(settings).map((site) => ({
+    id: site.id,
+    siteName: site.siteName,
+    clientName: site.clientName,
+    label: site.label,
+  }));
 
+  if (configured.length) {
+    return configured.sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  const { sites } = await fetchMasterSiteDirectory();
   return sites
     .filter((site) => site.siteKind === 'cafe_branch' && site.status === 'ACTIVE')
     .map((site) => ({
@@ -187,6 +202,38 @@ async function fetchCafeBranchSites(): Promise<CafeBranchSite[]> {
       label: formatCafeBranchLabel(site.siteName, site.clientName),
     }))
     .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+async function fetchStaffForCafeBranch(
+  branchId: string,
+  branchLabel: string,
+  companyId: string | null,
+): Promise<string[]> {
+  if (!companyId) return [];
+
+  const db = createSupabaseServiceClient();
+  const settings = await loadInternalWorkLocationsForCompany(db, companyId);
+  const isMdBranch = settings.cafe.some((loc) => loc.id === branchId);
+
+  if (isMdBranch) {
+    let query = db
+      .from('employees')
+      .select('emp_number, epf_no, epf_num')
+      .eq('status', 'ACTIVE')
+      .ilike('group', '%CAFE%')
+      .ilike('site', branchLabel.trim());
+    query = query.eq('company_id', companyId);
+    const { data, error } = await query;
+    if (error) {
+      console.error('[Cafe Roster] cafe employees fetch failed:', error.message);
+      return [];
+    }
+    return (data ?? [])
+      .map((row) => employeeDisplayEpf(row as EmployeeRow))
+      .filter((epf) => epf.length > 0);
+  }
+
+  return fetchSiteStaffEpfs(branchId, companyId);
 }
 
 async function fetchSiteStaffEpfs(siteProfileId: string, companyId: string | null): Promise<string[]> {
@@ -325,7 +372,7 @@ export async function getCafeRosterDeskData(input?: {
 }): Promise<CafeRosterDeskData> {
   const companyId = await resolveCompanyScope();
   const [sites, pendingCheckinVerifications] = await Promise.all([
-    fetchCafeBranchSites(),
+    fetchCafeBranchSites(companyId),
     fetchPendingCafeCheckinVerifications(companyId),
   ]);
   const { windowStart, days } = buildRollingWindow(input?.windowStart);
@@ -358,7 +405,12 @@ export async function getCafeRosterDeskData(input?: {
     };
   }
 
-  const staffEpfs = await fetchSiteStaffEpfs(selectedSiteId, companyId);
+  const selectedSite = sites.find((site) => site.id === selectedSiteId);
+  const staffEpfs = await fetchStaffForCafeBranch(
+    selectedSiteId,
+    selectedSite?.label ?? selectedSite?.siteName ?? '',
+    companyId,
+  );
   const staff = await fetchEmployeesForStaffEpfs(staffEpfs, companyId);
   const staffById = new Map(staff.map((member) => [member.id, member]));
   const employeeIds = staff.map((member) => member.id);

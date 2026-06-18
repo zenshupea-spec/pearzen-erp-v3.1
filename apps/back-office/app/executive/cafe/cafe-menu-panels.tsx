@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ChefHat,
@@ -19,6 +19,8 @@ import {
   Plus,
   Shield,
   Satellite,
+  Banknote,
+  CreditCard,
   ShoppingBag,
   Smartphone,
   Tag,
@@ -29,7 +31,6 @@ import {
   X,
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
-import BrandWatermarkBackground from '../../../components/portal/BrandWatermarkBackground';
 import {
   CUSTOMER_MENU_CLOUDFLARE_LINKS,
   CUSTOMER_MENU_SECURITY_RULES,
@@ -41,7 +42,8 @@ import {
   COVER_TEXT_SHADOW,
   DEFAULT_CAFE_COVER_TEXT_COLOR,
   DEFAULT_CAFE_COVER_THEME,
-  deriveCategoryPalette,
+  DEFAULT_CAFE_COVER_TINT_STRENGTH,
+  coverBandBackgroundStyle,
   extractCoverTheme,
   type CafeCoverTheme,
 } from './cafe-cover-theme';
@@ -65,6 +67,13 @@ import {
   type RecipeLine,
 } from './cafe-menu-sync';
 import { getMenuKitchenTrackKind, type KitchenTrackKind } from './prep-menu-sync';
+import {
+  CAFE_ORDER_INPUT_CLASS,
+  CAFE_ORDER_LABEL_CLASS,
+  CAFE_ORDER_TEXTAREA_CLASS,
+} from '../../../../../packages/cafe-customer-order/order-form-styles';
+import { useCafeCustomerPhoneLookup } from '../../../../../packages/cafe-customer-order/use-cafe-customer-phone';
+import { CafeOpenStatusBadge } from '../../../../../packages/cafe-open-hours/CafeOpenStatusBadge';
 
 type MenuItem = CafeMenuRecipeItem;
 
@@ -96,6 +105,55 @@ function KitchenTrackToggle({
         </button>
       ))}
     </div>
+  );
+}
+
+function BoundedNumberInput({
+  value,
+  min,
+  max,
+  fallback,
+  onCommit,
+  className,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  fallback: number;
+  onCommit: (next: number) => void;
+  className?: string;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  const editing = useRef(false);
+
+  useEffect(() => {
+    if (!editing.current) setDraft(String(value));
+  }, [value]);
+
+  const commit = () => {
+    editing.current = false;
+    const parsed = parseInt(draft, 10);
+    const next = Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
+    setDraft(String(next));
+    onCommit(next);
+  };
+
+  return (
+    <input
+      type="number"
+      min={min}
+      max={max}
+      value={draft}
+      onFocus={() => {
+        editing.current = true;
+      }}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') e.currentTarget.blur();
+      }}
+      className={className}
+    />
   );
 }
 
@@ -446,11 +504,16 @@ function ItemThumb({ item, size }: { item: MenuItem; size: 'sm' | 'lg' }) {
 }
 type FulfillmentChoice = 'dine-in' | 'takeout' | 'delivery';
 
+type CafePaymentMethod = 'card_online' | 'cash_at_counter';
+
+type ModalStep = 'choice' | 'payment' | 'details';
+
 type OrderConfirmation = {
   choice: FulfillmentChoice;
   name: string;
   phone: string;
   address?: string;
+  paymentMethod: CafePaymentMethod;
 };
 
 function useCoverTheme(coverUrl: string | null): CafeCoverTheme {
@@ -476,32 +539,24 @@ function useCoverTheme(coverUrl: string | null): CafeCoverTheme {
 function CoverBand({
   coverUrl,
   theme,
+  tintStrength = DEFAULT_CAFE_COVER_TINT_STRENGTH,
   children,
   className = '',
   imagePosition = 'center',
 }: {
   coverUrl: string | null;
   theme: CafeCoverTheme;
+  tintStrength?: number;
   children: React.ReactNode;
   className?: string;
   imagePosition?: 'top' | 'center' | 'bottom';
 }) {
-  const objectPositionClass =
-    imagePosition === 'top'
-      ? 'object-top'
-      : imagePosition === 'bottom'
-        ? 'object-bottom'
-        : 'object-center';
+  const coverBackground = coverBandBackgroundStyle(coverUrl, tintStrength, imagePosition);
 
   return (
     <div className={`relative overflow-hidden ${className}`}>
-      {coverUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={coverUrl}
-          alt=""
-          className={`absolute inset-0 h-full w-full object-cover ${objectPositionClass}`}
-        />
+      {coverBackground ? (
+        <div aria-hidden className="absolute inset-0" style={coverBackground} />
       ) : (
         <div
           className="absolute inset-0"
@@ -523,6 +578,10 @@ function CustomerMenuPreview({
   overheadPct,
   showItemImages = true,
   coverTextColor = DEFAULT_CAFE_COVER_TEXT_COLOR,
+  coverTintStrength = DEFAULT_CAFE_COVER_TINT_STRENGTH,
+  cafeName = 'Café Tasha',
+  cafeOpenStart = '07:00',
+  cafeOpenEnd = '19:00',
 }: {
   items: MenuItem[];
   categories: string[];
@@ -531,6 +590,10 @@ function CustomerMenuPreview({
   overheadPct: number;
   showItemImages?: boolean;
   coverTextColor?: string;
+  coverTintStrength?: number;
+  cafeName?: string;
+  cafeOpenStart?: string;
+  cafeOpenEnd?: string;
 }) {
   const theme = useCoverTheme(coverUrl);
   const bandTextStyle = {
@@ -539,10 +602,23 @@ function CustomerMenuPreview({
   };
   const [cart, setCart] = useState<Record<string, number>>({});
   const [showOrderModal, setShowOrderModal] = useState(false);
-  const [modalStep, setModalStep] = useState<'choice' | 'details'>('choice');
+  const [modalStep, setModalStep] = useState<ModalStep>('choice');
   const [pendingChoice, setPendingChoice] = useState<FulfillmentChoice | null>(null);
-  const [customerName, setCustomerName] = useState('');
-  const [customerPhone, setCustomerPhone] = useState('');
+  const [pendingPayment, setPendingPayment] = useState<CafePaymentMethod | null>(null);
+  const lookupCustomer = useCallback(async (phone: string) => {
+    const { lookupCafeCustomerByPhone } = await import('./actions');
+    return lookupCafeCustomerByPhone(phone);
+  }, []);
+  const {
+    customerPhone,
+    setCustomerPhone,
+    customerName,
+    setCustomerName,
+    discountPct,
+    lookupLoading,
+    resetCustomerFields,
+    applyDiscount,
+  } = useCafeCustomerPhoneLookup(lookupCustomer);
   const [deliveryAddress, setDeliveryAddress] = useState('');
   const [orderConfirmed, setOrderConfirmed] = useState<OrderConfirmation | null>(null);
 
@@ -595,8 +671,8 @@ function CustomerMenuPreview({
     setShowOrderModal(false);
     setModalStep('choice');
     setPendingChoice(null);
-    setCustomerName('');
-    setCustomerPhone('');
+    setPendingPayment(null);
+    resetCustomerFields();
     setDeliveryAddress('');
   };
 
@@ -609,11 +685,17 @@ function CustomerMenuPreview({
 
   const selectFulfillment = (choice: FulfillmentChoice) => {
     setPendingChoice(choice);
+    setPendingPayment(choice === 'delivery' ? 'card_online' : null);
+    setModalStep('payment');
+  };
+
+  const selectPayment = (method: CafePaymentMethod) => {
+    setPendingPayment(method);
     setModalStep('details');
   };
 
   const confirmOrderDetails = async () => {
-    if (!pendingChoice) return;
+    if (!pendingChoice || !pendingPayment) return;
     const name = customerName.trim();
     const phone = customerPhone.trim();
     const address = deliveryAddress.trim();
@@ -630,6 +712,11 @@ function CustomerMenuPreview({
       };
     });
 
+    const paymentMethod: CafePaymentMethod =
+      pendingChoice === 'delivery' ? 'card_online' : pendingPayment;
+
+    const orderTotal = applyDiscount(cartTotal);
+
     try {
       const { placeCafeCustomerOrder } = await import('./actions');
       await placeCafeCustomerOrder({
@@ -638,7 +725,8 @@ function CustomerMenuPreview({
         customerPhone: phone,
         deliveryAddress: pendingChoice === 'delivery' ? address : undefined,
         items: orderItems,
-        totalLkr: cartTotal,
+        totalLkr: orderTotal,
+        paymentMethod,
       });
     } catch {
       /* preview still confirms locally if RPC unavailable */
@@ -649,6 +737,7 @@ function CustomerMenuPreview({
       name,
       phone,
       address: pendingChoice === 'delivery' ? address : undefined,
+      paymentMethod,
     });
     resetOrderModal();
   };
@@ -670,16 +759,20 @@ function CustomerMenuPreview({
       style={{ borderColor: `${theme.primary}44` }}
     >
       {/* Header — cover band with centred logo */}
-      <CoverBand coverUrl={coverUrl} theme={theme} imagePosition="top" className="shrink-0 border-b border-white/20">
+      <CoverBand
+        coverUrl={coverUrl}
+        theme={theme}
+        tintStrength={coverTintStrength}
+        imagePosition="top"
+        className="shrink-0 border-b border-white/20"
+      >
         <div className="relative px-5 pb-5 pt-3">
           <div className="flex justify-end">
-            <span
-              className="flex items-center gap-1.5 rounded-full border border-white/40 bg-white/20 px-2.5 py-1 text-[9px] font-black backdrop-blur-md"
-              style={bandTextStyle}
-            >
-              <span className="h-1.5 w-1.5 rounded-full bg-current opacity-90" />
-              Open now
-            </span>
+            <CafeOpenStatusBadge
+              openStart={cafeOpenStart}
+              openEnd={cafeOpenEnd}
+              coverTextColor={coverTextColor}
+            />
           </div>
           <div className="-mt-1 flex flex-col items-center text-center">
             <div
@@ -693,14 +786,14 @@ function CustomerMenuPreview({
               )}
             </div>
             <p
-              className="font-university-roman mt-3 text-xl font-black leading-none tracking-[0.12em]"
+              className="mt-3 text-2xl font-black tracking-wide"
               style={bandTextStyle}
             >
-              Our Menu
+              {cafeName}
             </p>
             {cartCount === 0 && !orderConfirmed ? (
               <p
-                className="mt-1.5 text-[11px] font-black leading-snug"
+                className="mt-1 text-sm font-medium leading-snug"
                 style={bandTextStyle}
               >
                 Tap + beside any item, then place your order
@@ -710,26 +803,13 @@ function CustomerMenuPreview({
         </div>
       </CoverBand>
 
-      {/* Menu body — logo watermark grid visible behind list */}
-      <div className="relative min-h-0 flex-1 overflow-y-auto">
-        <div
-          className="relative min-h-full"
-          style={{
-            background: `linear-gradient(180deg, ${theme.primarySoft}88 0%, #fdfbf7 18%, #fdfbf7 100%)`,
-          }}
-        >
-          <BrandWatermarkBackground
-            logoUrl={logoUrl}
-            mode="grid"
-            compact
-            opacity={logoUrl ? 0.26 : 0.08}
-            fadeStrength="light"
-            base="transparent"
-          />
+      {/* Menu body — plain background; cover stays in header only */}
+      <div className="relative min-h-0 flex-1 overflow-y-auto bg-[#fdfbf7]">
+        <div className="relative min-h-full">
           {grouped.length === 0 ? (
-            <p className="relative z-10 px-5 py-10 text-center text-xs text-stone-500">No menu items yet.</p>
+            <p className="px-5 py-10 text-center text-xs text-stone-500">No menu items yet.</p>
           ) : (
-            <div className="relative z-10 space-y-5 px-4 py-4 pb-6">
+            <div className="space-y-6 px-4 py-4 pb-6">
             {orderConfirmed ? (
               <div
                 className="rounded-xl border px-4 py-3 text-center backdrop-blur-[2px]"
@@ -750,80 +830,66 @@ function CustomerMenuPreview({
                 {orderConfirmed.address ? (
                   <p className="mt-1 text-[10px] text-stone-600">{orderConfirmed.address}</p>
                 ) : null}
+                <p className="mt-1 text-[10px]" style={{ color: theme.accentDark }}>
+                  {orderConfirmed.paymentMethod === 'cash_at_counter'
+                    ? `Pay LKR ${cartTotal.toLocaleString()} at the counter when you collect.`
+                    : 'Pay online by card to complete your order.'}
+                </p>
               </div>
             ) : null}
 
-            {grouped.map(({ cat, rows }, sectionIndex) => {
-              const palette = deriveCategoryPalette(theme, sectionIndex);
-              return (
-                <section key={cat} className="space-y-0.5">
-                  <div className="mb-2 flex flex-col items-center gap-1 px-1">
-                    <h4
-                      className="font-university-roman text-sm tracking-[0.14em]"
-                      style={{ color: palette.gradTo }}
-                    >
-                      {cat}
-                    </h4>
-                    <div
-                      className="h-px w-16"
-                      style={{ background: `linear-gradient(90deg, transparent, ${palette.gradFrom}, transparent)` }}
-                    />
-                  </div>
+            {grouped.map(({ cat, rows }) => (
+                <section key={cat}>
+                  <h4 className="mb-2 text-center text-sm font-black uppercase tracking-[0.2em] text-emerald-900">
+                    {cat}
+                  </h4>
 
-                  <ul className="divide-y divide-stone-200/70 rounded-xl border border-stone-200/50 bg-white/45 backdrop-blur-[1px]">
+                  <ul className="divide-y divide-stone-200 rounded-xl border border-stone-200 bg-white/80">
                     {rows.map((item) => {
                       const price = priceById.get(item.id) ?? 0;
                       const qty = cart[item.id] ?? 0;
                       return (
                         <li
                           key={item.id}
-                          className="flex items-center gap-2.5 px-3 py-2.5 transition-colors"
-                          style={qty > 0 ? { backgroundColor: `${theme.primarySoft}99` } : undefined}
+                          className="flex items-center gap-3 px-3 py-3 transition-colors"
+                          style={qty > 0 ? { backgroundColor: 'rgba(16,185,129,0.08)' } : undefined}
                         >
                           {showItemImages ? (
-                            <div
-                              className="relative h-10 w-10 shrink-0 overflow-hidden rounded-lg"
-                              style={{ background: `linear-gradient(145deg, ${palette.gradFrom}66, ${palette.gradTo}99)` }}
-                            >
+                            <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-emerald-100 text-lg">
                               {item.hasImage ? (
-                                <div className="flex h-full items-center justify-center">
-                                  <div className="h-5 w-5 rounded-md bg-white/45" />
-                                </div>
+                                <div className="h-6 w-6 rounded-md bg-emerald-200/80" />
                               ) : (
-                                <div className="flex h-full items-center justify-center">
-                                  <Tag className="h-3.5 w-3.5 text-white/75" strokeWidth={1.75} />
-                                </div>
+                                <Tag className="h-4 w-4 text-emerald-700" strokeWidth={1.75} />
                               )}
                             </div>
                           ) : null}
 
                           <div className="min-w-0 flex-1">
-                            <p className="truncate text-[12px] font-semibold leading-tight text-stone-800">
+                            <p className="truncate text-sm font-semibold leading-tight text-stone-800">
                               {item.name}
                             </p>
-                            <p className="text-[11px] font-medium tabular-nums" style={{ color: palette.gradTo }}>
+                            <p className="text-sm font-bold tabular-nums text-emerald-800">
                               LKR {price.toLocaleString()}
                             </p>
                           </div>
 
-                          <div className="flex shrink-0 items-center gap-0.5">
+                          <div className="flex shrink-0 items-center gap-1">
                             <button
                               type="button"
                               onClick={() => adjustQty(item.id, -1)}
                               disabled={qty === 0}
-                              className="flex h-7 w-7 items-center justify-center rounded-full text-stone-500 transition-all hover:bg-stone-100 disabled:opacity-20"
+                              className="flex h-8 w-8 items-center justify-center rounded-full text-stone-500 transition-all hover:bg-stone-100 disabled:opacity-30"
                               aria-label={`Remove one ${item.name}`}
                             >
                               <Minus className="h-3 w-3" />
                             </button>
-                            <span className="min-w-[1.25rem] text-center text-xs font-bold tabular-nums text-stone-700">
+                            <span className="min-w-[1.25rem] text-center text-sm font-bold tabular-nums text-stone-700">
                               {qty}
                             </span>
                             <button
                               type="button"
                               onClick={() => adjustQty(item.id, 1)}
-                              className="flex h-7 w-7 items-center justify-center rounded-full text-white shadow-sm transition-all hover:opacity-90"
-                              style={{ backgroundColor: theme.primary }}
+                              className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-700 text-white transition-all hover:bg-emerald-800"
                               aria-label={`Add one ${item.name}`}
                             >
                               <Plus className="h-3 w-3" strokeWidth={2.5} />
@@ -834,78 +900,44 @@ function CustomerMenuPreview({
                     })}
                   </ul>
                 </section>
-              );
-            })}
+              ))}
           </div>
         )}
         </div>
       </div>
 
-      {/* Order bar with cover band */}
-      <CoverBand
-        coverUrl={coverUrl}
-        theme={theme}
-        imagePosition="bottom"
-        className="relative z-10 shrink-0 border-t border-white/20"
-      >
-        <div className="flex items-center justify-between gap-3 px-4 py-3">
+      {/* Order bar — plain footer; cover stays in header only */}
+      <footer className="relative z-10 shrink-0 border-t border-stone-200 bg-white px-4 py-4">
+        <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <p
-              className="text-[10px] font-black uppercase tracking-[0.14em]"
-              style={bandTextStyle}
-            >
+            <p className="text-[10px] font-bold uppercase tracking-wider text-stone-500">
               Your order
             </p>
-            <p
-              className="mt-1 inline-flex rounded-xl border border-white/90 bg-white px-3 py-1.5 font-university-roman text-2xl font-black tabular-nums tracking-[0.06em] text-slate-900 shadow-[0_4px_16px_-4px_rgba(0,0,0,0.35)]"
-            >
+            <p className="text-2xl font-black tabular-nums text-stone-900">
               LKR {cartTotal.toLocaleString()}
             </p>
-            {cartCount > 0 ? (
-              <p
-                className="text-[11px] font-bold"
-                style={bandTextStyle}
-              >
-                {cartCount} item{cartCount === 1 ? '' : 's'} selected
-              </p>
-            ) : (
-              <p
-                className="text-[11px] font-bold"
-                style={bandTextStyle}
-              >
-                Add items from the menu above
-              </p>
-            )}
+            <p className="text-xs text-stone-500">
+              {cartCount > 0
+                ? `${cartCount} item${cartCount === 1 ? '' : 's'} selected`
+                : 'Add items above'}
+            </p>
           </div>
           <button
             type="button"
             onClick={handlePlaceOrder}
             disabled={cartCount === 0}
-            className="flex shrink-0 items-center gap-2 rounded-full border px-4 py-2.5 text-[10px] font-bold uppercase tracking-wider shadow-lg transition-all disabled:cursor-not-allowed disabled:border-stone-300 disabled:bg-stone-200 disabled:text-stone-400 disabled:shadow-none"
-            style={
-              cartCount > 0
-                ? {
-                    backgroundColor: '#ffffff',
-                    borderColor: 'rgba(255,255,255,0.9)',
-                    color: theme.primaryDark,
-                    boxShadow: '0 8px 24px -8px rgba(0,0,0,0.35)',
-                  }
-                : undefined
-            }
+            className="flex shrink-0 items-center gap-2 rounded-full bg-emerald-700 px-5 py-3 text-xs font-bold uppercase tracking-wider text-white shadow-md transition-all hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-stone-300 disabled:shadow-none"
           >
             <ShoppingBag className="h-3.5 w-3.5" />
-            Place Order
+            Place order
             {cartCount > 0 ? (
-              <span
-                className="flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1.5 text-[9px] text-white"
-                style={{ backgroundColor: theme.primary }}
-              >
+              <span className="flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-white/20 px-1.5 text-[9px]">
                 {cartCount}
               </span>
             ) : null}
           </button>
         </div>
-      </CoverBand>
+      </footer>
 
       {/* Order modal: fulfillment choice → customer details */}
       {showOrderModal ? (
@@ -935,12 +967,22 @@ function CustomerMenuPreview({
                 <X className="h-4 w-4" />
               </button>
               <p id="cafe-order-modal-title" className="pr-8 text-sm font-black text-slate-900">
-                {modalStep === 'choice' ? 'How would you like your order?' : 'Your contact details'}
+                {modalStep === 'choice'
+                  ? 'How would you like your order?'
+                  : modalStep === 'payment'
+                    ? 'How would you like to pay?'
+                    : 'Your contact details'}
               </p>
-              <p className="mt-1 text-[11px] text-slate-500">
+              <p className="mt-1 text-[11px] text-stone-600">
                 {modalStep === 'choice'
                   ? `Choose dine-in, takeout, or delivery for ${cartCount} item${cartCount === 1 ? '' : 's'}.`
-                  : `We need your name and phone${pendingChoice === 'delivery' ? ', plus delivery address' : ''}.`}
+                  : modalStep === 'payment'
+                    ? pendingChoice === 'delivery'
+                      ? `Delivery orders must be paid online · LKR ${cartTotal.toLocaleString()}`
+                      : `Pay at the counter or online · LKR ${cartTotal.toLocaleString()}`
+                    : `LKR ${cartTotal.toLocaleString()} · name and phone required${
+                        pendingChoice === 'delivery' ? ', plus delivery address' : ''
+                      }.`}
               </p>
             </div>
 
@@ -969,34 +1011,57 @@ function CustomerMenuPreview({
                   </button>
                 ))}
               </div>
+            ) : modalStep === 'payment' ? (
+              <div className="space-y-3 p-4">
+                {pendingChoice === 'delivery' ? (
+                  <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] text-amber-900">
+                    Delivery orders must be paid online before we dispatch your order.
+                  </p>
+                ) : null}
+                <div className={pendingChoice === 'delivery' ? 'grid grid-cols-1 gap-2' : 'grid grid-cols-2 gap-2'}>
+                  {pendingChoice !== 'delivery' ? (
+                    <button
+                      type="button"
+                      onClick={() => selectPayment('cash_at_counter')}
+                      className="rounded-xl border border-slate-200/80 bg-white px-3 py-4 text-center transition-all hover:shadow-md"
+                    >
+                      <Banknote className="mx-auto h-5 w-5 text-slate-600" strokeWidth={1.75} />
+                      <p className="mt-2 text-[10px] font-black uppercase text-slate-800">Cash</p>
+                      <p className="mt-1 text-[8px] text-slate-500">Pay at counter</p>
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => selectPayment('card_online')}
+                    className="rounded-xl border border-slate-200/80 bg-white px-3 py-4 text-center transition-all hover:shadow-md"
+                  >
+                    <CreditCard className="mx-auto h-5 w-5 text-slate-600" strokeWidth={1.75} />
+                    <p className="mt-2 text-[10px] font-black uppercase text-slate-800">Card</p>
+                    <p className="mt-1 text-[8px] text-slate-500">Pay online now</p>
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setModalStep('choice')}
+                  className="w-full rounded-xl border border-slate-200/80 px-3 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-600 hover:bg-slate-50"
+                >
+                  Back
+                </button>
+              </div>
             ) : (
               <div className="space-y-3 p-4">
-                {pendingChoice ? (
+                {pendingChoice && pendingPayment ? (
                   <p
-                    className="rounded-xl px-3 py-1.5 text-center text-[10px] font-bold uppercase tracking-wider"
+                    className="rounded-xl px-3 py-1.5 text-center text-xs font-bold uppercase tracking-wide"
                     style={{ backgroundColor: theme.primarySoft, color: theme.primaryDark }}
                   >
-                    {fulfillmentLabel(pendingChoice)}
+                    {fulfillmentLabel(pendingChoice)} ·{' '}
+                    {pendingPayment === 'cash_at_counter' ? 'pay at counter' : 'card payment'}
                   </p>
                 ) : null}
 
                 <label className="block">
-                  <span className="mb-1 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-slate-500">
-                    <User className="h-3 w-3" /> Your good name
-                  </span>
-                  <input
-                    type="text"
-                    value={customerName}
-                    onChange={(e) => setCustomerName(e.target.value)}
-                    placeholder="e.g. Sam"
-                    className="w-full rounded-xl border border-slate-200/80 px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2"
-                    style={{ ['--tw-ring-color' as string]: `${theme.primary}55` }}
-                    autoFocus
-                  />
-                </label>
-
-                <label className="block">
-                  <span className="mb-1 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                  <span className={`${CAFE_ORDER_LABEL_CLASS} flex items-center gap-1.5`}>
                     <Phone className="h-3 w-3" /> Phone number
                   </span>
                   <input
@@ -1004,13 +1069,38 @@ function CustomerMenuPreview({
                     value={customerPhone}
                     onChange={(e) => setCustomerPhone(e.target.value)}
                     placeholder="e.g. 077 123 4567"
-                    className="w-full rounded-xl border border-slate-200/80 px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2"
+                    className={CAFE_ORDER_INPUT_CLASS}
+                    autoFocus
                   />
                 </label>
 
+                <label className="block">
+                  <span className={`${CAFE_ORDER_LABEL_CLASS} flex items-center gap-1.5`}>
+                    <User className="h-3 w-3" /> Your good name
+                    {lookupLoading ? (
+                      <span className="text-[9px] font-medium normal-case tracking-normal text-slate-400">
+                        looking up…
+                      </span>
+                    ) : null}
+                  </span>
+                  <input
+                    type="text"
+                    value={customerName}
+                    onChange={(e) => setCustomerName(e.target.value)}
+                    placeholder="e.g. Sam"
+                    className={CAFE_ORDER_INPUT_CLASS}
+                  />
+                </label>
+
+                {discountPct > 0 ? (
+                  <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[10px] font-bold text-emerald-900">
+                    Loyalty discount: {discountPct}% off · LKR {applyDiscount(cartTotal).toLocaleString()}
+                  </p>
+                ) : null}
+
                 {pendingChoice === 'delivery' ? (
                   <label className="block">
-                    <span className="mb-1 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                    <span className={`${CAFE_ORDER_LABEL_CLASS} flex items-center gap-1.5`}>
                       <Truck className="h-3 w-3" /> Delivery address
                     </span>
                     <textarea
@@ -1018,7 +1108,7 @@ function CustomerMenuPreview({
                       onChange={(e) => setDeliveryAddress(e.target.value)}
                       placeholder="Street, building, area…"
                       rows={3}
-                      className="w-full resize-none rounded-xl border border-slate-200/80 px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2"
+                      className={CAFE_ORDER_TEXTAREA_CLASS}
                     />
                   </label>
                 ) : null}
@@ -1026,7 +1116,7 @@ function CustomerMenuPreview({
                 <div className="flex gap-2 pt-1">
                   <button
                     type="button"
-                    onClick={() => setModalStep('choice')}
+                    onClick={() => setModalStep('payment')}
                     className="flex-1 rounded-xl border border-slate-200/80 px-3 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-600 hover:bg-slate-50"
                   >
                     Back
@@ -1034,11 +1124,11 @@ function CustomerMenuPreview({
                   <button
                     type="button"
                     onClick={confirmOrderDetails}
-                    disabled={!canConfirmDetails}
+                    disabled={!canConfirmDetails || !pendingPayment}
                     className="flex-1 rounded-xl px-3 py-2.5 text-[10px] font-black uppercase tracking-wider text-white shadow-md transition-all disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none"
-                    style={canConfirmDetails ? { backgroundColor: theme.accent } : undefined}
+                    style={canConfirmDetails && pendingPayment ? { backgroundColor: theme.accent } : undefined}
                   >
-                    Confirm Order
+                    {pendingPayment === 'cash_at_counter' ? 'Place order' : 'Pay by card'}
                   </button>
                 </div>
               </div>
@@ -1066,11 +1156,20 @@ export function MenuEngineeringDesk({
   setCafeCoverUrl,
   cafeCoverTextColor,
   setCafeCoverTextColor,
+  cafeCoverTintStrength,
+  setCafeCoverTintStrength,
   customerMenuUrl,
   setCustomerMenuUrl,
+  showItemImages,
+  setShowItemImages,
+  cafeName,
+  cafeOpenStart = '07:00',
+  cafeOpenEnd = '19:00',
   prepItems = [],
   displayItems = [],
   onKitchenTrackChange,
+  onCreateIngredientForRecipe,
+  saveState = 'idle',
 }: {
   items: MenuItem[];
   setItems: React.Dispatch<React.SetStateAction<MenuItem[]>>;
@@ -1086,11 +1185,20 @@ export function MenuEngineeringDesk({
   setCafeCoverUrl: React.Dispatch<React.SetStateAction<string | null>>;
   cafeCoverTextColor: string;
   setCafeCoverTextColor: React.Dispatch<React.SetStateAction<string>>;
+  cafeCoverTintStrength: number;
+  setCafeCoverTintStrength: React.Dispatch<React.SetStateAction<number>>;
   customerMenuUrl: string | null;
   setCustomerMenuUrl: React.Dispatch<React.SetStateAction<string | null>>;
+  showItemImages: boolean;
+  setShowItemImages: React.Dispatch<React.SetStateAction<boolean>>;
+  cafeName?: string;
+  cafeOpenStart?: string;
+  cafeOpenEnd?: string;
   prepItems?: Array<{ menuItemId: string }>;
   displayItems?: Array<{ menuItemId: string }>;
   onKitchenTrackChange?: (menuId: string, track: KitchenTrackKind) => void;
+  onCreateIngredientForRecipe?: (menuId: string, created: Ingredient) => void;
+  saveState?: 'idle' | 'saving' | 'saved' | 'error';
 }) {
   const [activeTab,  setActiveTab] = useState<'TABLE' | 'PREVIEW'>('TABLE');
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -1103,7 +1211,6 @@ export function MenuEngineeringDesk({
   const [newCatRow,   setNewCatRow]   = useState<string | null>(null);
   const [newCatInput, setNewCatInput] = useState('');
   const [menuUrlCopied, setMenuUrlCopied] = useState(false);
-  const [showItemImages, setShowItemImages] = useState(true);
 
   const liveMenuUrl = normalizeCustomerMenuUrl(customerMenuUrl);
   const liveMenuHost = customerMenuHost(customerMenuUrl);
@@ -1201,6 +1308,10 @@ export function MenuEngineeringDesk({
   };
 
   const createIngredientAndAddToRecipe = (menuId: string, created: Ingredient) => {
+    if (onCreateIngredientForRecipe) {
+      onCreateIngredientForRecipe(menuId, created);
+      return;
+    }
     const nextIngredients = ingredients.some((i) => i.id === created.id)
       ? ingredients
       : [...ingredients, created];
@@ -1265,6 +1376,22 @@ export function MenuEngineeringDesk({
 
   return (
     <ExecutiveGlassCard className="overflow-hidden">
+      {/* Always mounted — upload buttons on both tabs trigger these refs */}
+      <input
+        ref={logoInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => handleLogoFile(e.target.files?.[0])}
+      />
+      <input
+        ref={coverInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => handleCoverFile(e.target.files?.[0])}
+      />
+
       {/* ── Header ── */}
       <div className="border-b border-slate-200/80 bg-slate-50/80 px-5 py-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1283,7 +1410,23 @@ export function MenuEngineeringDesk({
           </div>
 
           {/* Sync button */}
-          <button
+          <div className="flex flex-wrap items-center gap-3">
+            {saveState === 'saving' ? (
+              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                Saving…
+              </span>
+            ) : null}
+            {saveState === 'saved' ? (
+              <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-700">
+                Saved
+              </span>
+            ) : null}
+            {saveState === 'error' ? (
+              <span className="text-[10px] font-bold uppercase tracking-widest text-rose-700">
+                Save failed
+              </span>
+            ) : null}
+            <button
             type="button"
             onClick={handleSync}
             className={`flex items-center gap-2 rounded-2xl border px-5 py-2.5 text-xs font-black uppercase tracking-widest shadow-md transition-all ${
@@ -1295,6 +1438,7 @@ export function MenuEngineeringDesk({
             <Satellite className={`h-3.5 w-3.5 ${synced ? '' : 'animate-pulse'}`} />
             {synced ? 'Synced to POS & Menu!' : 'Sync Prices to Live POS & Online Menu'}
           </button>
+          </div>
         </div>
 
         {/* Sub-tabs */}
@@ -1329,7 +1473,7 @@ export function MenuEngineeringDesk({
               <div className="min-w-0 flex-1">
                 <p className="text-[10px] font-black uppercase tracking-widest text-slate-700">Brand Configuration</p>
                 <p className="mt-0.5 text-[10px] text-slate-500">
-                  Upload a logo (background watermark) and a menu cover (header &amp; footer bands). Cover colours auto-theme the customer preview to match your photo.
+                  Upload a logo and a menu cover (header band only). The live preview matches the customer-facing menu typography and layout.
                 </p>
               </div>
 
@@ -1358,14 +1502,6 @@ export function MenuEngineeringDesk({
                   <Upload className="h-4 w-4 text-rose-600" />
                   <span className="text-xs font-black text-slate-700">+ Upload Café Logo</span>
                 </div>
-
-                <input
-                  ref={logoInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => handleLogoFile(e.target.files?.[0])}
-                />
 
                 {cafeLogoUrl && (
                   <button
@@ -1404,14 +1540,6 @@ export function MenuEngineeringDesk({
                   <ImageIcon className="h-4 w-4 text-emerald-600" />
                   <span className="text-xs font-black text-slate-700">+ Upload Menu Cover</span>
                 </div>
-
-                <input
-                  ref={coverInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => handleCoverFile(e.target.files?.[0])}
-                />
 
                 {cafeCoverUrl && (
                   <button
@@ -1622,18 +1750,12 @@ export function MenuEngineeringDesk({
                         <div className={metricCellCls}>
                           <div className={metricPrimaryCls}>
                             <div className="relative inline-flex h-9 w-[4.5rem] items-center">
-                              <input
-                                type="number"
+                              <BoundedNumberInput
+                                value={item.targetMargin}
                                 min={1}
                                 max={98}
-                                value={item.targetMargin}
-                                onChange={(e) =>
-                                  updateItem(
-                                    item.id,
-                                    'targetMargin',
-                                    Math.max(1, Math.min(98, parseInt(e.target.value) || 50)),
-                                  )
-                                }
+                                fallback={50}
+                                onCommit={(next) => updateItem(item.id, 'targetMargin', next)}
                                 className={`h-full w-full rounded-xl border bg-white/90 px-2 pr-5 text-center font-mono text-sm font-black tabular-nums shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400/40 ${
                                   isLowMargin
                                     ? 'border-amber-300/80 text-amber-800'
@@ -1820,6 +1942,23 @@ export function MenuEngineeringDesk({
             <div className="flex flex-wrap items-center gap-2">
               <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200/80 bg-white/70 px-3 py-1.5 text-[10px] font-bold text-slate-700">
                 <Palette className="h-3 w-3 shrink-0 text-slate-500" />
+                Cover tint
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={cafeCoverTintStrength}
+                  onChange={(e) => setCafeCoverTintStrength(Number(e.target.value))}
+                  className="h-2 w-24 cursor-pointer accent-slate-700"
+                  aria-label="Cover photo tint strength"
+                />
+                <span className="font-mono text-[9px] font-black uppercase tracking-wide text-slate-500">
+                  {cafeCoverTintStrength}%
+                </span>
+              </label>
+              <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200/80 bg-white/70 px-3 py-1.5 text-[10px] font-bold text-slate-700">
+                <Palette className="h-3 w-3 shrink-0 text-slate-500" />
                 Cover text colour
                 <input
                   type="color"
@@ -1832,18 +1971,31 @@ export function MenuEngineeringDesk({
                   {cafeCoverTextColor}
                 </span>
               </label>
-              <button
-                type="button"
-                onClick={() => setShowItemImages((v) => !v)}
-                className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-[10px] font-bold transition-colors ${
-                  showItemImages
-                    ? 'border-slate-200/80 bg-white/70 text-slate-700 hover:bg-slate-50'
-                    : 'border-slate-300/80 bg-slate-800 text-white hover:bg-slate-700'
-                }`}
-              >
-                <ImageIcon className="h-3 w-3" />
-                {showItemImages ? 'Hide item images' : 'Show item images'}
-              </button>
+              <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200/80 bg-white/70 px-3 py-1.5 text-[10px] font-bold text-slate-700">
+                <ImageIcon className="h-3 w-3 shrink-0 text-slate-500" />
+                Item images
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={showItemImages}
+                  aria-label="Show item images on customer menu"
+                  onClick={() => setShowItemImages((v) => !v)}
+                  className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full border-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-emerald-400/40 ${
+                    showItemImages
+                      ? 'border-emerald-400/80 bg-emerald-600'
+                      : 'border-slate-300/80 bg-slate-300'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform duration-200 ${
+                      showItemImages ? 'translate-x-[14px]' : 'translate-x-0.5'
+                    }`}
+                  />
+                </button>
+                <span className="font-mono text-[9px] font-black uppercase tracking-wide text-slate-500">
+                  {showItemImages ? 'On' : 'Off'}
+                </span>
+              </label>
               {!cafeLogoUrl ? (
                 <button
                   type="button"
@@ -1851,13 +2003,13 @@ export function MenuEngineeringDesk({
                   className="inline-flex items-center gap-1.5 rounded-xl border border-dashed border-rose-300/80 bg-rose-50/60 px-3 py-1.5 text-[10px] font-bold text-rose-800 hover:bg-rose-50"
                 >
                   <Upload className="h-3 w-3" />
-                  Upload logo for watermark grid
+                  Upload café logo
                 </button>
               ) : (
                 <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200/80 bg-emerald-50/80 px-3 py-1 text-[10px] font-semibold text-emerald-800">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={cafeLogoUrl} alt="" className="h-4 w-4 object-contain" />
-                  Logo grid active
+                  Logo uploaded
                 </span>
               )}
               {!cafeCoverUrl ? (
@@ -1876,6 +2028,7 @@ export function MenuEngineeringDesk({
           <div className="grid gap-6 lg:grid-cols-[minmax(0,384px)_minmax(0,1fr)] lg:items-start xl:gap-8">
             <div className="mx-auto w-full max-w-sm lg:sticky lg:top-6 lg:mx-0 lg:self-start">
               <CustomerMenuPreview
+                key={showItemImages ? 'menu-with-images' : 'menu-text-only'}
                 items={items}
                 categories={categories}
                 logoUrl={cafeLogoUrl}
@@ -1883,6 +2036,10 @@ export function MenuEngineeringDesk({
                 overheadPct={globalOverhead}
                 showItemImages={showItemImages}
                 coverTextColor={cafeCoverTextColor}
+                coverTintStrength={cafeCoverTintStrength}
+                cafeName={cafeName}
+                cafeOpenStart={cafeOpenStart}
+                cafeOpenEnd={cafeOpenEnd}
               />
             </div>
 

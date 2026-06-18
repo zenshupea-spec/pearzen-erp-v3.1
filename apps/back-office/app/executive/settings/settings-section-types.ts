@@ -3,7 +3,6 @@ export type SettingsSectionId =
   | 'statutory'
   | 'payGroup'
   | 'guardRetention'
-  | 'compliance'
   | 'guardFormulas'
   | 'cafeFormulas'
   | 'crossDeployment'
@@ -15,6 +14,7 @@ export type SettingsSectionId =
   | 'welfareFund'
   | 'fuelSurplus'
   | 'geofence'
+  | 'internalWorkLocations'
   | 'shiftTimes'
   | 'cafeOperatingWindow'
   | 'penaltyCatalog'
@@ -26,7 +26,6 @@ export const SETTINGS_SECTION_AUDIT_ACTIONS: Record<SettingsSectionId, string[]>
   statutory: ['UPDATE_INVOICE_SETTINGS', 'UPDATE_PAYROLL_STATUTORY_SETTINGS', 'UPDATE_SETTINGS'],
   payGroup: ['UPDATE_ENGINE_CONSTANTS'],
   guardRetention: ['UPDATE_ENGINE_CONSTANTS'],
-  compliance: ['UPDATE_COMPLIANCE_SETTINGS'],
   guardFormulas: ['UPDATE_PAY_FORMULAS'],
   cafeFormulas: ['UPDATE_PAY_FORMULAS', 'UPDATE_ENGINE_CONSTANTS'],
   crossDeployment: ['UPDATE_ENGINE_CONSTANTS'],
@@ -38,6 +37,7 @@ export const SETTINGS_SECTION_AUDIT_ACTIONS: Record<SettingsSectionId, string[]>
   welfareFund: ['UPDATE_WELFARE_FUND_SETTINGS'],
   fuelSurplus: ['UPDATE_ENGINE_CONSTANTS'],
   geofence: ['UPDATE_GEOFENCE_SETTINGS'],
+  internalWorkLocations: ['UPDATE_INTERNAL_WORK_LOCATIONS'],
   shiftTimes: ['UPDATE_SHIFT_SETTINGS'],
   cafeOperatingWindow: ['UPDATE_ENGINE_CONSTANTS'],
   penaltyCatalog: ['UPDATE_PENALTY_CATALOG'],

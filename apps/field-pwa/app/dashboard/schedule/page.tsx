@@ -8,6 +8,7 @@ import { redirect } from 'next/navigation';
 import { getUpcomingShifts } from '../../actions';
 import { resolveGuardSession } from '../../../lib/guard-auth';
 import { colomboTodayIso } from '../../../lib/guard-shift-resolver';
+import { formatColomboTime } from '../../../lib/shift-display';
 
 function formatShiftDate(isoDate: string) {
   return new Date(`${isoDate}T12:00:00`).toLocaleDateString('en-GB', {
@@ -18,10 +19,7 @@ function formatShiftDate(isoDate: string) {
 }
 
 function formatTimeRange(start: string, end: string) {
-  const opts: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' };
-  const s = new Date(start).toLocaleTimeString('en-GB', opts);
-  const e = new Date(end).toLocaleTimeString('en-GB', opts);
-  return `${s} – ${e}`;
+  return `${formatColomboTime(start)} – ${formatColomboTime(end)}`;
 }
 
 export default async function SchedulePage() {

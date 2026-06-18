@@ -3,7 +3,6 @@ import type { SupabaseClient, User } from "@supabase/supabase-js";
 import {
   canAccessPathViaPortalRbac,
   hasAnyPortalAccess,
-  isImmutableExecutiveRank,
   isLockedOmRank,
   isLockedTmRank,
   landingPathFromPortalRbac,
@@ -13,8 +12,10 @@ import { createSupabaseServiceClient } from "../../../packages/supabase/service"
 import { resolveCompanyIdForSession } from "./company-context";
 import { EXECUTIVE_DESK_PATH, HQ_HUB_PATH } from "./hq-hub";
 import { resolveEmployeePortalRbacRow } from "./portal-rbac-store";
+import { canAccessPathInStaffPortal } from "./portal-isolation";
 import {
   HR_PORTAL_EDITOR_ROLES,
+  isExecutiveRank,
   normalizePortalRole,
   PORTAL_RANKS,
 } from "./portal-role-utils";
@@ -68,7 +69,7 @@ export function authenticatedLandingPath(
   profile?: Pick<BackOfficeUserProfile, "portalRbac" | "rbacGated">,
 ): string {
   const normalized = normalizePortalRole(role);
-  if (!normalized) return "/login/head-office";
+  if (!normalized) return "/login";
   if (normalized === "MD" || normalized === "OD") return EXECUTIVE_DESK_PATH;
   if (normalized === "OM") return "/om";
   if (normalized === "TM") return "/tm";
@@ -76,31 +77,31 @@ export function authenticatedLandingPath(
   if (profile?.rbacGated) {
     return landingPathFromPortalRbac(profile.portalRbac ?? undefined) != null
       ? HQ_HUB_PATH
-      : "/login/head-office";
+      : "/login/hq";
   }
-  return portalPathForRole(normalized) ?? "/login/head-office";
+  if (normalized === "EA") return HQ_HUB_PATH;
+  return portalPathForRole(normalized) ?? "/login";
 }
 
 export function canAccessPathForProfile(
   pathname: string,
   profile: BackOfficeUserProfile,
+  search = "",
 ): boolean {
   if (!profile.role) return false;
-  if (isImmutableExecutiveRank(profile.role)) return true;
   if (profile.rbacGated) {
-    return canAccessPathViaPortalRbac(pathname, profile.portalRbac ?? undefined);
+    if (!canAccessPathViaPortalRbac(pathname, profile.portalRbac ?? undefined)) {
+      return false;
+    }
   }
-  const expected = portalPathForRole(profile.role);
-  if (!expected) return false;
-  return pathname === expected || pathname.startsWith(`${expected}/`);
+  return canAccessPathInStaffPortal(pathname, profile, search);
 }
 
-/** HR portal routes (MNR, onboarding, temp roster, etc.). */
+/** HR portal routes (MNR, onboarding, temp roster, etc.) — HQ Staff Portal only. */
 export function canAccessHrPortal(role: string | null | undefined): boolean {
   const normalized = normalizePortalRole(role);
   if (!normalized) return false;
-  if (normalized === "MD" || normalized === "OD") return true;
-  return normalized === "HR" || normalized === "FM" || normalized === "OM";
+  return normalized === "HR" || normalized === "FM" || normalized === "EA";
 }
 
 export function isHrPortalEditor(
@@ -117,7 +118,7 @@ export function assertHrPortalEditor(
   role: string | null | undefined,
 ): asserts role is HrPortalEditorRole {
   if (!isHrPortalEditor(role)) {
-    throw new Error("Only HR, MD, OD, or FM can perform this action.");
+    throw new Error("Only HR, MD, OD, FM, or EA can perform this action.");
   }
 }
 
@@ -170,7 +171,7 @@ export async function fetchEmployeePortalProfileByEmail(
       rank,
     });
 
-    if (isImmutableExecutiveRank(rank)) {
+    if (isExecutiveRank(rank)) {
       return {
         role: rank,
         full_name: typeof data.full_name === "string" ? data.full_name : null,
@@ -239,8 +240,9 @@ export async function fetchEmployeePortalProfileByEmail(
 export async function fetchBackOfficeUserProfile(
   supabase: SupabaseClient,
   user: User,
+  tenantSlug?: string | null,
 ): Promise<BackOfficeUserProfile> {
-  const companyId = await resolveCompanyIdForSession(supabase);
+  const companyId = await resolveCompanyIdForSession(supabase, tenantSlug);
 
   if (user.email) {
     const fromMnr = await fetchEmployeePortalProfileByEmail(user.email, companyId);

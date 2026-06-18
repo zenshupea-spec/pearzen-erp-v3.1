@@ -7,6 +7,12 @@ body {
   color: #0f172a; /* slate-900 */
 }
 
+/* Installed PWA: disable native overscroll so pull-to-refresh can own the gesture */
+html.pwa-pull-to-refresh,
+html.pwa-pull-to-refresh body {
+  overscroll-behavior-y: none;
+}
+
 /* Next.js dev portal: don't intercept clicks when the overlay is empty */
 nextjs-portal {
   pointer-events: none;

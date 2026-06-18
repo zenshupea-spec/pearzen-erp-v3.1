@@ -1,6 +1,16 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import {
+  DEFAULT_CAFE_OPEN_HOURS,
+  isWithinCafeOpenHours as sharedIsWithinCafeOpenHours,
+  normalizeCafeOpenTime,
+} from '../../../packages/cafe-open-hours';
+import {
+  findInternalWorkLocation,
+  loadInternalWorkLocationsForCompany,
+  type InternalWorkLocationsSettings,
+} from './internal-work-locations';
+import {
   loadSettingEnvelope,
   MD_SETTINGS_ENVELOPE_KEYS,
 } from '../../../packages/supabase/md-settings-envelope';
@@ -19,12 +29,7 @@ export type CafeOpenHours = {
   openEnd: string;
 };
 
-const DEFAULT_OPEN: CafeOpenHours = { openStart: '07:00', openEnd: '19:00' };
-
-function timeOrDefault(value: unknown, fallback: string): string {
-  const s = typeof value === 'string' ? value.trim() : '';
-  return /^\d{2}:\d{2}$/.test(s) ? s : fallback;
-}
+const DEFAULT_OPEN: CafeOpenHours = DEFAULT_CAFE_OPEN_HOURS;
 
 export async function loadCafeOpenHours(
   supabase: SupabaseClient,
@@ -36,8 +41,8 @@ export async function loadCafeOpenHours(
     | undefined;
 
   return {
-    openStart: timeOrDefault(engine?.cafeOpenStart, DEFAULT_OPEN.openStart),
-    openEnd: timeOrDefault(engine?.cafeOpenEnd, DEFAULT_OPEN.openEnd),
+    openStart: normalizeCafeOpenTime(engine?.cafeOpenStart, DEFAULT_OPEN.openStart),
+    openEnd: normalizeCafeOpenTime(engine?.cafeOpenEnd, DEFAULT_OPEN.openEnd),
   };
 }
 
@@ -46,17 +51,7 @@ export function isWithinCafeOpenHours(
   openEnd: string,
   date = new Date(),
 ): boolean {
-  const [sh, sm] = openStart.split(':').map(Number);
-  const [eh, em] = openEnd.split(':').map(Number);
-  const nowMins = date.getHours() * 60 + date.getMinutes();
-  const startMins = sh * 60 + sm;
-  const endMins = eh * 60 + em;
-
-  if (startMins <= endMins) {
-    return nowMins >= startMins && nowMins <= endMins;
-  }
-
-  return nowMins >= startMins || nowMins <= endMins;
+  return sharedIsWithinCafeOpenHours(openStart, openEnd, date);
 }
 
 function normalizeSiteName(value: string): string {
@@ -71,7 +66,21 @@ function siteMatchesCafe(siteName: string, hospitalityName: string): boolean {
   return name.includes('café') || name.includes('cafe') || name.includes('tasha');
 }
 
-export async function resolveCafeSiteGeofence(
+function mapInternalLocationToGeofence(loc: {
+  name: string;
+  latitude: number;
+  longitude: number;
+  geofenceRadiusM: number;
+}): CafeSiteGeofence {
+  return {
+    siteName: loc.name,
+    siteLat: loc.latitude,
+    siteLng: loc.longitude,
+    geofenceRadiusM: resolveGeofenceRadiusM(loc.geofenceRadiusM),
+  };
+}
+
+async function resolveLegacyCafeSiteGeofence(
   supabase: SupabaseClient,
   companyId: string,
 ): Promise<CafeSiteGeofence | null> {
@@ -112,6 +121,55 @@ export async function resolveCafeSiteGeofence(
   };
 }
 
+export async function resolveCafeSiteGeofence(
+  supabase: SupabaseClient,
+  companyId: string,
+  locationName?: string | null,
+): Promise<CafeSiteGeofence | null> {
+  const settings = await loadInternalWorkLocationsForCompany(companyId);
+
+  if (locationName?.trim()) {
+    const assigned = findInternalWorkLocation(settings, 'cafe', locationName);
+    if (assigned) return mapInternalLocationToGeofence(assigned);
+  }
+
+  const firstConfigured = settings.cafe.find(
+    (loc) => Number.isFinite(loc.latitude) && Number.isFinite(loc.longitude),
+  );
+  if (firstConfigured) return mapInternalLocationToGeofence(firstConfigured);
+
+  return resolveLegacyCafeSiteGeofence(supabase, companyId);
+}
+
+export async function resolveHeadOfficeSiteGeofence(
+  supabase: SupabaseClient,
+  companyId: string,
+  locationName?: string | null,
+): Promise<CafeSiteGeofence | null> {
+  const settings = await loadInternalWorkLocationsForCompany(companyId);
+
+  if (locationName?.trim()) {
+    const assigned = findInternalWorkLocation(settings, 'headOffice', locationName);
+    if (assigned) return mapInternalLocationToGeofence(assigned);
+  }
+
+  const firstConfigured = settings.headOffice.find(
+    (loc) => Number.isFinite(loc.latitude) && Number.isFinite(loc.longitude),
+  );
+  if (firstConfigured) return mapInternalLocationToGeofence(firstConfigured);
+
+  return null;
+}
+
+export function listCafeBranchOptions(settings: InternalWorkLocationsSettings) {
+  return settings.cafe.map((loc) => ({
+    id: loc.id,
+    label: loc.name,
+    siteName: loc.name,
+    clientName: '',
+  }));
+}
+
 export function validateCafeCheckinLocation(
   latitude: number,
   longitude: number,
@@ -120,7 +178,7 @@ export function validateCafeCheckinLocation(
   if (!site) {
     return {
       ok: false,
-      error: 'Café site GPS is not configured. Contact your manager.',
+      error: 'Café branch GPS is not configured. Contact your manager.',
     };
   }
 

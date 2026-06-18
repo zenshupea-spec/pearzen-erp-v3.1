@@ -3,7 +3,8 @@ import { createSupabaseServerClient } from '../../../../../packages/supabase/ser
 import {
   fetchWithRosterCompanyFallback,
   resolveCompanyIdForSession,
-} from '../../../lib/company-context';
+} from '../../../lib/company-context-server';
+import { getOmServiceDb } from '../../../lib/om-service-db';
 import { getLiveRosters } from '../../actions/time-engine';
 import OmCommandShell from '../components/OmCommandShell';
 import RosterGrid from './RosterGrid';
@@ -16,7 +17,7 @@ export const metadata = {
 };
 
 async function fetchRosterEmployees(companyId: string | null) {
-  const supabase = await createSupabaseServerClient();
+  const supabase = getOmServiceDb();
   let query = supabase
     .from('employees')
     .select('id, emp_number, full_name, company_id')
@@ -33,10 +34,11 @@ async function fetchRosterEmployees(companyId: string | null) {
 }
 
 async function fetchRosterSites(companyId: string | null) {
-  const supabase = await createSupabaseServerClient();
+  const supabase = getOmServiceDb();
   let query = supabase
     .from('site_profiles')
     .select('id, site_name')
+    .neq('site_status', 'ARCHIVED')
     .order('site_name', { ascending: true });
   if (companyId) query = query.eq('company_id', companyId);
   const { data, error } = await query;

@@ -1,6 +1,6 @@
 'use server';
 
-import { revalidatePath } from 'next/cache';
+import { revalidatePath, unstable_noStore as noStore } from 'next/cache';
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
 import { createSupabaseServiceClient } from '../../../../packages/supabase/service';
 import {
@@ -10,10 +10,15 @@ import {
 import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access-server';
 import { normalizePortalRole } from '../../lib/portal-role-utils';
 import {
-  guestNameFromOtaSummary,
+  countRawIcalEvents,
   isAllowedOtaIcalUrl,
+  isIcalCalendarDocument,
+  otaUidMatchesFeed,
   parseIcalEvents,
+  resolveOtaImport,
 } from './shalom/shalom-ical-import';
+import { appendIcalCancellation, pearzenIcalUid } from './shalom/shalom-ical-cancel';
+import { SHALOM_ICAL_EXPORT_CHANNELS } from './shalom/shalom-ical-export';
 
 export type ShalomChannel = 'AIRBNB' | 'BOOKING' | 'DIRECT' | 'BLOCKED' | 'AUTO_BLOCK';
 
@@ -32,6 +37,22 @@ export type ShalomBookingRecord = {
   enrichedContact?: string;
   otaIcalUid?: string;
   otaImported?: boolean;
+  /** Amount caretaker should collect; null = personnel use only */
+  caretakerCollectLkr?: number | null;
+};
+
+export type ShalomOtaFeedEvent = {
+  checkIn: string;
+  checkOut: string;
+  summary: string;
+  isBlock: boolean;
+};
+
+export type ShalomOtaFeedSummary = {
+  channel: 'AIRBNB' | 'BOOKING';
+  rawCount: number;
+  parsedCount: number;
+  events: ShalomOtaFeedEvent[];
 };
 
 export type ShalomPropertyRecord = {
@@ -91,6 +112,10 @@ function rowToBooking(row: Record<string, unknown>): ShalomBookingRecord {
     enrichedContact: row.enriched_contact ? String(row.enriched_contact) : undefined,
     otaIcalUid: row.ota_ical_uid ? String(row.ota_ical_uid) : undefined,
     otaImported: Boolean(row.ota_imported),
+    caretakerCollectLkr:
+      row.caretaker_collect_lkr != null && row.caretaker_collect_lkr !== ''
+        ? Number(row.caretaker_collect_lkr)
+        : null,
   };
 }
 
@@ -121,6 +146,7 @@ export async function fetchShalomProperties(): Promise<{
   tableReady: boolean;
   error?: string;
 }> {
+  noStore();
   try {
     const companyId = await resolveCompanyId();
     if (!companyId) return { properties: [], tableReady: false, error: 'No company context' };
@@ -377,6 +403,7 @@ export async function upsertShalomBooking(input: {
   notes?: string;
   enriched?: boolean;
   enrichedContact?: string;
+  caretakerCollectLkr?: number | null;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   try {
     await requireExecutiveRole();
@@ -398,6 +425,10 @@ export async function upsertShalomBooking(input: {
       notes: input.notes ?? '',
       enriched: Boolean(input.enriched),
       enriched_contact: input.enrichedContact ?? '',
+      caretaker_collect_lkr:
+        input.caretakerCollectLkr != null && input.caretakerCollectLkr > 0
+          ? input.caretakerCollectLkr
+          : null,
       updated_at: new Date().toISOString(),
     };
 
@@ -417,13 +448,64 @@ export async function upsertShalomBooking(input: {
   }
 }
 
-export async function deleteShalomBooking(id: string): Promise<{ success: boolean; error?: string }> {
+export async function deleteShalomBooking(id: string): Promise<{
+  success: boolean;
+  error?: string;
+  otaImported?: boolean;
+  pushedCancelToAirbnb?: boolean;
+}> {
   try {
     await requireExecutiveRole();
     const companyId = await resolveCompanyId();
     if (!companyId) return { success: false, error: 'No company context' };
 
     const db = createSupabaseServiceClient();
+    const { data: row, error: fetchError } = await db
+      .from('shalom_bookings')
+      .select('id, property_id, channel, check_in, check_out, ota_imported')
+      .eq('id', id)
+      .eq('company_id', companyId)
+      .maybeSingle();
+
+    if (fetchError) return { success: false, error: fetchError.message };
+    if (!row) return { success: false, error: 'Booking not found' };
+
+    const otaImported = Boolean(row.ota_imported);
+    const channel = String(row.channel ?? '');
+    const exportable =
+      (SHALOM_ICAL_EXPORT_CHANNELS as readonly string[]).includes(channel) && !otaImported;
+
+    let pushedCancelToAirbnb = false;
+    if (exportable) {
+      const propertyId = String(row.property_id);
+      const { data: property, error: propertyError } = await db
+        .from('shalom_properties')
+        .select('settings')
+        .eq('id', propertyId)
+        .eq('company_id', companyId)
+        .maybeSingle();
+
+      if (propertyError) return { success: false, error: propertyError.message };
+
+      const settings = appendIcalCancellation(
+        (property?.settings as Record<string, unknown> | undefined) ?? undefined,
+        {
+          uid: pearzenIcalUid(String(row.id)),
+          checkIn: String(row.check_in).slice(0, 10),
+          checkOut: String(row.check_out).slice(0, 10),
+        },
+      );
+
+      const { error: settingsError } = await db
+        .from('shalom_properties')
+        .update({ settings, updated_at: new Date().toISOString() })
+        .eq('id', propertyId)
+        .eq('company_id', companyId);
+
+      if (settingsError) return { success: false, error: settingsError.message };
+      pushedCancelToAirbnb = true;
+    }
+
     const { error } = await db
       .from('shalom_bookings')
       .delete()
@@ -432,7 +514,7 @@ export async function deleteShalomBooking(id: string): Promise<{ success: boolea
 
     if (error) return { success: false, error: error.message };
     revalidatePath(SHALOM_PATH);
-    return { success: true };
+    return { success: true, otaImported, pushedCancelToAirbnb };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : 'Delete failed' };
   }
@@ -465,7 +547,13 @@ async function fetchOtaIcalText(url: string): Promise<string> {
   }
 
   const response = await fetch(url, {
-    headers: { Accept: 'text/calendar,text/plain,*/*' },
+    headers: {
+      Accept: 'text/calendar,text/plain,*/*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      Referer: 'https://www.airbnb.com/',
+      'User-Agent':
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    },
     cache: 'no-store',
     signal: AbortSignal.timeout(20_000),
   });
@@ -488,21 +576,22 @@ export async function syncShalomPropertyFromOtas(propertyId: string): Promise<{
   imported: number;
   removed: number;
   errors: string[];
+  feeds?: ShalomOtaFeedSummary[];
   properties?: ShalomPropertyRecord[];
 }> {
+  noStore();
   try {
     await requireExecutiveRole();
-    const companyId = await resolveCompanyId();
-    if (!companyId) {
+    const sessionCompanyId = await resolveCompanyId();
+    if (!sessionCompanyId) {
       return { success: false, imported: 0, removed: 0, errors: ['No company context'] };
     }
 
     const db = createSupabaseServiceClient();
     const { data: property, error: propError } = await db
       .from('shalom_properties')
-      .select('id, airbnb_ical_url, booking_ical_url')
+      .select('id, company_id, airbnb_ical_url, booking_ical_url')
       .eq('id', propertyId)
-      .eq('company_id', companyId)
       .maybeSingle();
 
     if (propError || !property) {
@@ -511,6 +600,16 @@ export async function syncShalomPropertyFromOtas(propertyId: string): Promise<{
         imported: 0,
         removed: 0,
         errors: [propError?.message ?? 'Property not found'],
+      };
+    }
+
+    const companyId = String(property.company_id);
+    if (companyId !== sessionCompanyId) {
+      return {
+        success: false,
+        imported: 0,
+        removed: 0,
+        errors: ['Property not found for your company'],
       };
     }
 
@@ -532,28 +631,59 @@ export async function syncShalomPropertyFromOtas(propertyId: string): Promise<{
     let imported = 0;
     let removed = 0;
     const errors: string[] = [];
+    const feedSummaries: ShalomOtaFeedSummary[] = [];
+
+    const todayIso = new Date().toISOString().slice(0, 10);
 
     for (const feed of feeds) {
       try {
         const icsText = await fetchOtaIcalText(feed.url);
+        if (!isIcalCalendarDocument(icsText)) {
+          throw new Error('Response is not a valid iCal calendar');
+        }
+
+        const rawEventCount = countRawIcalEvents(icsText);
         const events = parseIcalEvents(icsText);
+        if (rawEventCount > 0 && events.length === 0) {
+          throw new Error(`Failed to parse ${rawEventCount} calendar event(s)`);
+        }
+
+        feedSummaries.push({
+          channel: feed.channel,
+          rawCount: rawEventCount,
+          parsedCount: events.length,
+          events: events.map((event) => {
+            const { isBlock } = resolveOtaImport(event.summary, feed.channel, event.nights);
+            return {
+              checkIn: event.checkIn,
+              checkOut: event.checkOut,
+              summary: event.summary,
+              isBlock,
+            };
+          }),
+        });
+
         const activeUids = new Set<string>();
 
         for (const event of events) {
           activeUids.add(event.uid);
-          const guestName = guestNameFromOtaSummary(event.summary, feed.channel);
+          const { isBlock, guestName } = resolveOtaImport(event.summary, feed.channel, event.nights);
           const row = {
             property_id: propertyId,
             company_id: companyId,
             guest_name: guestName,
-            channel: feed.channel,
+            channel: isBlock ? ('BLOCKED' as const) : feed.channel,
             check_in: event.checkIn,
             check_out: event.checkOut,
             nights: event.nights,
             rate_per_night: 0,
             total_revenue: 0,
             paid: false,
-            notes: 'Synced via OTA iCal — guest details not included in feed.',
+            notes: isBlock
+              ? `Synced via ${feed.channel} iCal — blocked / unavailable night.`
+              : feed.channel === 'BOOKING'
+                ? 'Synced via Booking.com iCal — occupied night (feed does not separate guest vs closed).'
+                : 'Synced via Airbnb iCal — guest stay (no guest name in feed).',
             enriched: false,
             enriched_contact: '',
             ota_ical_uid: event.uid,
@@ -575,7 +705,7 @@ export async function syncShalomPropertyFromOtas(propertyId: string): Promise<{
 
           if (existing) {
             const updatePayload: Record<string, unknown> = {
-              channel: feed.channel,
+              channel: row.channel,
               check_in: event.checkIn,
               check_out: event.checkOut,
               nights: event.nights,
@@ -613,10 +743,9 @@ export async function syncShalomPropertyFromOtas(propertyId: string): Promise<{
 
         const { data: staleRows, error: staleError } = await db
           .from('shalom_bookings')
-          .select('id, ota_ical_uid')
+          .select('id, ota_ical_uid, channel, check_in, check_out')
           .eq('property_id', propertyId)
           .eq('company_id', companyId)
-          .eq('channel', feed.channel)
           .eq('ota_imported', true);
 
         if (staleError && !isMissingOtaColumn(staleError)) {
@@ -625,7 +754,18 @@ export async function syncShalomPropertyFromOtas(propertyId: string): Promise<{
         }
 
         const staleIds = (staleRows ?? [])
-          .filter((row) => row.ota_ical_uid && !activeUids.has(String(row.ota_ical_uid)))
+          .filter((row) => {
+            const uid = String(row.ota_ical_uid ?? '');
+            if (!uid || activeUids.has(uid)) return false;
+            const checkIn = String(row.check_in ?? '').slice(0, 10);
+            // Airbnb / Booking.com drop past nights from export — keep anything that has started.
+            if (checkIn && checkIn <= todayIso) return false;
+            return (
+              row.channel === feed.channel ||
+              row.channel === 'BLOCKED' ||
+              otaUidMatchesFeed(uid, feed.channel)
+            );
+          })
           .map((row) => String(row.id));
 
         if (staleIds.length > 0) {
@@ -655,6 +795,7 @@ export async function syncShalomPropertyFromOtas(propertyId: string): Promise<{
       imported,
       removed,
       errors,
+      feeds: feedSummaries,
       properties: refreshed.properties,
     };
   } catch (err) {

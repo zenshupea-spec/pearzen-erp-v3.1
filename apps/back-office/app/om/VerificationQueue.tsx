@@ -246,8 +246,9 @@ export default function VerificationQueue({
               </div>
               <p className="text-sm font-bold text-slate-700">Queue is clear</p>
               <p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-slate-500">
-                Shifts with complete field photos and no holds appear here. Check the On hold tab
-                for missing selfies or timing exceptions.
+                Shifts ready for review appear here — including live check-ins and flagged auto
+                check-outs. Use the On hold tab for missing selfies or timing exceptions still
+                being resolved.
               </p>
             </div>
           )}

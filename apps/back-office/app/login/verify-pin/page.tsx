@@ -5,14 +5,14 @@ import { createSupabaseServerClient } from '../../../../../packages/supabase/ser
 import {
   getHeadOfficePortalAuthByEmail,
   hasValidOtpSetupSessionForUser,
-  hasValidPortalPinSessionForUser,
   requiresHeadOfficePortalPin,
+  resolveHeadOfficePortalEntryPath,
 } from '../../../lib/head-office-portal-auth';
 import {
   authenticatedLandingPath,
   fetchBackOfficeUserProfile,
-} from '../../../lib/hr-portal-access';
-import { resolveTenantCompanyFromRequest } from '../../../lib/tenant-context';
+} from '../../../lib/hr-portal-access-server';
+import { resolveTenantCompanyFromRequest } from '../../../lib/tenant-context-server';
 
 import VerifyPinForm from './VerifyPinForm';
 
@@ -43,11 +43,15 @@ export default async function VerifyPinPage({
     redirect(`/login/head-office?error=${error}`);
   }
 
-  if (
-    !authRecord.needs_pin_setup &&
-    (await hasValidPortalPinSessionForUser(profile.employeeId!, user.email))
-  ) {
-    redirect(authenticatedLandingPath(profile.role, profile));
+  if (!authRecord.needs_pin_setup) {
+    const entryPath = await resolveHeadOfficePortalEntryPath(
+      profile,
+      user.email,
+      user.last_sign_in_at,
+    );
+    if (entryPath !== '/login/verify-pin') {
+      redirect(entryPath);
+    }
   }
 
   const tenant = await resolveTenantCompanyFromRequest();

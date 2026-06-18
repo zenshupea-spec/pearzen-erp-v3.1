@@ -8,6 +8,7 @@ import {
   Coffee,
   Crosshair,
   FileText,
+  Globe,
   Layers,
   Scissors,
   ShieldAlert,
@@ -17,11 +18,16 @@ import {
 import {
   CAFE_FRONT_PORTAL_ROUTE,
   GUARD_FIELD_PORTAL_ROUTE,
+  SM_PORTAL_ROUTE,
   MASTER_HUB_PILLARS,
   type MasterHubModule,
   type MasterHubPillar,
 } from '../../lib/master-hub-pillars';
-import { cafeFrontPortalLoginUrl, guardPortalLoginUrl } from '../../app/login/portal-urls';
+import {
+  cafeFrontPortalLoginUrl,
+  guardPortalUrl,
+  smPortalLoginUrl,
+} from '../../app/login/portal-urls';
 import { canSeeMasterHubModule } from '../../lib/master-hub-access';
 import type { MasterHubBadges } from '../../lib/master-hub-actions';
 import { CAFE_HUB_ENTRY_PATH, EXECUTIVE_DESK_PATH } from '../../lib/hq-hub';
@@ -31,10 +37,9 @@ const MODULE_ICONS: Record<string, LucideIcon> = {
   '/executive/operations': Crosshair,
   '/om': Crosshair,
   '/tm': Layers,
-  '/hq/sm-proxy': Briefcase,
+  [SM_PORTAL_ROUTE]: Briefcase,
   [GUARD_FIELD_PORTAL_ROUTE]: ShieldAlert,
   [CAFE_FRONT_PORTAL_ROUTE]: Coffee,
-  '/hq/guard-proxy': ShieldAlert,
   '/fm': Calculator,
   '/hq/deductions': Scissors,
   '/invoice-desk': FileText,
@@ -42,6 +47,7 @@ const MODULE_ICONS: Record<string, LucideIcon> = {
   '/hr/vacancies': FileText,
   '/hr/onboarding': FileText,
   '/executive/cafe': Coffee,
+  '/security-website': Globe,
   '/hq/audit': BookOpen,
 };
 
@@ -62,7 +68,8 @@ function filterPillars(role: string, badges: MasterHubBadges): MasterHubPillar[]
 }
 
 function moduleHref(mod: MasterHubModule): string {
-  if (mod.route === GUARD_FIELD_PORTAL_ROUTE) return guardPortalLoginUrl();
+  if (mod.route === GUARD_FIELD_PORTAL_ROUTE) return guardPortalUrl();
+  if (mod.route === SM_PORTAL_ROUTE) return smPortalLoginUrl();
   if (mod.route === CAFE_FRONT_PORTAL_ROUTE) return cafeFrontPortalLoginUrl();
   if (mod.route === '/executive/cafe') return CAFE_HUB_ENTRY_PATH;
   return mod.route;

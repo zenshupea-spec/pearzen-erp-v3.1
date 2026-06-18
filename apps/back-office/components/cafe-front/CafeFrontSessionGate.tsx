@@ -9,6 +9,7 @@ import {
   getCafePrepAvgStats,
   type CafeFrontSession,
 } from '../../app/cafe-front/actions';
+import PortalLoadingScreen from '../../../../packages/pwa-shell/PortalLoadingScreen';
 
 function formatAvgPrep(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
@@ -67,9 +68,7 @@ export function CafeFrontSessionGate({
 
   if (loading) {
     return (
-      <div className="flex min-h-[50dvh] flex-1 items-center justify-center px-4 text-sm text-slate-500">
-        Loading café front office…
-      </div>
+      <PortalLoadingScreen accent="amber" fullscreen={false} className="min-h-[100dvh]" />
     );
   }
 

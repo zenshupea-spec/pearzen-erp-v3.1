@@ -1,8 +1,7 @@
 'use server'
 
-import { cookies } from 'next/headers';
+import { resolveSmSessionEpf } from '../../../../lib/sm-assignments';
 import { createSupabaseServiceClient } from '../../../../../../packages/supabase/server';
-import { redirect } from 'next/navigation';
 
 // ── Shift time helpers ────────────────────────────────────────────────────────
 
@@ -51,14 +50,7 @@ function getShiftStartUTC(
 // ── Auth helper ───────────────────────────────────────────────────────────────
 
 export async function resolveEpf(): Promise<string> {
-  const cookieStore = await cookies();
-  const demo = cookieStore.get('sm_demo_session')?.value;
-  if (demo) return demo.toUpperCase();
-
-  const supabase = createSupabaseServiceClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) redirect('/login');
-  return session.user.email?.split('@')[0].toUpperCase() ?? '';
+  return resolveSmSessionEpf();
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────

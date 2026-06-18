@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   Home,
   Airplay,
@@ -19,36 +19,28 @@ import {
   Calendar,
   Plus,
   RefreshCw,
-  Upload,
-  CloudUpload,
   Building2,
   Wifi,
-  Ban,
-  Brush,
   Check,
   Camera,
   Clock,
   ShieldCheck,
   Trash2,
   Settings2,
-  Link2,
-  Copy,
-  CopyCheck,
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
 import {
   deleteShalomProperty,
   fetchShalomProperties,
   syncShalomPropertyFromOtas,
-  upsertShalomBooking,
   upsertShalomProperty,
+  upsertShalomBooking,
   type ShalomPropertyRecord,
 } from '../shalom-actions';
-import { buildShalomIcalExportUrl } from './shalom-ical-url';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Channel = 'AIRBNB' | 'BOOKING' | 'DIRECT' | 'BLOCKED' | 'AUTO_BLOCK';
+type Channel = 'AIRBNB' | 'BOOKING' | 'BLOCKED';
 
 interface Booking {
   id: string;
@@ -61,10 +53,13 @@ interface Booking {
   totalRevenue: number;
   paid: boolean;
   notes?: string;
+  otaImported?: boolean;
   /** Set to true once an admin manually verifies and enriches iCal-imported data */
   enriched?: boolean;
   /** Admin-verified guest contact number (stored after enrichment) */
   enrichedContact?: string;
+  /** Amount caretaker should collect; undefined/null = personnel use only */
+  caretakerCollectLkr?: number | null;
 }
 
 interface Property {
@@ -94,6 +89,8 @@ interface PropSettings {
   cleanBufferEnabled: boolean;
   cleanBufferDays: number;
   defaultRate: number;
+  airbnbCommissionPct: number;
+  bookingCommissionPct: number;
   seasonalRates: SeasonalRate[];
 }
 
@@ -119,7 +116,7 @@ interface AuditRecord {
 
 const NAWALA_BOOKINGS: Booking[] = [
   { id: 'N001', guestName: 'Amelia Chen',     channel: 'AIRBNB',  checkIn: '2026-05-01', checkOut: '2026-05-05', nights: 4, ratePerNight: 8500, totalRevenue: 34000, paid: true  },
-  { id: 'N002', guestName: 'Ravi & Family',   channel: 'DIRECT',  checkIn: '2026-05-06', checkOut: '2026-05-10', nights: 4, ratePerNight: 7800, totalRevenue: 31200, paid: true  },
+  { id: 'N002', guestName: 'Ravi & Family',   channel: 'BOOKING', checkIn: '2026-05-06', checkOut: '2026-05-10', nights: 4, ratePerNight: 7800, totalRevenue: 31200, paid: true  },
   { id: 'N003', guestName: 'Thomas Müller',   channel: 'BOOKING', checkIn: '2026-05-12', checkOut: '2026-05-16', nights: 4, ratePerNight: 9200, totalRevenue: 36800, paid: true  },
   { id: 'N004', guestName: 'Priya Sharma',    channel: 'AIRBNB',  checkIn: '2026-05-17', checkOut: '2026-05-21', nights: 4, ratePerNight: 8500, totalRevenue: 34000, paid: false, notes: 'Balance LKR 17,000 due on check-in' },
   { id: 'N005', guestName: 'Blocked',         channel: 'BLOCKED', checkIn: '2026-05-21', checkOut: '2026-05-23', nights: 2, ratePerNight: 0,    totalRevenue: 0,     paid: true  },
@@ -129,7 +126,7 @@ const NAWALA_BOOKINGS: Booking[] = [
 
 const KANDY_BOOKINGS: Booking[] = [
   { id: 'K001', guestName: 'Sophie Laurent',  channel: 'AIRBNB',  checkIn: '2026-05-03', checkOut: '2026-05-07', nights: 4, ratePerNight: 6200, totalRevenue: 24800, paid: true  },
-  { id: 'K002', guestName: 'Dev Patel',        channel: 'DIRECT',  checkIn: '2026-05-09', checkOut: '2026-05-13', nights: 4, ratePerNight: 5800, totalRevenue: 23200, paid: true  },
+  { id: 'K002', guestName: 'Dev Patel',        channel: 'BOOKING', checkIn: '2026-05-09', checkOut: '2026-05-13', nights: 4, ratePerNight: 5800, totalRevenue: 23200, paid: true  },
   { id: 'K003', guestName: 'Blocked',          channel: 'BLOCKED', checkIn: '2026-05-13', checkOut: '2026-05-14', nights: 1, ratePerNight: 0,    totalRevenue: 0,     paid: true  },
   { id: 'K004', guestName: 'Yuki Tanaka',      channel: 'BOOKING', checkIn: '2026-05-18', checkOut: '2026-05-22', nights: 4, ratePerNight: 6800, totalRevenue: 27200, paid: false },
   { id: 'K005', guestName: 'Maria García',     channel: 'AIRBNB',  checkIn: '2026-05-25', checkOut: '2026-05-29', nights: 4, ratePerNight: 6200, totalRevenue: 24800, paid: false },
@@ -165,12 +162,16 @@ const PROPERTIES: Property[] = [
 // ─── Channel meta ─────────────────────────────────────────────────────────────
 
 const CHANNEL_META: Record<Channel, { label: string; bg: string; text: string; border: string; icon: React.ElementType }> = {
-  AIRBNB:     { label: 'Airbnb',      bg: 'bg-rose-100/90',    text: 'text-rose-900',    border: 'border-rose-200',    icon: Airplay   },
-  BOOKING:    { label: 'Booking.com', bg: 'bg-blue-100/90',    text: 'text-blue-900',    border: 'border-blue-200',    icon: Globe     },
-  DIRECT:     { label: 'Direct',      bg: 'bg-emerald-100/90', text: 'text-emerald-900', border: 'border-emerald-200', icon: User      },
-  BLOCKED:    { label: 'Blocked',     bg: 'bg-slate-100/90',   text: 'text-slate-500',   border: 'border-slate-200',   icon: Lock      },
-  AUTO_BLOCK: { label: 'Auto-Clean',  bg: 'bg-orange-100/90',  text: 'text-orange-700',  border: 'border-orange-200',  icon: Brush     },
+  AIRBNB:  { label: 'Airbnb',      bg: 'bg-rose-100/90',    text: 'text-rose-900',    border: 'border-rose-200',    icon: Airplay },
+  BOOKING: { label: 'Booking.com', bg: 'bg-blue-100/90',    text: 'text-blue-900',    border: 'border-blue-200',    icon: Globe   },
+  BLOCKED: { label: 'Blocked',     bg: 'bg-slate-100/90',   text: 'text-slate-500',   border: 'border-slate-200',   icon: Lock    },
 };
+
+function normalizeChannel(channel: string): Channel {
+  if (channel === 'AIRBNB' || channel === 'BOOKING' || channel === 'BLOCKED') return channel;
+  if (channel === 'DIRECT') return 'BOOKING';
+  return 'BLOCKED';
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -185,9 +186,78 @@ function dateKey(year: number, month: number, day: number) {
 }
 
 function addDays(dateStr: string, n: number): string {
-  const d = new Date(dateStr);
-  d.setDate(d.getDate() + n);
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
+}
+
+function nightsBetweenDates(checkIn: string, checkOut: string): number {
+  const start = new Date(`${checkIn}T00:00:00Z`).getTime();
+  const end = new Date(`${checkOut}T00:00:00Z`).getTime();
+  const diff = Math.round((end - start) / 86_400_000);
+  return diff > 0 ? diff : 0;
+}
+
+function nightsInMonth(checkIn: string, checkOut: string, monthStart: string, monthEndExclusive: string): number {
+  const start = checkIn < monthStart ? monthStart : checkIn;
+  const end = checkOut < monthEndExclusive ? checkOut : monthEndExclusive;
+  if (start >= end) return 0;
+  return nightsBetweenDates(start, end);
+}
+
+function monthRange(year: number, month: number) {
+  const prefix = `${year}-${String(month).padStart(2, '0')}`;
+  const nextMonth = month === 12 ? 1 : month + 1;
+  const nextYear = month === 12 ? year + 1 : year;
+  return {
+    monthStart: `${prefix}-01`,
+    monthEndExclusive: `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`,
+    daysInMonth: new Date(year, month, 0).getDate(),
+  };
+}
+
+function bookingOverlapsRange(
+  booking: Booking,
+  rangeStart: string,
+  rangeEndExclusive: string,
+): boolean {
+  return (
+    (booking.checkIn >= rangeStart && booking.checkIn < rangeEndExclusive) ||
+    (booking.checkOut > rangeStart && booking.checkOut <= rangeEndExclusive) ||
+    (booking.checkIn < rangeStart && booking.checkOut > rangeEndExclusive)
+  );
+}
+
+const ROLLING_WINDOW_DAYS = 30;
+
+function rolling30Range(): { rangeStart: string; rangeEndExclusive: string } {
+  const todayIso = new Date().toISOString().slice(0, 10);
+  return {
+    rangeStart: addDays(todayIso, -(ROLLING_WINDOW_DAYS - 1)),
+    rangeEndExclusive: addDays(todayIso, 1),
+  };
+}
+
+function isAvailabilityBlock(booking: Booking): boolean {
+  return (
+    normalizeChannel(booking.channel) === 'BLOCKED' ||
+    booking.guestName === 'Blocked' ||
+    /blocked \/ unavailable/i.test(booking.notes ?? '')
+  );
+}
+
+function isOtaReservation(booking: Booking): boolean {
+  return Boolean(booking.otaImported) && !isAvailabilityBlock(booking);
+}
+
+function calendarDayLabel(booking: Booking): string {
+  if (isAvailabilityBlock(booking)) return 'Block';
+  if (booking.otaImported && normalizeChannel(booking.channel) === 'BOOKING') return 'B.com';
+  if (isOtaReservation(booking)) return 'Reserved';
+  const first = booking.guestName.split(' ')[0] ?? '';
+  if (/^reserved\b/i.test(first) || first === 'Airbnb' || first === 'Booking.com') return 'Reserved';
+  if (/^occupied\b/i.test(first)) return 'B.com';
+  return first;
 }
 
 const DAY_NAMES    = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -217,8 +287,6 @@ function makePhotos(checkIn: string, count = 4): AuditPhoto[] {
   }));
 }
 
-// ─── Per-Property Default Settings ───────────────────────────────────────────
-
 function defaultPropSettings(propId: string): PropSettings {
   const nawalaRates: SeasonalRate[] = [
     { id: 'n-s1', name: 'December Peak',  startDate: '2026-12-15', endDate: '2027-01-05', ratePerNight: 14_000 },
@@ -232,7 +300,31 @@ function defaultPropSettings(propId: string): PropSettings {
     cleanBufferEnabled: true,
     cleanBufferDays: 1,
     defaultRate: propId === 'prop-nawala' ? 8_500 : propId === 'prop-kandy' ? 6_200 : 0,
+    airbnbCommissionPct: 3,
+    bookingCommissionPct: 15,
     seasonalRates: propId === 'prop-nawala' ? nawalaRates : propId === 'prop-kandy' ? kandyRates : [],
+  };
+}
+
+function settingsFromRecord(raw: Record<string, unknown> | undefined, propId: string): PropSettings {
+  const base = defaultPropSettings(propId);
+  if (!raw || typeof raw !== 'object') return base;
+
+  const seasonal = Array.isArray(raw.seasonalRates)
+    ? (raw.seasonalRates as SeasonalRate[])
+    : base.seasonalRates;
+
+  return {
+    cleanBufferEnabled:
+      typeof raw.cleanBufferEnabled === 'boolean' ? raw.cleanBufferEnabled : base.cleanBufferEnabled,
+    cleanBufferDays:
+      typeof raw.cleanBufferDays === 'number' ? raw.cleanBufferDays : base.cleanBufferDays,
+    defaultRate: typeof raw.defaultRate === 'number' ? raw.defaultRate : base.defaultRate,
+    airbnbCommissionPct:
+      typeof raw.airbnbCommissionPct === 'number' ? raw.airbnbCommissionPct : base.airbnbCommissionPct,
+    bookingCommissionPct:
+      typeof raw.bookingCommissionPct === 'number' ? raw.bookingCommissionPct : base.bookingCommissionPct,
+    seasonalRates: seasonal,
   };
 }
 
@@ -408,73 +500,6 @@ function PropertySelector({
   );
 }
 
-// ─── Outbound iCal link (ERP → Airbnb / Booking.com) ─────────────────────────
-
-function OutboundIcalLinkPanel({
-  propertyId,
-  compact,
-}: {
-  propertyId: string;
-  compact?: boolean;
-}) {
-  const [copied, setCopied] = useState(false);
-  const exportUrl = buildShalomIcalExportUrl(propertyId);
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(exportUrl).catch(() => {});
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2500);
-  };
-
-  return (
-    <ExecutiveGlassCard className={compact ? 'p-4' : 'p-5'}>
-      <div className={`flex items-center gap-2 ${compact ? 'mb-2' : 'mb-3'}`}>
-        <div className="flex h-7 w-7 items-center justify-center rounded-xl border border-sky-200/80 bg-sky-50/80">
-          <Link2 className="h-3.5 w-3.5 text-sky-600" />
-        </div>
-        <div>
-          <p className="text-[10px] font-black uppercase tracking-widest text-sky-800">
-            Paste into Airbnb
-          </p>
-          <p className="text-[9px] text-slate-500">
-            Outbound link — pushes ERP blocks to Airbnb
-          </p>
-        </div>
-      </div>
-
-      <div className="flex items-center gap-2">
-        <input
-          type="text"
-          readOnly
-          value={exportUrl}
-          className="w-full rounded-xl border border-sky-200/60 bg-white/90 py-2.5 pl-3 pr-3 text-[11px] font-mono text-slate-600 shadow-sm focus:outline-none select-all cursor-text"
-          onFocus={(e) => e.currentTarget.select()}
-        />
-        <button
-          type="button"
-          onClick={handleCopy}
-          className={`flex shrink-0 items-center gap-1.5 rounded-xl border px-4 py-2.5 text-[11px] font-black uppercase tracking-widest shadow-sm transition-all ${
-            copied
-              ? 'border-emerald-300/70 bg-emerald-100/80 text-emerald-800 shadow-emerald-200/60'
-              : 'border-sky-300/70 bg-sky-100/80 text-sky-800 hover:bg-sky-200/80 shadow-sky-200/60'
-          }`}
-        >
-          {copied
-            ? <><CopyCheck className="h-3.5 w-3.5" /> Copied!</>
-            : <><Copy     className="h-3.5 w-3.5" /> Copy</>
-          }
-        </button>
-      </div>
-
-      <p className="mt-2.5 text-[10px] leading-relaxed text-slate-500">
-        Paste into Airbnb&apos;s calendar import (&ldquo;Import calendar&rdquo;). Uses your live Pearzen URL
-        (not localhost). For Booking.com, import your <strong>Airbnb export</strong> iCal link here — Booking.com
-        typically rejects non-OTA calendar URLs.
-      </p>
-    </ExecutiveGlassCard>
-  );
-}
-
 // ─── Add Property Modal ───────────────────────────────────────────────────────
 
 const EMPTY_ADD_FORM = {
@@ -503,14 +528,11 @@ function AddPropertyModal({
   }) => void | Promise<void>;
 }) {
   const [form, setForm] = useState(EMPTY_ADD_FORM);
-  const [draftPropertyId, setDraftPropertyId] = useState('');
   const [saving, setSaving] = useState(false);
 
-  // Reset form and pre-assign export URL id each time the modal opens
   useEffect(() => {
     if (open) {
       setForm(EMPTY_ADD_FORM);
-      setDraftPropertyId(crypto.randomUUID());
       setSaving(false);
     }
   }, [open]);
@@ -528,7 +550,7 @@ function AddPropertyModal({
     setSaving(true);
     try {
       await onConnect({
-        id: draftPropertyId,
+        id: crypto.randomUUID(),
         name: form.name.trim(),
         location: form.location.trim() || 'Unknown location',
         bedrooms: Math.max(1, parseInt(form.bedrooms) || 2),
@@ -585,8 +607,6 @@ function AddPropertyModal({
                 </div>
               </div>
             </ExecutiveGlassCard>
-
-            {draftPropertyId ? <OutboundIcalLinkPanel propertyId={draftPropertyId} compact /> : null}
 
             <ExecutiveGlassCard className="p-4">
               <p className="mb-1 text-[10px] font-bold uppercase tracking-widest text-emerald-800">Import from OTAs</p>
@@ -745,14 +765,12 @@ function PropertyConfigModal({
           </div>
 
           <div className="space-y-5">
-            <OutboundIcalLinkPanel propertyId={property.id} />
-
             <ExecutiveGlassCard className="p-5">
               <p className="mb-1 text-[10px] font-black uppercase tracking-widest text-emerald-800">
-                Import from OTAs
+                OTA calendar links
               </p>
               <p className="mb-3 text-[9px] text-slate-500">
-                Paste each platform&apos;s export URL — Pearzen pulls reserved dates into the calendar below.
+                Paste each platform&apos;s export URL — Pearzen pulls bookings and blocked dates into the calendar.
               </p>
               <div className="space-y-3">
                 <div>
@@ -776,57 +794,6 @@ function PropertyConfigModal({
                   />
                 </div>
               </div>
-            </ExecutiveGlassCard>
-
-            {/* ── Deep Clean Buffer ── */}
-            <ExecutiveGlassCard className="p-5">
-              <div className="mb-3 flex items-center gap-2">
-                <div className="flex h-7 w-7 items-center justify-center rounded-xl border border-orange-200/80 bg-orange-50/80">
-                  <Brush className="h-3.5 w-3.5 text-orange-600" />
-                </div>
-                <p className="text-[10px] font-black uppercase tracking-widest text-orange-800">
-                  Deep Clean Buffer
-                </p>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-4">
-                {/* Enable/disable toggle */}
-                <button
-                  type="button"
-                  onClick={() => setDraft((prev) => ({ ...prev, cleanBufferEnabled: !prev.cleanBufferEnabled }))}
-                  className={`relative h-6 w-11 rounded-full border-2 transition-all ${
-                    draft.cleanBufferEnabled ? 'border-orange-500 bg-orange-500' : 'border-slate-300 bg-slate-200'
-                  }`}
-                >
-                  <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-all ${
-                    draft.cleanBufferEnabled ? 'left-[22px]' : 'left-0.5'
-                  }`} />
-                </button>
-                {/* Days input */}
-                <div className="flex items-center gap-2">
-                  <label className="text-xs font-bold text-orange-900">Auto-Block</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={7}
-                    value={draft.cleanBufferDays}
-                    onChange={(e) =>
-                      setDraft((prev) => ({
-                        ...prev,
-                        cleanBufferDays: Math.max(1, Math.min(7, parseInt(e.target.value) || 1)),
-                      }))
-                    }
-                    disabled={!draft.cleanBufferEnabled}
-                    className="w-14 rounded-xl border border-orange-200/80 bg-white/80 px-2 py-1.5 text-center text-sm font-black text-orange-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-orange-400/40 disabled:opacity-40 transition-all"
-                  />
-                  <span className="text-xs font-bold text-orange-800">
-                    day{draft.cleanBufferDays > 1 ? 's' : ''} post-checkout
-                  </span>
-                </div>
-              </div>
-              <p className="mt-2 text-[10px] text-slate-500">
-                Post-checkout dates are automatically blocked on all connected OTAs for deep cleaning. Saved per property.
-              </p>
             </ExecutiveGlassCard>
 
             {/* ── Dynamic Rate Engine ── */}
@@ -858,7 +825,7 @@ function PropertyConfigModal({
                   />
                 </div>
                 <p className="mt-1 text-[10px] text-slate-400">
-                  Base rate applied to all unbooked dates not covered by a seasonal override.
+                  Also editable on the Break-Even calculator below — shown to caretakers for guest collection.
                 </p>
               </div>
 
@@ -1032,64 +999,6 @@ function MonthSelectorBar({
   );
 }
 
-// ─── Manual Block Modal ───────────────────────────────────────────────────────
-
-function ManualBlockModal({
-  date,
-  onConfirm,
-  onClose,
-}: {
-  date: string | null;
-  onConfirm: (date: string, reason: string) => void;
-  onClose: () => void;
-}) {
-  const [reason, setReason] = useState('');
-  if (!date) return null;
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm" onClick={onClose}>
-      <div className="relative w-full max-w-xs overflow-hidden rounded-3xl border border-white/75 bg-[#eef2f6] shadow-[0_32px_80px_-16px_rgba(15,23,42,0.35)] backdrop-blur-2xl" onClick={(e) => e.stopPropagation()}>
-        <div aria-hidden className="pointer-events-none absolute -top-10 right-0 h-36 w-36 rounded-full bg-orange-300/15 blur-[56px]" />
-        <div className="relative p-6">
-          <div className="mb-4 flex items-start justify-between">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200/80 bg-slate-100/80">
-                <Ban className="h-5 w-5 text-slate-600" />
-              </div>
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Manual Block</p>
-                <h3 className="text-base font-black text-slate-900">{date}</h3>
-              </div>
-            </div>
-            <button type="button" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200/80 bg-white/70 text-slate-500 hover:text-slate-900 transition-colors"><X className="h-4 w-4" /></button>
-          </div>
-
-          <ExecutiveGlassCard className="p-4">
-            <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-600">Reason (optional)</label>
-            <input
-              type="text"
-              placeholder="e.g. Owner stay, maintenance..."
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              className="w-full rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-500/30 transition-all"
-            />
-          </ExecutiveGlassCard>
-
-          <p className="mt-3 text-[10px] text-slate-500">
-            Saved to Pearzen and included in your outbound iCal link for Airbnb.
-          </p>
-
-          <div className="mt-4 flex gap-3">
-            <button type="button" onClick={onClose} className="flex-1 rounded-xl border border-slate-200 bg-white/70 py-2.5 text-sm font-bold text-slate-700 hover:bg-white/90 transition-all">Cancel</button>
-            <button type="button" onClick={() => { onConfirm(date, reason); setReason(''); onClose(); }} className="flex-[2] rounded-xl bg-slate-800 py-2.5 text-sm font-bold text-white hover:bg-slate-700 transition-all">
-              Block This Date
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ─── Booking Detail Modal ─────────────────────────────────────────────────────
 
 function BookingModal({
@@ -1115,8 +1024,8 @@ function BookingModal({
 
   if (!booking) return null;
 
-  const cm             = CHANNEL_META[booking.channel];
-  const isGuest        = booking.channel !== 'BLOCKED' && booking.channel !== 'AUTO_BLOCK';
+  const cm             = CHANNEL_META[normalizeChannel(booking.channel)];
+  const isGuest        = !isAvailabilityBlock(booking);
   const audit          = isGuest ? BOOKING_AUDIT[booking.id] : undefined;
   const isVerified     = audit?.status === 'VERIFIED';
   const isWaiting      = audit?.status === 'WAITING';
@@ -1453,26 +1362,100 @@ function BookingModal({
 
 // ─── Break-Even Calculator ────────────────────────────────────────────────────
 
-function BreakEvenCalculator({ property }: { property: Property }) {
-  const [overhead,    setOverhead]    = useState(String(property.overhead));
+function BreakEvenCalculator({
+  property,
+  guestNightlyRate,
+  airbnbCommissionPct,
+  bookingCommissionPct,
+  realNetProfit,
+  netProfitMonthLabel,
+  onSave,
+  saving,
+}: {
+  property: Property;
+  guestNightlyRate: number;
+  airbnbCommissionPct: number;
+  bookingCommissionPct: number;
+  /** Actual net profit from caretaker collections minus monthly overhead */
+  realNetProfit: number | null;
+  netProfitMonthLabel: string;
+  onSave: (payload: {
+    defaultRate: number;
+    overhead: number;
+    occupancyTarget: number;
+    airbnbCommissionPct: number;
+    bookingCommissionPct: number;
+  }) => void | Promise<void>;
+  saving?: boolean;
+}) {
+  const [overhead, setOverhead] = useState(String(property.overhead));
   const [daysInMonth, setDaysInMonth] = useState('31');
-  const [occupancy,   setOccupancy]   = useState(String(property.occupancyTarget));
+  const [occupancy, setOccupancy] = useState(String(property.occupancyTarget));
+  const [guestRate, setGuestRate] = useState(String(guestNightlyRate || ''));
+  const [airbnbCommission, setAirbnbCommission] = useState(String(airbnbCommissionPct));
+  const [bookingCommission, setBookingCommission] = useState(String(bookingCommissionPct));
 
-  // Reset when property changes
   React.useEffect(() => {
     setOverhead(String(property.overhead));
     setOccupancy(String(property.occupancyTarget));
-  }, [property.id, property.overhead, property.occupancyTarget]);
+    setGuestRate(String(guestNightlyRate || ''));
+    setAirbnbCommission(String(airbnbCommissionPct));
+    setBookingCommission(String(bookingCommissionPct));
+  }, [
+    property.id,
+    property.overhead,
+    property.occupancyTarget,
+    guestNightlyRate,
+    airbnbCommissionPct,
+    bookingCommissionPct,
+  ]);
 
   const minRate = useMemo(() => {
-    const oh   = parseFloat(overhead)    || 0;
+    const oh = parseFloat(overhead) || 0;
     const days = parseFloat(daysInMonth) || 1;
-    const occ  = parseFloat(occupancy)   / 100 || 0.01;
+    const occ = parseFloat(occupancy) / 100 || 0.01;
     return Math.ceil(oh / (days * occ));
   }, [overhead, daysInMonth, occupancy]);
 
-  const inputCls = 'w-full rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 transition-all';
+  const guestRateNum = parseInt(guestRate, 10) || 0;
+  const airbnbPct = Math.max(0, Math.min(100, parseFloat(airbnbCommission) || 0));
+  const bookingPct = Math.max(0, Math.min(100, parseFloat(bookingCommission) || 0));
+  const worstCommissionPct = useMemo(() => {
+    const active: number[] = [];
+    if (property.otaChannels.includes('AIRBNB')) active.push(airbnbPct);
+    if (property.otaChannels.includes('BOOKING')) active.push(bookingPct);
+    return active.length > 0 ? Math.max(...active) : 0;
+  }, [property.otaChannels, airbnbPct, bookingPct]);
+
+  const netPerNightAfterCosts =
+    guestRateNum > 0 ? Math.round(guestRateNum * (1 - worstCommissionPct / 100)) : 0;
+  const belowFloor = guestRateNum > 0 && guestRateNum < minRate;
+  const breakEvenNights =
+    guestRateNum > 0
+      ? Math.ceil((parseFloat(overhead) || 0) / guestRateNum)
+      : null;
+  const netProfitAtTargetOccupancy = useMemo(() => {
+    if (guestRateNum <= 0) return null;
+    const days = parseFloat(daysInMonth) || 0;
+    const occ = parseFloat(occupancy) / 100 || 0;
+    const oh = parseFloat(overhead) || 0;
+    const soldNights = days * occ;
+    return Math.round(soldNights * netPerNightAfterCosts - oh);
+  }, [guestRateNum, daysInMonth, occupancy, overhead, netPerNightAfterCosts]);
+
+  const inputCls =
+    'w-full rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 transition-all';
   const labelCls = 'mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-600';
+
+  const handleSave = () => {
+    void onSave({
+      defaultRate: guestRateNum,
+      overhead: parseInt(overhead, 10) || 0,
+      occupancyTarget: Math.max(1, Math.min(100, parseInt(occupancy, 10) || property.occupancyTarget)),
+      airbnbCommissionPct: airbnbPct,
+      bookingCommissionPct: bookingPct,
+    });
+  };
 
   return (
     <ExecutiveGlassCard className="p-6">
@@ -1486,10 +1469,11 @@ function BreakEvenCalculator({ property }: { property: Property }) {
         </div>
       </div>
 
-      {/* Dynamic property context label */}
       <div className="mb-4 flex items-center gap-2 rounded-xl border border-indigo-200/70 bg-indigo-50/50 px-3 py-2 text-[10px] text-indigo-800">
         <Building2 className="h-3 w-3 flex-shrink-0" />
-        <span>Dynamically loaded from <strong>{property.name}</strong> — {property.location}. Changing the property selector above will reset these values.</span>
+        <span>
+          Pricing for <strong>{property.name}</strong> — {property.location}. Saved per property for caretaker collection.
+        </span>
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -1518,7 +1502,7 @@ function BreakEvenCalculator({ property }: { property: Property }) {
         <div className="flex-1">
           <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-800">Minimum Nightly Base Rate — {property.name}</p>
           <p className="mt-1 text-3xl font-black tabular-nums text-emerald-900">{lkr(minRate)}</p>
-          <p className="mt-1 text-[10px] text-emerald-700">Dynamic pricing algorithms are locked below this floor for this property.</p>
+          <p className="mt-1 text-[10px] text-emerald-700">Break-even floor from overhead and occupancy target.</p>
         </div>
         <div className="hidden flex-shrink-0 sm:block">
           <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-emerald-200/80 bg-white/70 shadow-sm">
@@ -1527,15 +1511,128 @@ function BreakEvenCalculator({ property }: { property: Property }) {
         </div>
       </div>
 
+      {/* Caretaker guest collection rate */}
+      <div className="mt-5 rounded-2xl border border-amber-200/80 bg-gradient-to-br from-amber-50/80 to-white/70 p-5">
+        <p className="text-[10px] font-black uppercase tracking-widest text-amber-900">Guest nightly rate — caretaker collection</p>
+        <p className="mt-1 text-[10px] text-amber-800">
+          Set the amount the caretaker should collect from the guest per night (cash or balance due at check-in).
+        </p>
+        <div className="mt-3 flex flex-wrap items-end gap-3">
+          <div className="min-w-[180px] flex-1">
+            <label className={labelCls}>Rate per night (LKR)</label>
+            <div className="relative">
+              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-mono text-slate-400">LKR</span>
+              <input
+                type="number"
+                min={0}
+                value={guestRate}
+                onChange={(e) => setGuestRate(e.target.value)}
+                placeholder="e.g. 8500"
+                className={`${inputCls} pl-10 text-lg font-black`}
+              />
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving || guestRateNum <= 0}
+            className="rounded-xl bg-amber-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-amber-600/20 transition-all hover:bg-amber-500 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+          >
+            {saving ? 'Saving…' : 'Save nightly rate'}
+          </button>
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div>
+            <label className={labelCls}>Airbnb commission %</label>
+            <div className="relative">
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step="0.1"
+                value={airbnbCommission}
+                onChange={(e) => setAirbnbCommission(e.target.value)}
+                className={`${inputCls} pr-8`}
+              />
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-mono text-slate-400">%</span>
+            </div>
+          </div>
+          <div>
+            <label className={labelCls}>Booking.com commission %</label>
+            <div className="relative">
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step="0.1"
+                value={bookingCommission}
+                onChange={(e) => setBookingCommission(e.target.value)}
+                className={`${inputCls} pr-8`}
+              />
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-mono text-slate-400">%</span>
+            </div>
+          </div>
+        </div>
+
+        {guestRateNum > 0 ? (
+          <div className="mt-4 rounded-xl border border-amber-300/70 bg-white/80 px-4 py-3">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-amber-900">Caretaker instruction</p>
+            <p className="mt-1 text-2xl font-black tabular-nums text-amber-950">{lkr(guestRateNum)} <span className="text-base font-bold text-amber-800">per night</span></p>
+            <p className="mt-1 text-[11px] text-amber-800">
+              Collect from guest at {property.name} — multiply by number of nights for the stay total.
+            </p>
+            {worstCommissionPct > 0 ? (
+              <p className="mt-2 text-[10px] text-amber-800">
+                Net after OTA commission (up to {worstCommissionPct}%):{' '}
+                <span className="font-bold tabular-nums">{lkr(netPerNightAfterCosts)}/night</span>
+              </p>
+            ) : null}
+            {belowFloor ? (
+              <p className="mt-2 text-[10px] font-semibold text-rose-700">
+                Below break-even floor ({lkr(minRate)}/night) — may not cover monthly overhead at target occupancy.
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          <p className="mt-3 text-[10px] text-slate-500">Enter a nightly rate and save so caretakers see the collection amount.</p>
+        )}
+      </div>
+
       <div className="mt-4 grid grid-cols-3 gap-2">
         {[
-          { label: 'Booked Revenue', value: lkr(minRate * Math.floor(31 * (parseFloat(occupancy) / 100))), color: 'text-emerald-800' },
-          { label: 'Break-Even Nights', value: `${Math.ceil((parseFloat(overhead) || 0) / (minRate || 1))} nights`, color: 'text-slate-700' },
-          { label: 'Occupancy Buffer', value: `${Math.max(0, 100 - parseFloat(occupancy)).toFixed(0)}% margin`, color: 'text-slate-500' },
+          {
+            label: 'Net Profit @ Target Occ.',
+            value: netProfitAtTargetOccupancy != null ? lkr(netProfitAtTargetOccupancy) : 'Set guest rate',
+            color:
+              netProfitAtTargetOccupancy == null
+                ? 'text-slate-400'
+                : netProfitAtTargetOccupancy >= 0
+                  ? 'text-emerald-800'
+                  : 'text-rose-700',
+          },
+          {
+            label: 'Nights to Break Even',
+            value: breakEvenNights != null ? `${breakEvenNights} nights` : 'Set guest rate',
+            color: breakEvenNights != null ? 'text-slate-700' : 'text-slate-400',
+          },
+          {
+            label: 'Net Profit Made',
+            value: realNetProfit != null ? lkr(realNetProfit) : 'Enter collections',
+            color:
+              realNetProfit == null
+                ? 'text-slate-400'
+                : realNetProfit >= 0
+                  ? 'text-emerald-800'
+                  : 'text-rose-700',
+          },
         ].map((item) => (
           <ExecutiveGlassCard key={item.label} className="p-2.5 text-center">
             <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">{item.label}</p>
             <p className={`mt-1 font-black tabular-nums ${item.color}`}>{item.value}</p>
+            {item.label === 'Net Profit Made' ? (
+              <p className="mt-0.5 text-[8px] text-slate-400">{netProfitMonthLabel} collections − overhead</p>
+            ) : null}
           </ExecutiveGlassCard>
         ))}
       </div>
@@ -1546,50 +1643,27 @@ function BreakEvenCalculator({ property }: { property: Property }) {
 // ─── Calendar Grid ────────────────────────────────────────────────────────────
 
 function CalendarGrid({
-  year, month,
+  year,
+  month,
   bookings,
-  manualBlocks,
-  autoBlockDays,
-  autoBlockEnabled,
-  defaultRate,
-  seasonalRates,
   onBookingClick,
-  onEmptyDayClick,
 }: {
   year: number;
   month: number;
   bookings: Booking[];
-  manualBlocks: string[];
-  autoBlockDays: number;
-  autoBlockEnabled: boolean;
-  defaultRate?: number;
-  seasonalRates?: SeasonalRate[];
   onBookingClick: (b: Booking) => void;
-  onEmptyDayClick: (date: string) => void;
 }) {
-  // Build auto-block date set from checkout dates
-  const autoBlockSet = useMemo(() => {
-    const set = new Set<string>();
-    if (!autoBlockEnabled || autoBlockDays < 1) return set;
-    bookings
-      .filter((b) => b.channel !== 'BLOCKED' && b.channel !== 'AUTO_BLOCK')
-      .forEach((b) => {
-        for (let i = 0; i < autoBlockDays; i++) {
-          set.add(addDays(b.checkOut, i));
-        }
-      });
-    return set;
-  }, [bookings, autoBlockDays, autoBlockEnabled]);
-
-  const manualBlockSet = useMemo(() => new Set(manualBlocks), [manualBlocks]);
-
   const bookingForDay = useCallback((day: number) => {
     const key = dateKey(year, month, day);
-    return bookings.find((b) => key >= b.checkIn && key < b.checkOut) ?? null;
+    return (
+      bookings.find((b) => key >= b.checkIn && key < b.checkOut && !isAvailabilityBlock(b)) ??
+      bookings.find((b) => key >= b.checkIn && key < b.checkOut) ??
+      null
+    );
   }, [bookings, year, month]);
 
   const firstDayOfWeek = new Date(year, month - 1, 1).getDay();
-  const daysInMonth    = new Date(year, month, 0).getDate();
+  const daysInMonth = new Date(year, month, 0).getDate();
   const cells: (number | null)[] = [
     ...Array(firstDayOfWeek).fill(null),
     ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
@@ -1610,49 +1684,31 @@ function CalendarGrid({
         {cells.map((day, idx) => {
           if (day === null) return <div key={`empty-${idx}`} className="h-14 rounded-xl" />;
 
-          const key       = dateKey(year, month, day);
-          const booking   = bookingForDay(day);
-          const isAuto    = !booking && autoBlockSet.has(key);
-          const isManual  = !booking && !isAuto && manualBlockSet.has(key);
-          const isToday   = isCurrentMonth && today.getDate() === day;
-
-          const cm = booking ? CHANNEL_META[booking.channel]
-                   : isAuto  ? CHANNEL_META['AUTO_BLOCK']
-                   : isManual ? CHANNEL_META['BLOCKED']
-                   : null;
-
-          const occupied = booking || isAuto || isManual;
-
-          // ── Rate display ─────────────────────────────────────────────────────
-          const activeOverride = seasonalRates?.find(
-            (r) => r.startDate && r.endDate && key >= r.startDate && key <= r.endDate,
-          );
-          const isSeasonalOverride = !!activeOverride && !booking && !isAuto && !isManual;
-          const displayRate = (() => {
-            if (!defaultRate) return undefined;
-            if (booking && booking.channel !== 'BLOCKED' && booking.channel !== 'AUTO_BLOCK')
-              return booking.ratePerNight;
-            if (isAuto || isManual) return undefined;
-            return activeOverride ? activeOverride.ratePerNight : defaultRate;
-          })();
-          const rateLabel = displayRate
-            ? displayRate >= 1000
-              ? `${(displayRate / 1000).toFixed(1).replace(/\.0$/, '')}K`
-              : String(displayRate)
-            : '';
+          const key = dateKey(year, month, day);
+          const booking = bookingForDay(day);
+          const isToday = isCurrentMonth && today.getDate() === day;
+          const channel = booking ? normalizeChannel(booking.channel) : null;
+          const cm = channel ? CHANNEL_META[channel] : null;
+          const isBlockDay = Boolean(booking && isAvailabilityBlock(booking));
 
           return (
             <div
               key={day}
               onClick={() => {
-                if (booking) { onBookingClick(booking); return; }
-                if (!isAuto && !isManual) onEmptyDayClick(key);
+                if (booking) onBookingClick(booking);
               }}
-              title={isAuto ? `Auto-block: post-checkout deep clean (${autoBlockDays}d)` : isManual ? 'Manual block' : 'Click to manually block'}
+              title={
+                booking
+                  ? isBlockDay
+                    ? 'Blocked — synced from OTA'
+                    : 'Reserved — synced from OTA'
+                  : undefined
+              }
               className={[
                 'group relative flex h-14 flex-col items-center justify-start overflow-hidden rounded-xl border pt-1.5 transition-all select-none',
-                occupied ? `cursor-pointer ${cm!.bg} ${cm!.border} hover:scale-[1.04] hover:shadow-md`
-                         : 'cursor-pointer border-slate-200/60 bg-white/40 hover:border-slate-300 hover:bg-white/70',
+                booking
+                  ? `cursor-pointer ${cm!.bg} ${cm!.border} hover:scale-[1.04] hover:shadow-md${isBlockDay ? ' ring-1 ring-inset ring-slate-400/50' : ''}`
+                  : 'border-slate-200/60 bg-white/40',
                 isToday ? 'ring-2 ring-emerald-500/60' : '',
               ].join(' ')}
             >
@@ -1662,38 +1718,23 @@ function CalendarGrid({
                 {day}
               </span>
 
-              {booking && booking.channel !== 'BLOCKED' && booking.channel !== 'AUTO_BLOCK' && (
+              {booking && !isBlockDay && (
                 <span className={`mt-0.5 truncate px-1.5 text-[8px] font-bold leading-tight ${cm!.text}`}>
-                  {booking.guestName.split(' ')[0]}
+                  {calendarDayLabel(booking)}
                 </span>
               )}
 
-              {(booking?.channel === 'BLOCKED' || isManual) && <Lock className="mt-0.5 h-3 w-3 text-slate-500" />}
-              {isAuto && <Brush className="mt-0.5 h-3 w-3 text-orange-600" />}
-
-              {/* Empty day hover hint */}
-              {!occupied && (
-                <span className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                  <Ban className="h-4 w-4 text-slate-300" />
+              {isBlockDay && (
+                <span className={`mt-0.5 flex items-center gap-0.5 text-[8px] font-bold leading-tight ${cm!.text}`}>
+                  <Lock className="h-2.5 w-2.5" />
+                  Block
                 </span>
               )}
 
-              {/* Check-in indicator */}
               {booking && key === booking.checkIn && (
                 <span className={`absolute bottom-0 left-0 right-0 h-0.5 ${
-                  booking.channel === 'AIRBNB'  ? 'bg-rose-500'    :
-                  booking.channel === 'BOOKING' ? 'bg-blue-500'    :
-                  booking.channel === 'DIRECT'  ? 'bg-emerald-500' : 'bg-slate-400'
+                  channel === 'AIRBNB' ? 'bg-rose-500' : channel === 'BOOKING' ? 'bg-blue-500' : 'bg-slate-400'
                 }`} />
-              )}
-
-              {/* Active rate — faint corner label */}
-              {rateLabel && booking?.channel !== 'BLOCKED' && !isManual && (
-                <span className={`absolute bottom-0.5 right-1 font-mono text-[7px] font-semibold tabular-nums leading-none ${
-                  isSeasonalOverride ? 'text-indigo-400' : 'text-slate-400/70'
-                }`}>
-                  {rateLabel}
-                </span>
               )}
             </div>
           );
@@ -1717,7 +1758,7 @@ function recordToProperty(row: ShalomPropertyRecord): Property {
     bookings: row.bookings.map((b) => ({
       id: b.id,
       guestName: b.guestName,
-      channel: b.channel,
+      channel: normalizeChannel(b.channel),
       checkIn: b.checkIn,
       checkOut: b.checkOut,
       nights: b.nights,
@@ -1725,8 +1766,10 @@ function recordToProperty(row: ShalomPropertyRecord): Property {
       totalRevenue: b.totalRevenue,
       paid: b.paid,
       notes: b.notes,
+      otaImported: b.otaImported,
       enriched: b.enriched,
       enrichedContact: b.enrichedContact,
+      caretakerCollectLkr: b.caretakerCollectLkr ?? null,
     })),
   };
 }
@@ -1740,14 +1783,17 @@ export default function ShalomPage() {
   const [selectedProp, setSelectedProp] = useState<Property | null>(null);
   const [viewYear,  setViewYear]     = useState(now.getFullYear());
   const [viewMonth, setViewMonth]    = useState(now.getMonth() + 1);
+  const [registerYear, setRegisterYear] = useState(now.getFullYear());
+  const [registerMonth, setRegisterMonth] = useState(now.getMonth() + 1);
+  const [savingCollectId, setSavingCollectId] = useState<string | null>(null);
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
-  const [blockDate, setBlockDate]    = useState<string | null>(null);
-  const [manualBlocks,    setManualBlocks]    = useState<Record<string, string[]>>({});
   const [propSettings,    setPropSettings]    = useState<Record<string, PropSettings>>({});
   const [addPropOpen,     setAddPropOpen]     = useState(false);
   const [propSettingsOpen, setPropSettingsOpen] = useState(false);
   const [importingOta,   setImportingOta]    = useState(false);
+  const [savingPricing, setSavingPricing] = useState(false);
   const [toast, setToast]                    = useState<string | null>(null);
+  const syncedOtaPropsRef = useRef(new Set<string>());
 
   const applyPropertyRecords = useCallback((records: ShalomPropertyRecord[], focusId?: string) => {
     const rows = records.map(recordToProperty);
@@ -1759,7 +1805,7 @@ export default function ShalomPage() {
     setPropSettings((prev) => ({
       ...prev,
       ...Object.fromEntries(
-        rows.map((p) => [p.id, prev[p.id] ?? defaultPropSettings(p.id)]),
+        records.map((row) => [row.id, settingsFromRecord(row.settings, row.id)]),
       ),
     }));
   }, []);
@@ -1773,20 +1819,40 @@ export default function ShalomPage() {
       }
 
       let records = result.properties;
-      let syncError: string | null = null;
-      const first = records[0]!;
-      if (first.airbnbIcalUrl || first.bookingIcalUrl) {
-        const sync = await syncShalomPropertyFromOtas(first.id);
+      const syncErrors: string[] = [];
+
+      for (const prop of records) {
+        if (!prop.airbnbIcalUrl && !prop.bookingIcalUrl) continue;
+        if (syncedOtaPropsRef.current.has(prop.id)) continue;
+        syncedOtaPropsRef.current.add(prop.id);
+        const sync = await syncShalomPropertyFromOtas(prop.id);
         if (sync.properties?.length) records = sync.properties;
-        if (sync.errors.length > 0) {
-          syncError = sync.errors.join(' · ');
-        }
+        if (sync.errors.length > 0) syncErrors.push(...sync.errors);
       }
 
-      applyPropertyRecords(records, first.id);
-      setLoadError(syncError ?? result.error ?? null);
+      applyPropertyRecords(records, records[0]?.id);
+      setLoadError(syncErrors.length > 0 ? syncErrors.join(' · ') : result.error ?? null);
     })();
   }, [applyPropertyRecords]);
+
+  // Sync OTA calendars when switching to a property that has not been imported this session.
+  useEffect(() => {
+    if (!selectedProp) return;
+    if (!selectedProp.airbnbIcalUrl && !selectedProp.bookingIcalUrl) return;
+    if (syncedOtaPropsRef.current.has(selectedProp.id)) return;
+
+    syncedOtaPropsRef.current.add(selectedProp.id);
+    void (async () => {
+      const sync = await syncShalomPropertyFromOtas(selectedProp.id);
+      if (sync.properties?.length) {
+        applyPropertyRecords(sync.properties, selectedProp.id);
+      }
+      syncedOtaPropsRef.current.add(selectedProp.id);
+      if (sync.errors.length > 0) {
+        setLoadError(sync.errors.join(' · '));
+      }
+    })();
+  }, [applyPropertyRecords, selectedProp]);
 
   // Sync selected prop when properties list changes
   useEffect(() => {
@@ -1805,53 +1871,14 @@ export default function ShalomPage() {
     if (viewMonth === 12) { setViewMonth(1); setViewYear((y) => y + 1); }
     else setViewMonth((m) => m + 1);
   };
-
-  const currentBlocks = selectedProp ? (manualBlocks[selectedProp.id] ?? []) : [];
-
-  const handleConfirmBlock = useCallback(async (date: string, reason: string) => {
-    if (!selectedProp) return;
-
-    const checkOut = addDays(date, 1);
-    const result = await upsertShalomBooking({
-      propertyId: selectedProp.id,
-      guestName: 'Blocked',
-      channel: 'BLOCKED',
-      checkIn: date,
-      checkOut,
-      nights: 1,
-      ratePerNight: 0,
-      totalRevenue: 0,
-      paid: true,
-      notes: reason.trim(),
-    });
-    if (!result.success || !result.id) {
-      const message = result.error ?? 'Failed to save block';
-      setLoadError(message);
-      setToast(message);
-      return;
-    }
-
-    const block: Booking = {
-      id: result.id,
-      guestName: 'Blocked',
-      channel: 'BLOCKED',
-      checkIn: date,
-      checkOut,
-      nights: 1,
-      ratePerNight: 0,
-      totalRevenue: 0,
-      paid: true,
-      notes: reason.trim() || undefined,
-    };
-
-    setProperties((prev) =>
-      prev.map((p) =>
-        p.id === selectedProp.id ? { ...p, bookings: [...p.bookings, block] } : p,
-      ),
-    );
-    setLoadError(null);
-    setToast('Date blocked — included in your Airbnb export calendar.');
-  }, [selectedProp]);
+  const prevRegisterMonth = () => {
+    if (registerMonth === 1) { setRegisterMonth(12); setRegisterYear((y) => y - 1); }
+    else setRegisterMonth((m) => m - 1);
+  };
+  const nextRegisterMonth = () => {
+    if (registerMonth === 12) { setRegisterMonth(1); setRegisterYear((y) => y + 1); }
+    else setRegisterMonth((m) => m + 1);
+  };
 
   const currentSettings: PropSettings = selectedProp
     ? (propSettings[selectedProp.id] ?? defaultPropSettings(selectedProp.id))
@@ -1899,6 +1926,7 @@ export default function ShalomPage() {
       if (sync.properties?.length) {
         applyPropertyRecords(sync.properties, selectedProp.id);
       }
+      syncedOtaPropsRef.current.add(selectedProp.id);
       if (sync.errors.length > 0) {
         setToast(`Saved settings — OTA sync: ${sync.errors.join(' · ')}`);
       } else {
@@ -1924,11 +1952,6 @@ export default function ShalomPage() {
     setProperties(remaining);
     setSelectedProp(remaining[0] ?? null);
     setPropSettings((prev) => {
-      const next = { ...prev };
-      delete next[removedId];
-      return next;
-    });
-    setManualBlocks((prev) => {
       const next = { ...prev };
       delete next[removedId];
       return next;
@@ -2016,10 +2039,67 @@ export default function ShalomPage() {
     setLoadError(null);
     setPropSettings((prev) => ({
       ...prev,
-      [newProp.id]: { cleanBufferEnabled: true, cleanBufferDays: 1, defaultRate: 0, seasonalRates: [] },
+      [newProp.id]: { cleanBufferEnabled: true, cleanBufferDays: 1, defaultRate: 0, airbnbCommissionPct: 3, bookingCommissionPct: 15, seasonalRates: [] },
     }));
     setToast(`Property "${newProp.name}" saved. Add an Airbnb iCal URL to import reservations.`);
   }, [applyPropertyRecords]);
+
+  const handleSaveCaretakerRate = useCallback(
+    async (payload: {
+      defaultRate: number;
+      overhead: number;
+      occupancyTarget: number;
+      airbnbCommissionPct: number;
+      bookingCommissionPct: number;
+    }) => {
+      if (!selectedProp) return;
+
+      const nextSettings: PropSettings = {
+        ...(propSettings[selectedProp.id] ?? defaultPropSettings(selectedProp.id)),
+        defaultRate: payload.defaultRate,
+        airbnbCommissionPct: payload.airbnbCommissionPct,
+        bookingCommissionPct: payload.bookingCommissionPct,
+      };
+
+      setSavingPricing(true);
+      try {
+        const result = await upsertShalomProperty({
+          id: selectedProp.id,
+          name: selectedProp.name,
+          location: selectedProp.location,
+          bedrooms: selectedProp.bedrooms,
+          overhead: payload.overhead,
+          occupancyTarget: payload.occupancyTarget,
+          otaChannels: selectedProp.otaChannels,
+          airbnbIcalUrl: selectedProp.airbnbIcalUrl,
+          bookingIcalUrl: selectedProp.bookingIcalUrl,
+          settings: nextSettings as unknown as Record<string, unknown>,
+        });
+        if (!result.success) {
+          setToast(result.error ?? 'Failed to save nightly rate');
+          return;
+        }
+
+        setPropSettings((prev) => ({ ...prev, [selectedProp.id]: nextSettings }));
+        setProperties((prev) =>
+          prev.map((p) =>
+            p.id === selectedProp.id
+              ? { ...p, overhead: payload.overhead, occupancyTarget: payload.occupancyTarget }
+              : p,
+          ),
+        );
+        setSelectedProp((prev) =>
+          prev && prev.id === selectedProp.id
+            ? { ...prev, overhead: payload.overhead, occupancyTarget: payload.occupancyTarget }
+            : prev,
+        );
+        setToast(`Saved guest rate ${lkr(payload.defaultRate)}/night for ${selectedProp.name}.`);
+      } finally {
+        setSavingPricing(false);
+      }
+    },
+    [propSettings, selectedProp],
+  );
 
   const handleImportFromOtas = useCallback(async () => {
     if (!selectedProp) return;
@@ -2035,10 +2115,27 @@ export default function ShalomPage() {
         return;
       }
       setLoadError(null);
+      const refreshed = sync.properties?.find((p) => p.id === selectedProp.id);
+      const refreshedBookings = refreshed?.bookings ?? [];
+      const bookingFeed = sync.feeds?.find((f) => f.channel === 'BOOKING');
+      const airbnbFeed = sync.feeds?.find((f) => f.channel === 'AIRBNB');
+      const occupied = refreshedBookings.filter((b) => b.otaImported && !isAvailabilityBlock(b)).length;
+      const blocked = refreshedBookings.filter((b) => b.otaImported && isAvailabilityBlock(b)).length;
+
+      if (airbnbFeed && airbnbFeed.parsedCount === 0 && !bookingFeed?.parsedCount) {
+        setToast('Sync ran, but OTA exports returned 0 events. Re-copy the export URL(s) from Property Settings.');
+        return;
+      }
+
+      const parts: string[] = [];
+      if (bookingFeed?.parsedCount) parts.push(`Booking.com: ${bookingFeed.parsedCount} event(s)`);
+      if (airbnbFeed?.parsedCount) parts.push(`Airbnb: ${airbnbFeed.parsedCount} event(s)`);
       setToast(
-        sync.imported > 0
-          ? `Imported ${sync.imported} reservation(s) from Airbnb/Booking.`
-          : 'OTA calendars synced — no new reservations in feed.',
+        parts.length
+          ? `${parts.join(' · ')} · saved ${occupied} occupied, ${blocked} blocked.`
+          : sync.imported > 0
+            ? `Synced ${sync.imported} OTA event(s).`
+            : 'OTA calendars synced — no changes in feed.',
       );
     } finally {
       setImportingOta(false);
@@ -2065,26 +2162,95 @@ export default function ShalomPage() {
     setSelectedBooking((prev) => (prev ? updater(prev) : null));
   }, []);
 
-  const handlePushRates = () => {
-    if (!selectedProp) return;
-    setToast(`Rates pushed to ${selectedProp.otaChannels.join(' & ')} for ${selectedProp.name}`);
-  };
-  const handlePushBlocks = () => {
-    if (!selectedProp) return;
-    setToast(`Availability blocks synced to OTAs for ${selectedProp.name}`);
-  };
+  const handleUpdateCaretakerCollect = useCallback(
+    async (booking: Booking, rawValue: string) => {
+      if (!selectedProp) return;
+      const parsed = rawValue.trim() === '' ? null : Math.max(0, parseInt(rawValue, 10) || 0);
+      const nextValue = parsed === 0 ? null : parsed;
 
-  const monthPrefix = `${viewYear}-${String(viewMonth).padStart(2, '0')}`;
-  const monthBookings = useMemo(() =>
-    (selectedProp?.bookings ?? []).filter((b) => b.checkIn.startsWith(monthPrefix) || b.checkOut.startsWith(monthPrefix)),
-    [selectedProp?.bookings, monthPrefix],
+      const updater = (b: Booking): Booking =>
+        b.id === booking.id ? { ...b, caretakerCollectLkr: nextValue } : b;
+
+      setProperties((prev) =>
+        prev.map((p) =>
+          p.id === selectedProp.id ? { ...p, bookings: p.bookings.map(updater) } : p,
+        ),
+      );
+      setSelectedProp((prev) =>
+        prev ? { ...prev, bookings: prev.bookings.map(updater) } : prev,
+      );
+
+      setSavingCollectId(booking.id);
+      const channel =
+        booking.channel === 'BLOCKED' ? 'BLOCKED' : (booking.channel as 'AIRBNB' | 'BOOKING');
+      const result = await upsertShalomBooking({
+        id: booking.id,
+        propertyId: selectedProp.id,
+        guestName: booking.guestName,
+        channel,
+        checkIn: booking.checkIn,
+        checkOut: booking.checkOut,
+        nights: booking.nights,
+        ratePerNight: booking.ratePerNight,
+        totalRevenue: booking.totalRevenue,
+        paid: booking.paid,
+        notes: booking.notes,
+        enriched: booking.enriched,
+        enrichedContact: booking.enrichedContact,
+        caretakerCollectLkr: nextValue,
+      });
+      setSavingCollectId(null);
+      if (!result.success) {
+        setToast(result.error ?? 'Failed to save collection amount');
+      }
+    },
+    [selectedProp],
   );
 
-  const daysInViewMonth    = new Date(viewYear, viewMonth, 0).getDate();
-  const paidRevenue        = monthBookings.filter((b) => b.paid && b.channel !== 'BLOCKED').reduce((s, b) => s + b.totalRevenue, 0);
-  const pendingRevenue     = monthBookings.filter((b) => !b.paid && b.channel !== 'BLOCKED').reduce((s, b) => s + b.totalRevenue, 0);
-  const bookedNights       = monthBookings.filter((b) => b.channel !== 'BLOCKED').reduce((s, b) => s + b.nights, 0);
-  const occupancyPct       = Math.round((bookedNights / daysInViewMonth) * 100);
+  const { rangeStart: rollingStart, rangeEndExclusive: rollingEnd } = rolling30Range();
+
+  const rollingBookings = useMemo(
+    () =>
+      (selectedProp?.bookings ?? []).filter((b) =>
+        bookingOverlapsRange(b, rollingStart, rollingEnd),
+      ),
+    [selectedProp?.bookings, rollingStart, rollingEnd],
+  );
+
+  const registerBounds = monthRange(registerYear, registerMonth);
+  const registerBookings = useMemo(
+    () =>
+      (selectedProp?.bookings ?? []).filter((b) =>
+        bookingOverlapsRange(b, registerBounds.monthStart, registerBounds.monthEndExclusive),
+      ),
+    [selectedProp?.bookings, registerBounds.monthStart, registerBounds.monthEndExclusive],
+  );
+
+  const collectionTotal = useMemo(
+    () =>
+      registerBookings
+        .filter(
+          (b) =>
+            !isAvailabilityBlock(b) &&
+            b.caretakerCollectLkr != null &&
+            b.caretakerCollectLkr > 0,
+        )
+        .reduce((s, b) => s + (b.caretakerCollectLkr ?? 0), 0),
+    [registerBookings],
+  );
+
+  const realNetProfit =
+    collectionTotal > 0 && selectedProp ? collectionTotal - selectedProp.overhead : null;
+
+  const paidRevenue        = rollingBookings.filter((b) => b.paid && !isAvailabilityBlock(b)).reduce((s, b) => s + b.totalRevenue, 0);
+  const pendingRevenue     = rollingBookings.filter((b) => !b.paid && !isAvailabilityBlock(b)).reduce((s, b) => s + b.totalRevenue, 0);
+  const bookedNights       = rollingBookings
+    .filter((b) => !isAvailabilityBlock(b))
+    .reduce((s, b) => s + nightsInMonth(b.checkIn, b.checkOut, rollingStart, rollingEnd), 0);
+  const blockedNights      = rollingBookings
+    .filter((b) => isAvailabilityBlock(b))
+    .reduce((s, b) => s + nightsInMonth(b.checkIn, b.checkOut, rollingStart, rollingEnd), 0);
+  const occupancyPct       = Math.round((bookedNights / ROLLING_WINDOW_DAYS) * 100);
 
   if (!selectedProp) {
     return (
@@ -2117,8 +2283,11 @@ export default function ShalomPage() {
   return (
     <>
       {toast && <OtaToast msg={toast} onDone={() => setToast(null)} />}
-      <BookingModal booking={selectedBooking} onClose={() => setSelectedBooking(null)} onEnrich={handleEnrich} />
-      <ManualBlockModal date={blockDate} onConfirm={handleConfirmBlock} onClose={() => setBlockDate(null)} />
+      <BookingModal
+        booking={selectedBooking}
+        onClose={() => setSelectedBooking(null)}
+        onEnrich={handleEnrich}
+      />
       <AddPropertyModal
         open={addPropOpen}
         onClose={() => setAddPropOpen(false)}
@@ -2165,7 +2334,10 @@ export default function ShalomPage() {
             <ExecutiveGlassCard className="p-4">
               <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Booked Nights</p>
               <p className="mt-2 text-3xl font-black text-slate-900">{bookedNights}</p>
-              <p className="text-[10px] text-slate-500">of {daysInViewMonth} days · {MONTH_NAMES[viewMonth - 1]}</p>
+              <p className="text-[10px] text-slate-500">
+                of {ROLLING_WINDOW_DAYS} days · last 30 days rolling
+                {blockedNights > 0 ? ` · ${blockedNights} blocked` : ''}
+              </p>
             </ExecutiveGlassCard>
 
             <ExecutiveGlassCard className="p-4">
@@ -2174,7 +2346,7 @@ export default function ShalomPage() {
               <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200/80">
                 <div className={`h-full rounded-full transition-all ${occupancyPct >= selectedProp.occupancyTarget ? 'bg-emerald-500' : 'bg-amber-500'}`} style={{ width: `${Math.min(occupancyPct, 100)}%` }} />
               </div>
-              <p className="mt-1 text-[9px] text-slate-400">Target: {selectedProp.occupancyTarget}%</p>
+              <p className="mt-1 text-[9px] text-slate-400">Target: {selectedProp.occupancyTarget}% · last 30 days</p>
             </ExecutiveGlassCard>
 
             <ExecutiveGlassCard className="bg-gradient-to-br from-white/70 to-emerald-50/50 p-4">
@@ -2183,6 +2355,7 @@ export default function ShalomPage() {
                 <TrendingUp className="h-4 w-4 text-emerald-600" />
                 <p className="text-3xl font-black tabular-nums text-emerald-900">{lkr(paidRevenue)}</p>
               </div>
+              <p className="mt-1 text-[9px] text-slate-400">Last 30 days rolling</p>
             </ExecutiveGlassCard>
 
             <ExecutiveGlassCard className="bg-gradient-to-br from-white/70 to-amber-50/50 p-4">
@@ -2191,6 +2364,7 @@ export default function ShalomPage() {
                 <TrendingDown className="h-4 w-4 text-amber-600" />
                 <p className="text-3xl font-black tabular-nums text-amber-900">{lkr(pendingRevenue)}</p>
               </div>
+              <p className="mt-1 text-[9px] text-slate-400">Last 30 days rolling</p>
             </ExecutiveGlassCard>
           </div>
 
@@ -2215,7 +2389,7 @@ export default function ShalomPage() {
 
               {/* Channel legend */}
               <div className="flex flex-wrap items-center gap-2 text-[10px]">
-                {(['AIRBNB','BOOKING','DIRECT','BLOCKED','AUTO_BLOCK'] as Channel[]).map((ch) => {
+                {(['AIRBNB', 'BOOKING', 'BLOCKED'] as Channel[]).map((ch) => {
                   const cm = CHANNEL_META[ch];
                   return (
                     <span key={ch} className={`flex items-center gap-1 rounded-full border px-2 py-0.5 font-bold ${cm.bg} ${cm.text} ${cm.border}`}>
@@ -2225,34 +2399,15 @@ export default function ShalomPage() {
                 })}
               </div>
 
-              {/* OTA Sync Buttons */}
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void handleImportFromOtas()}
-                  disabled={importingOta}
-                  className="flex items-center gap-1.5 rounded-xl border border-rose-200/80 bg-rose-50/80 px-3 py-1.5 text-[10px] font-bold text-rose-800 hover:bg-rose-100/80 transition-all disabled:opacity-60"
-                >
-                  <RefreshCw className={`h-3 w-3 ${importingOta ? 'animate-spin' : ''}`} />
-                  {importingOta ? 'Importing…' : 'Import from OTAs'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handlePushRates}
-                  className="flex items-center gap-1.5 rounded-xl border border-blue-200/80 bg-blue-50/80 px-3 py-1.5 text-[10px] font-bold text-blue-800 hover:bg-blue-100/80 transition-all"
-                >
-                  <Upload className="h-3 w-3" />
-                  Push Rates to OTA
-                </button>
-                <button
-                  type="button"
-                  onClick={handlePushBlocks}
-                  className="flex items-center gap-1.5 rounded-xl border border-slate-200/80 bg-slate-100/80 px-3 py-1.5 text-[10px] font-bold text-slate-700 hover:bg-slate-200/80 transition-all"
-                >
-                  <CloudUpload className="h-3 w-3" />
-                  Push Blocks to OTA
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => void handleImportFromOtas()}
+                disabled={importingOta}
+                className="flex items-center gap-1.5 rounded-xl border border-rose-200/80 bg-rose-50/80 px-3 py-1.5 text-[10px] font-bold text-rose-800 hover:bg-rose-100/80 transition-all disabled:opacity-60"
+              >
+                <RefreshCw className={`h-3 w-3 ${importingOta ? 'animate-spin' : ''}`} />
+                {importingOta ? 'Importing…' : 'Import from OTAs'}
+              </button>
             </div>
 
             <div className="p-5">
@@ -2260,29 +2415,48 @@ export default function ShalomPage() {
                 year={viewYear}
                 month={viewMonth}
                 bookings={selectedProp.bookings}
-                manualBlocks={currentBlocks}
-                autoBlockDays={currentSettings.cleanBufferDays}
-                autoBlockEnabled={currentSettings.cleanBufferEnabled}
-                defaultRate={currentSettings.defaultRate}
-                seasonalRates={currentSettings.seasonalRates}
                 onBookingClick={setSelectedBooking}
-                onEmptyDayClick={setBlockDate}
               />
             </div>
 
             <div className="border-t border-slate-200/80 bg-slate-50/60 px-5 py-2.5 text-[10px] text-slate-500">
-              Click a coloured day to view booking details. Click any empty day to manually block it. Bottom bar = check-in day. Green ring = today.
+              Read-only OTA sync. Empty days = available on the platform (not in iCal). Click a coloured day for details. Green ring = today.
             </div>
           </ExecutiveGlassCard>
 
           {/* ── Break-Even Calculator (property-aware) ── */}
-          <BreakEvenCalculator property={selectedProp} />
+          <BreakEvenCalculator
+            property={selectedProp}
+            guestNightlyRate={currentSettings.defaultRate}
+            airbnbCommissionPct={currentSettings.airbnbCommissionPct}
+            bookingCommissionPct={currentSettings.bookingCommissionPct}
+            realNetProfit={realNetProfit}
+            netProfitMonthLabel={`${MONTH_NAMES[registerMonth - 1]} ${registerYear}`}
+            onSave={handleSaveCaretakerRate}
+            saving={savingPricing}
+          />
 
           {/* ── Booking Register ── */}
           <ExecutiveGlassCard className="overflow-hidden">
-            <div className="border-b border-slate-200/80 bg-slate-50/80 px-5 py-3.5 flex items-center justify-between">
+            <div className="border-b border-slate-200/80 bg-slate-50/80 px-5 py-3.5 flex flex-wrap items-center justify-between gap-3">
               <h2 className="text-lg font-bold text-slate-800 uppercase">Booking Register — {selectedProp.name}</h2>
-              <span className="text-[10px] text-slate-500">{monthBookings.filter((b) => b.channel !== 'BLOCKED').length} active bookings · {MONTH_NAMES[viewMonth - 1]}</span>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-1.5 rounded-xl border border-slate-200/80 bg-white/70 px-2 py-1">
+                  <button type="button" onClick={prevRegisterMonth} className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-500 hover:text-slate-900 transition-all">
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                  </button>
+                  <span className="min-w-[100px] text-center text-xs font-black text-slate-900">
+                    {MONTH_NAMES[registerMonth - 1]} {registerYear}
+                  </span>
+                  <button type="button" onClick={nextRegisterMonth} className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-500 hover:text-slate-900 transition-all">
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <span className="text-[10px] text-slate-500">
+                  {registerBookings.length} entries
+                  {collectionTotal > 0 ? ` · collections ${lkr(collectionTotal)}` : ''}
+                </span>
+              </div>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
@@ -2294,11 +2468,12 @@ export default function ShalomPage() {
                     <th className="px-5 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">Check-Out</th>
                     <th className="px-5 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider text-center">Nights</th>
                     <th className="px-5 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider text-right">Revenue</th>
+                    <th className="px-5 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider text-right">Caretaker Collect</th>
                     <th className="px-5 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200/60">
-                  {selectedProp.bookings.filter((b) => b.channel !== 'BLOCKED').map((b) => {
+                  {registerBookings.map((b) => {
                     const cm = CHANNEL_META[b.channel];
                     return (
                       <tr key={b.id} className="hover:bg-white/40 transition-colors">
@@ -2311,12 +2486,44 @@ export default function ShalomPage() {
                         <td className="px-5 py-3.5 text-sm font-medium text-slate-800 font-mono">{b.checkIn}</td>
                         <td className="px-5 py-3.5 text-sm font-medium text-slate-800 font-mono">{b.checkOut}</td>
                         <td className="px-5 py-3.5 text-sm font-medium text-slate-800 text-center font-bold">{b.nights}</td>
-                        <td className="px-5 py-3.5 text-sm font-medium text-slate-800 text-right font-black tabular-nums">{lkr(b.totalRevenue)}</td>
+                        <td className="px-5 py-3.5 text-sm font-medium text-slate-800 text-right font-black tabular-nums">
+                          {isAvailabilityBlock(b) ? '—' : lkr(b.totalRevenue)}
+                        </td>
+                        <td className="px-5 py-3.5 text-sm font-medium text-slate-800 text-right">
+                          {isAvailabilityBlock(b) ? (
+                            <span className="text-slate-400">—</span>
+                          ) : (
+                            <input
+                              type="number"
+                              min={0}
+                              placeholder="Optional"
+                              defaultValue={b.caretakerCollectLkr ?? ''}
+                              key={`${b.id}-${b.caretakerCollectLkr ?? 'empty'}`}
+                              disabled={savingCollectId === b.id}
+                              onBlur={(e) => {
+                                const raw = e.target.value.trim();
+                                const current = b.caretakerCollectLkr ?? null;
+                                const next = raw === '' ? null : Math.max(0, parseInt(raw, 10) || 0);
+                                if (next === current || (next === 0 && current == null)) return;
+                                void handleUpdateCaretakerCollect(b, raw);
+                              }}
+                              className="w-28 rounded-lg border border-slate-200 bg-white/95 px-2 py-1 text-right text-sm font-bold tabular-nums text-slate-900 placeholder:font-normal placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500/40 disabled:opacity-60"
+                              title="Amount caretaker must collect; leave blank for personnel use only"
+                            />
+                          )}
+                        </td>
                         <td className="px-5 py-3.5 text-sm font-medium text-slate-800">
+                          {isAvailabilityBlock(b) ? (
+                            <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-100/90 px-2 py-0.5 text-[10px] font-bold text-slate-600">
+                              <Lock className="h-3 w-3" />
+                              Blocked
+                            </span>
+                          ) : (
                           <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold ${b.paid ? 'bg-emerald-100/90 text-emerald-900 border-emerald-200' : 'bg-amber-100/90 text-amber-900 border-amber-200'}`}>
                             {b.paid ? <CheckCircle2 className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}
                             {b.paid ? 'Paid' : 'Pending'}
                           </span>
+                          )}
                         </td>
                       </tr>
                     );
@@ -2324,6 +2531,9 @@ export default function ShalomPage() {
                 </tbody>
               </table>
             </div>
+            {registerBookings.length === 0 ? (
+              <p className="px-5 py-6 text-center text-sm text-slate-500">No bookings for {MONTH_NAMES[registerMonth - 1]} {registerYear}.</p>
+            ) : null}
           </ExecutiveGlassCard>
 
         </div>

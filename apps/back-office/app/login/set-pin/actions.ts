@@ -27,5 +27,5 @@ export async function setHeadOfficePinAction(newPin: string, confirmPin: string)
     session.profile.employeeId!,
     session.user.email,
   );
-  redirect(session.landing);
+  redirect('/login/setup-2fa');
 }

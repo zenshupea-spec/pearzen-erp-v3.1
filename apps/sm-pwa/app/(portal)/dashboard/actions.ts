@@ -2,7 +2,6 @@
 
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import { redirect } from 'next/navigation';
-import { cookies } from 'next/headers';
 import { getCurrentSmEpf } from '../../../lib/sm-assignments';
 
 export type TriRoleAck = { OM: boolean; SM: boolean; MD: boolean };
@@ -25,31 +24,6 @@ export type SmVisitLog = {
   created_at: string;
   notes: string | null;
 };
-
-const DEMO_INCIDENTS: SmFieldIncident[] = [
-  {
-    id: 'demo-1',
-    timestamp: new Date().toISOString(),
-    site: 'Lanka Hospitals',
-    incidentType: 'GUARD_MISCONDUCT',
-    guardName: 'Suresh Bandara',
-    guardEmpNo: 'EMP-1042',
-    severity: 'HIGH',
-    status: 'OPEN',
-    ack: { OM: false, SM: false, MD: false },
-  },
-  {
-    id: 'demo-2',
-    timestamp: new Date(Date.now() - 86400000).toISOString(),
-    site: 'Arpico Supercentre',
-    incidentType: 'CLIENT_COMPLAINT',
-    guardName: 'Ranjith Perera',
-    guardEmpNo: 'EMP-1087',
-    severity: 'MEDIUM',
-    status: 'OPEN',
-    ack: { OM: true, SM: false, MD: false },
-  },
-];
 
 function mapSeverity(sev: string): 'HIGH' | 'MEDIUM' | 'LOW' {
   if (sev === 'CRITICAL' || sev === 'HIGH') return 'HIGH';
@@ -80,19 +54,13 @@ function rowToIncident(
   };
 }
 
-async function isDemoSession(): Promise<boolean> {
-  const cookieStore = await cookies();
-  return cookieStore.get('sm_demo_session')?.value === 'SM-001';
-}
-
 export async function getVisitsForDateAction(dateIso: string): Promise<SmVisitLog[]> {
-  if (await isDemoSession()) return [];
-
   const supabase = await createSupabaseServerClient();
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) redirect('/login');
 
-  const epf = session.user.email?.split('@')[0].toUpperCase() ?? '';
+  const epf = await getCurrentSmEpf();
+  if (!epf) redirect('/login');
   const dayStart = `${dateIso}T00:00:00`;
   const dayEnd = `${dateIso}T23:59:59.999`;
 
@@ -109,8 +77,6 @@ export async function getVisitsForDateAction(dateIso: string): Promise<SmVisitLo
 }
 
 export async function getIncidentsAction(): Promise<SmFieldIncident[]> {
-  if (await isDemoSession()) return DEMO_INCIDENTS;
-
   const supabase = await createSupabaseServerClient();
   const epf = await getCurrentSmEpf();
   if (!epf) redirect('/login');
@@ -162,8 +128,6 @@ export async function getIncidentsAction(): Promise<SmFieldIncident[]> {
 }
 
 export async function acknowledgeIncidentAction(id: string): Promise<{ error?: string }> {
-  if (await isDemoSession()) return {};
-
   const supabase = await createSupabaseServerClient();
   const epf = await getCurrentSmEpf();
   if (!epf) redirect('/login');

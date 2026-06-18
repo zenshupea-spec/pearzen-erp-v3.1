@@ -3,8 +3,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { createSupabaseServerClient } from '../../../packages/supabase/server';
 import { createSupabaseServiceClient } from '../../../packages/supabase/service';
-import { resolveCompanyIdForSession } from './company-context';
-import { fetchBackOfficeUserProfile } from './hr-portal-access';
+import { resolveCompanyIdForSession } from './company-context-server';
+import { fetchBackOfficeUserProfile } from './hr-portal-access-server';
 
 export type StaffAuditPortal =
   | 'fm'

@@ -7,7 +7,7 @@ import {
   cafeEmployeeEpfKey,
   resolveCafeEmployeeForUser,
 } from '../../../lib/cafe-front-auth';
-import { resolveCompanyIdForSession } from '../../../lib/company-context';
+import { resolveCompanyIdForSession } from '../../../lib/company-context-server';
 import { auditStaffAction } from '../../../lib/staff-audit';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import { createSupabaseServiceClient } from '../../../../../packages/supabase/service';

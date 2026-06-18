@@ -2,8 +2,9 @@ import { redirect } from 'next/navigation';
 
 import MasterHubView from '../../components/hq/MasterHubView';
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
-import { fetchBackOfficeUserProfile, portalPathForRole } from '../../lib/hr-portal-access';
+import { fetchBackOfficeUserProfile, portalPathForRole } from '../../lib/hr-portal-access-server';
 import { canAccessHqHub } from '../../lib/hq-hub';
+import { loginPathForRole } from '../../lib/portal-isolation';
 import { getMasterHubBadges } from '../../lib/master-hub-actions';
 
 export const dynamic = 'force-dynamic';
@@ -16,18 +17,19 @@ export default async function HqMasterHubPage() {
   } = await supabase.auth.getUser();
 
   if (authError || !user) {
-    redirect('/login/head-office');
+    redirect('/login/hq');
   }
 
   const profile = await fetchBackOfficeUserProfile(supabase, user);
   const role = profile.role;
 
   if (!role) {
-    redirect('/login/head-office?error=no_portal_rank');
+    redirect('/login/hq?error=no_portal_rank');
   }
 
-  if (!canAccessHqHub(role)) {
-    redirect(portalPathForRole(role) ?? '/login/head-office?error=no_portal_rank');
+  if (!canAccessHqHub(role) && !profile.rbacGated) {
+    const fallback = portalPathForRole(role) ?? loginPathForRole(role, profile);
+    redirect(fallback.startsWith('/login') ? `${fallback}?error=wrong_portal` : fallback);
   }
 
   const profileName =

@@ -10,15 +10,14 @@ export function canAccessExecutiveDesk(role: string | null | undefined): boolean
   return isExecutiveRank(role);
 }
 
-/** Ranks that may open the HQ Hub nexus (/dashboard). OM and TM use their own portals only. */
-export const HQ_HUB_ACCESS_ROLES = ['MD', 'OD', 'HR', 'FM', 'EA'] as const;
+/** HQ Staff ranks that land on /dashboard after sign-in. */
+export const HQ_HUB_ACCESS_ROLES = ['HR', 'FM', 'EA'] as const;
 
 export function canAccessHqHub(role: string | null | undefined): boolean {
   const normalized = normalizePortalRole(role);
-  return (
-    normalized !== null &&
-    (HQ_HUB_ACCESS_ROLES as readonly string[]).includes(normalized)
-  );
+  if (!normalized) return false;
+  if (isExecutiveRank(normalized)) return true;
+  return (HQ_HUB_ACCESS_ROLES as readonly string[]).includes(normalized);
 }
 
 /** Café backoffice opened from HQ Hub (or by non-executive HQ staff). */

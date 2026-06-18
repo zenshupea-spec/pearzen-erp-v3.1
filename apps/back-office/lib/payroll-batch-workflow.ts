@@ -1,16 +1,25 @@
+/**
+ * Payroll batch helpers — bank file export and legacy localStorage fallback.
+ * Workflow state is persisted in `payroll_runs` via payroll-run-actions.ts.
+ */
+
+export type {
+  PayrollGroupId,
+  PayrollGroupWorkflow,
+  PayrollWorkflowStatus,
+} from './payroll-run-types';
+
+export {
+  buildBatchId,
+  batchIdToGroupId,
+  PAYROLL_GROUP_LABELS,
+} from './payroll-run-types';
+
+import type { PayrollGroupId, PayrollGroupWorkflow } from './payroll-run-types';
+
 export const PAYROLL_WORKFLOW_STORAGE_KEY = 'pearzen:payroll-batch-workflow:v1';
 
-export type PayrollGroupId = 'security' | 'cafe';
-export type PayrollWorkflowStatus = 'DRAFT' | 'SUBMITTED_FOR_REVIEW' | 'APPROVED';
-
-export interface PayrollGroupWorkflow {
-  groupId: PayrollGroupId;
-  batchId: string;
-  status: PayrollWorkflowStatus;
-  submittedAt?: string;
-  approvedAt?: string;
-}
-
+/** @deprecated Use buildBatchId(year, month, groupId) — kept for mock/demo pages. */
 export const PAYROLL_GROUP_TO_BATCH_ID: Record<PayrollGroupId, string> = {
   security: 'PR-2605-SEC',
   cafe: 'PR-2605-CAF',
@@ -40,6 +49,7 @@ function writeRaw(entries: PayrollGroupWorkflow[]) {
   window.dispatchEvent(new CustomEvent('payroll-workflow-changed'));
 }
 
+/** Legacy localStorage read — prefer getPayrollBatchStatus server action. */
 export function getPayrollWorkflowState(): PayrollGroupWorkflow[] {
   return readRaw();
 }
@@ -48,6 +58,7 @@ export function getGroupWorkflow(groupId: PayrollGroupId): PayrollGroupWorkflow 
   return readRaw().find((g) => g.groupId === groupId) ?? DEFAULT_WORKFLOW.find((g) => g.groupId === groupId)!;
 }
 
+/** Legacy fallback when payroll_runs table is unavailable. */
 export function submitGroupForMdReview(groupId: PayrollGroupId) {
   const next = readRaw().map((g) =>
     g.groupId === groupId
@@ -57,6 +68,7 @@ export function submitGroupForMdReview(groupId: PayrollGroupId) {
   writeRaw(next);
 }
 
+/** Legacy fallback when payroll_runs table is unavailable. */
 export function revertGroupToDraft(groupId: PayrollGroupId) {
   const next = readRaw().map((g) =>
     g.groupId === groupId
@@ -66,6 +78,7 @@ export function revertGroupToDraft(groupId: PayrollGroupId) {
   writeRaw(next);
 }
 
+/** Legacy fallback when payroll_runs table is unavailable. */
 export function approvePayrollGroup(groupId: PayrollGroupId) {
   const next = readRaw().map((g) =>
     g.groupId === groupId
@@ -73,11 +86,6 @@ export function approvePayrollGroup(groupId: PayrollGroupId) {
       : g,
   );
   writeRaw(next);
-}
-
-export function batchIdToGroupId(batchId: string): PayrollGroupId | null {
-  const entry = Object.entries(PAYROLL_GROUP_TO_BATCH_ID).find(([, id]) => id === batchId);
-  return entry ? (entry[0] as PayrollGroupId) : null;
 }
 
 export function subscribePayrollWorkflow(onChange: () => void) {
@@ -97,6 +105,20 @@ export function generateBankTransferTxt(groupLabel: string, gross: number, headc
     'HDR|Commercial Bank v3.2|PEARZEN ERP',
     `BATCH|${groupLabel.replace(/\s+/g, '_').toUpperCase()}|${date}`,
     `SUMMARY|RECIPIENTS=${headcount}|GROSS=${gross}`,
+    'EOF',
+  ].join('\n');
+}
+
+export function generateOtherBankTransferTxt(
+  groupLabel: string,
+  gross: number,
+  headcount: number,
+): string {
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  return [
+    'HDR|Other Banks Export|PEARZEN ERP',
+    `BATCH|${groupLabel.replace(/\s+/g, '_').toUpperCase()}|${date}`,
+    `SUMMARY|RECIPIENTS=${headcount}|GROSS=${gross}|DESTINATION=NON_COMMERCIAL`,
     'EOF',
   ].join('\n');
 }

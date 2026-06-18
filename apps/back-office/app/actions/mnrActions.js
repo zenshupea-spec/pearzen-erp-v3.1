@@ -9,7 +9,7 @@ import {
 import {
   CLASSIC_VENTURE_COMPANY_ID,
   resolveCompanyIdForSession,
-} from "../../lib/company-context";
+} from "../../lib/company-context-server";
 import {
   decryptEmployeePiiRecord,
   encryptEmployeePiiRecord,
@@ -23,7 +23,7 @@ import {
   canAccessHrPortal,
   fetchBackOfficeUserProfile,
   formatHrPortalEditorLabel,
-} from "../../lib/hr-portal-access";
+} from "../../lib/hr-portal-access-server";
 
 const HQ_MASTER_COMPANY_ID = "00000000-0000-0000-0000-000000000000";
 
@@ -289,5 +289,4 @@ export async function terminateEmployee(id, newStatus) {
   if (error) throw new Error(error.message);
   revalidatePath("/hr/mnr");
   revalidatePath("/hr");
-  revalidatePath("/fm/offboarding");
 }

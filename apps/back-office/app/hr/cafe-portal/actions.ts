@@ -1,6 +1,7 @@
 'use server';
 
 import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
 import { revalidatePath } from 'next/cache';
 
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
@@ -23,6 +24,13 @@ function getAdminClient() {
 
 function generateOTP(): string {
   return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+const PROVISION_FLASH_COOKIE = 'cafe_portal_provision_flash';
+
+export async function clearProvisionFlashCookie() {
+  const jar = await cookies();
+  jar.set(PROVISION_FLASH_COOKIE, '', { maxAge: 0, path: '/' });
 }
 
 export async function provisionCafePortalAccess(epfInput: string) {

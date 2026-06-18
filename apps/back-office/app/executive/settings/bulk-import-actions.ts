@@ -9,7 +9,7 @@ import {
 import {
   CLASSIC_VENTURE_COMPANY_ID,
   resolveCompanyIdForSession,
-} from '../../../lib/company-context';
+} from '../../../lib/company-context-server';
 import {
   mapEmployeeImportRow,
   mapSiteImportRow,
@@ -27,7 +27,7 @@ import {
   clampGeofenceRadiusM,
   DEFAULT_GEOFENCE_RADIUS_M,
 } from '../../../lib/site-geofence';
-import { fetchBackOfficeUserProfile } from '../../../lib/hr-portal-access';
+import { fetchBackOfficeUserProfile } from '../../../lib/hr-portal-access-server';
 import { getRankPayMatrix } from './rank-matrix-actions';
 
 export type BulkWorkbookMode = 'template' | 'export';

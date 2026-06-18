@@ -14,6 +14,11 @@ import {
   tenantSubdomainUrl,
 } from "./lib/tenant-host";
 import { isPublicCustomerMenuHost } from "./lib/customer-menu-host";
+import {
+  isSecurityWebsiteHost,
+  isSecurityWebsitePublicPath,
+} from "./lib/security-website-host";
+import { CVS_TENANT_SLUG } from "./lib/company-ids";
 import { canAccessPortalActivityLedger } from "./lib/audit-portals";
 import { canAccessHqHub } from "./lib/hq-hub";
 import {
@@ -23,17 +28,23 @@ import {
   portalPathForRole,
 } from "./lib/hr-portal-access";
 import {
+  loginPathForRequestPath,
+  loginPathForRole,
+} from "./lib/portal-isolation";
+import {
   cafeEmployeeEpfKey,
   getCafePortalAuthRecord,
   resolveCafeEmployeeForUser,
 } from "./lib/cafe-front-auth";
 import {
   clearPortalPinSessionCookies,
+  hasValidHeadOfficeGeofenceSession,
   isPortalPinExemptPath,
+  requiresHeadOfficePortalPin,
   resolvePortalAccessGate,
 } from "./lib/head-office-portal-auth";
+import { isHeadOfficeGeofenceExempt } from "./lib/head-office-geofence-exempt";
 import { createSupabaseServiceClient } from "../../packages/supabase/service";
-import { verifyOfficeLocation } from "./utils/geofence";
 
 const AUTH_MATCHER = [
   "/",
@@ -51,6 +62,7 @@ const AUTH_MATCHER = [
   "/fm/:path*",
   "/fm-dashboard/:path*",
   "/invoice-desk/:path*",
+  "/account/:path*",
 ];
 
 function getClientIp(req: NextRequest) {
@@ -114,6 +126,35 @@ function buildRequestWithTenant(req: NextRequest, tenantSlug: string | null) {
   return requestHeaders;
 }
 
+function pathnameRequiresHeadOfficeGeofence(
+  pathname: string,
+): boolean {
+  if (pathname === "/dashboard" || pathname.startsWith("/dashboard/")) return true;
+  if (pathname === "/executive" || pathname.startsWith("/executive/")) return true;
+  if (pathname === "/om" || pathname.startsWith("/om/")) return true;
+  if (pathname === "/tm" || pathname.startsWith("/tm/")) return true;
+  if (pathname === "/hr" || pathname.startsWith("/hr/")) return true;
+  if (pathname === "/fm" || pathname.startsWith("/fm/")) return true;
+  if (pathname.startsWith("/hq/")) return true;
+  if (pathname === "/invoice-desk" || pathname.startsWith("/invoice-desk/")) {
+    return true;
+  }
+  return false;
+}
+
+async function enforceHeadOfficeGeofenceSession(
+  req: NextRequest,
+  profile: Awaited<ReturnType<typeof fetchBackOfficeUserProfile>>,
+  userEmail: string,
+  pathname: string,
+): Promise<boolean> {
+  if (isHeadOfficeGeofenceExempt(profile.role)) return true;
+  if (!requiresHeadOfficePortalPin(profile, userEmail)) return true;
+  if (!pathnameRequiresHeadOfficeGeofence(pathname)) return true;
+  if (!profile.employeeId) return false;
+  return hasValidHeadOfficeGeofenceSession(req, profile.employeeId, userEmail);
+}
+
 async function runAuthProxy(
   req: NextRequest,
   requestHeaders: Headers,
@@ -137,7 +178,7 @@ async function runAuthProxy(
   if (!supabaseUrl || !supabaseAnonKey) {
     const loginPath = pathname.startsWith("/cafe-front")
       ? "/login/cafe-front"
-      : "/login/head-office";
+      : loginPathForRequestPath(pathname, req.nextUrl.search);
     const loginUrl = new URL(loginPath, req.url);
     loginUrl.searchParams.set("error", "auth_unconfigured");
     return stampTenant(NextResponse.redirect(loginUrl), tenantSlug);
@@ -174,7 +215,7 @@ async function runAuthProxy(
 
     const loginPath = pathname.startsWith("/cafe-front")
       ? "/login/cafe-front"
-      : "/login/head-office";
+      : loginPathForRequestPath(pathname, req.nextUrl.search);
     const loginUrl = new URL(loginPath, req.url);
     const returnPath = `${pathname}${req.nextUrl.search}`;
     if (returnPath.startsWith("/") && !returnPath.startsWith("//")) {
@@ -188,10 +229,11 @@ async function runAuthProxy(
   }
 
   const user = userData.user;
-  const profile = await fetchBackOfficeUserProfile(supabase, user);
+  const profile = await fetchBackOfficeUserProfile(supabase, user, tenantSlug);
   const roleString = profile.role;
   const expectedPortal = portalPathForRole(roleString);
-  const isGodMode = roleString === "MD" || roleString === "OD";
+  const userLoginPath = loginPathForRole(roleString, profile);
+  const search = req.nextUrl.search;
 
   const applyCookies = (redirectResponse: NextResponse) => {
     cookiesToSet.forEach(({ name, value, options }) => {
@@ -200,10 +242,15 @@ async function runAuthProxy(
     return stampTenant(redirectResponse, tenantSlug);
   };
 
-  const portalGate = await resolvePortalAccessGate(req, profile, user.email);
+  const portalGate = await resolvePortalAccessGate(
+    req,
+    profile,
+    user.email,
+    user.last_sign_in_at,
+  );
   if (portalGate === "revoked" || portalGate === "not_provisioned") {
     await supabase.auth.signOut();
-    const loginUrl = new URL("/login/head-office", req.url);
+    const loginUrl = new URL(userLoginPath === "/login" ? "/login/hq" : userLoginPath, req.url);
     loginUrl.searchParams.set(
       "error",
       portalGate === "revoked" ? "access_revoked" : "not_provisioned",
@@ -229,11 +276,40 @@ async function runAuthProxy(
     );
   }
 
+  if (portalGate === "setup_2fa" && pathname !== "/login/setup-2fa") {
+    return applyCookies(
+      NextResponse.redirect(new URL("/login/setup-2fa", req.url)),
+    );
+  }
+
+  if (portalGate === "verify_2fa" && pathname !== "/login/verify-2fa") {
+    return applyCookies(
+      NextResponse.redirect(new URL("/login/verify-2fa", req.url)),
+    );
+  }
+
+  if (
+    !(await enforceHeadOfficeGeofenceSession(
+      req,
+      profile,
+      user.email ?? "",
+      pathname,
+    )) &&
+    !isPortalPinExemptPath(pathname)
+  ) {
+    await supabase.auth.signOut();
+    const loginUrl = new URL(userLoginPath === "/login" ? "/login/hq" : userLoginPath, req.url);
+    loginUrl.searchParams.set("error", "geofence_denied");
+    const denied = applyCookies(NextResponse.redirect(loginUrl));
+    clearPortalPinSessionCookies(denied);
+    return denied;
+  }
+
   if (pathname === "/") {
     const landing = authenticatedLandingPath(roleString, profile);
     const target =
-      landing === "/login/head-office"
-        ? "/login/head-office?error=no_portal_rank"
+      landing === "/login" || landing.startsWith("/login/")
+        ? `${userLoginPath}?error=no_portal_rank`
         : landing;
     return applyCookies(NextResponse.redirect(new URL(target, req.url)));
   }
@@ -246,22 +322,18 @@ async function runAuthProxy(
     if (!roleString) {
       return applyCookies(
         NextResponse.redirect(
-          new URL("/login/head-office?error=no_portal_rank", req.url),
+          new URL("/login/hq?error=no_portal_rank", req.url),
         ),
       );
     }
-    if (!canAccessHqHub(roleString)) {
-      const fallback =
-        expectedPortal ??
-        (authenticatedLandingPath(roleString) !== "/login/head-office"
-          ? authenticatedLandingPath(roleString)
-          : null);
-      if (fallback) {
+    if (!canAccessHqHub(roleString) && !profile.rbacGated) {
+      const fallback = authenticatedLandingPath(roleString, profile);
+      if (fallback && !fallback.startsWith("/login")) {
         return applyCookies(NextResponse.redirect(new URL(fallback, req.url)));
       }
       return applyCookies(
         NextResponse.redirect(
-          new URL("/login/head-office?error=no_portal_rank", req.url),
+          new URL(`${userLoginPath}?error=wrong_portal`, req.url),
         ),
       );
     }
@@ -271,28 +343,27 @@ async function runAuthProxy(
   if (pathname.startsWith("/hq/")) {
     if (pathname === "/hq/audit" || pathname.startsWith("/hq/audit/")) {
       if (!canAccessPortalActivityLedger(roleString)) {
-        const fallback =
-          expectedPortal ??
-          (authenticatedLandingPath(roleString) !== "/login/head-office"
-            ? authenticatedLandingPath(roleString)
-            : "/dashboard");
+        const fallback = authenticatedLandingPath(roleString, profile);
         return applyCookies(
-          NextResponse.redirect(new URL(fallback, req.url)),
+          NextResponse.redirect(
+            new URL(
+              fallback.startsWith("/login") ? "/dashboard" : fallback,
+              req.url,
+            ),
+          ),
         );
       }
       return stampTenant(response, tenantSlug);
     }
 
-    const hqAllowed = isGodMode || roleString === "HR" || roleString === "FM";
-    if (!hqAllowed) {
-      if (expectedPortal) {
-        return applyCookies(
-          NextResponse.redirect(new URL(expectedPortal, req.url)),
-        );
-      }
+    if (!canAccessPathForProfile(pathname, profile, search)) {
+      const fallback = authenticatedLandingPath(roleString, profile);
       return applyCookies(
         NextResponse.redirect(
-          new URL("/login/head-office?error=no_portal_rank", req.url),
+          new URL(
+            fallback.startsWith("/login") ? `${userLoginPath}?error=hq_denied` : fallback,
+            req.url,
+          ),
         ),
       );
     }
@@ -327,20 +398,11 @@ async function runAuthProxy(
   }
 
   if (pathname === "/executive" || pathname.startsWith("/executive/")) {
-    const isExecutive = roleString === "MD" || roleString === "OD";
-    const isCafeBackoffice =
-      pathname === "/executive/cafe" || pathname.startsWith("/executive/cafe/");
-    if (!isExecutive) {
-      const cafeAllowed =
-        isCafeBackoffice && (roleString === "HR" || roleString === "FM");
-      if (!cafeAllowed) {
-        const deniedUrl = new URL("/login/head-office", req.url);
-        deniedUrl.searchParams.set("error", "executive_denied");
-        if (roleString) {
-          deniedUrl.searchParams.set("role", roleString);
-        }
-        return applyCookies(NextResponse.redirect(deniedUrl));
-      }
+    if (!canAccessPathForProfile(pathname, profile, search)) {
+      const deniedUrl = new URL(userLoginPath, req.url);
+      deniedUrl.searchParams.set("error", "wrong_portal");
+      if (roleString) deniedUrl.searchParams.set("role", roleString);
+      return applyCookies(NextResponse.redirect(deniedUrl));
     }
     return stampTenant(response, tenantSlug);
   }
@@ -359,72 +421,12 @@ async function runAuthProxy(
     pathname === "/invoice-desk" ||
     pathname.startsWith("/invoice-desk/")
   ) {
-    if (isGodMode) {
-      return stampTenant(response, tenantSlug);
-    }
-
-    if (profile.rbacGated) {
-      if (!canAccessPathForProfile(pathname, profile)) {
-        const landing = authenticatedLandingPath(roleString, profile);
-        const target =
-          landing === "/login/head-office"
-            ? "/login/head-office?error=no_portal_rank"
-            : landing;
-        return applyCookies(NextResponse.redirect(new URL(target, req.url)));
-      }
-      return stampTenant(response, tenantSlug);
-    }
-
-    const tmSharedOmPath =
-      roleString === "TM" &&
-      (pathname === "/om/sites/location" ||
-        pathname.startsWith("/om/sites/location/") ||
-        pathname === "/om/guard-cards" ||
-        pathname.startsWith("/om/guard-cards/"));
-
-    const inOwnPortal =
-      expectedPortal &&
-      (pathname === expectedPortal ||
-        pathname.startsWith(`${expectedPortal}/`) ||
-        tmSharedOmPath);
-
-    if (!expectedPortal || !inOwnPortal) {
-      if (expectedPortal) {
-        return applyCookies(
-          NextResponse.redirect(new URL(expectedPortal, req.url)),
-        );
-      }
-      return applyCookies(
-        NextResponse.redirect(
-          new URL("/login/head-office?error=no_portal_rank", req.url),
-        ),
-      );
-    }
-
-    if (
-      expectedPortal === "/om" ||
-      expectedPortal === "/hr" ||
-      expectedPortal === "/fm"
-    ) {
-      const ip = getClientIp(req);
-      const latHeader = req.headers.get("x-user-lat");
-      const lngHeader = req.headers.get("x-user-lng");
-      const lat = latHeader ? Number.parseFloat(latHeader) : undefined;
-      const lng = lngHeader ? Number.parseFloat(lngHeader) : undefined;
-
-      const allowed = verifyOfficeLocation(ip, {
-        lat: Number.isFinite(lat as number) ? (lat as number) : undefined,
-        lng: Number.isFinite(lng as number) ? (lng as number) : undefined,
-        role: roleString,
-      });
-
-      if (!allowed) {
-        return applyCookies(
-          NextResponse.redirect(
-            new URL("/login/head-office?error=geofence_denied", req.url),
-          ),
-        );
-      }
+    if (!canAccessPathForProfile(pathname, profile, search)) {
+      const landing = authenticatedLandingPath(roleString, profile);
+      const target = landing.startsWith("/login")
+        ? `${userLoginPath}?error=wrong_portal`
+        : landing;
+      return applyCookies(NextResponse.redirect(new URL(target, req.url)));
     }
 
     return stampTenant(response, tenantSlug);
@@ -437,10 +439,11 @@ export async function middleware(req: NextRequest) {
   const hostname = req.headers.get("host")?.split(":")[0] ?? "";
   const { pathname, search } = req.nextUrl;
 
-  // Never expose the public portal catalog — staff use direct sign-in URLs.
-  if (pathname === "/login") {
+  // Staff choose their isolated portal at /login (MD · OM · TM · HQ).
+  if (pathname === "/login/head-office") {
     const redirectUrl = req.nextUrl.clone();
-    redirectUrl.pathname = "/login/head-office";
+    redirectUrl.pathname = "/login/hq";
+    redirectUrl.search = req.nextUrl.search;
     return NextResponse.redirect(redirectUrl);
   }
 
@@ -463,6 +466,26 @@ export async function middleware(req: NextRequest) {
       req.cookies.get(TENANT_SLUG_COOKIE)?.value,
     );
     return NextResponse.redirect(tenantSubdomainUrl(slug, pathname, search));
+  }
+
+  // Public security marketing site — classicventuresecurity.com: marketing pages + /clientlogin only.
+  // Staff portals (/login, /hr, …) live on cvs.pearzen.tech — never expose them on this domain.
+  if (isSecurityWebsiteHost(hostname)) {
+    if (pathname === "/") {
+      const redirectUrl = req.nextUrl.clone();
+      redirectUrl.pathname = "/security-website";
+      return stampTenant(NextResponse.redirect(redirectUrl), CVS_TENANT_SLUG);
+    }
+    if (isSecurityWebsitePublicPath(pathname)) {
+      return stampTenant(
+        NextResponse.next({ request: { headers: buildRequestWithTenant(req, CVS_TENANT_SLUG) } }),
+        CVS_TENANT_SLUG,
+      );
+    }
+    const redirectUrl = req.nextUrl.clone();
+    redirectUrl.pathname = "/security-website";
+    redirectUrl.search = "";
+    return stampTenant(NextResponse.redirect(redirectUrl), CVS_TENANT_SLUG);
   }
 
   // Public menu domain must never serve ERP / staff portals (misconfigured DNS guard).

@@ -1,22 +1,10 @@
 'use server'
 
-import { cookies } from 'next/headers';
 import { createSupabaseServerClient } from '../../../../../../packages/supabase/server';
-import { redirect } from 'next/navigation';
-
-async function resolveEpf(): Promise<string> {
-  const cookieStore = await cookies();
-  const demo = cookieStore.get('sm_demo_session')?.value;
-  if (demo) return demo.toUpperCase();
-
-  const supabase = await createSupabaseServerClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) redirect('/login');
-  return session.user.email?.split('@')[0].toUpperCase() ?? '';
-}
+import { resolveSmSessionEpf } from '../../../../lib/sm-assignments';
 
 export async function submitAttendanceAction(formData: FormData) {
-  const epf = await resolveEpf();
+  const epf = await resolveSmSessionEpf();
   const supabase = await createSupabaseServerClient();
 
   const shiftDate = formData.get('shift_date') as string;

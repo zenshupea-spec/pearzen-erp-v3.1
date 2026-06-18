@@ -2,6 +2,12 @@
 const nextConfig = {
   reactStrictMode: true,
   devIndicators: false,
+  images: {
+    remotePatterns: [{ protocol: 'https', hostname: '**' }],
+  },
+  serverActions: {
+    bodySizeLimit: '4mb',
+  },
   typescript: {
     // WIP branches have TS drift; unblock production deploys until types are aligned.
     ignoreBuildErrors: true,

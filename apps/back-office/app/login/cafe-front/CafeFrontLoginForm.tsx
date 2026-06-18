@@ -149,7 +149,7 @@ export default function CafeFrontLoginForm({
               GPS · Selfie check-in at site · HR verifies identity
             </p>
             <p className="text-[10px] font-mono text-slate-400">
-              Forgot your PIN? Contact HR to issue a new OTP.
+              OTP expires in 1 minute · Forgot your PIN? Contact HR to issue a new OTP.
             </p>
           </div>
           </div>

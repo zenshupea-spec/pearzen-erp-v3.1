@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Settings,
   Clock,
@@ -64,8 +64,6 @@ import {
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
 import {
-  getComplianceConfig,
-  updateComplianceSettings,
   getShiftSettings,
   updateShiftSettings,
   getGeofenceSettings,
@@ -79,29 +77,18 @@ import {
 } from './actions';
 import {
   DEFAULT_GEOFENCE_RADIUS_M,
+  formatGpsCoords,
   MAX_GEOFENCE_RADIUS_M,
   MIN_GEOFENCE_RADIUS_M,
+  parseGpsCoords,
 } from '../../../lib/site-geofence';
 import { fetchCompanyLogo, persistCompanyLogo, clearCompanyLogo } from './logo-actions';
 import { getRankPayMatrix, saveRankPayMatrix } from './rank-matrix-actions';
 import { getGratuitySettings, saveGratuitySettings } from './gratuity-actions';
 import { getWelfareFundSettings, saveWelfareFundSettings } from './welfare-fund-actions';
-import { getMdEngineConstants, saveMdEngineConstants, type GuardMonthPreviewQty } from './engine-constants-actions';
+import { getMdEngineConstants, saveMdEngineConstants, type CafeMonthPreviewQty, type GuardMonthPreviewQty } from './engine-constants-actions';
 import { getBankExportSettings, saveBankExportSettings } from './bank-export-actions';
 import { getPayFormulasSettings, savePayFormulasSettings } from './pay-formulas-actions';
-import { getRbacMatrixPayload, savePortalRbacMatrix } from './rbac-actions';
-import {
-  provisionHeadOfficePortalOtpAction,
-  resetHeadOfficePortalAccessAction,
-} from './portal-auth-actions';
-import {
-  isSystemLockedRank,
-  makeBlankPortalRbacRow,
-  PORTAL_RBAC_PORTALS,
-  type HeadOfficeRbacStaffRow,
-  type PortalAccessLevel,
-  type PortalRbacMatrix,
-} from '../../../../../packages/portal-rbac';
 import type { GratuitySettings } from '../../../../../packages/gratuity';
 import type { WelfareFundSettings } from '../../../../../packages/welfare-fund';
 import {
@@ -131,6 +118,16 @@ import {
   SettingsCardHeader,
   SettingsTraceability,
 } from './settings-section-ui';
+import {
+  getInternalWorkLocations,
+  saveInternalWorkLocations,
+} from './internal-work-locations-actions';
+import {
+  createEmptyInternalWorkLocation,
+  DEFAULT_INTERNAL_WORK_LOCATIONS,
+  type InternalWorkLocation,
+  type InternalWorkLocationsSettings,
+} from '../../../lib/internal-work-locations';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -356,1215 +353,6 @@ const INITIAL_ENTITY_NAMES: EntityNames = {
   realEstate:  'Shalom Residence',
 };
 
-// ─── Security & Sessions ──────────────────────────────────────────────────────
-
-type VaultRole = 'MD' | 'OD' | 'Exec Admin';
-type SessionStatus = 'ONLINE' | 'IDLE';
-
-interface VaultSession {
-  id: string;
-  user: string;
-  role: VaultRole;
-  device: string;
-  ipAddress: string;
-  location: string;
-  lastActive: string;
-  status: SessionStatus;
-  isCurrent: boolean;
-}
-
-const INITIAL_SESSIONS: VaultSession[] = [
-  {
-    id: 'S-001',
-    user: 'Managing Director',
-    role: 'MD',
-    device: 'macOS 14 · Chrome 124',
-    ipAddress: '112.134.18.42',
-    location: 'Colombo, LK',
-    lastActive: 'Just now',
-    status: 'ONLINE',
-    isCurrent: true,
-  },
-  {
-    id: 'S-002',
-    user: 'Operations Developer',
-    role: 'OD',
-    device: 'Windows 11 · Edge 123',
-    ipAddress: '112.134.92.17',
-    location: 'Colombo, LK',
-    lastActive: '4 min ago',
-    status: 'ONLINE',
-    isCurrent: false,
-  },
-  {
-    id: 'S-003',
-    user: 'Exec Admin — Finance',
-    role: 'Exec Admin',
-    device: 'iPadOS 17 · Safari',
-    ipAddress: '203.115.44.88',
-    location: 'Kandy, LK',
-    lastActive: '18 min ago',
-    status: 'IDLE',
-    isCurrent: false,
-  },
-  {
-    id: 'S-004',
-    user: 'Exec Admin — HR',
-    role: 'Exec Admin',
-    device: 'Android 14 · Chrome Mobile',
-    ipAddress: '112.134.55.201',
-    location: 'Colombo, LK',
-    lastActive: '1 hr ago',
-    status: 'IDLE',
-    isCurrent: false,
-  },
-];
-
-const ROLE_META: Record<VaultRole, { label: string; cls: string }> = {
-  MD:         { label: 'MD',         cls: 'border-indigo-200/80 bg-indigo-50/80 text-indigo-800' },
-  OD:         { label: 'OD',         cls: 'border-sky-200/80 bg-sky-50/80 text-sky-800' },
-  'Exec Admin': { label: 'Exec Admin', cls: 'border-slate-200/80 bg-slate-100/80 text-slate-700' },
-};
-
-function SessionStatusBadge({ status }: { status: SessionStatus }) {
-  if (status === 'ONLINE') {
-    return (
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200/80 bg-emerald-50/80 px-3 py-1 text-sm font-black uppercase tracking-wider text-emerald-800">
-        <CircleDot className="h-3 w-3 text-emerald-500 animate-pulse" />
-        Online
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200/80 bg-amber-50/80 px-3 py-1 text-sm font-black uppercase tracking-wider text-amber-800">
-      <Clock className="h-3 w-3" />
-      Idle
-    </span>
-  );
-}
-
-function SecuritySessionsPanel() {
-  const [sessions, setSessions] = useState<VaultSession[]>(INITIAL_SESSIONS);
-  const [toast, setToast] = useState<string | null>(null);
-
-  const showToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 2500);
-  };
-
-  const revokeSession = (id: string) => {
-    setSessions((prev) => prev.filter((s) => s.id !== id));
-    showToast('Vault session revoked — user signed out remotely.');
-  };
-
-  const terminateAllOthers = () => {
-    setSessions((prev) => prev.filter((s) => s.isCurrent));
-    showToast('All other vault sessions terminated.');
-  };
-
-  const otherCount = sessions.filter((s) => !s.isCurrent).length;
-
-  return (
-    <ExecutiveGlassCard className="overflow-hidden">
-      {toast && (
-        <div className="border-b border-emerald-200/80 bg-emerald-50/80 px-5 py-2.5">
-          <p className="flex items-center gap-2 text-sm font-bold text-emerald-800">
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            {toast}
-          </p>
-        </div>
-      )}
-
-      <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-rose-200/80 bg-rose-50/80">
-              <Shield className="h-5 w-5 text-rose-700" />
-            </div>
-              <div>
-                <h3 className="text-lg font-bold text-slate-800">Active Vault Sessions</h3>
-                <p className="text-sm font-medium text-slate-600">
-                  Monitor executive portal logins and revoke unauthorized or stale access in real time.
-                </p>
-                <SettingsTraceability />
-              </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={terminateAllOthers}
-            disabled={otherCount === 0}
-            className={`flex items-center gap-2 rounded-2xl border px-4 py-2.5 text-sm font-black uppercase tracking-widest shadow-sm transition-all ${
-              otherCount === 0
-                ? 'cursor-not-allowed border-slate-200/80 bg-slate-100/80 text-slate-600'
-                : 'border-rose-300/80 bg-rose-600 text-white shadow-rose-600/25 hover:bg-rose-500'
-            }`}
-          >
-            <Lock className="h-3.5 w-3.5" />
-            Terminate All Other Sessions
-          </button>
-        </div>
-      </div>
-
-      <div className="overflow-x-auto">
-        <table className="w-full text-left text-sm">
-          <thead className="border-b border-slate-200/80 bg-slate-50/60 text-sm font-bold uppercase tracking-widest text-slate-500">
-            <tr>
-              <th className="px-6 py-3">User</th>
-              <th className="px-6 py-3">Device</th>
-              <th className="px-6 py-3">IP Address &amp; Location</th>
-              <th className="px-6 py-3">Last Active</th>
-              <th className="px-6 py-3 text-center">Status</th>
-              <th className="px-6 py-3 text-right">Action</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200/60">
-            {sessions.map((session) => {
-              const roleMeta = ROLE_META[session.role];
-              return (
-                <tr
-                  key={session.id}
-                  className={`transition-colors ${
-                    session.isCurrent ? 'bg-emerald-50/30 hover:bg-emerald-50/50' : 'hover:bg-white/40'
-                  }`}
-                >
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border border-slate-200/80 bg-white/80">
-                        <User className="h-4 w-4 text-slate-500" />
-                      </div>
-                      <div>
-                        <p className="font-bold text-slate-900">{session.user}</p>
-                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                          <span className={`inline-flex rounded-full border px-2 py-0.5 text-sm font-black ${roleMeta.cls}`}>
-                            {roleMeta.label}
-                          </span>
-                          {session.isCurrent && (
-                            <span className="inline-flex rounded-full border border-emerald-200/80 bg-emerald-100/80 px-2 py-0.5 text-sm font-black text-emerald-800">
-                              Current Session
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-2">
-                      <Monitor className="h-3.5 w-3.5 flex-shrink-0 text-slate-600" />
-                      <span className="text-sm font-semibold text-slate-700">{session.device}</span>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4">
-                    <div className="flex items-start gap-2">
-                      <MapPin className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-slate-600" />
-                      <div>
-                        <p className="font-mono text-sm font-semibold text-slate-800">{session.ipAddress}</p>
-                        <p className="text-sm text-slate-500">{session.location}</p>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4">
-                    <span className="text-sm font-semibold text-slate-700">{session.lastActive}</span>
-                  </td>
-                  <td className="px-6 py-4 text-center">
-                    <SessionStatusBadge status={session.status} />
-                  </td>
-                  <td className="px-6 py-4 text-right">
-                    {session.isCurrent ? (
-                      <span className="text-sm font-semibold text-emerald-700">Protected</span>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => revokeSession(session.id)}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-rose-300/80 bg-rose-50/80 px-3 py-1.5 text-sm font-black uppercase tracking-wider text-rose-800 transition-all hover:bg-rose-100/80 hover:shadow-sm"
-                      >
-                        <OctagonX className="h-3 w-3" />
-                        Revoke Access
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      {sessions.length === 0 && (
-        <div className="px-6 py-10 text-center text-sm text-slate-500">No active vault sessions.</div>
-      )}
-
-      <div className="border-t border-slate-200/80 bg-slate-50/60 px-6 py-3">
-        <p className="text-sm text-slate-500">
-          {sessions.length} active session{sessions.length !== 1 ? 's' : ''} ·{' '}
-          {sessions.filter((s) => s.status === 'ONLINE').length} online ·{' '}
-          Revoked sessions are immediately invalidated and require re-authentication.
-        </p>
-      </div>
-    </ExecutiveGlassCard>
-  );
-}
-
-// ─── Vault PIN Configuration Panel ───────────────────────────────────────────
-
-const MFA_VALID_CODE = '000000'; // mock
-
-function VaultPinConfigPanel() {
-  const [idleTimeout,    setIdleTimeout]    = useState(30);
-  const [autoLockEnabled, setAutoLockEnabled] = useState(true);
-  const [policyLoading,  setPolicyLoading]  = useState(true);
-  const [mfaCode,        setMfaCode]        = useState('');
-  const [newPin,         setNewPin]         = useState('');
-  const [confirmPin,     setConfirmPin]     = useState('');
-  const [mfaError,       setMfaError]       = useState(false);
-  const [pinMismatch,    setPinMismatch]    = useState(false);
-  const [saved,          setSaved]          = useState(false);
-  const [timeoutSaved,   setTimeoutSaved]   = useState(false);
-
-  const pinReady =
-    mfaCode.length === 6 &&
-    newPin.length === 4 &&
-    confirmPin.length === 4;
-
-  const handleUpdatePin = () => {
-    setMfaError(false);
-    setPinMismatch(false);
-
-    if (mfaCode !== MFA_VALID_CODE) {
-      setMfaError(true);
-      setMfaCode('');
-      return;
-    }
-    if (newPin !== confirmPin) {
-      setPinMismatch(true);
-      setConfirmPin('');
-      return;
-    }
-
-    setSaved(true);
-    setMfaCode('');
-    setNewPin('');
-    setConfirmPin('');
-    setTimeout(() => setSaved(false), 3000);
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const { getVaultSessionPolicy } = await import(
-          '../../actions/vault-session-actions'
-        );
-        const policy = await getVaultSessionPolicy();
-        if (cancelled) return;
-        setIdleTimeout(policy.idleTimeoutMinutes);
-        setAutoLockEnabled(policy.autoLockEnabled);
-      } finally {
-        if (!cancelled) setPolicyLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const handleTimeoutSave = async () => {
-    try {
-      const { saveVaultSessionPolicy } = await import(
-        '../../actions/vault-session-actions'
-      );
-      await saveVaultSessionPolicy(idleTimeout, autoLockEnabled);
-      setTimeoutSaved(true);
-      setTimeout(() => setTimeoutSaved(false), 2500);
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to save vault timeout.');
-    }
-  };
-
-  return (
-    <ExecutiveGlassCard className="overflow-hidden">
-      {/* Card header */}
-      <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-indigo-200/80 bg-indigo-50/80">
-            <KeyRound className="h-5 w-5 text-indigo-700" />
-          </div>
-          <div>
-            <h3 className="text-lg font-bold text-slate-800">
-              Vault PIN Configuration
-            </h3>
-            <p className="text-sm font-medium text-slate-600">
-              Control idle auto-lock behaviour and update the master vault PIN with MFA verification
-            </p>
-            <SettingsTraceability />
-          </div>
-        </div>
-      </div>
-
-      <div className="divide-y divide-slate-200/60">
-
-        {/* ── Idle Auto-Lock Timeout ── */}
-        <div className="px-6 py-5">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div className="flex items-start gap-3">
-              <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl border border-amber-200/80 bg-amber-50/80">
-                <Timer className="h-4 w-4 text-amber-700" />
-              </div>
-              <div>
-                <p className="text-sm font-bold text-slate-900">Idle Auto-Lock Timeout</p>
-                <p className="mt-0.5 text-sm text-slate-500">
-                  The vault will soft-lock after this many minutes of inactivity. Any mouse or keyboard event then triggers the PIN screen.
-                </p>
-              </div>
-            </div>
-            {timeoutSaved && (
-              <span className="flex items-center gap-1.5 rounded-xl border border-emerald-200/80 bg-emerald-50/80 px-3 py-1.5 text-sm font-bold text-emerald-800">
-                <CheckCircle2 className="h-3.5 w-3.5" />
-                Timeout updated
-              </span>
-            )}
-          </div>
-
-          {/* ── Enable Auto-Lock master toggle ── */}
-          <div className="mt-4 flex flex-col gap-1.5">
-            <div className="flex items-center justify-between rounded-xl border border-slate-200/70 bg-slate-50/60 px-4 py-3">
-              <div className="flex items-center gap-2.5">
-                {autoLockEnabled
-                  ? <ShieldCheck className="h-4 w-4 text-indigo-600 flex-shrink-0" />
-                  : <Unlock className="h-4 w-4 text-rose-500 flex-shrink-0" />
-                }
-                <span className="text-sm font-black uppercase tracking-wider text-slate-700">
-                  Enable Auto-Lock
-                </span>
-              </div>
-              {/* Toggle pill */}
-              <button
-                type="button"
-                role="switch"
-                aria-checked={autoLockEnabled}
-                onClick={() => setAutoLockEnabled((v) => !v)}
-                className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer items-center rounded-full border-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 ${
-                  autoLockEnabled
-                    ? 'border-indigo-300/80 bg-indigo-600'
-                    : 'border-slate-300/80 bg-slate-300'
-                }`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition-transform duration-200 ${
-                    autoLockEnabled ? 'translate-x-5' : 'translate-x-0.5'
-                  }`}
-                />
-              </button>
-            </div>
-
-            {/* Warning when auto-lock is disabled */}
-            {!autoLockEnabled && (
-              <div className="flex items-start gap-2 rounded-xl border border-rose-300/70 bg-rose-50/70 px-3.5 py-2.5">
-                <ShieldAlert className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-rose-600" />
-                <p className="text-sm font-semibold leading-snug text-rose-700">
-                  Warning: Disabling auto-lock leaves the vault permanently open while unattended.
-                </p>
-              </div>
-            )}
-          </div>
-
-          <div className={`mt-4 flex flex-wrap items-center gap-4 transition-opacity duration-200 ${autoLockEnabled ? 'opacity-100' : 'opacity-40 pointer-events-none select-none'}`}>
-            <div>
-              <label className={`${labelCls} flex items-center gap-1.5`}>
-                <Clock className="h-3 w-3 text-amber-600" />
-                Idle Auto-Lock Timeout (Minutes)
-              </label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="number"
-                  min={1}
-                  max={60}
-                  value={idleTimeout}
-                  disabled={!autoLockEnabled}
-                  onChange={(e) => setIdleTimeout(Math.max(1, Math.min(60, parseInt(e.target.value) || 1)))}
-                  className="w-24 rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-center text-sm font-black text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-500/40 transition-all disabled:cursor-not-allowed"
-                />
-                <span className="text-sm font-semibold text-slate-500">
-                  minute{idleTimeout !== 1 ? 's' : ''} of inactivity
-                </span>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleTimeoutSave}
-              disabled={!autoLockEnabled || policyLoading}
-              className="mt-4 flex items-center gap-2 rounded-xl border border-amber-200/80 bg-amber-50/80 px-4 py-2 text-sm font-black uppercase tracking-widest text-amber-800 transition-all hover:bg-amber-100/80 hover:shadow-sm disabled:cursor-not-allowed"
-            >
-              <Save className="h-3.5 w-3.5" />
-              Apply Timeout
-            </button>
-          </div>
-
-          {autoLockEnabled && (
-            <div className={`mt-4 flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-semibold ${
-              idleTimeout <= 2
-                ? 'border-rose-200/80 bg-rose-50/60 text-rose-800'
-                : idleTimeout <= 5
-                  ? 'border-amber-200/80 bg-amber-50/60 text-amber-800'
-                  : 'border-slate-200/60 bg-slate-50/60 text-slate-600'
-            }`}>
-              <ShieldCheck className="h-3.5 w-3.5 flex-shrink-0" />
-              Vault will soft-lock after <strong className="mx-1">{idleTimeout} min</strong> of inactivity.
-              {idleTimeout <= 2 && ' High-security mode — very aggressive lockout.'}
-              {idleTimeout > 2 && idleTimeout <= 5 && ' Recommended range for executive sessions.'}
-              {idleTimeout > 5 && ' Recommended range for executive sessions.'}
-            </div>
-          )}
-        </div>
-
-        {/* ── Change Master PIN ── */}
-        <div className="px-6 py-5">
-          <div className="mb-5 flex items-start gap-3">
-            <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl border border-rose-200/80 bg-rose-50/80">
-              <Lock className="h-4 w-4 text-rose-700" />
-            </div>
-            <div>
-              <p className="text-sm font-bold text-slate-900">Change Master PIN</p>
-              <p className="mt-0.5 text-sm text-slate-500">
-                MFA verification is required before setting a new vault PIN. The current PIN is used for idle-lock resumption.
-              </p>
-            </div>
-          </div>
-
-          {saved && (
-            <div className="mb-4 flex items-center gap-2 rounded-xl border border-emerald-200/80 bg-emerald-50/80 px-4 py-3 text-sm font-bold text-emerald-800">
-              <ShieldCheck className="h-4 w-4 flex-shrink-0" />
-              Vault PIN updated successfully. New PIN is now active.
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-
-            {/* MFA Code */}
-            <div>
-              <label className={`${labelCls} flex items-center gap-1.5`}>
-                <ShieldCheck className="h-3 w-3 text-indigo-600" />
-                Current Google Auth Code (MFA)
-              </label>
-              <input
-                type="text"
-                inputMode="numeric"
-                maxLength={6}
-                value={mfaCode}
-                onChange={(e) => {
-                  setMfaError(false);
-                  setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6));
-                }}
-                placeholder="6-digit code"
-                className={`${inputCls} font-mono tracking-widest ${
-                  mfaError ? 'border-rose-300/80 ring-2 ring-rose-500/20' : ''
-                }`}
-              />
-              {mfaError && (
-                <p className="mt-1 flex items-center gap-1 text-sm font-bold text-rose-700">
-                  <ShieldAlert className="h-3 w-3" />
-                  Invalid MFA code
-                </p>
-              )}
-            </div>
-
-            {/* New PIN */}
-            <div>
-              <label className={`${labelCls} flex items-center gap-1.5`}>
-                <KeyRound className="h-3 w-3 text-slate-500" />
-                New 4-Digit PIN
-              </label>
-              <input
-                type="password"
-                inputMode="numeric"
-                maxLength={4}
-                value={newPin}
-                onChange={(e) => setNewPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
-                placeholder="••••"
-                className={`${inputCls} text-center tracking-[0.4em]`}
-              />
-              {newPin.length > 0 && newPin.length < 4 && (
-                <p className="mt-1 text-sm text-slate-600">{4 - newPin.length} digit{4 - newPin.length !== 1 ? 's' : ''} remaining</p>
-              )}
-            </div>
-
-            {/* Confirm PIN */}
-            <div>
-              <label className={`${labelCls} flex items-center gap-1.5`}>
-                <KeyRound className="h-3 w-3 text-slate-500" />
-                Confirm New PIN
-              </label>
-              <input
-                type="password"
-                inputMode="numeric"
-                maxLength={4}
-                value={confirmPin}
-                onChange={(e) => {
-                  setPinMismatch(false);
-                  setConfirmPin(e.target.value.replace(/\D/g, '').slice(0, 4));
-                }}
-                placeholder="••••"
-                className={`${inputCls} text-center tracking-[0.4em] ${
-                  pinMismatch ? 'border-rose-300/80 ring-2 ring-rose-500/20' : ''
-                }`}
-              />
-              {pinMismatch && (
-                <p className="mt-1 flex items-center gap-1 text-sm font-bold text-rose-700">
-                  <ShieldAlert className="h-3 w-3" />
-                  PINs do not match
-                </p>
-              )}
-              {confirmPin.length === 4 && newPin.length === 4 && confirmPin === newPin && !pinMismatch && (
-                <p className="mt-1 flex items-center gap-1 text-sm font-bold text-emerald-700">
-                  <CheckCircle2 className="h-3 w-3" />
-                  PINs match
-                </p>
-              )}
-            </div>
-          </div>
-
-          {/* Security advisory */}
-          <div className="mt-4 flex items-start gap-2 rounded-xl border border-slate-200/60 bg-slate-50/60 px-3 py-2.5 text-sm text-slate-600">
-            <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-indigo-500" />
-            <span>
-              Your new PIN will replace the current vault PIN immediately. Avoid simple sequences (e.g. 1234, 0000).
-              The MFA code must be verified first — this action is logged to the vault audit trail.
-            </span>
-          </div>
-
-          {/* Update PIN button */}
-          <div className="mt-5 flex items-center justify-between gap-4">
-            <div className="flex items-center gap-1.5 text-sm font-semibold text-slate-500">
-              <Lock className="h-3 w-3" />
-              MFA-gated · Audit logged · Cannot be undone without re-verification
-            </div>
-            <button
-              type="button"
-              onClick={handleUpdatePin}
-              disabled={!pinReady}
-              className={`flex items-center gap-2 rounded-2xl px-6 py-2.5 text-sm font-black uppercase tracking-widest text-white shadow-lg transition-all ${
-                pinReady
-                  ? 'bg-slate-900 shadow-slate-900/20 hover:bg-slate-700'
-                  : 'cursor-not-allowed bg-slate-300 shadow-none'
-              }`}
-            >
-              <Lock className="h-4 w-4" />
-              Update PIN
-            </button>
-          </div>
-        </div>
-      </div>
-    </ExecutiveGlassCard>
-  );
-}
-
-// ─── MFA Enrollment Panel ─────────────────────────────────────────────────────
-
-const MFA_SLOTS: { role: string; label: string; setupKey: string; accentColor: string }[] = [
-  { role: 'MD', label: 'Managing Director (MD)', setupKey: 'A1B2 C3D4 E5F6 G7H8 I9J0', accentColor: 'indigo' },
-  { role: 'OD', label: 'Operations Developer (OD)', setupKey: 'Z9Y8 X7W6 V5U4 T3S2 R1Q0', accentColor: 'violet' },
-];
-
-function MfaSlot({ role, label, setupKey, accentColor }: { role: string; label: string; setupKey: string; accentColor: string }) {
-  const [otpCode,  setOtpCode]  = useState('');
-  const [enabled,  setEnabled]  = useState(false);
-  const [otpError, setOtpError] = useState(false);
-  const [toast,    setToast]    = useState<string | null>(null);
-
-  const accent = accentColor === 'violet' ? {
-    border: 'border-violet-200/80', bg: 'bg-violet-50/80', icon: 'text-violet-700',
-    ring: 'focus:ring-violet-500/40', btn: 'bg-violet-600 shadow-violet-600/25 hover:bg-violet-500',
-    label: 'text-violet-700', badge: 'border-violet-200/80 bg-violet-50/80 text-violet-800',
-  } : {
-    border: 'border-indigo-200/80', bg: 'bg-indigo-50/80', icon: 'text-indigo-700',
-    ring: 'focus:ring-indigo-500/40', btn: 'bg-indigo-600 shadow-indigo-600/25 hover:bg-indigo-500',
-    label: 'text-indigo-700', badge: 'border-emerald-200/80 bg-emerald-50/80 text-emerald-800',
-  };
-
-  const showToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 3000);
-  };
-
-  const handleEnable = () => {
-    setOtpError(false);
-    if (otpCode.length !== 6) { setOtpError(true); return; }
-    setEnabled(true);
-    setOtpCode('');
-    showToast(`MFA enabled for ${label}.`);
-  };
-
-  return (
-    <div className={`rounded-2xl border ${accent.border} bg-white/60 shadow-sm overflow-hidden`}>
-      {toast && (
-        <div className="border-b border-emerald-200/80 bg-emerald-50/80 px-5 py-2.5">
-          <p className="flex items-center gap-2 text-sm font-bold text-emerald-800">
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            {toast}
-          </p>
-        </div>
-      )}
-
-      {/* Slot header */}
-      <div className={`border-b ${accent.border} ${accent.bg} px-5 py-3 flex items-center justify-between gap-3`}>
-        <div className="flex items-center gap-2.5">
-          <div className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border ${accent.border} ${accent.bg}`}>
-            <Smartphone className={`h-4.5 w-4.5 ${accent.icon}`} />
-          </div>
-          <div>
-            <p className={`text-sm font-black uppercase tracking-widest ${accent.label}`}>{role}</p>
-            <p className="text-xs font-semibold text-slate-600">{label}</p>
-          </div>
-        </div>
-        {enabled ? (
-          <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-black uppercase tracking-wider ${accent.badge}`}>
-            <CircleDot className="h-2.5 w-2.5 text-emerald-500 animate-pulse" />
-            MFA Active
-          </span>
-        ) : (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200/80 bg-slate-50/80 px-2.5 py-1 text-xs font-bold uppercase tracking-wider text-slate-500">
-            Not Enrolled
-          </span>
-        )}
-      </div>
-
-      <div className="p-5">
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-[auto_1fr]">
-
-          {/* QR Code */}
-          <div className="flex flex-col items-center gap-2">
-            <div className="flex h-36 w-36 flex-col items-center justify-center rounded-2xl border-4 border-slate-800 bg-slate-800 shadow-lg shadow-slate-900/30 select-none">
-              <div className="mb-1 grid grid-cols-7 gap-0.5">
-                {Array.from({ length: 49 }).map((_, i) => {
-                  const corners = [0,1,2,3,4,5,6,7,13,14,20,21,27,28,34,35,42,43,44,45,46,47,48];
-                  const isFilled = corners.includes(i) || Math.random() > 0.6;
-                  return (
-                    <div key={i} className={`h-3 w-3 rounded-[2px] ${isFilled ? 'bg-white' : 'bg-slate-700'}`} />
-                  );
-                })}
-              </div>
-              <p className="mt-1 px-2 text-center text-[10px] font-bold uppercase tracking-wider text-slate-500 leading-tight">
-                Scan with<br />Authenticator
-              </p>
-            </div>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Step 1 — Scan QR</p>
-          </div>
-
-          {/* Setup fields */}
-          <div className="flex flex-col justify-center gap-4">
-            <div>
-              <label className={`${labelCls} flex items-center gap-1.5`}>
-                <KeyRound className="h-3 w-3 text-slate-500" />
-                Manual Setup Key
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  readOnly
-                  value={setupKey}
-                  className="w-full rounded-xl border border-slate-200/80 bg-slate-50/80 px-3 py-2 font-mono text-sm font-bold tracking-widest text-slate-700 shadow-inner focus:outline-none cursor-default select-all"
-                />
-                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                  Read Only
-                </span>
-              </div>
-            </div>
-
-            <div>
-              <label className={`${labelCls} flex items-center gap-1.5`}>
-                <ShieldCheck className="h-3 w-3 text-indigo-600" />
-                Verify 6-Digit Code
-              </label>
-              <div className="flex items-start gap-3">
-                <div className="flex-1">
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={6}
-                    value={otpCode}
-                    onChange={(e) => { setOtpError(false); setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6)); }}
-                    placeholder="6-digit code from authenticator app"
-                    disabled={enabled}
-                    className={`${inputCls} font-mono tracking-[0.35em] ${otpError ? 'border-rose-300/80 ring-2 ring-rose-500/20' : ''} ${enabled ? 'cursor-not-allowed opacity-60' : ''}`}
-                  />
-                  {otpError && (
-                    <p className="mt-1 flex items-center gap-1 text-sm font-bold text-rose-700">
-                      <ShieldAlert className="h-3 w-3" /> A 6-digit code is required
-                    </p>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={handleEnable}
-                  disabled={enabled}
-                  className={`flex flex-shrink-0 items-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-black uppercase tracking-widest text-white shadow-lg transition-all ${
-                    enabled ? 'cursor-not-allowed bg-emerald-400 shadow-none' : `${accent.btn}`
-                  }`}
-                >
-                  {enabled ? <><CheckCircle2 className="h-4 w-4" /> Enabled</> : <><Lock className="h-4 w-4" /> Enable</>}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function MfaEnrollmentPanel() {
-  return (
-    <ExecutiveGlassCard className="overflow-hidden">
-      {/* Card Header */}
-      <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-indigo-200/80 bg-indigo-50/80">
-            <Smartphone className="h-5 w-5 text-indigo-700" />
-          </div>
-          <div>
-            <h3 className="text-lg font-bold text-slate-800">Two-Factor Authentication (MFA) Setup</h3>
-            <p className="text-sm font-medium text-slate-600">
-              Bind Google Authenticator to each executive vault account — MD and OD each have an independent MFA slot.
-            </p>
-            <SettingsTraceability />
-          </div>
-          <span className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-indigo-200/80 bg-indigo-50/80 px-3 py-1 text-xs font-black uppercase tracking-wider text-indigo-800">
-            <Users className="h-3 w-3" />
-            2 Slots
-          </span>
-        </div>
-      </div>
-
-      <div className="p-6 space-y-5">
-        {MFA_SLOTS.map((slot) => (
-          <MfaSlot key={slot.role} {...slot} />
-        ))}
-
-        <div className="flex items-start gap-2 rounded-xl border border-amber-200/80 bg-amber-50/60 px-3 py-2.5 text-sm text-amber-900">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-amber-600" />
-          <span>
-            Once enabled on a slot, every vault login for that role will require both a password and a time-based 6-digit code.
-            Disabling MFA requires full admin re-verification via the audit trail.
-          </span>
-        </div>
-      </div>
-    </ExecutiveGlassCard>
-  );
-}
-
-// ─── RBAC Matrix Panel ────────────────────────────────────────────────────────
-
-interface RbacStaffRow {
-  id: string;
-  label: string;
-  sub: string;
-  email: string | null;
-  isLocked: boolean;
-}
-
-const RBAC_PORTALS = PORTAL_RBAC_PORTALS;
-
-const PORTAL_SECTION_SPANS = (() => {
-  const order: string[] = [];
-  const counts: Record<string, number> = {};
-  RBAC_PORTALS.forEach((p) => {
-    if (!counts[p.section]) { order.push(p.section); counts[p.section] = 0; }
-    counts[p.section]++;
-  });
-  return order.map((s) => ({ label: s, count: counts[s] }));
-})();
-
-function staffRowsFromPayload(staff: HeadOfficeRbacStaffRow[]): RbacStaffRow[] {
-  return staff.map((person) => ({
-    id: person.id,
-    label: person.fullName,
-    sub: person.rank ? `${person.rank} · Head Office` : 'Head Office · No rank set',
-    email: person.email,
-    isLocked: isSystemLockedRank(person.rank),
-  }));
-}
-
-const ACCESS_META: Record<PortalAccessLevel, { label: string; cls: string; dotCls: string; selectCls: string }> = {
-  FULL: {
-    label:     'Full Access',
-    cls:       'border-emerald-200/80 bg-emerald-50/80 text-emerald-900',
-    dotCls:    'bg-emerald-500',
-    selectCls: 'border-emerald-200/80 bg-emerald-50/80 text-emerald-900 focus:ring-emerald-500/40',
-  },
-  READ: {
-    label:     'Read Only',
-    cls:       'border-amber-200/80 bg-amber-50/80 text-amber-900',
-    dotCls:    'bg-amber-400',
-    selectCls: 'border-amber-200/80 bg-amber-50/80 text-amber-900 focus:ring-amber-500/40',
-  },
-  NONE: {
-    label:     'No Access',
-    cls:       'border-slate-200/80 bg-slate-100/80 text-slate-500',
-    dotCls:    'bg-slate-300',
-    selectCls: 'border-slate-200/80 bg-slate-50/80 text-slate-500 focus:ring-slate-400/40',
-  },
-};
-
-function RbacMatrixPanel({
-  audit,
-}: {
-  audit?: SettingsSectionAudit;
-}) {
-  const [staffRows, setStaffRows] = useState<RbacStaffRow[]>([]);
-  const [matrix, setMatrix] = useState<PortalRbacMatrix>({});
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [generatingId, setGeneratingId] = useState<string | null>(null);
-  const [resettingId, setResettingId] = useState<string | null>(null);
-  const [generatedOtp, setGeneratedOtp] = useState<{
-    otp: string;
-    staffName: string;
-    email: string;
-  } | null>(null);
-  const [otpCopied, setOtpCopied] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const payload = await getRbacMatrixPayload();
-        if (cancelled) return;
-        setStaffRows(staffRowsFromPayload(payload.staff));
-        setMatrix(payload.matrix);
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load staff permissions');
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const getCell = (employeeId: string, portalId: string): PortalAccessLevel =>
-    matrix[employeeId]?.[portalId] ?? 'NONE';
-
-  const setCell = (employeeId: string, portalId: string, val: PortalAccessLevel) =>
-    setMatrix((prev) => ({
-      ...prev,
-      [employeeId]: { ...(prev[employeeId] ?? makeBlankPortalRbacRow()), [portalId]: val },
-    }));
-
-  const handleSave = async () => {
-    setSaving(true);
-    setError(null);
-    const result = await savePortalRbacMatrix(matrix);
-    setSaving(false);
-    if (!result.success) {
-      setError(result.error ?? 'Failed to save permissions');
-      return;
-    }
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
-  };
-
-  const handleGenerateOtp = async (person: RbacStaffRow) => {
-    setAuthError(null);
-    setGeneratedOtp(null);
-    setGeneratingId(person.id);
-    const result = await provisionHeadOfficePortalOtpAction(person.id);
-    setGeneratingId(null);
-    if (result.error) {
-      setAuthError(result.error);
-      return;
-    }
-    if (result.success && result.otp) {
-      setGeneratedOtp({
-        otp: result.otp,
-        staffName: result.staffName ?? person.label,
-        email: result.email ?? person.email ?? '—',
-      });
-    }
-  };
-
-  const handleResetAccess = async (person: RbacStaffRow) => {
-    setAuthError(null);
-    setResettingId(person.id);
-    const result = await resetHeadOfficePortalAccessAction(person.id);
-    setResettingId(null);
-    if (result.error) {
-      setAuthError(result.error);
-      return;
-    }
-    setGeneratedOtp(null);
-  };
-
-  const copyGeneratedOtp = () => {
-    if (!generatedOtp) return;
-    navigator.clipboard.writeText(generatedOtp.otp);
-    setOtpCopied(true);
-    setTimeout(() => setOtpCopied(false), 2000);
-  };
-
-  return (
-    <div className="space-y-6">
-      <ExecutiveGlassCard className="overflow-hidden">
-
-        {/* Card Header */}
-        <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-violet-200/80 bg-violet-50/80">
-                <Users className="h-5 w-5 text-violet-700" />
-              </div>
-              <div>
-                <h3 className="text-lg font-bold text-slate-800">
-                  Role-Based Access Control Matrix
-                </h3>
-                <p className="text-sm font-medium text-slate-600">
-                  Head Office staff added in HR → MNR appear here automatically. Generate a one-time password for Google sign-in, then staff set a 6-digit PIN. Reset access immediately revokes login and PIN.
-                </p>
-                <SettingsTraceability sectionId="portalRbac" audit={audit} />
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {error && (
-                <span className="rounded-xl border border-rose-200/80 bg-rose-50/80 px-3 py-1.5 text-sm font-bold text-rose-800">
-                  {error}
-                </span>
-              )}
-              {saved && (
-                <span className="flex items-center gap-1.5 rounded-xl border border-emerald-200/80 bg-emerald-50/80 px-3 py-1.5 text-sm font-bold text-emerald-800">
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                  Permissions saved
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Legend */}
-        <div className="border-b border-slate-200/60 bg-white/30 px-6 py-3">
-          <div className="flex flex-wrap items-center gap-4">
-            <span className="text-sm font-bold uppercase tracking-widest text-slate-600">Access Levels:</span>
-            {(Object.entries(ACCESS_META) as [PortalAccessLevel, typeof ACCESS_META[PortalAccessLevel]][]).map(([key, meta]) => (
-              <span
-                key={key}
-                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-sm font-black uppercase tracking-wider ${meta.cls}`}
-              >
-                <span className={`h-1.5 w-1.5 rounded-full ${meta.dotCls}`} />
-                {meta.label}
-              </span>
-            ))}
-          </div>
-        </div>
-
-        {authError ? (
-          <div className="border-b border-rose-100 bg-rose-50 px-6 py-3 text-sm font-semibold text-rose-800">
-            {authError}
-          </div>
-        ) : null}
-
-        {generatedOtp ? (
-          <div className="border-b border-violet-100 bg-violet-50 px-6 py-4">
-            <div className="flex flex-wrap items-center gap-3">
-              <CheckCircle2 className="h-5 w-5 shrink-0 text-violet-700" />
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-bold text-violet-900">
-                  OTP for {generatedOtp.staffName} ({generatedOtp.email})
-                </p>
-                <div className="mt-2 flex flex-wrap items-center gap-3">
-                  <span className="font-mono text-3xl font-black tracking-[0.25em] text-violet-700">
-                    {generatedOtp.otp}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={copyGeneratedOtp}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-violet-300 bg-white px-3 py-2 text-xs font-bold text-violet-900"
-                  >
-                    {otpCopied ? <CheckCircle2 className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                    {otpCopied ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-                <p className="mt-2 text-xs font-semibold text-violet-800">
-                  Share once. Staff use it after Google sign-in to set their PIN. Reset access blocks their email before the code screen.
-                </p>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {/* Matrix Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="border-b border-slate-200/80 bg-slate-50/60">
-              {/* Section group row */}
-              <tr className="border-b border-slate-100/80">
-                <th className="w-52 px-6 py-2" />
-                {PORTAL_SECTION_SPANS.map(({ label, count }) => (
-                  <th
-                    key={label}
-                    colSpan={count}
-                    className="px-4 py-2 text-center text-[9px] font-black uppercase tracking-widest text-slate-400 border-l border-slate-200/60"
-                  >
-                    {label}
-                  </th>
-                ))}
-                <th className="w-36 px-2 py-2 text-center text-[9px] font-black uppercase tracking-widest text-slate-400 border-l border-slate-200/60">
-                  Login
-                </th>
-              </tr>
-              {/* Portal column headers */}
-              <tr>
-                <th className="w-52 px-6 py-3 text-left text-[11px] font-bold uppercase tracking-widest text-slate-500">
-                  Staff Member
-                </th>
-                {RBAC_PORTALS.map((portal) => (
-                  <th
-                    key={portal.id}
-                    className="px-3 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-slate-500 border-l border-slate-200/40"
-                  >
-                    <div className="whitespace-nowrap">{portal.label}</div>
-                    <div className="mt-0.5 text-[9px] font-semibold normal-case tracking-normal text-slate-400 whitespace-nowrap">
-                      {portal.sub}
-                    </div>
-                  </th>
-                ))}
-                <th className="w-36 px-2 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-slate-500 border-l border-slate-200/40">
-                  Portal OTP
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200/60">
-              {loading ? (
-                <tr>
-                  <td colSpan={RBAC_PORTALS.length + 2} className="px-6 py-10 text-center text-sm font-medium text-slate-500">
-                    Loading Head Office staff from MNR…
-                  </td>
-                </tr>
-              ) : staffRows.length === 0 ? (
-                <tr>
-                  <td colSpan={RBAC_PORTALS.length + 2} className="px-6 py-10 text-center text-sm text-slate-600">
-                    <p className="font-bold text-slate-800">No Head Office staff yet</p>
-                    <p className="mt-1">Add employees in HR → MNR and set their corporate group to Head Office. They will appear here automatically.</p>
-                  </td>
-                </tr>
-              ) : (
-                staffRows.map((person, ri) => (
-                  <tr
-                    key={person.id}
-                    className={`transition-colors hover:bg-white/40 ${ri % 2 === 0 ? 'bg-white/20' : ''}`}
-                  >
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl border ${person.isLocked ? 'border-rose-200/80 bg-rose-50/80' : 'border-violet-200/80 bg-violet-50/80'}`}>
-                          {person.isLocked
-                            ? <Lock className="h-3.5 w-3.5 text-rose-600" />
-                            : <User className="h-3.5 w-3.5 text-violet-700" />
-                          }
-                        </div>
-                        <div>
-                          <p className="text-sm font-black text-slate-900">{person.label}</p>
-                          <p className="text-[11px] text-slate-500">{person.sub}</p>
-                          {person.isLocked && (
-                            <span className="mt-0.5 inline-block rounded-full bg-rose-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-rose-600 border border-rose-200/60">
-                              System locked
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </td>
-
-                    {RBAC_PORTALS.map((portal) => {
-                      const level = getCell(person.id, portal.id);
-                      const meta = ACCESS_META[level];
-                      return (
-                        <td key={portal.id} className="px-3 py-3 text-center border-l border-slate-200/40">
-                          {person.isLocked ? (
-                            <span className={`inline-flex items-center gap-1 rounded-xl border px-2 py-1 text-[10px] font-black uppercase tracking-wider opacity-70 ${meta.cls}`}>
-                              <span className={`h-1.5 w-1.5 rounded-full ${meta.dotCls}`} />
-                              {level === 'FULL' ? 'Full' : level === 'READ' ? 'Read' : 'None'}
-                            </span>
-                          ) : (
-                            <div className="relative inline-block">
-                              <select
-                                value={level}
-                                onChange={(e) => setCell(person.id, portal.id, e.target.value as PortalAccessLevel)}
-                                className={`appearance-none rounded-xl border py-1.5 pl-2.5 pr-6 text-[11px] font-black uppercase tracking-wider shadow-sm focus:outline-none focus:ring-2 transition-all cursor-pointer ${meta.selectCls}`}
-                              >
-                                <option value="FULL">Full Access</option>
-                                <option value="READ">Read Only</option>
-                                <option value="NONE">No Access</option>
-                              </select>
-                              <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 opacity-60" />
-                            </div>
-                          )}
-                        </td>
-                      );
-                    })}
-
-                    <td className="px-2 py-3 border-l border-slate-200/40">
-                      <div className="flex flex-col gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handleGenerateOtp(person)}
-                          disabled={!person.email || generatingId === person.id || resettingId === person.id}
-                          className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-violet-600 px-2.5 py-2 text-[10px] font-black uppercase tracking-wider text-white hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          <RefreshCw className={`h-3 w-3 ${generatingId === person.id ? 'animate-spin' : ''}`} />
-                          {generatingId === person.id ? '…' : 'Generate OTP'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleResetAccess(person)}
-                          disabled={!person.email || generatingId === person.id || resettingId === person.id}
-                          className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-2 text-[10px] font-black uppercase tracking-wider text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          <KeyRound className="h-3 w-3" />
-                          {resettingId === person.id ? '…' : 'Reset access'}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Footer */}
-        <div className="border-t border-slate-200/60 bg-slate-50/60 px-6 py-4">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-start gap-2 text-sm text-slate-600 max-w-xl">
-              <Lock className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-violet-500" />
-              <span>
-                Staff are sourced from MNR Head Office records. Permission changes are logged to the executive audit trail and enforced on the next sign-in.
-                MD and OD access is system-locked. Operating Managers are locked to OM Command Center only. Territory Managers are locked to TM Command Center only.
-              </span>
-            </div>
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={handleSave}
-                disabled={saving || loading || staffRows.length === 0}
-                className="flex flex-shrink-0 items-center gap-2 rounded-2xl bg-violet-700 px-6 py-2.5 text-sm font-black uppercase tracking-widest text-white shadow-lg shadow-violet-700/25 hover:bg-violet-600 transition-all disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <Save className="h-4 w-4" />
-                {saving ? 'Saving…' : 'Commit Permissions'}
-              </button>
-            </div>
-          </div>
-        </div>
-      </ExecutiveGlassCard>
-    </div>
-  );
-}
-
 const MASTER_BANK_FORMATS = (Object.entries(BANK_EXPORT_FORMAT_LABELS) as [BankExportFormatId, string][]).map(
   ([id, label]) => ({ id, label }),
 );
@@ -1597,15 +385,39 @@ const CAFE_FORMULA_ROWS: {
   { key: 'saturdayShift', title: 'SATURDAY SHIFT', icon: Calendar },
 ];
 
-type SettingsTab = 'GENERAL' | 'SECURITY' | 'CATALOGS' | 'RBAC' | 'OPERATIONS';
+type SettingsTab = 'GENERAL' | 'CATALOGS' | 'OPERATIONS';
 
 const SETTINGS_TABS: { id: SettingsTab; label: string; Icon: React.ElementType }[] = [
   { id: 'GENERAL',    label: 'Finance & Compensation',    Icon: Settings    },
-  { id: 'SECURITY',   label: 'Security & Access Control', Icon: Shield      },
   { id: 'CATALOGS',   label: 'Asset & Penalty Catalogs',  Icon: ListChecks  },
-  { id: 'RBAC',       label: 'Staff Permissions & Roles', Icon: Users       },
   { id: 'OPERATIONS', label: 'Operations & Compliance',   Icon: UserCheck   },
 ];
+
+const GLOBAL_SETTINGS_WARNING_TABS: Partial<
+  Record<
+    SettingsTab,
+    { subtitle: string; portals: string; caution: string }
+  >
+> = {
+  GENERAL: {
+    subtitle: 'Finance & Compensation',
+    portals: 'FM payroll, HR MNR, and client billing',
+    caution:
+      'Ensure the Finance Manager and HR are informed before modifying statutory formulas, rank pay matrix, or bank export rules.',
+  },
+  CATALOGS: {
+    subtitle: 'Asset & Penalty Catalogs',
+    portals: 'FM deductions, HR clearance, and tenant billing',
+    caution:
+      'Ensure operations and finance are aligned before updating penalty amounts or Shalom replacement costs.',
+  },
+  OPERATIONS: {
+    subtitle: 'Operations & Compliance',
+    portals: 'OM, FM, HR, and Field PWA',
+    caution:
+      'Ensure all operational managers are informed before modifying shift timings or geofence defaults.',
+  },
+};
 
 type SettingsDirtySnapshot = {
   settings: SettingsState;
@@ -1619,18 +431,19 @@ type SettingsDirtySnapshot = {
   salaryMonthThreshold: number;
   enforceFlatSiteRate: boolean;
   allowPoyaOnFlatRate: boolean;
+  requireDeductionMonthLock: boolean;
   smVisits: number;
   hoSalary: number;
   guardPreviewQty: GuardMonthPreviewQty;
   cafePreviewBasic: number;
+  cafePreviewQty: CafeMonthPreviewQty;
   cafePreviewOtHours: number;
-  takeHomeFloor: number;
-  maxDeductionPct: number;
   dayShiftStart: string;
   dayShiftEnd: string;
   nightShiftStart: string;
   nightShiftEnd: string;
   defaultGeofenceRadiusM: string;
+  internalWorkLocations: InternalWorkLocationsSettings;
   cafeOpenStart: string;
   cafeOpenEnd: string;
   guardFormulas: GuardPayFormulas;
@@ -1644,6 +457,166 @@ type SettingsDirtySnapshot = {
 
 function serializeSettingsDirtySnapshot(snap: SettingsDirtySnapshot): string {
   return JSON.stringify(snap);
+}
+
+const TRACKED_DIRTY_SECTIONS = [
+  'bankExport',
+  'statutory',
+  'payGroup',
+  'guardRetention',
+  'guardFormulas',
+  'cafeFormulas',
+  'crossDeployment',
+  'entityBranding',
+  'cafeOtCutoff',
+  'billingCycle',
+  'rankPay',
+  'gratuity',
+  'welfareFund',
+  'fuelSurplus',
+  'geofence',
+  'internalWorkLocations',
+  'shiftTimes',
+  'cafeOperatingWindow',
+] as const satisfies readonly SettingsSectionId[];
+
+const SETTINGS_SECTION_LABELS: Record<SettingsSectionId, string> = {
+  bankExport: 'Bank Export Format',
+  statutory: 'Statutory & Tax Rates',
+  payGroup: 'Pay Group & Live Preview',
+  guardRetention: 'Guard Retention Rules',
+  guardFormulas: 'Guard Pay Formulas',
+  cafeFormulas: 'Café Pay Formulas',
+  crossDeployment: 'Cross-Deployment Pay Rules',
+  entityBranding: 'Entity Branding & Logo',
+  cafeOtCutoff: 'Café OT Cutoff',
+  billingCycle: 'Billing & Payroll Cycle',
+  rankPay: 'Rank Pay Matrix',
+  gratuity: 'Gratuity Settings',
+  welfareFund: 'Welfare Fund',
+  fuelSurplus: 'Fuel Surplus Correction',
+  geofence: 'Default Geofence Radius',
+  internalWorkLocations: 'Internal Work Locations',
+  shiftTimes: 'Guard Shift Times',
+  cafeOperatingWindow: 'Café Operating Window',
+  penaltyCatalog: 'Security Penalty Matrix',
+  replacementCatalog: 'Replacement Asset Catalog',
+  portalRbac: 'Portal Permissions',
+};
+
+function sectionSnapshotSlice(
+  sectionId: SettingsSectionId,
+  snap: SettingsDirtySnapshot,
+): unknown {
+  const { settings } = snap;
+  switch (sectionId) {
+    case 'bankExport':
+      return {
+        masterBankFormat: snap.masterBankFormat,
+        enforceBankFormat: snap.enforceBankFormat,
+        isolateExternalBank: snap.isolateExternalBank,
+      };
+    case 'statutory':
+      return {
+        vatRate: settings.vatRate,
+        ssclRate: settings.ssclRate,
+        invoiceHeadOffice: settings.invoiceHeadOffice,
+        invoiceTelephone: settings.invoiceTelephone,
+        invoiceEmail: settings.invoiceEmail,
+        invoicePvNo: settings.invoicePvNo,
+        supplierTin: settings.supplierTin,
+        supplierAddress: settings.supplierAddress,
+        epfEmployeeRate: settings.epfEmployeeRate,
+        epfEmployerRate: settings.epfEmployerRate,
+        etfRate: settings.etfRate,
+        payrollEpfEmployer: settings.payrollEpfEmployer,
+        payrollEtfEmployer: settings.payrollEtfEmployer,
+        monthlyDaysDivisor: settings.monthlyDaysDivisor,
+        apitSlabs: snap.apitSlabs,
+        stampDutyAmount: snap.stampDutyAmount,
+      };
+    case 'payGroup':
+      return {
+        smPayMode: settings.smPayMode,
+        smFixedBasic: settings.smFixedBasic,
+        smPerVisitBonus: settings.smPerVisitBonus,
+        smVisits: snap.smVisits,
+        hoSalary: snap.hoSalary,
+        guardPreviewQty: snap.guardPreviewQty,
+        cafePreviewBasic: snap.cafePreviewBasic,
+        cafePreviewQty: snap.cafePreviewQty,
+        cafePreviewOtHours: snap.cafePreviewOtHours,
+      };
+    case 'guardRetention':
+      return {
+        prevMonthThreshold: snap.prevMonthThreshold,
+        salaryMonthThreshold: snap.salaryMonthThreshold,
+      };
+    case 'guardFormulas':
+      return { guardFormulas: snap.guardFormulas };
+    case 'cafeFormulas':
+      return {
+        cafeFormulas: snap.cafeFormulas,
+        cafeOtMaxMonthlyHours: settings.cafeOtMaxMonthlyHours,
+      };
+    case 'crossDeployment':
+      return {
+        enforceFlatSiteRate: snap.enforceFlatSiteRate,
+        allowPoyaOnFlatRate: snap.allowPoyaOnFlatRate,
+      };
+    case 'entityBranding':
+      return { entities: snap.entities, companyLogo: snap.companyLogo };
+    case 'cafeOtCutoff':
+      return { cafeOtCutoffTime: settings.cafeOtCutoffTime };
+    case 'billingCycle':
+      return {
+        invoiceDispatchDay: settings.invoiceDispatchDay,
+        payrollTargetDay: settings.payrollTargetDay,
+        collectionWarningDay: settings.collectionWarningDay,
+        requireDeductionMonthLock: snap.requireDeductionMonthLock,
+      };
+    case 'rankPay':
+      return { rankPay: snap.rankPay, rankAddDraft: snap.rankAddDraft };
+    case 'gratuity':
+      return { gratuitySettings: snap.gratuitySettings };
+    case 'welfareFund':
+      return { welfareFundSettings: snap.welfareFundSettings };
+    case 'fuelSurplus':
+      return { fuelSurplusCorrection: settings.fuelSurplusCorrection };
+    case 'geofence':
+      return { defaultGeofenceRadiusM: snap.defaultGeofenceRadiusM };
+    case 'internalWorkLocations':
+      return { internalWorkLocations: snap.internalWorkLocations };
+    case 'shiftTimes':
+      return {
+        dayShiftStart: snap.dayShiftStart,
+        dayShiftEnd: snap.dayShiftEnd,
+        nightShiftStart: snap.nightShiftStart,
+        nightShiftEnd: snap.nightShiftEnd,
+      };
+    case 'cafeOperatingWindow':
+      return { cafeOpenStart: snap.cafeOpenStart, cafeOpenEnd: snap.cafeOpenEnd };
+    default:
+      return null;
+  }
+}
+
+function listDirtySettingsSections(
+  savedJson: string | null,
+  currentJson: string,
+): SettingsSectionId[] {
+  if (!savedJson) return [];
+  try {
+    const saved = JSON.parse(savedJson) as SettingsDirtySnapshot;
+    const current = JSON.parse(currentJson) as SettingsDirtySnapshot;
+    return TRACKED_DIRTY_SECTIONS.filter(
+      (id) =>
+        JSON.stringify(sectionSnapshotSlice(id, saved)) !==
+        JSON.stringify(sectionSnapshotSlice(id, current)),
+    );
+  } catch {
+    return [];
+  }
 }
 
 function hasRankAddDraft(draft: Omit<RankPay, 'id'>): boolean {
@@ -1926,6 +899,19 @@ const evaluatePreview = (formula: string) => {
   }
 };
 
+const evaluateFormulaAtB = (formula: string, B: number, HRS = 9): number => {
+  try {
+    const parsed = formula
+      .replace(/\[?B\]?/g, String(B))
+      .replace(/\[?HRS\]?/gi, String(HRS));
+    // eslint-disable-next-line no-new-func
+    const result = new Function(`return ${parsed}`)();
+    return Number.isFinite(result) ? Number(result) : 0;
+  } catch {
+    return 0;
+  }
+};
+
 // ── Shared simulation helpers ─────────────────────────────────────────────────
 
 const SIM_EPF_EMP = 0.08;
@@ -2083,28 +1069,91 @@ const MonthSimulator = ({
 
 // ── Month Simulation Panel — Café Staff ───────────────────────────────────────
 
+const CAFE_SIM_SHIFT_HRS = 9;
+
 const CafeMonthSimulator = ({
   basic,
+  qty,
   otHours,
+  formulas,
   onBasicChange,
+  onQtyChange,
   onOtHoursChange,
 }: {
   basic: number;
+  qty: CafeMonthPreviewQty;
   otHours: number;
+  formulas: CafePayFormulas;
   onBasicChange: (value: number) => void;
+  onQtyChange: (qty: CafeMonthPreviewQty) => void;
   onOtHoursChange: (value: number) => void;
 }) => {
-  const cafeB = basic;
-  const dailyRate = cafeB / 26;
-  const otRate    = (dailyRate / 9) * 1.5;
-  const otPay     = Math.round(otRate * otHours);
-  const gross     = cafeB + otPay;
-  const epfEmp    = Math.round(gross * SIM_EPF_EMP);
-  const apit      = simApit(gross);
-  const net       = gross - epfEmp - apit - SIM_STAMP;
+  const B = basic;
+
+  const rates = {
+    std:       evaluateFormulaAtB(formulas.standardShift, B),
+    sun:       evaluateFormulaAtB(formulas.weeklyHolidaySunday, B),
+    poya:      evaluateFormulaAtB(formulas.poyaDay, B, CAFE_SIM_SHIFT_HRS),
+    pubHol:    evaluateFormulaAtB(formulas.publicHoliday, B),
+    statutory: evaluateFormulaAtB(formulas.statutoryHoliday, B, CAFE_SIM_SHIFT_HRS),
+    sat:       evaluateFormulaAtB(formulas.saturdayShift, B),
+  };
+  const otRate = evaluateFormulaAtB(formulas.otRatePerHour, B);
+
+  const dayGross =
+    qty.std * rates.std +
+    qty.sun * rates.sun +
+    qty.poya * rates.poya +
+    qty.pubHol * rates.pubHol +
+    qty.statutory * rates.statutory +
+    qty.sat * rates.sat;
+  const otPay  = Math.round(otRate * otHours);
+  const gross  = dayGross + otPay;
+  const epfEmp = Math.round(gross * SIM_EPF_EMP);
+  const apit   = simApit(gross);
+  const net    = gross - epfEmp - apit - SIM_STAMP;
+
+  const bumpQty = (key: keyof CafeMonthPreviewQty, delta: number) =>
+    onQtyChange({ ...qty, [key]: Math.max(0, Math.min(31, qty[key] + delta)) });
 
   const bumpOt = (delta: number) =>
     onOtHoursChange(Math.max(0, Math.min(200, otHours + delta)));
+
+  const SimRow = ({
+    label,
+    k,
+    rate,
+  }: {
+    label: string;
+    k: keyof CafeMonthPreviewQty;
+    rate: number;
+  }) => (
+    <div className="flex items-center justify-between gap-2">
+      <span className="truncate text-[10px] font-semibold text-amber-900">{label}</span>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => bumpQty(k, -1)}
+          className="flex h-5 w-5 items-center justify-center rounded border border-amber-300 bg-amber-100 text-amber-800 hover:bg-amber-200 text-xs font-black leading-none"
+        >
+          −
+        </button>
+        <span className="w-5 text-center font-mono text-xs font-black tabular-nums text-amber-900">
+          {qty[k]}
+        </span>
+        <button
+          type="button"
+          onClick={() => bumpQty(k, 1)}
+          className="flex h-5 w-5 items-center justify-center rounded border border-amber-300 bg-amber-100 text-amber-800 hover:bg-amber-200 text-xs font-black leading-none"
+        >
+          +
+        </button>
+        <span className="w-28 text-right font-mono text-[10px] tabular-nums text-amber-800">
+          {fmtSimLKR(qty[k] * rate)}
+        </span>
+      </div>
+    </div>
+  );
 
   return (
     <div className="rounded-xl border border-amber-300/80 bg-amber-50/95 px-4 py-3 shadow-sm ring-1 ring-amber-200/60 min-w-[300px]">
@@ -2117,15 +1166,25 @@ const CafeMonthSimulator = ({
           <span className="text-[9px] font-black uppercase tracking-widest text-amber-700">Basic</span>
           <input
             type="number"
-            value={cafeB}
+            value={B}
             onChange={(e) => onBasicChange(parseInt(e.target.value, 10) || 0)}
             className="w-20 rounded border border-amber-300 bg-white px-1.5 py-0.5 text-center text-xs font-bold text-amber-900"
           />
         </div>
       </div>
 
+      {/* Day-type rows */}
+      <div className="space-y-1.5">
+        <SimRow label="Std Working Days"  k="std"       rate={rates.std} />
+        <SimRow label="Sundays"           k="sun"       rate={rates.sun} />
+        <SimRow label="Poya Days"         k="poya"      rate={rates.poya} />
+        <SimRow label="Public Holidays"   k="pubHol"    rate={rates.pubHol} />
+        <SimRow label="Statutory Holidays" k="statutory" rate={rates.statutory} />
+        <SimRow label="Saturdays"         k="sat"       rate={rates.sat} />
+      </div>
+
       {/* OT Hours row */}
-      <div className="flex items-center justify-between gap-2 mb-2">
+      <div className="mt-2 flex items-center justify-between gap-2 border-t border-amber-300/50 pt-2">
         <span className="truncate text-[10px] font-semibold text-amber-900">OT Hours (Month)</span>
         <div className="flex items-center gap-1.5">
           <button
@@ -2152,12 +1211,12 @@ const CafeMonthSimulator = ({
       </div>
 
       {/* Gross subtotal */}
-      <div className="mt-1 flex items-center justify-between border-t border-amber-300/70 pt-2">
+      <div className="mt-3 flex items-center justify-between border-t border-amber-300/70 pt-2">
         <span className="text-[10px] font-semibold text-amber-700">
           Est. Month Gross
           {otPay > 0 && (
             <span className="ml-1 text-[9px] font-medium text-amber-600">
-              (Basic + OT)
+              (Days + OT)
             </span>
           )}
         </span>
@@ -2229,15 +1288,247 @@ const FormulaRow = ({
   </div>
 );
 
+// ─── Internal work location branch GPS ───────────────────────────────────────
+
+type InternalBranchKind = 'headOffice' | 'cafe';
+
+const INTERNAL_BRANCH_META: Record<
+  InternalBranchKind,
+  { title: string; subtitle: string; Icon: typeof Building2; accent: string }
+> = {
+  headOffice: {
+    title: 'Head Office Branches',
+    subtitle: 'GPS geofences for HO staff check-in and portal access',
+    Icon: Building2,
+    accent: 'slate',
+  },
+  cafe: {
+    title: 'Café Branches',
+    subtitle: 'GPS geofences for café staff shift check-in',
+    Icon: Coffee,
+    accent: 'amber',
+  },
+};
+
+function InternalWorkLocationRow({
+  row,
+  index,
+  kind,
+  onUpdate,
+  onRemove,
+}: {
+  row: InternalWorkLocation;
+  index: number;
+  kind: InternalBranchKind;
+  onUpdate: (patch: Partial<InternalWorkLocation>) => void;
+  onRemove: () => void;
+}) {
+  const [gpsText, setGpsText] = useState(() => formatGpsCoords(row.latitude, row.longitude));
+
+  useEffect(() => {
+    setGpsText(formatGpsCoords(row.latitude, row.longitude));
+  }, [row.id, row.latitude, row.longitude]);
+
+  return (
+    <div className="rounded-xl border border-slate-200/80 bg-white/90 p-4 shadow-sm">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+          Branch {index + 1}
+        </p>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-rose-700 hover:bg-rose-50"
+        >
+          <Trash2 className="h-3 w-3" />
+          Remove
+        </button>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="sm:col-span-2">
+          <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">
+            Branch name
+          </label>
+          <input
+            value={row.name}
+            onChange={(e) => onUpdate({ name: e.target.value })}
+            placeholder={kind === 'headOffice' ? 'e.g. Colombo HQ' : 'e.g. Café Tasha — Bambalapitiya'}
+            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+          />
+        </div>
+        <div className="sm:col-span-2">
+          <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">
+            Address
+          </label>
+          <input
+            value={row.address}
+            onChange={(e) => onUpdate({ address: e.target.value })}
+            placeholder="Street address, city"
+            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+          />
+        </div>
+        <div className="sm:col-span-2">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+            <div className="min-w-0 flex-1">
+              <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">
+                Google Maps coordinates
+              </label>
+              <div className="relative min-w-0">
+                <MapPin className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  value={gpsText}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setGpsText(next);
+                    const { lat, lng } = parseGpsCoords(next);
+                    if (lat != null && lng != null) {
+                      onUpdate({ latitude: lat, longitude: lng });
+                    }
+                  }}
+                  onBlur={() => {
+                    const { lat, lng } = parseGpsCoords(gpsText);
+                    onUpdate({
+                      latitude: lat ?? 0,
+                      longitude: lng ?? 0,
+                    });
+                    setGpsText(formatGpsCoords(lat ?? 0, lng ?? 0));
+                  }}
+                  placeholder="e.g., 6.9271, 79.8612"
+                  className="w-full rounded-xl border border-slate-200 bg-white py-2 pl-9 pr-3 font-mono text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+                />
+              </div>
+            </div>
+            <div className="w-full shrink-0 lg:w-[140px]">
+              <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-500">
+                Geofence radius (m)
+              </label>
+              <input
+                type="number"
+                min={MIN_GEOFENCE_RADIUS_M}
+                max={MAX_GEOFENCE_RADIUS_M}
+                value={row.geofenceRadiusM}
+                onChange={(e) =>
+                  onUpdate({
+                    geofenceRadiusM: Number.parseInt(e.target.value, 10) || MIN_GEOFENCE_RADIUS_M,
+                  })
+                }
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InternalWorkLocationsPanel({
+  value,
+  onChange,
+}: {
+  value: InternalWorkLocationsSettings;
+  onChange: (next: InternalWorkLocationsSettings) => void;
+}) {
+  const renderBlock = (kind: InternalBranchKind, locations: InternalWorkLocation[]) => {
+    const meta = INTERNAL_BRANCH_META[kind];
+    const Icon = meta.Icon;
+
+    const updateRow = (id: string, patch: Partial<InternalWorkLocation>) => {
+      onChange({
+        ...value,
+        [kind]: locations.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+      });
+    };
+
+    const removeRow = (id: string) => {
+      onChange({ ...value, [kind]: locations.filter((row) => row.id !== id) });
+    };
+
+    const addRow = () => {
+      onChange({ ...value, [kind]: [...locations, createEmptyInternalWorkLocation()] });
+    };
+
+    return (
+      <div
+        className={`rounded-2xl border p-5 ${
+          kind === 'cafe'
+            ? 'border-amber-200/70 bg-amber-50/40'
+            : 'border-slate-200/70 bg-slate-50/60'
+        }`}
+      >
+        <div className="mb-4 flex items-start gap-3">
+          <div
+            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border ${
+              kind === 'cafe'
+                ? 'border-amber-200/80 bg-amber-100/80 text-amber-700'
+                : 'border-slate-200/80 bg-slate-100/80 text-slate-700'
+            }`}
+          >
+            <Icon className="h-5 w-5" />
+          </div>
+          <div>
+            <p className="text-base font-bold text-slate-800">{meta.title}</p>
+            <p className="mt-0.5 text-sm font-medium text-slate-600">{meta.subtitle}</p>
+          </div>
+        </div>
+
+        {locations.length === 0 ? (
+          <p className="mb-3 rounded-xl border border-dashed border-slate-200 bg-white/60 px-4 py-5 text-sm font-medium text-slate-500">
+            No branches configured yet. Add a branch with name and GPS coordinates.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {locations.map((row, index) => (
+              <InternalWorkLocationRow
+                key={row.id}
+                row={row}
+                index={index}
+                kind={kind}
+                onUpdate={(patch) => updateRow(row.id, patch)}
+                onRemove={() => removeRow(row.id)}
+              />
+            ))}
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={addRow}
+          className="mt-3 inline-flex items-center gap-1.5 rounded-xl border border-dashed border-emerald-300 bg-emerald-50/60 px-3 py-2 text-xs font-bold text-emerald-800 hover:bg-emerald-100/70"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add branch
+        </button>
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-start gap-2 rounded-xl border border-emerald-200/70 bg-emerald-50/50 px-4 py-3 text-sm text-emerald-900">
+        <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" />
+        <p>
+          Configure Classic Venture head office and café branches here. HR assigns staff to a branch in
+          MNR; check-in uses that branch&apos;s GPS geofence. Client guard sites stay in the Site Directory.
+        </p>
+      </div>
+      {renderBlock('headOffice', value.headOffice)}
+      {renderBlock('cafe', value.cafe)}
+    </div>
+  );
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 export default function SettingsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const navGuardRef = useExecutiveNavGuardRef();
   const [activeTab, setActiveTab]   = useState<SettingsTab>('GENERAL');
-  const [showOpsWarning, setShowOpsWarning] = useState(false);
+  const [showGlobalSettingsWarning, setShowGlobalSettingsWarning] = useState(false);
   const [pendingTab, setPendingTab] = useState<SettingsTab | null>(null);
   const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
+  const [unsavedSaveError, setUnsavedSaveError] = useState<string | null>(null);
   const [pendingNavigation, setPendingNavigation] = useState<string | null>(null);
   const [pendingTabSwitch, setPendingTabSwitch] = useState<SettingsTab | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null);
@@ -2292,6 +1583,7 @@ export default function SettingsPage() {
   // ── Cross-Deployment Pay Rules state ────────────────────────────────────────
   const [enforceFlatSiteRate, setEnforceFlatSiteRate] = useState(true);
   const [allowPoyaOnFlatRate, setAllowPoyaOnFlatRate] = useState(false);
+  const [requireDeductionMonthLock, setRequireDeductionMonthLock] = useState(true);
 
   // ── Live Wage Preview calculator state ───────────────────────────────────────
   const [smVisits,     setSmVisits]     = useState(70);
@@ -2300,13 +1592,10 @@ export default function SettingsPage() {
     std: 20, sun: 4, poya: 1, pubHol: 0, sat: 4,
   });
   const [cafePreviewBasic, setCafePreviewBasic] = useState(38_000);
+  const [cafePreviewQty, setCafePreviewQty] = useState<CafeMonthPreviewQty>({
+    std: 20, sun: 4, poya: 1, pubHol: 0, statutory: 0, sat: 4,
+  });
   const [cafePreviewOtHours, setCafePreviewOtHours] = useState(0);
-  const [takeHomeFloor, setTakeHomeFloor] = React.useState(5);
-  const [maxDeductionPct, setMaxDeductionPct] = React.useState(5);
-  const [complianceLastEditor, setComplianceLastEditor] = React.useState<string | null>(null);
-
-  // ── Operational Compliance state ─────────────────────────────────────────────
-  const [hardBlockEnabled,  setHardBlockEnabled]  = useState(true);
 
   // ── Global Shift Timing Defaults state ───────────────────────────────────────
   const [dayShiftStart,   setDayShiftStart]   = useState('07:00');
@@ -2316,12 +1605,16 @@ export default function SettingsPage() {
   const [defaultGeofenceRadiusM, setDefaultGeofenceRadiusM] = useState(
     String(DEFAULT_GEOFENCE_RADIUS_M),
   );
+  const [internalWorkLocations, setInternalWorkLocations] = useState<InternalWorkLocationsSettings>(
+    DEFAULT_INTERNAL_WORK_LOCATIONS,
+  );
 
   // ── Café Operating Window state ──────────────────────────────────────────────
   const [cafeOpenStart, setCafeOpenStart] = useState('07:00');
   const [cafeOpenEnd,   setCafeOpenEnd]   = useState('19:00');
 
   const syncSavedSnapshotRef = useRef<(patch?: Partial<SettingsDirtySnapshot>) => void>(() => {});
+  const leaveBypassRef = useRef(false);
 
   // ── Rank Pay Matrix state ───────────────────────────────────────────────────
   const BLANK_RANK: Omit<RankPay, 'id'> = { rankCode: '', fullTitle: '', basicPay: 0, annualIncrement: 0, salaryType: 'BANK', operationalGroup: 'GUARD_FIELD' };
@@ -2439,18 +1732,20 @@ export default function SettingsPage() {
       salaryMonthThreshold: overrides?.salaryMonthThreshold ?? salaryMonthThreshold,
       enforceFlatSiteRate: overrides?.enforceFlatSiteRate ?? enforceFlatSiteRate,
       allowPoyaOnFlatRate: overrides?.allowPoyaOnFlatRate ?? allowPoyaOnFlatRate,
+      requireDeductionMonthLock:
+        overrides?.requireDeductionMonthLock ?? requireDeductionMonthLock,
       smVisits: overrides?.smVisits ?? smVisits,
       hoSalary: overrides?.hoSalary ?? hoSalary,
       guardPreviewQty: overrides?.guardPreviewQty ?? guardPreviewQty,
       cafePreviewBasic: overrides?.cafePreviewBasic ?? cafePreviewBasic,
+      cafePreviewQty: overrides?.cafePreviewQty ?? cafePreviewQty,
       cafePreviewOtHours: overrides?.cafePreviewOtHours ?? cafePreviewOtHours,
-      takeHomeFloor: overrides?.takeHomeFloor ?? takeHomeFloor,
-      maxDeductionPct: overrides?.maxDeductionPct ?? maxDeductionPct,
       dayShiftStart: overrides?.dayShiftStart ?? dayShiftStart,
       dayShiftEnd: overrides?.dayShiftEnd ?? dayShiftEnd,
       nightShiftStart: overrides?.nightShiftStart ?? nightShiftStart,
       nightShiftEnd: overrides?.nightShiftEnd ?? nightShiftEnd,
       defaultGeofenceRadiusM: overrides?.defaultGeofenceRadiusM ?? defaultGeofenceRadiusM,
+      internalWorkLocations: overrides?.internalWorkLocations ?? internalWorkLocations,
       cafeOpenStart: overrides?.cafeOpenStart ?? cafeOpenStart,
       cafeOpenEnd: overrides?.cafeOpenEnd ?? cafeOpenEnd,
       guardFormulas: overrides?.guardFormulas ?? guardFormulas,
@@ -2475,18 +1770,19 @@ export default function SettingsPage() {
       salaryMonthThreshold,
       enforceFlatSiteRate,
       allowPoyaOnFlatRate,
+      requireDeductionMonthLock,
       smVisits,
       hoSalary,
       guardPreviewQty,
       cafePreviewBasic,
+      cafePreviewQty,
       cafePreviewOtHours,
-      takeHomeFloor,
-      maxDeductionPct,
       dayShiftStart,
       dayShiftEnd,
       nightShiftStart,
       nightShiftEnd,
       defaultGeofenceRadiusM,
+      internalWorkLocations,
       cafeOpenStart,
       cafeOpenEnd,
       guardFormulas,
@@ -2506,7 +1802,12 @@ export default function SettingsPage() {
     [buildDirtySnapshot],
   );
 
-  const isDirty = settingsHydrated && savedSnapshot !== null && currentSnapshot !== savedSnapshot;
+  const dirtySections = useMemo(
+    () => listDirtySettingsSections(savedSnapshot, currentSnapshot),
+    [savedSnapshot, currentSnapshot],
+  );
+
+  const isDirty = settingsHydrated && dirtySections.length > 0;
 
   syncSavedSnapshotRef.current = (patch?: Partial<SettingsDirtySnapshot>) => {
     setSavedSnapshot(serializeSettingsDirtySnapshot(buildDirtySnapshot(patch)));
@@ -2531,18 +1832,19 @@ export default function SettingsPage() {
     setSalaryMonthThreshold(snap.salaryMonthThreshold);
     setEnforceFlatSiteRate(snap.enforceFlatSiteRate);
     setAllowPoyaOnFlatRate(snap.allowPoyaOnFlatRate);
+    setRequireDeductionMonthLock(snap.requireDeductionMonthLock);
     setSmVisits(snap.smVisits);
     setHoSalary(snap.hoSalary);
     setGuardPreviewQty(snap.guardPreviewQty);
     setCafePreviewBasic(snap.cafePreviewBasic);
+    setCafePreviewQty(snap.cafePreviewQty);
     setCafePreviewOtHours(snap.cafePreviewOtHours);
-    setTakeHomeFloor(snap.takeHomeFloor);
-    setMaxDeductionPct(snap.maxDeductionPct);
     setDayShiftStart(snap.dayShiftStart);
     setDayShiftEnd(snap.dayShiftEnd);
     setNightShiftStart(snap.nightShiftStart);
     setNightShiftEnd(snap.nightShiftEnd);
     setDefaultGeofenceRadiusM(snap.defaultGeofenceRadiusM);
+    setInternalWorkLocations(snap.internalWorkLocations);
     setCafeOpenStart(snap.cafeOpenStart);
     setCafeOpenEnd(snap.cafeOpenEnd);
     setGuardFormulas(snap.guardFormulas);
@@ -2564,9 +1866,9 @@ export default function SettingsPage() {
       rankPay,
       gratuity,
       welfare,
-      compliance,
       shift,
       geofence,
+      internalLocations,
       logo,
     ] = await Promise.all([
       getMdInvoiceConfig(),
@@ -2578,9 +1880,9 @@ export default function SettingsPage() {
       getRankPayMatrix(),
       getGratuitySettings(),
       getWelfareFundSettings(),
-      getComplianceConfig(),
       getShiftSettings(),
       getGeofenceSettings(),
+      getInternalWorkLocations(),
       fetchCompanyLogo(),
     ]);
 
@@ -2641,18 +1943,19 @@ export default function SettingsPage() {
       salaryMonthThreshold: engine.salaryMonthRetentionThreshold,
       enforceFlatSiteRate: engine.enforceFlatSiteRate,
       allowPoyaOnFlatRate: engine.allowPoyaOnFlatRate,
+      requireDeductionMonthLock: engine.requireDeductionMonthLock,
       smVisits: engine.smPreviewVisits,
       hoSalary: engine.hoPreviewSalary,
       guardPreviewQty: engine.guardPreviewQty,
       cafePreviewBasic: engine.cafePreviewBasic,
+      cafePreviewQty: engine.cafePreviewQty,
       cafePreviewOtHours: engine.cafePreviewOtHours,
-      takeHomeFloor: compliance.statutory_takehome_floor ?? 5,
-      maxDeductionPct: compliance.max_deduction_pct ?? 5,
       dayShiftStart: shift.security_day_start,
       dayShiftEnd: shift.security_day_end,
       nightShiftStart: shift.security_night_start,
       nightShiftEnd: shift.security_night_end,
       defaultGeofenceRadiusM: String(geofence.default_geofence_radius_m),
+      internalWorkLocations: internalLocations,
       cafeOpenStart: engine.cafeOpenStart,
       cafeOpenEnd: engine.cafeOpenEnd,
       guardFormulas: formulas.guard,
@@ -2699,42 +2002,56 @@ export default function SettingsPage() {
 
   const clearUnsavedPrompt = () => {
     setShowUnsavedDialog(false);
+    setUnsavedSaveError(null);
     setPendingNavigation(null);
     setPendingTabSwitch(null);
   };
 
   const completePendingLeave = useCallback((tab: SettingsTab) => {
-    if (tab === 'OPERATIONS') {
-      setPendingTab('OPERATIONS');
-      setShowOpsWarning(true);
+    if (GLOBAL_SETTINGS_WARNING_TABS[tab]) {
+      setPendingTab(tab);
+      setShowGlobalSettingsWarning(true);
       return;
     }
     setActiveTab(tab);
   }, []);
 
-  const finishPendingNavigation = () => {
-    if (pendingNavigation) {
-      const href = pendingNavigation;
-      setPendingNavigation(null);
+  const pushPendingLeaveRoute = useCallback(
+    (href: string) => {
+      leaveBypassRef.current = true;
       router.push(href);
-      return;
-    }
-    if (pendingTabSwitch) {
-      const tab = pendingTabSwitch;
+      queueMicrotask(() => {
+        leaveBypassRef.current = false;
+      });
+    },
+    [router],
+  );
+
+  const finishPendingLeave = useCallback(
+    (href: string | null, tab: SettingsTab | null) => {
+      setPendingNavigation(null);
       setPendingTabSwitch(null);
-      completePendingLeave(tab);
-    }
-  };
+      if (href) {
+        pushPendingLeaveRoute(href);
+        return;
+      }
+      if (tab) {
+        completePendingLeave(tab);
+      }
+    },
+    [completePendingLeave, pushPendingLeaveRoute],
+  );
 
   const promptLeaveSettings = useCallback((href: string) => {
     setPendingNavigation(href);
     setPendingTabSwitch(null);
+    setUnsavedSaveError(null);
     setShowUnsavedDialog(true);
   }, []);
 
   const requestLeaveSettings = useCallback(
     (href: string) => {
-      if (!isDirty) {
+      if (!isDirty || leaveBypassRef.current) {
         router.push(href);
         return;
       }
@@ -2745,7 +2062,8 @@ export default function SettingsPage() {
 
   useEffect(() => {
     navGuardRef.current = {
-      shouldBlock: (href) => isDirty && !isInternalSettingsHref(href),
+      shouldBlock: (href) =>
+        !leaveBypassRef.current && isDirty && !isInternalSettingsHref(href),
       onBlocked: promptLeaveSettings,
     };
     return () => {
@@ -2759,6 +2077,7 @@ export default function SettingsPage() {
       if (isDirty) {
         setPendingTabSwitch(tab);
         setPendingNavigation(null);
+        setUnsavedSaveError(null);
         setShowUnsavedDialog(true);
         return;
       }
@@ -2768,11 +2087,16 @@ export default function SettingsPage() {
   );
 
   const discardUnsavedChanges = async () => {
-    const snap = await hydrateAllSettings();
-    setSavedSnapshot(serializeSettingsDirtySnapshot(snap));
-    setSettingsHydrated(true);
-    setShowUnsavedDialog(false);
-    finishPendingNavigation();
+    const navHref = pendingNavigation;
+    const tabSwitch = pendingTabSwitch;
+    setUnsavedSaveError(null);
+    try {
+      await reloadSettingsFromDb();
+      setShowUnsavedDialog(false);
+      finishPendingLeave(navHref, tabSwitch);
+    } catch {
+      setUnsavedSaveError('Could not discard changes. Please try again.');
+    }
   };
 
   useEffect(() => {
@@ -2814,6 +2138,7 @@ export default function SettingsPage() {
     cafeOtMaxMonthlyHours: s.cafeOtMaxMonthlyHours,
     enforceFlatSiteRate,
     allowPoyaOnFlatRate,
+    requireDeductionMonthLock,
     prevMonthRetentionThreshold: prevMonthThreshold,
     salaryMonthRetentionThreshold: salaryMonthThreshold,
     cafeOpenStart,
@@ -2822,6 +2147,7 @@ export default function SettingsPage() {
     hoPreviewSalary: hoSalary,
     guardPreviewQty,
     cafePreviewBasic,
+    cafePreviewQty,
     cafePreviewOtHours,
   });
 
@@ -2833,6 +2159,49 @@ export default function SettingsPage() {
       setSavedSnapshot(serializeSettingsDirtySnapshot(snap));
     },
     [savedSnapshot],
+  );
+
+  const patchSnapEngineConstants = useCallback(
+    (snap: SettingsDirtySnapshot) => {
+      snap.settings.cafeOtCutoffTime = s.cafeOtCutoffTime;
+      snap.settings.invoiceDispatchDay = s.invoiceDispatchDay;
+      snap.settings.payrollTargetDay = s.payrollTargetDay;
+      snap.settings.collectionWarningDay = s.collectionWarningDay;
+      snap.settings.smPayMode = s.smPayMode;
+      snap.settings.smFixedBasic = s.smFixedBasic;
+      snap.settings.smPerVisitBonus = s.smPerVisitBonus;
+      snap.settings.fuelSurplusCorrection = s.fuelSurplusCorrection;
+      snap.settings.cafeOtMaxMonthlyHours = s.cafeOtMaxMonthlyHours;
+      snap.enforceFlatSiteRate = enforceFlatSiteRate;
+      snap.allowPoyaOnFlatRate = allowPoyaOnFlatRate;
+      snap.requireDeductionMonthLock = requireDeductionMonthLock;
+      snap.prevMonthThreshold = prevMonthThreshold;
+      snap.salaryMonthThreshold = salaryMonthThreshold;
+      snap.cafeOpenStart = cafeOpenStart;
+      snap.cafeOpenEnd = cafeOpenEnd;
+      snap.smVisits = smVisits;
+      snap.hoSalary = hoSalary;
+      snap.guardPreviewQty = guardPreviewQty;
+      snap.cafePreviewBasic = cafePreviewBasic;
+      snap.cafePreviewQty = cafePreviewQty;
+      snap.cafePreviewOtHours = cafePreviewOtHours;
+    },
+    [
+      s,
+      enforceFlatSiteRate,
+      allowPoyaOnFlatRate,
+      requireDeductionMonthLock,
+      prevMonthThreshold,
+      salaryMonthThreshold,
+      cafeOpenStart,
+      cafeOpenEnd,
+      smVisits,
+      hoSalary,
+      guardPreviewQty,
+      cafePreviewBasic,
+      cafePreviewQty,
+      cafePreviewOtHours,
+    ],
   );
 
   const flashSectionSaved = (sectionId: SettingsSectionId) => {
@@ -2922,14 +2291,7 @@ export default function SettingsPage() {
           record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
           if (!failures.length) {
             patchSavedSnapshot((snap) => {
-              snap.settings.smPayMode = s.smPayMode;
-              snap.settings.smFixedBasic = s.smFixedBasic;
-              snap.settings.smPerVisitBonus = s.smPerVisitBonus;
-              snap.smVisits = smVisits;
-              snap.hoSalary = hoSalary;
-              snap.guardPreviewQty = guardPreviewQty;
-              snap.cafePreviewBasic = cafePreviewBasic;
-              snap.cafePreviewOtHours = cafePreviewOtHours;
+              patchSnapEngineConstants(snap);
             });
           }
           break;
@@ -2937,8 +2299,7 @@ export default function SettingsPage() {
           record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
           if (!failures.length) {
             patchSavedSnapshot((snap) => {
-              snap.prevMonthThreshold = prevMonthThreshold;
-              snap.salaryMonthThreshold = salaryMonthThreshold;
+              patchSnapEngineConstants(snap);
             });
           }
           break;
@@ -2946,8 +2307,7 @@ export default function SettingsPage() {
           record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
           if (!failures.length) {
             patchSavedSnapshot((snap) => {
-              snap.enforceFlatSiteRate = enforceFlatSiteRate;
-              snap.allowPoyaOnFlatRate = allowPoyaOnFlatRate;
+              patchSnapEngineConstants(snap);
             });
           }
           break;
@@ -2955,9 +2315,7 @@ export default function SettingsPage() {
           record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
           if (!failures.length) {
             patchSavedSnapshot((snap) => {
-              snap.settings.cafeOtCutoffTime = s.cafeOtCutoffTime;
-              snap.cafeOpenStart = cafeOpenStart;
-              snap.cafeOpenEnd = cafeOpenEnd;
+              patchSnapEngineConstants(snap);
             });
           }
           break;
@@ -2965,9 +2323,7 @@ export default function SettingsPage() {
           record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
           if (!failures.length) {
             patchSavedSnapshot((snap) => {
-              snap.settings.invoiceDispatchDay = s.invoiceDispatchDay;
-              snap.settings.payrollTargetDay = s.payrollTargetDay;
-              snap.settings.collectionWarningDay = s.collectionWarningDay;
+              patchSnapEngineConstants(snap);
             });
           }
           break;
@@ -2975,7 +2331,7 @@ export default function SettingsPage() {
           record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
           if (!failures.length) {
             patchSavedSnapshot((snap) => {
-              snap.settings.fuelSurplusCorrection = s.fuelSurplusCorrection;
+              patchSnapEngineConstants(snap);
             });
           }
           break;
@@ -2983,8 +2339,7 @@ export default function SettingsPage() {
           record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
           if (!failures.length) {
             patchSavedSnapshot((snap) => {
-              snap.cafeOpenStart = cafeOpenStart;
-              snap.cafeOpenEnd = cafeOpenEnd;
+              patchSnapEngineConstants(snap);
             });
           }
           break;
@@ -2995,7 +2350,7 @@ export default function SettingsPage() {
             patchSavedSnapshot((snap) => {
               snap.cafeFormulas = cafeFormulas;
               snap.guardFormulas = guardFormulas;
-              snap.settings.cafeOtMaxMonthlyHours = s.cafeOtMaxMonthlyHours;
+              patchSnapEngineConstants(snap);
             });
           }
           break;
@@ -3006,16 +2361,6 @@ export default function SettingsPage() {
               snap.guardFormulas = guardFormulas;
               snap.cafeFormulas = cafeFormulas;
             });
-          }
-          break;
-        case 'compliance':
-          record('Compliance limits', await updateComplianceSettings(takeHomeFloor, maxDeductionPct));
-          if (!failures.length) {
-            patchSavedSnapshot((snap) => {
-              snap.takeHomeFloor = takeHomeFloor;
-              snap.maxDeductionPct = maxDeductionPct;
-            });
-            setComplianceLastEditor('Just now');
           }
           break;
         case 'entityBranding': {
@@ -3076,6 +2421,20 @@ export default function SettingsPage() {
           }
           break;
         }
+        case 'internalWorkLocations': {
+          const invalidBranch = [...internalWorkLocations.headOffice, ...internalWorkLocations.cafe].find(
+            (loc) => !loc.name.trim() || !Number.isFinite(loc.latitude) || !Number.isFinite(loc.longitude),
+          );
+          if (invalidBranch) {
+            failures.push('Internal locations: each branch needs a name and GPS coordinates');
+          } else {
+            record('Internal work locations', await saveInternalWorkLocations(internalWorkLocations));
+            if (!failures.length) {
+              patchSavedSnapshot((snap) => { snap.internalWorkLocations = internalWorkLocations; });
+            }
+          }
+          break;
+        }
         case 'shiftTimes':
           record(
             'Guard shift times',
@@ -3114,12 +2473,20 @@ export default function SettingsPage() {
     void saveSettingsSection(sectionId);
   };
 
-  const handleSave = async (): Promise<boolean> => {
+  const handleSave = async (options?: { quiet?: boolean }): Promise<boolean> => {
     setSaving(true);
     const failures: string[] = [];
 
     const record = (label: string, res: { success: boolean; error?: string }) => {
       if (!res.success) failures.push(`${label}: ${res.error ?? 'unknown error'}`);
+    };
+
+    const reportFailures = (message: string) => {
+      if (options?.quiet) {
+        setUnsavedSaveError(message);
+      } else {
+        alert(message);
+      }
     };
 
     try {
@@ -3166,8 +2533,16 @@ export default function SettingsPage() {
 
       record('Division names', await saveDivisionNames(entities));
 
-      const rankPayToSave = rankPayWithPendingEdit(s.rankPay);
-      if (editingRankId && editDraft.rankCode.trim() && editDraft.fullTitle.trim()) {
+      let rankPayToSave = rankPayWithPendingEdit(s.rankPay);
+      if (showAddRank && newRankDraft.rankCode.trim() && newRankDraft.fullTitle.trim()) {
+        rankPayToSave = [
+          ...rankPayToSave,
+          { id: `rp-${Date.now()}`, ...newRankDraft, salaryType: 'BANK' as const },
+        ];
+        setS((prev) => ({ ...prev, rankPay: rankPayToSave }));
+        setShowAddRank(false);
+        setNewRankDraft(BLANK_RANK);
+      } else if (editingRankId && editDraft.rankCode.trim() && editDraft.fullTitle.trim()) {
         setS((prev) => ({ ...prev, rankPay: rankPayToSave }));
         setEditingRankId(null);
         setEditDraft(BLANK_RANK);
@@ -3176,16 +2551,20 @@ export default function SettingsPage() {
       record('Gratuity', await saveGratuitySettings(gratuitySettings));
       record('Welfare fund', await saveWelfareFundSettings(welfareFundSettings));
 
-      record(
-        'Compliance limits',
-        await updateComplianceSettings(takeHomeFloor, maxDeductionPct),
-      );
-
       const radius = parseInt(defaultGeofenceRadiusM, 10);
       if (!Number.isFinite(radius)) {
         failures.push('Geofence: invalid radius');
       } else {
         record('Geofence default', await updateGeofenceSettings(radius));
+      }
+
+      const invalidInternalBranch = [...internalWorkLocations.headOffice, ...internalWorkLocations.cafe].find(
+        (loc) => !loc.name.trim() || !Number.isFinite(loc.latitude) || !Number.isFinite(loc.longitude),
+      );
+      if (invalidInternalBranch) {
+        failures.push('Internal locations: each branch needs a name and GPS coordinates');
+      } else {
+        record('Internal work locations', await saveInternalWorkLocations(internalWorkLocations));
       }
 
       record(
@@ -3204,18 +2583,17 @@ export default function SettingsPage() {
       }
 
       if (failures.length > 0) {
-        alert(`Some settings could not be saved:\n\n${failures.join('\n')}`);
+        reportFailures(`Some settings could not be saved:\n\n${failures.join('\n')}`);
         return false;
       }
 
-      setComplianceLastEditor('Just now');
       await reloadSettingsFromDb();
       await refreshAuditTrail();
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
       return true;
     } catch {
-      alert('Failed to save settings. Please try again.');
+      reportFailures('Failed to save settings. Please try again.');
       return false;
     } finally {
       setSaving(false);
@@ -3223,10 +2601,13 @@ export default function SettingsPage() {
   };
 
   const saveUnsavedChangesAndLeave = async () => {
-    const ok = await handleSave();
+    setUnsavedSaveError(null);
+    const navHref = pendingNavigation;
+    const tabSwitch = pendingTabSwitch;
+    const ok = await handleSave({ quiet: true });
     if (!ok) return;
     setShowUnsavedDialog(false);
-    finishPendingNavigation();
+    finishPendingLeave(navHref, tabSwitch);
   };
 
   const SM_MODES: { id: SmPayMode; label: string; desc: string }[] = [
@@ -3254,8 +2635,29 @@ export default function SettingsPage() {
             </div>
             <div className="p-6">
               <p className="text-sm font-semibold text-slate-700 leading-relaxed">
-                You have changes that are not saved yet. Save them before leaving, discard and revert to the last saved version, or keep editing.
+                {dirtySections.length === 1
+                  ? 'The following section has changes that are not saved yet:'
+                  : 'The following sections have changes that are not saved yet:'}
               </p>
+              <ul className="mt-4 space-y-2 rounded-xl border border-amber-200/80 bg-amber-50/60 px-4 py-3">
+                {dirtySections.map((sectionId) => (
+                  <li
+                    key={sectionId}
+                    className="flex items-start gap-2 text-sm font-semibold text-amber-950"
+                  >
+                    <span className="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-amber-500" />
+                    {SETTINGS_SECTION_LABELS[sectionId]}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-4 text-sm font-medium text-slate-600 leading-relaxed">
+                Save them before leaving, discard and revert to the last saved version, or keep editing.
+              </p>
+              {unsavedSaveError ? (
+                <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800 whitespace-pre-line">
+                  {unsavedSaveError}
+                </p>
+              ) : null}
               <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
                 <button
                   type="button"
@@ -3286,8 +2688,8 @@ export default function SettingsPage() {
         </div>
       )}
 
-      {/* ── Operations & Compliance warning dialog ── */}
-      {showOpsWarning && (
+      {/* ── Global settings warning dialog (Finance, Catalogs, RBAC, Operations) ── */}
+      {showGlobalSettingsWarning && pendingTab && GLOBAL_SETTINGS_WARNING_TABS[pendingTab] && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm">
           <div className="mx-4 w-full max-w-md rounded-2xl border border-amber-300/80 bg-white shadow-2xl shadow-slate-900/30 ring-1 ring-slate-900/[0.05]">
             <div className="border-b border-amber-200/80 bg-amber-50/80 px-6 py-4 flex items-center gap-3">
@@ -3295,21 +2697,31 @@ export default function SettingsPage() {
                 <AlertTriangle className="h-5 w-5 text-amber-600" />
               </div>
               <div>
-                <h3 className="text-base font-black uppercase tracking-widest text-amber-900">Global Settings Warning</h3>
-                <p className="text-sm font-medium text-amber-700">Operations &amp; Compliance</p>
+                <h3 className="text-base font-black uppercase tracking-widest text-amber-900">
+                  Global Settings Warning
+                </h3>
+                <p className="text-sm font-medium text-amber-700">
+                  {GLOBAL_SETTINGS_WARNING_TABS[pendingTab]!.subtitle}
+                </p>
               </div>
             </div>
             <div className="p-6">
               <p className="text-sm font-semibold text-slate-700 leading-relaxed">
-                Changes made in this section will take effect <span className="font-black text-slate-900">immediately across all portals</span> — including OM, FM, HR, and Field PWA — the moment you commit them.
+                Changes made in this section will take effect{' '}
+                <span className="font-black text-slate-900">immediately across all portals</span>
+                {' '}— including {GLOBAL_SETTINGS_WARNING_TABS[pendingTab]!.portals} — the moment you
+                commit them.
               </p>
               <p className="mt-3 text-sm font-semibold text-rose-600">
-                Ensure all operational managers are informed before modifying shift timings or vetting enforcement rules.
+                {GLOBAL_SETTINGS_WARNING_TABS[pendingTab]!.caution}
               </p>
               <div className="mt-6 flex justify-end gap-3">
                 <button
                   type="button"
-                  onClick={() => { setShowOpsWarning(false); setPendingTab(null); }}
+                  onClick={() => {
+                    setShowGlobalSettingsWarning(false);
+                    setPendingTab(null);
+                  }}
                   className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-600 shadow-sm hover:bg-slate-50 transition-all"
                 >
                   Cancel
@@ -3319,7 +2731,7 @@ export default function SettingsPage() {
                   onClick={() => {
                     if (pendingTab) setActiveTab(pendingTab);
                     setPendingTab(null);
-                    setShowOpsWarning(false);
+                    setShowGlobalSettingsWarning(false);
                   }}
                   className="rounded-xl bg-amber-600 px-5 py-2 text-sm font-black uppercase tracking-wider text-white shadow-lg shadow-amber-600/25 hover:bg-amber-500 transition-all"
                 >
@@ -3341,7 +2753,7 @@ export default function SettingsPage() {
               </h1>
               <p className="text-sm font-semibold text-slate-500 uppercase tracking-wider">
                 {isDirty
-                  ? 'Unsaved changes · save each section below or you will be prompted before leaving'
+                  ? `Unsaved: ${dirtySections.map((id) => SETTINGS_SECTION_LABELS[id]).join(' · ')}`
                   : 'Master Configurator · each section saves independently'}
               </p>
             </div>
@@ -3350,7 +2762,7 @@ export default function SettingsPage() {
 
         {/* ── Tab bar ── */}
         <div className="border-b border-slate-200/60 bg-white/30 backdrop-blur-sm">
-          <div className="flex w-full gap-1 px-6 lg:px-12 2xl:px-24 py-3">
+          <div className="flex w-full gap-1 overflow-x-auto px-4 py-3 sm:px-6 lg:px-12 2xl:px-24 scrollbar-none">
             {SETTINGS_TABS.map(({ id, label, Icon }) => (
               <button
                 key={id}
@@ -3370,18 +2782,6 @@ export default function SettingsPage() {
         </div>
 
         <div className="w-full space-y-6 px-6 lg:px-12 2xl:px-24 py-8">
-
-          {activeTab === 'SECURITY' && (
-            <>
-              <MfaEnrollmentPanel />
-              <VaultPinConfigPanel />
-              <SecuritySessionsPanel />
-            </>
-          )}
-
-          {activeTab === 'RBAC' && (
-            <RbacMatrixPanel audit={sectionAudit('portalRbac')} />
-          )}
 
           {activeTab === 'CATALOGS' && (
             <AssetCatalogsPanel />
@@ -3495,14 +2895,24 @@ export default function SettingsPage() {
                       <div className="bg-slate-50 border border-slate-200 p-3 rounded-lg flex items-center justify-between mb-2">
                         <div className="flex items-center gap-2.5">
                           <FileText className="h-4 w-4 text-indigo-500 flex-shrink-0" />
-                          <p className="text-sm font-bold text-slate-800">Consolidated Master Batch</p>
+                          <p className="text-sm font-bold text-slate-800">Field Operations Batch</p>
                         </div>
                         <div className="flex items-center gap-1.5 flex-wrap justify-end">
                           <span className="inline-flex items-center rounded-md border border-slate-300 bg-white px-2 py-0.5 text-xs font-semibold text-slate-700">Guards</span>
-                          <span className="text-xs font-bold text-slate-400">+</span>
-                          <span className="inline-flex items-center rounded-md border border-slate-300 bg-white px-2 py-0.5 text-xs font-semibold text-slate-700">Sector Managers</span>
-                          <span className="text-xs font-bold text-slate-400">+</span>
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-50 border border-slate-200 p-3 rounded-lg flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2.5">
+                          <FileText className="h-4 w-4 text-sky-500 flex-shrink-0" />
+                          <p className="text-sm font-bold text-slate-800">CVS Payroll Group</p>
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-wrap justify-end">
                           <span className="inline-flex items-center rounded-md border border-slate-300 bg-white px-2 py-0.5 text-xs font-semibold text-slate-700">HQ Staff</span>
+                          <span className="text-xs font-bold text-slate-400">+</span>
+                          <span className="inline-flex items-center rounded-md border border-slate-300 bg-white px-2 py-0.5 text-xs font-semibold text-slate-700">SM Group</span>
+                          <span className="text-xs font-bold text-slate-400">+</span>
+                          <span className="inline-flex items-center rounded-md border border-slate-300 bg-white px-2 py-0.5 text-xs font-semibold text-slate-700">SM CVS</span>
                         </div>
                       </div>
 
@@ -4186,12 +3596,15 @@ export default function SettingsPage() {
                         <div className="mt-3">
                           <CafeMonthSimulator
                             basic={cafePreviewBasic}
+                            qty={cafePreviewQty}
                             otHours={cafePreviewOtHours}
+                            formulas={cafeFormulas}
                             onBasicChange={setCafePreviewBasic}
+                            onQtyChange={setCafePreviewQty}
                             onOtHoursChange={setCafePreviewOtHours}
                           />
                           <p className="mt-1.5 text-xs font-medium text-slate-500">
-                            Basic and OT hours persist when you save this section.
+                            Basic, day-type counts, and OT hours persist when you save this section.
                           </p>
                         </div>
                       </div>
@@ -4289,64 +3702,6 @@ export default function SettingsPage() {
 
                 </div>
               </ExecutiveGlassCard>
-
-              {/* COMPLIANCE & DEDUCTION LIMITS CARD */}
-              <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm mb-6">
-                <div className="flex items-start justify-between gap-3 mb-2 flex-wrap">
-                  <div className="flex items-center gap-2 min-w-0 flex-1">
-                    <ShieldAlert className="w-5 h-5 text-indigo-600 flex-shrink-0" />
-                    <div>
-                      <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">Compliance & Deduction Limits</h3>
-                      <SettingsTraceability audit={sectionAudit('compliance')} />
-                    </div>
-                  </div>
-                  <SectionSaveButton
-                    saving={sectionSaving === 'compliance'}
-                    saved={sectionSaved.compliance}
-                    onClick={saveSection('compliance')}
-                  />
-                </div>
-                <p className="text-xs text-slate-500 mb-5">Configure statutory take-home limits and deduction caps. These values are enforced by both the FM payroll engine and the OM recovery plan builder.</p>
-
-                <div className="space-y-3">
-                  <div className="flex items-center gap-4 bg-slate-50 border border-slate-200 p-4 rounded-lg">
-                    <div className="flex-1">
-                      <h4 className="text-xs font-bold text-slate-700">Statutory Take-Home Floor (%)</h4>
-                      <p className="text-[10px] text-slate-500 mt-1">Minimum percentage of Gross Pay an employee must take home legally. FM payroll engine pauses and rolls over deductions that breach this.</p>
-                    </div>
-                    <div className="flex items-center gap-2 bg-white border border-slate-300 px-3 py-2 rounded-md shadow-inner">
-                      <input
-                        type="number"
-                        min={1}
-                        max={99}
-                        value={takeHomeFloor}
-                        onChange={(e) => setTakeHomeFloor(Number(e.target.value))}
-                        className="w-12 text-lg font-black text-slate-800 outline-none text-center"
-                      />
-                      <span className="text-lg font-black text-slate-400">%</span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-4 bg-slate-50 border border-slate-200 p-4 rounded-lg">
-                    <div className="flex-1">
-                      <h4 className="text-xs font-bold text-slate-700">Max Monthly Deduction Cap (%)</h4>
-                      <p className="text-[10px] text-slate-500 mt-1">Maximum percentage of Basic Salary that can be deducted per month. Enforced by the OM recovery plan builder (Guard Legal Max).</p>
-                    </div>
-                    <div className="flex items-center gap-2 bg-white border border-slate-300 px-3 py-2 rounded-md shadow-inner">
-                      <input
-                        type="number"
-                        min={1}
-                        max={99}
-                        value={maxDeductionPct}
-                        onChange={(e) => setMaxDeductionPct(Number(e.target.value))}
-                        className="w-12 text-lg font-black text-slate-800 outline-none text-center"
-                      />
-                      <span className="text-lg font-black text-slate-400">%</span>
-                    </div>
-                  </div>
-                </div>
-
-              </div>
 
               {/* ── Dynamic Statutory Formula Builder Guards ── */}
               <ExecutiveGlassCard className="overflow-hidden">
@@ -4862,6 +4217,26 @@ export default function SettingsPage() {
                     <span className="text-sm text-slate-500">Red-alert dispatched to Exec Admin if cash low by this day</span>
                   </div>
                 </div>
+
+                <div className="flex items-start justify-between gap-4 rounded-2xl border border-violet-200/70 bg-violet-50/40 px-5 py-4">
+                  <div className="flex-1">
+                    <p className="text-sm font-bold text-slate-900">Require Deductions Admin lock before FM payroll lock</p>
+                    <p className="mt-1 text-sm font-semibold text-slate-500">
+                      When on, Finance must lock the month on Deductions Admin and send it to FM before she can lock payroll groups. Turn off to skip that gate and hide the FM desk warning.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setRequireDeductionMonthLock((value) => !value)}
+                    className="mt-0.5 flex-shrink-0"
+                    aria-label="Toggle deductions admin lock requirement"
+                  >
+                    {requireDeductionMonthLock
+                      ? <ToggleRight className="h-10 w-10 text-violet-600" />
+                      : <ToggleLeft className="h-10 w-10 text-slate-400" />
+                    }
+                  </button>
+                </div>
               </div>
 
               {/* Visual cycle summary */}
@@ -5362,65 +4737,8 @@ export default function SettingsPage() {
 
               <SettingsSectionHeading
                 title="Operations & field deployment"
-                sub="Vetting, geofence, and shift windows — save each section independently"
+                sub="Geofence, shift windows, and internal locations — save each section independently"
               />
-
-              {/* ── Global ISO Vetting Deployment Control ── */}
-              <ExecutiveGlassCard className="overflow-hidden">
-                <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
-                  <div className="flex flex-wrap items-start justify-between gap-4">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-rose-200/80 bg-rose-50/80">
-                        <ShieldAlert className="h-5 w-5 text-rose-600" />
-                      </div>
-                      <div>
-                        <h3 className="text-lg font-bold text-slate-800">Global ISO Vetting Deployment Control</h3>
-                        <p className="text-sm font-medium text-slate-600">ISO 18788 · MoD / Police Clearance Enforcement Layer</p>
-                        <SettingsTraceability />
-                      </div>
-                    </div>
-                    <div className={`flex items-center gap-2 rounded-xl border px-3 py-1.5 ${hardBlockEnabled ? 'border-rose-200/80 bg-rose-50/80' : 'border-slate-200/60 bg-slate-50/60'}`}>
-                      <span className={`h-2 w-2 flex-shrink-0 rounded-full ${hardBlockEnabled ? 'bg-rose-500 shadow-[0_0_6px_rgba(239,68,68,0.7)]' : 'bg-slate-400'}`} />
-                      <span className={`text-sm font-bold uppercase tracking-wider ${hardBlockEnabled ? 'text-rose-700' : 'text-slate-500'}`}>
-                        {hardBlockEnabled ? 'BLOCK ACTIVE' : 'BLOCK DISABLED'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="p-6">
-                  {/* Toggle row */}
-                  <div className="flex flex-wrap items-center gap-5 rounded-xl border border-slate-200/70 bg-slate-50/60 px-5 py-4">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-base font-semibold text-slate-800">
-                        Enforce Hard Block on Expired MoD / Police Clearances
-                      </p>
-                      <p className="mt-1 text-sm font-semibold text-rose-600">
-                        WARNING: Disabling this block allows the OM to deploy unvetted guards. The MD assumes all legal and insurance liability for SLA breaches.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setHardBlockEnabled((v) => !v)}
-                      title={hardBlockEnabled ? 'Click to disable hard block' : 'Click to enable hard block'}
-                      className="flex flex-shrink-0 items-center gap-2 rounded-xl transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/60"
-                    >
-                      {hardBlockEnabled ? (
-                        <ToggleRight className="h-10 w-10 text-rose-500" />
-                      ) : (
-                        <ToggleLeft className="h-10 w-10 text-slate-400" />
-                      )}
-                      <span className={`text-sm font-black uppercase tracking-wider ${hardBlockEnabled ? 'text-rose-600' : 'text-slate-500'}`}>
-                        {hardBlockEnabled ? 'ON' : 'OFF'}
-                      </span>
-                    </button>
-                  </div>
-
-                  <div className="mt-4">
-                    <SettingsTraceability />
-                  </div>
-                </div>
-              </ExecutiveGlassCard>
 
               {/* ── Default site geofence radius ── */}
               <ExecutiveGlassCard className="overflow-hidden">
@@ -5455,6 +4773,26 @@ export default function SettingsPage() {
                   <p className="pt-4 border-t border-slate-100 text-[10px] font-medium text-slate-400">
                     Override per site in Site Directory. Save this section to commit the company default.
                   </p>
+                </div>
+              </ExecutiveGlassCard>
+
+              <ExecutiveGlassCard className="overflow-hidden">
+                <SettingsCardHeader
+                  icon={Building2}
+                  iconClassName="border-slate-200/80 bg-slate-50/80 text-slate-700"
+                  title="Head Office & Café Branch GPS"
+                  sub="Configure internal Classic Venture locations for HO and café staff check-in — not client guard sites"
+                  sectionId="internalWorkLocations"
+                  audit={sectionAudit('internalWorkLocations')}
+                  saving={sectionSaving === 'internalWorkLocations'}
+                  saved={sectionSaved.internalWorkLocations}
+                  onSave={saveSection('internalWorkLocations')}
+                />
+                <div className="p-6">
+                  <InternalWorkLocationsPanel
+                    value={internalWorkLocations}
+                    onChange={setInternalWorkLocations}
+                  />
                 </div>
               </ExecutiveGlassCard>
 
@@ -5639,11 +4977,14 @@ export default function SettingsPage() {
                 </div>
               </ExecutiveGlassCard>
 
+              <SettingsSectionHeading
+                title="Bulk data migration"
+                sub="Excel workbook import and export for employees, sites, and SM guard links"
+              />
+              <BulkDataImportPanel />
 
             </div>
           )}
-
-          <BulkDataImportPanel />
 
         </div>
       </div>

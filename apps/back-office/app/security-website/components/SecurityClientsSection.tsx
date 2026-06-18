@@ -4,7 +4,14 @@ import { useRef, useState, type CSSProperties } from 'react';
 import Image from 'next/image';
 import { Camera, Loader2, Plus, Trash2 } from 'lucide-react';
 
-import { getSecurityWebsiteClientLogoImgClass } from '../../../lib/security-website-brand';
+import {
+  clampSecurityWebsiteClientLogoZoom,
+  resolveSecurityWebsiteClientLogoZoom,
+  SECURITY_WEBSITE_CLIENT_LOGO_ZOOM_MAX,
+  SECURITY_WEBSITE_CLIENT_LOGO_ZOOM_MIN,
+  SECURITY_WEBSITE_MARQUEE_LOGO_CONTAINER_CLASS,
+  SECURITY_WEBSITE_MARQUEE_LOGO_IMG_CLASS,
+} from '../../../lib/security-website-brand';
 import { uploadSecurityWebsiteClientLogoAction } from '../actions';
 import { compressSecurityWebsiteImageFile } from '../../../lib/security-website-image-compress-client';
 import type { SecurityWebsiteClient } from '../../../lib/security-website-types';
@@ -32,12 +39,63 @@ function shouldServeLogoUnoptimized(url: string): boolean {
   );
 }
 
-function logoPresentationClass(editing?: boolean): string {
+function marqueeLogoPresentationClass(editing?: boolean): string {
   if (editing) return '';
-  return ' opacity-95 transition duration-200 group-hover:opacity-100';
+  return ' opacity-90 grayscale-[25%] transition duration-300 group-hover:opacity-100 group-hover:grayscale-0';
 }
 
-function ClientLogoCell({
+function MarqueeLogoImage({
+  client,
+  zoom,
+  editing,
+  onLoadFailed,
+}: {
+  client: SecurityWebsiteClient;
+  zoom: number;
+  editing?: boolean;
+  onLoadFailed?: () => void;
+}) {
+  if (!client.logoUrl) return null;
+
+  const logoClass = `${SECURITY_WEBSITE_MARQUEE_LOGO_IMG_CLASS}${marqueeLogoPresentationClass(editing)}`;
+  const unoptimized = shouldServeLogoUnoptimized(client.logoUrl);
+  const imageStyle = {
+    transform: `scale(${zoom})`,
+    transformOrigin: 'center',
+  } as const;
+
+  if (isVectorLogo(client.logoUrl)) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={client.logoUrl}
+        alt={client.name}
+        className={logoClass}
+        style={imageStyle}
+        loading="lazy"
+        decoding="async"
+        onError={onLoadFailed}
+      />
+    );
+  }
+
+  return (
+    <Image
+      src={client.logoUrl}
+      alt={client.name}
+      width={320}
+      height={128}
+      sizes="192px"
+      quality={90}
+      className={logoClass}
+      style={imageStyle}
+      unoptimized={unoptimized}
+      onError={onLoadFailed}
+    />
+  );
+}
+
+function MarqueeLogoCard({
   client,
   editing,
   onUploaded,
@@ -45,14 +103,15 @@ function ClientLogoCell({
 }: {
   client: SecurityWebsiteClient;
   editing?: boolean;
-  onUploaded: (logoUrl: string) => void;
+  onUploaded?: (logoUrl: string) => void;
   onLoadFailed?: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+  const zoom = resolveSecurityWebsiteClientLogoZoom(client);
 
   const handleFile = async (file: File | undefined) => {
-    if (!file || !file.type.startsWith('image/')) return;
+    if (!file || !file.type.startsWith('image/') || !onUploaded) return;
     setUploading(true);
     try {
       const dataUrl = await compressSecurityWebsiteImageFile(file);
@@ -64,45 +123,37 @@ function ClientLogoCell({
     }
   };
 
-  if (client.logoUrl) {
-    const logoClass = `${getSecurityWebsiteClientLogoImgClass(client.name)}${logoPresentationClass(editing)}`;
-    const unoptimized = shouldServeLogoUnoptimized(client.logoUrl);
-    const handleLoadError = () => onLoadFailed?.();
-
-    return (
-      <div className="relative flex h-full w-full items-center justify-center px-3 py-2 sm:px-4">
-        {isVectorLogo(client.logoUrl) ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={client.logoUrl}
-            alt={client.name}
-            className={logoClass}
-            loading="lazy"
-            decoding="async"
-            onError={handleLoadError}
+  return (
+    <div className={`group relative ${SECURITY_WEBSITE_MARQUEE_LOGO_CONTAINER_CLASS}`}>
+      <div className="flex h-full w-full items-center justify-center overflow-hidden">
+        {client.logoUrl ? (
+          <MarqueeLogoImage
+            client={client}
+            zoom={zoom}
+            editing={editing}
+            onLoadFailed={onLoadFailed}
           />
-        ) : (
-          <Image
-            src={client.logoUrl}
-            alt={client.name}
-            width={480}
-            height={192}
-            sizes="(max-width: 640px) 140px, (max-width: 1024px) 180px, 220px"
-            quality={100}
-            className={logoClass}
-            unoptimized={unoptimized}
-            onError={handleLoadError}
-          />
-        )}
-        {editing ? (
+        ) : editing ? (
           <button
             type="button"
             onClick={() => inputRef.current?.click()}
-            className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/40 text-[10px] font-bold text-white opacity-0 transition hover:opacity-100"
+            className="inline-flex flex-col items-center gap-1 rounded-lg border border-dashed border-slate-300 px-3 py-2 text-[10px] font-semibold text-slate-500 hover:border-slate-400 hover:bg-slate-50"
           >
-            {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Change'}
+            {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+            Upload logo
           </button>
         ) : null}
+      </div>
+      {editing && client.logoUrl ? (
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/40 text-[10px] font-bold text-white opacity-0 transition hover:opacity-100"
+        >
+          {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Change'}
+        </button>
+      ) : null}
+      {editing ? (
         <input
           ref={inputRef}
           type="file"
@@ -110,35 +161,10 @@ function ClientLogoCell({
           className="hidden"
           onChange={(e) => void handleFile(e.target.files?.[0])}
         />
-      </div>
-    );
-  }
-
-  if (!editing) return null;
-
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => inputRef.current?.click()}
-        className="mb-2 inline-flex items-center gap-1 rounded border border-dashed border-slate-300 px-2 py-1 text-[10px] font-semibold text-slate-500"
-      >
-        {uploading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Camera className="h-3 w-3" />}
-        Logo
-      </button>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/png,image/jpeg,image/webp,image/svg+xml"
-        className="hidden"
-        onChange={(e) => void handleFile(e.target.files?.[0])}
-      />
-    </>
+      ) : null}
+    </div>
   );
 }
-
-const MARQUEE_LOGO_CLASS =
-  'max-h-[2.75rem] max-w-[9rem] w-auto h-auto object-contain object-center sm:max-h-[3rem] sm:max-w-[10rem]';
 
 function MarqueeLogoItem({
   client,
@@ -150,39 +176,14 @@ function MarqueeLogoItem({
   const [hidden, setHidden] = useState(false);
   if (!client.logoUrl || hidden) return null;
 
-  const logoClass = `${MARQUEE_LOGO_CLASS} opacity-90 grayscale-[25%] transition duration-300 group-hover:opacity-100 group-hover:grayscale-0`;
-  const unoptimized = shouldServeLogoUnoptimized(client.logoUrl);
-  const handleLoadError = () => {
-    setHidden(true);
-    onLoadFailed?.();
-  };
-
   return (
-    <div className="group flex h-16 w-[11rem] shrink-0 items-center justify-center rounded-xl border border-slate-100/90 bg-white px-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)] transition duration-300 hover:border-red-100/80 hover:shadow-[0_4px_14px_rgba(185,28,28,0.08)] sm:h-[4.25rem] sm:w-[12rem]">
-      {isVectorLogo(client.logoUrl) ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={client.logoUrl}
-          alt={client.name}
-          className={logoClass}
-          loading="lazy"
-          decoding="async"
-          onError={handleLoadError}
-        />
-      ) : (
-        <Image
-          src={client.logoUrl}
-          alt={client.name}
-          width={320}
-          height={128}
-          sizes="192px"
-          quality={90}
-          className={logoClass}
-          unoptimized={unoptimized}
-          onError={handleLoadError}
-        />
-      )}
-    </div>
+    <MarqueeLogoCard
+      client={client}
+      onLoadFailed={() => {
+        setHidden(true);
+        onLoadFailed?.();
+      }}
+    />
   );
 }
 
@@ -245,61 +246,61 @@ function ClientsMarquee({ clients }: { clients: SecurityWebsiteClient[] }) {
   );
 }
 
-function ClientLogoTile({
+function ClientLogoEditTile({
   client,
-  editing,
   onUpdate,
   onRemove,
 }: {
   client: SecurityWebsiteClient;
-  editing?: boolean;
   onUpdate: (patch: Partial<SecurityWebsiteClient>) => void;
   onRemove: () => void;
 }) {
-  const [hidden, setHidden] = useState(false);
-
-  if (!editing && hidden) return null;
-  if (!editing && !client.logoUrl) return null;
+  const zoom = resolveSecurityWebsiteClientLogoZoom(client);
+  const zoomPercent = Math.round(zoom * 100);
 
   return (
-    <div
-      className={
-        editing
-          ? 'relative flex min-h-[6.5rem] flex-col items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 sm:min-h-[7rem]'
-          : 'group relative flex aspect-[5/3] items-center justify-center overflow-hidden rounded-xl border border-slate-100 bg-white shadow-sm transition duration-200 hover:border-red-100 hover:shadow-md'
-      }
-    >
-      {editing ? (
-        <>
-          <button
-            type="button"
-            onClick={onRemove}
-            className="absolute right-1.5 top-1.5 z-10 rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
-            aria-label={`Remove ${client.name}`}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
-          <div className="flex h-full w-full flex-col items-center justify-center gap-1.5">
-            <ClientLogoCell
-              client={client}
-              editing
-              onUploaded={(logoUrl) => onUpdate({ logoUrl })}
-            />
-            <input
-              value={client.name}
-              onChange={(e) => onUpdate({ name: e.target.value })}
-              className="w-full rounded border border-amber-300/80 bg-amber-50/90 px-2 py-0.5 text-center text-[10px] font-semibold text-slate-900 outline-none focus:ring-2 focus:ring-amber-400/40"
-              aria-label="Client name"
-            />
-          </div>
-        </>
-      ) : (
-        <ClientLogoCell
+    <div className="flex w-[11rem] shrink-0 flex-col gap-2 sm:w-[12rem]">
+      <div className="relative">
+        <button
+          type="button"
+          onClick={onRemove}
+          className="absolute -right-1.5 -top-1.5 z-20 rounded-full border border-slate-200 bg-white p-1 text-slate-400 shadow-sm hover:bg-rose-50 hover:text-rose-600"
+          aria-label={`Remove ${client.name}`}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+        <MarqueeLogoCard
           client={client}
-          onUploaded={() => undefined}
-          onLoadFailed={() => setHidden(true)}
+          editing
+          onUploaded={(logoUrl) => onUpdate({ logoUrl })}
         />
-      )}
+      </div>
+      <input
+        value={client.name}
+        onChange={(e) => onUpdate({ name: e.target.value })}
+        className="w-full rounded border border-amber-300/80 bg-amber-50/90 px-2 py-0.5 text-center text-[10px] font-semibold text-slate-900 outline-none focus:ring-2 focus:ring-amber-400/40"
+        aria-label="Client name"
+      />
+      <label className="space-y-1">
+        <div className="flex items-center justify-between text-[9px] font-bold uppercase tracking-wider text-slate-500">
+          <span>Logo zoom</span>
+          <span className="tabular-nums text-slate-700">{zoomPercent}%</span>
+        </div>
+        <input
+          type="range"
+          min={SECURITY_WEBSITE_CLIENT_LOGO_ZOOM_MIN * 100}
+          max={SECURITY_WEBSITE_CLIENT_LOGO_ZOOM_MAX * 100}
+          step={5}
+          value={zoomPercent}
+          onChange={(e) =>
+            onUpdate({
+              logoZoom: clampSecurityWebsiteClientLogoZoom(Number(e.target.value) / 100),
+            })
+          }
+          className="h-1.5 w-full cursor-pointer accent-red-700"
+          aria-label={`Logo zoom for ${client.name}`}
+        />
+      </label>
     </div>
   );
 }
@@ -383,19 +384,15 @@ export default function SecurityClientsSection({
         </div>
 
         {editing ? (
-          <div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 md:grid-cols-4 lg:grid-cols-5">
-            {displayClients.map((client, index) => {
-              const clientIndex = editing ? index : clients.findIndex((c) => c.id === client.id);
-              return (
-                <ClientLogoTile
-                  key={client.id}
-                  client={client}
-                  editing={editing}
-                  onUpdate={(patch) => updateClient(clientIndex, patch)}
-                  onRemove={() => removeClient(clientIndex)}
-                />
-              );
-            })}
+          <div className="mt-8 flex flex-wrap gap-3 sm:gap-4">
+            {displayClients.map((client, index) => (
+              <ClientLogoEditTile
+                key={client.id}
+                client={client}
+                onUpdate={(patch) => updateClient(index, patch)}
+                onRemove={() => removeClient(index)}
+              />
+            ))}
           </div>
         ) : (
           <ClientsMarquee clients={displayClients} />

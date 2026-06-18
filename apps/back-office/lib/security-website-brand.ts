@@ -223,12 +223,56 @@ const SECURITY_WEBSITE_LARGE_LOGO_CLIENTS = new Set<string>([
   'Loadstar',
   'Aitken Spence PLC',
   'Continental Insurance',
+  'Singer Finance Lanka Plc',
 ]);
 
+export function isSecurityWebsiteLargeLogoClient(name: string): boolean {
+  return SECURITY_WEBSITE_LARGE_LOGO_CLIENTS.has(name);
+}
+
 export function getSecurityWebsiteClientLogoImgClass(name: string): string {
-  return SECURITY_WEBSITE_LARGE_LOGO_CLIENTS.has(name)
+  return isSecurityWebsiteLargeLogoClient(name)
     ? SECURITY_WEBSITE_CLIENT_LOGO_IMG_CLASS_LARGE
     : SECURITY_WEBSITE_CLIENT_LOGO_IMG_CLASS;
+}
+
+/** Default marquee card shell — shared between live marquee and CMS edit preview. */
+export const SECURITY_WEBSITE_MARQUEE_LOGO_CONTAINER_CLASS =
+  'flex h-16 w-[11rem] shrink-0 items-center justify-center rounded-xl border border-slate-100/90 bg-white px-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)] transition duration-300 hover:border-red-100/80 hover:shadow-[0_4px_14px_rgba(185,28,28,0.08)] sm:h-[4.25rem] sm:w-[12rem]';
+
+/** Default marquee logo sizing in SecurityClientsSection. */
+export const SECURITY_WEBSITE_MARQUEE_LOGO_IMG_CLASS =
+  'max-h-[2.75rem] max-w-[9rem] w-auto h-auto object-contain object-center sm:max-h-[3rem] sm:max-w-[10rem]';
+
+export const SECURITY_WEBSITE_CLIENT_LOGO_ZOOM_MIN = 0.5;
+export const SECURITY_WEBSITE_CLIENT_LOGO_ZOOM_MAX = 2.5;
+export const SECURITY_WEBSITE_CLIENT_LOGO_ZOOM_DEFAULT_LARGE = 1.4;
+
+export function clampSecurityWebsiteClientLogoZoom(value: number): number {
+  return Math.min(
+    SECURITY_WEBSITE_CLIENT_LOGO_ZOOM_MAX,
+    Math.max(SECURITY_WEBSITE_CLIENT_LOGO_ZOOM_MIN, Math.round(value * 100) / 100),
+  );
+}
+
+export function resolveSecurityWebsiteClientLogoZoom(client: {
+  name: string;
+  logoZoom?: number;
+}): number {
+  if (typeof client.logoZoom === 'number' && Number.isFinite(client.logoZoom)) {
+    return clampSecurityWebsiteClientLogoZoom(client.logoZoom);
+  }
+  return isSecurityWebsiteLargeLogoClient(client.name)
+    ? SECURITY_WEBSITE_CLIENT_LOGO_ZOOM_DEFAULT_LARGE
+    : 1;
+}
+
+/** @deprecated Use {@link SECURITY_WEBSITE_MARQUEE_LOGO_IMG_CLASS} with logo zoom instead. */
+export const SECURITY_WEBSITE_MARQUEE_LOGO_IMG_CLASS_LARGE =
+  SECURITY_WEBSITE_MARQUEE_LOGO_IMG_CLASS;
+
+export function getSecurityWebsiteMarqueeLogoImgClass(_name?: string): string {
+  return SECURITY_WEBSITE_MARQUEE_LOGO_IMG_CLASS;
 }
 
 /** Brochure fallback when a stored client row has no custom logo. */

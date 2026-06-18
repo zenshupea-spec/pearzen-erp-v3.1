@@ -80,7 +80,7 @@ export default function SecurityPlatformShowcase() {
               </div>
             ) : (
               <>
-                <h2 className="mt-2 text-3xl font-semibold uppercase tracking-tight text-slate-900 md:text-4xl">
+                <h2 className="mt-2 text-3xl font-semibold uppercase tracking-tight text-slate-900 md:text-4xl max-md:text-2xl">
                   {content.techTitle}
                 </h2>
                 <p className="mt-3 max-w-xl text-base leading-relaxed text-slate-600">
@@ -115,12 +115,14 @@ export default function SecurityPlatformShowcase() {
                       </div>
                     ) : (
                       <>
-                        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-red-50 text-red-700">
-                          <Icon className="h-4 w-4" />
+                        <div className="flex items-center gap-3 sm:block">
+                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-red-50 text-red-700">
+                            <Icon className="h-4 w-4" />
+                          </div>
+                          <h3 className="min-w-0 text-sm font-bold uppercase tracking-wide text-slate-900 sm:mt-3">
+                            {feature.title}
+                          </h3>
                         </div>
-                        <h3 className="mt-3 text-sm font-bold uppercase tracking-wide text-slate-900">
-                          {feature.title}
-                        </h3>
                         <p className="mt-1 text-sm leading-snug text-slate-600">
                           {feature.description}
                         </p>

@@ -154,9 +154,9 @@ export default function SecurityWebsiteHome() {
           priority
         />
         <div className="cv-hero-gradient absolute inset-0" />
-        <div className="relative mx-auto grid max-w-6xl gap-2.5 px-4 py-5 md:grid-cols-[1.1fr_0.9fr] md:gap-3.5 md:px-6 md:py-7">
+        <div className="relative mx-auto grid max-w-6xl gap-2.5 px-4 py-5 md:grid-cols-[1.1fr_0.9fr] md:gap-3.5 md:px-6 md:py-7 max-md:gap-4 max-md:py-6">
           <div className="space-y-2">
-            <p className="text-xs font-bold uppercase tracking-[0.28em] text-yellow-400">
+            <p className="text-xs font-bold uppercase tracking-[0.28em] text-yellow-400 max-md:text-[10px] max-md:tracking-[0.22em]">
               Manpower + Pearzen monitoring
             </p>
             {editing ? (
@@ -179,25 +179,25 @@ export default function SecurityWebsiteHome() {
             ) : (
               <>
                 <h1
-                  className={`max-w-2xl text-4xl font-semibold leading-tight tracking-tight md:text-5xl ${HEADING_CLASS}`}
+                  className={`max-w-2xl text-[1.35rem] font-semibold leading-snug tracking-tight md:text-[1.8rem] max-md:text-xl ${HEADING_CLASS}`}
                 >
                   {hero.heroHeadline}
                 </h1>
-                <p className="max-w-xl text-base leading-relaxed text-slate-300 md:text-lg">
+                <p className="max-w-xl text-base leading-relaxed text-slate-300 md:text-lg max-md:text-sm">
                   {hero.heroSubheadline}
                 </p>
               </>
             )}
-            <div className="flex flex-wrap gap-3 pt-1">
+            <div className="flex flex-wrap gap-3 pt-1 max-md:flex-col max-md:gap-2.5">
               <Link
                 href="/security-website/offerings"
-                className="cv-btn-primary rounded-full px-5 py-2.5 text-sm font-bold"
+                className="cv-btn-primary rounded-full px-5 py-2.5 text-sm font-bold max-md:py-3 max-md:text-center"
               >
                 {ui.navSolutions}
               </Link>
               <Link
                 href="/security-website/pricing"
-                className="cv-btn-secondary rounded-full px-5 py-2.5 text-sm font-semibold"
+                className="cv-btn-secondary rounded-full px-5 py-2.5 text-sm font-semibold max-md:py-3 max-md:text-center"
               >
                 {hero.heroCtaPrimary ?? ui.requestAssessment}
               </Link>
@@ -315,7 +315,7 @@ export default function SecurityWebsiteHome() {
           ) : (
             <>
               <h2
-                className={`text-3xl font-semibold tracking-tight text-slate-900 ${HEADING_CLASS}`}
+                className={`text-3xl font-semibold tracking-tight text-slate-900 max-md:text-2xl ${HEADING_CLASS}`}
               >
                 {content.servicesTitle}
               </h2>
@@ -331,31 +331,38 @@ export default function SecurityWebsiteHome() {
             const slug = service.slug ?? content.serviceDetails[index]?.slug;
             const inner = (
               <article className="rounded-2xl border border-slate-200 bg-slate-50/60 p-6 transition hover:border-slate-300 hover:bg-white">
-                <div className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-xl bg-red-800 text-white">
-                  <Icon className="h-5 w-5" />
-                </div>
                 {editing ? (
-                  <div className="space-y-3">
-                    <Field
-                      label={`Service ${index + 1} title`}
-                      value={draft.services[index]?.title ?? ''}
-                      editing
-                      onChange={(value) => patchService(index, 'title', value)}
-                    />
-                    <Field
-                      label={`Service ${index + 1} description`}
-                      value={draft.services[index]?.description ?? ''}
-                      editing
-                      onChange={(value) => patchService(index, 'description', value)}
-                      multiline
-                    />
-                  </div>
+                  <>
+                    <div className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-xl bg-red-800 text-white">
+                      <Icon className="h-5 w-5" />
+                    </div>
+                    <div className="space-y-3">
+                      <Field
+                        label={`Service ${index + 1} title`}
+                        value={draft.services[index]?.title ?? ''}
+                        editing
+                        onChange={(value) => patchService(index, 'title', value)}
+                      />
+                      <Field
+                        label={`Service ${index + 1} description`}
+                        value={draft.services[index]?.description ?? ''}
+                        editing
+                        onChange={(value) => patchService(index, 'description', value)}
+                        multiline
+                      />
+                    </div>
+                  </>
                 ) : (
                   <>
-                    <h3 className={`text-lg font-semibold text-slate-900 ${HEADING_CLASS}`}>
-                      {service.title}
-                    </h3>
-                    <p className="mt-2 text-sm leading-relaxed text-slate-600">
+                    <div className="mb-4 flex items-center gap-3">
+                      <div className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-red-800 text-white">
+                        <Icon className="h-5 w-5" />
+                      </div>
+                      <h3 className={`min-w-0 text-lg font-semibold text-slate-900 ${HEADING_CLASS}`}>
+                        {service.title}
+                      </h3>
+                    </div>
+                    <p className="text-sm leading-relaxed text-slate-600">
                       {service.description}
                     </p>
                     {slug ? (
@@ -388,7 +395,7 @@ export default function SecurityWebsiteHome() {
       </section>
 
       <section className="border-y border-red-100 bg-red-50/40">
-        <div className="mx-auto max-w-6xl px-4 py-16 md:px-6">
+        <div className="mx-auto max-w-6xl px-4 py-16 md:px-6 max-md:py-8">
           <SecurityCostEstimator
             showEmailCapture
             editing={editing}
@@ -485,14 +492,14 @@ export default function SecurityWebsiteHome() {
           </div>
           <Link
             href="/security-website/pricing"
-            className="shrink-0 rounded-full bg-yellow-400 px-6 py-3 text-sm font-bold text-red-950 hover:bg-yellow-300"
+            className="shrink-0 rounded-full bg-yellow-400 px-6 py-3 text-sm font-bold text-red-950 hover:bg-yellow-300 max-md:w-full max-md:py-3.5 max-md:text-center"
           >
             {ui.requestAssessment}
           </Link>
         </div>
       </section>
 
-      <section className="relative overflow-hidden border-t border-red-900/40 bg-[var(--cv-charcoal)] py-4 md:py-5">
+      <section className="cv-pre-footer relative overflow-hidden border-t border-red-900/40 bg-[var(--cv-charcoal)] pt-4 pb-2 md:pt-5 md:pb-2">
         <div
           className="pointer-events-none absolute inset-y-0 left-0 z-10 w-12 bg-gradient-to-r from-[var(--cv-charcoal)] via-[var(--cv-charcoal)]/90 to-transparent sm:w-20"
           aria-hidden

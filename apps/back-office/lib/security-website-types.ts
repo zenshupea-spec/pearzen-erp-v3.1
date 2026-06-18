@@ -77,6 +77,8 @@ export type SecurityWebsiteClient = {
   id: string;
   name: string;
   logoUrl: string | null;
+  /** Marquee logo scale multiplier (1 = default). */
+  logoZoom?: number;
 };
 
 export type SecurityWebsiteTrainingGalleryImage = {
@@ -239,7 +241,7 @@ export const DEFAULT_SECURITY_WEBSITE_CONTENT: SecurityWebsiteContent = {
   companyName: 'Classic Venture Security (Pvt) Ltd.',
   tagline: 'We never compromise on quality',
   logoUrl: null,
-  heroHeadline: 'Security you can prove — manpower plus live monitoring',
+  heroHeadline: 'Licensed manpower. GPS proof on every shift.',
   heroSubheadline:
     'GPS-verified guard attendance, supervisor spot checks with live proof, and a client portal that shows who is on your site right now. Classic Venture pairs trained manpower with Pearzen field technology for 170+ clients with island-wide coverage.',
   heroImageUrl: CV_BROCHURE_ASSETS.hero,
@@ -252,7 +254,7 @@ export const DEFAULT_SECURITY_WEBSITE_CONTENT: SecurityWebsiteContent = {
     { value: 'Client Portal', label: 'Live attendance, incidents, and patrol metrics for clients' },
     { value: 'Ministry licensed', label: 'Ministry of Defence registered · trained officers' },
   ],
-  servicesTitle: 'Professional manpower on every site',
+  servicesTitle: 'Manpower solutions',
   servicesSubtitle:
     'Technology proves attendance and incidents — our officers deliver the presence. Static guards, mobile patrols, guest relations, events, and ex-servicemen task force cover across Sri Lanka.',
   services: [
@@ -390,14 +392,14 @@ export const DEFAULT_SECURITY_WEBSITE_CONTENT: SecurityWebsiteContent = {
   ],
   i18n: {
     si: {
-      heroHeadline: 'ඔප්පු කළ හැකි ආරක්ෂාව — මානව බලය සහ සජීවී නිරීක්ෂණය',
+      heroHeadline: 'බලපත්‍ර ලබා ඇති මානව බලය. සෑම වැඩමුරුවකම GPS සාක්ෂි.',
       heroSubheadline:
         'GPS සත්‍යාපිත පැමිණීම්, සංචාරක නිලධාරී සත්‍යාපනය, සහ ඔබේ අඩවියේ කවුද සිටිනවාද යන්න පෙන්වන සේවාලාභී දොරටුව. 2008 සිට මේජර් සුසිල් පෙරේරා මෙහෙයවීමෙන්.',
       heroCtaPrimary: 'අඩවි තක්සේරුවක් ඉල්ලන්න',
       heroCtaSecondary: 'ක්ෂණික ඇස්තමේන්තුව',
     },
     ta: {
-      heroHeadline: 'நிரூபிக்கக்கூடிய பாதுகாப்பு — மனிதவளம் + நேரடி கண்காணிப்பு',
+      heroHeadline: 'உரிமம் பெற்ற மனிதவளம். ஒவ்வொரு ஷிப்டிலும் GPS சான்று.',
       heroSubheadline:
         'GPS சரிபார்க்கப்பட்ட வருகை, மேற்பார்வையாளர் சரிபார்ப்பு, உங்கள் தளத்தில் யார் உள்ளனர் என்பதைக் காட்டும் வாடிக்கையாளர் போர்டல். 2008 முதல் மேஜர் சுசில் பெரேரா தலைமையில்.',
       heroCtaPrimary: 'தள மதிப்பீடு கோருங்கள்',
@@ -510,6 +512,12 @@ function mergeHeroTrainingGallery(raw: unknown): SecurityWebsiteTrainingGalleryI
   return parsed.length > 0 ? parsed : defaults;
 }
 
+function parseOptionalLogoZoom(value: unknown): number | undefined {
+  const n = typeof value === 'number' ? value : parseFloat(String(value));
+  if (!Number.isFinite(n)) return undefined;
+  return Math.min(2.5, Math.max(0.5, Math.round(n * 100) / 100));
+}
+
 function mergeClients(raw: unknown): SecurityWebsiteClient[] {
   const defaults = buildDefaultClients();
   if (!Array.isArray(raw) || raw.length === 0) return defaults;
@@ -524,10 +532,12 @@ function mergeClients(raw: unknown): SecurityWebsiteClient[] {
         typeof row.id === 'string' && row.id.trim()
           ? row.id.trim()
           : `client-${index + 1}`;
+      const logoZoom = parseOptionalLogoZoom(row.logoZoom);
       return {
         id,
         name,
         logoUrl: resolveSecurityWebsiteClientLogo(name, asNullableString(row.logoUrl)),
+        ...(logoZoom !== undefined ? { logoZoom } : {}),
       };
     })
     .filter((c): c is SecurityWebsiteClient => c !== null)

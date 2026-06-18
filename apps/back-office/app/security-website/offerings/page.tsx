@@ -91,7 +91,7 @@ export default async function SecurityOfferingsPage() {
   return (
     <div className="mx-auto max-w-6xl px-4 py-12 md:px-6 md:py-16">
       <p className="text-xs font-bold uppercase tracking-[0.24em] text-red-700">Our solutions</p>
-      <h1 className="mt-2 text-3xl font-semibold uppercase tracking-tight text-slate-900 md:text-4xl">
+      <h1 className="mt-2 text-3xl font-semibold uppercase tracking-tight text-slate-900 md:text-4xl max-md:text-2xl">
         Trained manpower, backed by proof
       </h1>
       <p className="mt-4 max-w-2xl text-base leading-relaxed text-slate-600">

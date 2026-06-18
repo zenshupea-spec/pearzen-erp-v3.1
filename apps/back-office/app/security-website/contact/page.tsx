@@ -13,7 +13,7 @@ export default async function ContactPage() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-12 md:px-6 md:py-16">
-      <h1 className="text-3xl font-semibold tracking-tight text-slate-900">Contact us</h1>
+      <h1 className="text-3xl font-semibold tracking-tight text-slate-900 max-md:text-2xl">Contact us</h1>
       <p className="mt-4 max-w-2xl text-base text-slate-600">{content.ctaBody}</p>
 
       <div className="mt-12 grid gap-8 md:grid-cols-2">

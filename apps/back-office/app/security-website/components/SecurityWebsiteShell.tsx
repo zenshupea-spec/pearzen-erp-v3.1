@@ -114,6 +114,15 @@ export default function SecurityWebsiteShell({ children }: { children: ReactNode
   }, [pathname]);
 
   useEffect(() => {
+    if (!mobileOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [mobileOpen]);
+
+  useEffect(() => {
     const syncHash = () => setLocationHash(window.location.hash);
     syncHash();
     window.addEventListener('hashchange', syncHash);
@@ -137,24 +146,27 @@ export default function SecurityWebsiteShell({ children }: { children: ReactNode
 
   return (
     <SecurityWebsiteEditProvider>
-    <div className="security-website min-h-screen bg-white text-slate-900">
+    <div className="security-website min-h-screen overflow-x-hidden bg-white text-slate-900 md:overflow-x-visible">
       <SecurityWebsiteEditBar />
 
-      <div className="bg-red-700 py-1.5 text-center text-[11px] font-medium italic text-white">
+      <div className="bg-red-700 py-1.5 text-center text-[11px] font-medium italic text-white max-md:px-3 max-md:text-[10px] max-md:leading-snug">
         {content.tagline}
       </div>
       <div className="cv-checker" aria-hidden />
 
       <header className="sticky top-0 z-40 border-b border-red-100/80 bg-white/95 backdrop-blur-sm">
-        <div className="mx-auto flex max-w-6xl items-center gap-4 px-4 py-3 md:px-6">
-          <Link href="/security-website" className="flex min-w-0 shrink-0 items-center gap-2.5">
+        <div className="mx-auto flex max-w-6xl items-center gap-4 px-4 py-3 md:px-6 max-md:gap-2 max-md:px-3 max-md:py-2.5">
+          <Link
+            href="/security-website"
+            className="flex min-w-0 shrink-0 items-center gap-2.5 max-md:min-w-0 max-md:flex-1"
+          >
             {content.logoUrl ? (
               <Image
                 src={content.logoUrl}
                 alt={content.companyName}
                 width={140}
                 height={56}
-                className="h-12 w-auto shrink-0 object-contain sm:h-14"
+                className="h-12 w-auto shrink-0 object-contain sm:h-14 max-md:h-9"
                 sizes="140px"
                 priority
                 unoptimized={
@@ -163,8 +175,8 @@ export default function SecurityWebsiteShell({ children }: { children: ReactNode
               />
             ) : (
               <div className="flex shrink-0 items-center gap-2">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-700 text-white">
-                  <Shield className="h-5 w-5" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-700 text-white max-md:h-9 max-md:w-9">
+                  <Shield className="h-5 w-5 max-md:h-4 max-md:w-4" />
                 </div>
               </div>
             )}
@@ -174,6 +186,11 @@ export default function SecurityWebsiteShell({ children }: { children: ReactNode
               </p>
               <p className="mt-0.5 text-[11px] leading-snug text-red-600/90">
                 Established 7 March 2008
+              </p>
+            </div>
+            <div className="min-w-0 md:hidden">
+              <p className="truncate font-university-roman text-xs leading-snug text-red-800">
+                {content.companyName}
               </p>
             </div>
           </Link>
@@ -194,12 +211,12 @@ export default function SecurityWebsiteShell({ children }: { children: ReactNode
           <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
             <Link
               href="/clientlogin"
-              className="hidden h-9 items-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-3 text-xs font-semibold text-red-800 transition hover:border-red-300 hover:bg-red-100 sm:inline-flex"
+              className="hidden h-9 items-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-3 text-xs font-semibold text-red-800 transition hover:border-red-300 hover:bg-red-100 sm:inline-flex max-md:hidden"
             >
               <LayoutDashboard className="h-3.5 w-3.5" />
               {ui.navClientPortal}
             </Link>
-            <div className="relative">
+            <div className="relative max-md:hidden">
               <select
                 value={locale}
                 onChange={(e) =>
@@ -219,7 +236,7 @@ export default function SecurityWebsiteShell({ children }: { children: ReactNode
             {!isCareers ? (
               <Link
                 href="/security-website/careers"
-                className="cv-btn-primary hidden h-9 items-center rounded-full px-4 text-xs font-semibold sm:inline-flex"
+                className="cv-btn-primary hidden h-9 items-center rounded-full px-4 text-xs font-semibold sm:inline-flex max-md:hidden"
               >
                 {ui.ctaCareers}
               </Link>
@@ -248,13 +265,39 @@ export default function SecurityWebsiteShell({ children }: { children: ReactNode
                   ui={ui}
                   onHashChange={setLocationHash}
                   onNavigate={() => setMobileOpen(false)}
-                  className="rounded-lg px-3 py-2.5 hover:bg-red-50"
+                  className="rounded-lg px-3 py-2.5 hover:bg-red-50 max-md:py-3 max-md:text-base"
                 />
               ))}
+
+              <div className="mt-3 border-t border-slate-100 pt-3 md:hidden">
+                <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  Language
+                </p>
+                <div className="grid grid-cols-3 gap-2 px-1">
+                  {SECURITY_WEBSITE_LOCALES.map((loc) => (
+                    <button
+                      key={loc}
+                      type="button"
+                      onClick={() => {
+                        setLocale(loc);
+                        setMobileOpen(false);
+                      }}
+                      className={`rounded-lg border px-2 py-2.5 text-xs font-semibold transition ${
+                        locale === loc
+                          ? 'border-red-300 bg-red-50 text-red-800'
+                          : 'border-slate-200 bg-white text-slate-600 hover:border-red-200'
+                      }`}
+                    >
+                      {LOCALE_LABELS[loc]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <Link
                 href="/clientlogin"
                 onClick={() => setMobileOpen(false)}
-                className="mt-3 inline-flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-semibold text-red-800 hover:bg-red-100"
+                className="mt-3 inline-flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-semibold text-red-800 hover:bg-red-100 md:hidden"
               >
                 <LayoutDashboard className="h-4 w-4" />
                 {ui.navClientPortal}
@@ -263,7 +306,7 @@ export default function SecurityWebsiteShell({ children }: { children: ReactNode
                 <Link
                   href="/security-website/careers"
                   onClick={() => setMobileOpen(false)}
-                  className="cv-btn-primary mt-4 inline-flex items-center justify-center rounded-full px-4 py-2.5 text-sm font-semibold"
+                  className="cv-btn-primary mt-4 inline-flex items-center justify-center rounded-full px-4 py-2.5 text-sm font-semibold md:hidden"
                 >
                   {ui.ctaCareers}
                 </Link>
@@ -282,23 +325,23 @@ export default function SecurityWebsiteShell({ children }: { children: ReactNode
               <p className="text-sm font-bold text-white">{content.companyName}</p>
               <p className="mt-2 text-sm text-slate-400">{content.footerTagline}</p>
             </div>
-            <div className="space-y-2 text-sm">
+            <div className="space-y-2 text-sm max-md:space-y-3">
               <a
                 href={`tel:${content.contactPhone.replace(/\s/g, '')}`}
-                className="flex items-center justify-center gap-2 hover:text-white"
+                className="flex items-center justify-center gap-2 hover:text-white max-md:break-all"
               >
                 <Phone className="h-4 w-4 text-yellow-400" />
                 {content.contactPhone}
               </a>
               <a
                 href={`mailto:${content.contactEmail}`}
-                className="flex items-center justify-center gap-2 hover:text-white"
+                className="flex items-center justify-center gap-2 hover:text-white max-md:break-all"
               >
                 <Mail className="h-4 w-4 text-yellow-400" />
                 {content.contactEmail}
               </a>
-              <p className="flex items-center justify-center gap-2">
-                <MapPin className="h-4 w-4 text-yellow-400" />
+              <p className="flex items-center justify-center gap-2 max-md:items-start max-md:text-left">
+                <MapPin className="h-4 w-4 text-yellow-400 max-md:mt-0.5 max-md:shrink-0" />
                 {content.contactAddress}
               </p>
             </div>

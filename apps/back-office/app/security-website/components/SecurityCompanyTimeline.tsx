@@ -176,39 +176,23 @@ export default function SecurityCompanyTimeline({
           </h2>
         </div>
 
-        <ol className="mt-8 grid gap-5 sm:hidden">
+        <ol className="mt-8 sm:hidden">
           {milestones.map((item, index) => (
-            <li key={item.year} className="grid grid-cols-[6.5rem_1fr] items-start gap-3">
-              <div className={`${TIMELINE_IMAGE_FRAME_CLASS} rounded-lg`}>
-                {editing && item.image.onUploaded ? (
-                  <SecurityEditableImage
-                    src={item.image.src}
-                    alt={item.imageAlt}
-                    slot={item.image.slot}
-                    editing={editing}
-                    hasCustomImage={item.image.hasCustom}
-                    onUploaded={item.image.onUploaded}
-                    frame={item.image.frame}
-                    defaultFrame={item.image.defaultFrame}
-                    onFrameChange={item.image.onFrameChange}
-                    className="absolute inset-0"
-                    objectFit={item.objectFit}
-                  />
-                ) : (
-                  <Image
-                    key={item.image.src}
-                    src={item.image.src}
-                    alt={item.imageAlt}
-                    fill
-                    className={timelineImageClass(item)}
-                    style={timelineImageStyle(item)}
-                    sizes="104px"
-                    priority={index === 0}
-                    unoptimized={shouldServeTimelineImageUnoptimized(item.image.src)}
-                  />
-                )}
-              </div>
+            <li key={item.year} className="relative pl-8 pb-8 last:pb-0">
+              <span
+                className="absolute left-0 top-1.5 z-10 h-3 w-3 rounded-full border-2 border-white bg-red-700 shadow"
+                aria-hidden
+              />
+              {index < milestones.length - 1 ? (
+                <span
+                  className="absolute bottom-0 left-[5px] top-5 w-px bg-red-200"
+                  aria-hidden
+                />
+              ) : null}
               <TimelineCopy item={item} />
+              <div className="mt-3">
+                <TimelineCardImage item={item} priority={index === 0} editing={editing} />
+              </div>
             </li>
           ))}
         </ol>

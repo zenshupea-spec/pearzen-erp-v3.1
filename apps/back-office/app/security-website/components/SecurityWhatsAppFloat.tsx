@@ -23,7 +23,7 @@ export default function SecurityWhatsAppFloat({ message }: Props) {
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-2 rounded-full bg-[#25D366] px-4 py-3 text-sm font-bold text-white shadow-lg transition hover:bg-[#1fb855] hover:shadow-xl"
+      className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-2 rounded-full bg-[#25D366] px-4 py-3 text-sm font-bold text-white shadow-lg transition hover:bg-[#1fb855] hover:shadow-xl max-md:bottom-4 max-md:right-4"
       aria-label={ui.whatsappUs}
     >
       <MessageCircle className="h-5 w-5" />

@@ -7,6 +7,13 @@
   --cv-charcoal: #1f2937;
 }
 
+@media (max-width: 767px) {
+  .security-website {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+}
+
 .security-website .cv-checker {
   height: 6px;
   background-image: repeating-linear-gradient(
@@ -64,6 +71,16 @@
 
 .security-website .cv-footer {
   background: var(--cv-charcoal);
+}
+
+/* Training gallery strip flows into the footer — same charcoal background */
+.security-website:has(.cv-pre-footer) .cv-footer {
+  border-top-width: 0;
+}
+
+.security-website:has(.cv-pre-footer) .cv-footer > div:first-child {
+  padding-top: 1rem;
+  padding-bottom: 3rem;
 }
 
 .security-website .cv-estimate-panel {

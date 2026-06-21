@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { Check } from "lucide-react";
 
 import { createSupabaseBrowserClient } from "../../../packages/supabase/client";
 
@@ -33,6 +34,8 @@ type Props = {
   /** Post-OAuth redirect path (must start with /). */
   redirectNext?: string;
   disabled?: boolean;
+  completed?: boolean;
+  completedLabel?: string;
 };
 
 export default function GoogleSignInButton({
@@ -40,6 +43,8 @@ export default function GoogleSignInButton({
   onArm,
   redirectNext = "/",
   disabled = false,
+  completed = false,
+  completedLabel = "Google verified",
 }: Props) {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
 
@@ -72,15 +77,24 @@ export default function GoogleSignInButton({
     <button
       type="button"
       onClick={handleGoogleSignIn}
-      disabled={loading || disabled}
+      disabled={loading || disabled || completed}
       className={`group flex w-full items-center justify-center gap-3 rounded-xl border-2 px-4 py-3.5 text-sm font-black uppercase tracking-[0.15em] shadow-md transition-all active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100 ${
-        armed || loading
+        completed || armed || loading
           ? 'border-emerald-500 bg-emerald-500 text-white shadow-emerald-500/30 hover:bg-emerald-600'
           : 'border-rose-300 bg-slate-900 text-white shadow-slate-900/25 hover:bg-slate-800'
       }`}
     >
-      <GoogleIcon />
-      <span>{loading ? "Redirecting…" : "Continue with Google"}</span>
+      {completed ? (
+        <>
+          <Check className="h-5 w-5 shrink-0" strokeWidth={2.5} />
+          <span className="truncate normal-case tracking-normal">{completedLabel}</span>
+        </>
+      ) : (
+        <>
+          <GoogleIcon />
+          <span>{loading ? "Redirecting…" : "Continue with Google"}</span>
+        </>
+      )}
     </button>
   );
 }

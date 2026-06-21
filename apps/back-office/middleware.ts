@@ -11,16 +11,26 @@ import {
   isTenantRedirectPlatformHost,
   normalizeTenantSlug,
   parseTenantSlugFromHostname,
+  tenantBaseDomain,
   tenantSubdomainUrl,
 } from "./lib/tenant-host";
-import { isPublicCustomerMenuHost } from "./lib/customer-menu-host";
+import { isPublicCustomerMenuHost, normalizeCustomerMenuUrl } from "./lib/customer-menu-host";
 import {
   isSecurityWebsiteHost,
   isSecurityWebsitePublicPath,
 } from "./lib/security-website-host";
+import {
+  isPearzenWebsiteHost,
+  isPearzenWebsitePublicPath,
+} from "./lib/pearzen-website-host";
+import {
+  isTenantPortalAuthFlowPath,
+  parseTenantPortalHost,
+  pathAllowedOnTenantPortalHost,
+} from "./lib/tenant-portal-host";
 import { CVS_TENANT_SLUG } from "./lib/company-ids";
 import { canAccessPortalActivityLedger } from "./lib/audit-portals";
-import { canAccessHqHub } from "./lib/hq-hub";
+import { canAccessHqHub, WFM_HUB_PATH } from "./lib/hq-hub";
 import {
   authenticatedLandingPath,
   canAccessPathForProfile,
@@ -44,12 +54,53 @@ import {
   resolvePortalAccessGate,
 } from "./lib/head-office-portal-auth";
 import { isHeadOfficeGeofenceExempt } from "./lib/head-office-geofence-exempt";
+import { isDedicatedPartnerHost, isPartnerRoute } from "./lib/partner-host";
+import { runPartnerAuthGate } from "./lib/partner-portal-middleware";
+import {
+  isDedicatedForgeHost,
+  legacyForgeRedirectHost,
+  normalizeHostname,
+} from "./lib/forge-host";
+import { runForgeAuthGate } from "./lib/forge-portal-middleware";
+import { isSignInBeforeLatestColomboMidnight } from "./lib/portal-sl-midnight";
+import { resolveTenantCompany } from "./lib/tenant-context";
+import {
+  customDomainRoutesTraffic,
+  lookupTenantCustomDomain,
+  type TenantCustomDomainBinding,
+} from "./lib/tenant-custom-domain-server";
 import { createSupabaseServiceClient } from "../../packages/supabase/service";
+import {
+  fetchTenantModuleContextForSlug,
+} from "./lib/tenant-product-bundle-server";
+import {
+  hubPathForBundle,
+  isTenantPathAllowedForBundle,
+  landingPathForRoleAndBundle,
+} from "./lib/tenant-product-bundle";
+import {
+  canAccessSalonDesk,
+  isSalonVerticalEnabled,
+} from "./lib/salon-vertical-server";
+import {
+  canAccessRetailDesk,
+  isRetailVerticalEnabled,
+} from "./lib/retail-vertical-server";
+import {
+  decodeSupabaseAccessTokenSessionId,
+  getActivePendingChallengeForChallenger,
+} from "./lib/portal-pending-login";
 
 const AUTH_MATCHER = [
   "/",
   "/dashboard",
   "/dashboard/:path*",
+  "/wfm",
+  "/wfm/:path*",
+  "/salon",
+  "/salon/:path*",
+  "/retail",
+  "/retail/:path*",
   "/hq",
   "/hq/:path*",
   "/executive/:path*",
@@ -63,6 +114,8 @@ const AUTH_MATCHER = [
   "/fm-dashboard/:path*",
   "/invoice-desk/:path*",
   "/account/:path*",
+  "/settings",
+  "/settings/:path*",
 ];
 
 function getClientIp(req: NextRequest) {
@@ -100,6 +153,9 @@ function resolveTenantSlug(req: NextRequest): string | null {
   const hostname = req.headers.get("host")?.split(":")[0] ?? "";
   const pathname = req.nextUrl.pathname;
 
+  const portalBinding = parseTenantPortalHost(hostname);
+  if (portalBinding) return portalBinding.tenantSlug;
+
   const fromHost = parseTenantSlugFromHostname(hostname);
   if (fromHost) return fromHost;
 
@@ -113,6 +169,110 @@ function resolveTenantSlug(req: NextRequest): string | null {
   }
 
   return null;
+}
+
+async function resolveTenantSlugWithCustomDomain(
+  req: NextRequest,
+): Promise<{ tenantSlug: string | null; customDomain: TenantCustomDomainBinding | null }> {
+  const hostname = req.headers.get("host")?.split(":")[0] ?? "";
+  const customDomain = await lookupTenantCustomDomain(hostname);
+
+  if (customDomain && customDomainRoutesTraffic(customDomain)) {
+    return { tenantSlug: customDomain.tenantSlug, customDomain };
+  }
+
+  return { tenantSlug: resolveTenantSlug(req), customDomain: null };
+}
+
+function handleCustomDomainRequest(
+  req: NextRequest,
+  binding: TenantCustomDomainBinding,
+): NextResponse | null {
+  const { pathname, search } = req.nextUrl;
+  const tenantSlug = binding.tenantSlug;
+  const requestHeaders = buildRequestWithTenant(req, tenantSlug);
+
+  if (pathname.startsWith("/auth/") || pathname.startsWith("/api/")) {
+    return stampTenant(
+      NextResponse.next({ request: { headers: requestHeaders } }),
+      tenantSlug,
+    );
+  }
+
+  switch (binding.domainType) {
+    case "erp_staff": {
+      if (matchesAuthProxy(pathname)) {
+        return runAuthProxy(req, requestHeaders, tenantSlug);
+      }
+
+      const isForgeRoute =
+        pathname === "/forge" ||
+        pathname.startsWith("/forge/") ||
+        pathname === "/login/forge" ||
+        pathname.startsWith("/login/forge/");
+
+      if (isForgeRoute) {
+        return runForgeAuthGate(req, requestHeaders, (response) =>
+          stampTenant(response, tenantSlug),
+        );
+      }
+
+      if (isPartnerRoute(pathname)) {
+        return runPartnerAuthGate(req, requestHeaders, (response) =>
+          stampTenant(response, tenantSlug),
+        );
+      }
+
+      return stampTenant(
+        NextResponse.next({ request: { headers: requestHeaders } }),
+        tenantSlug,
+      );
+    }
+
+    case "security_website": {
+      if (pathname === "/") {
+        const redirectUrl = req.nextUrl.clone();
+        redirectUrl.pathname = "/security-website";
+        return stampTenant(NextResponse.redirect(redirectUrl), tenantSlug);
+      }
+      if (isSecurityWebsitePublicPath(pathname)) {
+        return stampTenant(
+          NextResponse.next({ request: { headers: requestHeaders } }),
+          tenantSlug,
+        );
+      }
+      const redirectUrl = req.nextUrl.clone();
+      redirectUrl.pathname = "/security-website";
+      redirectUrl.search = "";
+      return stampTenant(NextResponse.redirect(redirectUrl), tenantSlug);
+    }
+
+    case "public_website": {
+      if (pathname === "/") {
+        const redirectUrl = req.nextUrl.clone();
+        redirectUrl.pathname = "/public-website";
+        return stampTenant(NextResponse.redirect(redirectUrl), tenantSlug);
+      }
+      if (pathname === "/public-website" || pathname.startsWith("/public-website/")) {
+        return stampTenant(
+          NextResponse.next({ request: { headers: requestHeaders } }),
+          tenantSlug,
+        );
+      }
+      const redirectUrl = req.nextUrl.clone();
+      redirectUrl.pathname = "/public-website";
+      redirectUrl.search = "";
+      return stampTenant(NextResponse.redirect(redirectUrl), tenantSlug);
+    }
+
+    case "customer_menu": {
+      const menuUrl = normalizeCustomerMenuUrl(process.env.NEXT_PUBLIC_CUSTOMER_MENU_URL);
+      return NextResponse.redirect(menuUrl);
+    }
+
+    default:
+      return null;
+  }
 }
 
 function buildRequestWithTenant(req: NextRequest, tenantSlug: string | null) {
@@ -130,6 +290,9 @@ function pathnameRequiresHeadOfficeGeofence(
   pathname: string,
 ): boolean {
   if (pathname === "/dashboard" || pathname.startsWith("/dashboard/")) return true;
+  if (pathname === "/wfm" || pathname.startsWith("/wfm/")) return true;
+  if (pathname === "/salon" || pathname.startsWith("/salon/")) return true;
+  if (pathname === "/retail" || pathname.startsWith("/retail/")) return true;
   if (pathname === "/executive" || pathname.startsWith("/executive/")) return true;
   if (pathname === "/om" || pathname.startsWith("/om/")) return true;
   if (pathname === "/tm" || pathname.startsWith("/tm/")) return true;
@@ -140,6 +303,60 @@ function pathnameRequiresHeadOfficeGeofence(
     return true;
   }
   return false;
+}
+
+async function resolveLandingPath(
+  roleString: string | null,
+  profile: Awaited<ReturnType<typeof fetchBackOfficeUserProfile>>,
+  tenantSlug: string | null,
+): Promise<string> {
+  if (tenantSlug) {
+    const moduleContext = await fetchTenantModuleContextForSlug(tenantSlug);
+    if (moduleContext) {
+      return landingPathForRoleAndBundle(
+        roleString,
+        moduleContext.productBundle,
+        profile,
+      );
+    }
+  }
+  return authenticatedLandingPath(roleString, profile);
+}
+
+async function enforceTenantBundleGate(
+  req: NextRequest,
+  tenantSlug: string | null,
+  pathname: string,
+  roleString: string | null,
+  profile: Awaited<ReturnType<typeof fetchBackOfficeUserProfile>>,
+): Promise<NextResponse | null> {
+  if (!tenantSlug) return null;
+  if (isForgePath(pathname) || pathname.startsWith("/login") || pathname.startsWith("/auth/")) {
+    return null;
+  }
+
+  const moduleContext = await fetchTenantModuleContextForSlug(tenantSlug);
+  if (!moduleContext) return null;
+
+  if (
+    isTenantPathAllowedForBundle(
+      pathname,
+      moduleContext.productBundle,
+      moduleContext.enabledModules,
+    )
+  ) {
+    return null;
+  }
+
+  const landing = landingPathForRoleAndBundle(
+    roleString,
+    moduleContext.productBundle,
+    profile,
+  );
+  const target = landing.startsWith("/login")
+    ? `${loginPathForRequestPath(pathname, req.nextUrl.search)}?error=module_not_enabled`
+    : landing;
+  return NextResponse.redirect(new URL(target, req.url));
 }
 
 async function enforceHeadOfficeGeofenceSession(
@@ -162,6 +379,25 @@ async function runAuthProxy(
 ) {
   const { pathname } = req.nextUrl;
   const hostname = req.headers.get("host")?.split(":")[0] ?? "";
+
+  if (
+    tenantSlug &&
+    !isForgePath(pathname) &&
+    !pathname.startsWith("/login") &&
+    !pathname.startsWith("/auth/") &&
+    !isPearzenWebsitePublicPath(pathname) &&
+    !isSecurityWebsitePublicPath(pathname)
+  ) {
+    const tenant = await resolveTenantCompany(tenantSlug);
+    if (tenant?.isSuspended) {
+      const loginUrl = new URL(
+        loginPathForRequestPath(pathname, req.nextUrl.search) || "/login/hq",
+        req.url,
+      );
+      loginUrl.searchParams.set("error", "tenant_suspended");
+      return stampTenant(NextResponse.redirect(loginUrl), tenantSlug);
+    }
+  }
 
   const oauthCode = req.nextUrl.searchParams.get("code");
   if (oauthCode && pathname !== "/auth/callback") {
@@ -229,6 +465,26 @@ async function runAuthProxy(
   }
 
   const user = userData.user;
+
+  if (
+    isSignInBeforeLatestColomboMidnight(user.last_sign_in_at) &&
+    !pathname.startsWith("/login") &&
+    !pathname.startsWith("/auth/")
+  ) {
+    await supabase.auth.signOut();
+    const loginUrl = new URL(
+      loginPathForRequestPath(pathname, req.nextUrl.search) || "/login/hq",
+      req.url,
+    );
+    loginUrl.searchParams.set("error", "daily_signout");
+    const denied = stampTenant(NextResponse.redirect(loginUrl), tenantSlug);
+    cookiesToSet.forEach(({ name, value, options }) => {
+      denied.cookies.set(name, value, options);
+    });
+    clearPortalPinSessionCookies(denied);
+    return denied;
+  }
+
   const profile = await fetchBackOfficeUserProfile(supabase, user, tenantSlug);
   const roleString = profile.role;
   const expectedPortal = portalPathForRole(roleString);
@@ -241,6 +497,29 @@ async function runAuthProxy(
     });
     return stampTenant(redirectResponse, tenantSlug);
   };
+
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  const currentSessionId = session?.access_token
+    ? decodeSupabaseAccessTokenSessionId(session.access_token)
+    : null;
+
+  if (
+    currentSessionId &&
+    profile.employeeId &&
+    pathname !== "/login/await-session"
+  ) {
+    const pendingChallenge = await getActivePendingChallengeForChallenger({
+      employeeId: profile.employeeId,
+      challengerSessionId: currentSessionId,
+    });
+    if (pendingChallenge) {
+      const awaitUrl = new URL("/login/await-session", req.url);
+      awaitUrl.searchParams.set("pending", pendingChallenge.id);
+      return applyCookies(NextResponse.redirect(awaitUrl));
+    }
+  }
 
   const portalGate = await resolvePortalAccessGate(
     req,
@@ -289,6 +568,15 @@ async function runAuthProxy(
   }
 
   if (
+    portalGate === "setup_unlock_code" &&
+    pathname !== "/login/set-unlock-code"
+  ) {
+    return applyCookies(
+      NextResponse.redirect(new URL("/login/set-unlock-code", req.url)),
+    );
+  }
+
+  if (
     !(await enforceHeadOfficeGeofenceSession(
       req,
       profile,
@@ -306,7 +594,7 @@ async function runAuthProxy(
   }
 
   if (pathname === "/") {
-    const landing = authenticatedLandingPath(roleString, profile);
+    const landing = await resolveLandingPath(roleString, profile, tenantSlug);
     const target =
       landing === "/login" || landing.startsWith("/login/")
         ? `${userLoginPath}?error=no_portal_rank`
@@ -315,7 +603,14 @@ async function runAuthProxy(
   }
 
   if (pathname === "/hq") {
-    return applyCookies(NextResponse.redirect(new URL("/dashboard", req.url)));
+    const hubPath =
+      tenantSlug != null
+        ? hubPathForBundle(
+            (await fetchTenantModuleContextForSlug(tenantSlug))?.productBundle ??
+              "full_erp",
+          )
+        : "/dashboard";
+    return applyCookies(NextResponse.redirect(new URL(hubPath, req.url)));
   }
 
   if (pathname === "/dashboard" || pathname.startsWith("/dashboard/")) {
@@ -327,7 +622,7 @@ async function runAuthProxy(
       );
     }
     if (!canAccessHqHub(roleString) && !profile.rbacGated) {
-      const fallback = authenticatedLandingPath(roleString, profile);
+      const fallback = await resolveLandingPath(roleString, profile, tenantSlug);
       if (fallback && !fallback.startsWith("/login")) {
         return applyCookies(NextResponse.redirect(new URL(fallback, req.url)));
       }
@@ -337,7 +632,116 @@ async function runAuthProxy(
         ),
       );
     }
+    if (tenantSlug) {
+      const moduleContext = await fetchTenantModuleContextForSlug(tenantSlug);
+      if (moduleContext?.productBundle === "wfm_only") {
+        return applyCookies(NextResponse.redirect(new URL(WFM_HUB_PATH, req.url)));
+      }
+    }
     return stampTenant(response, tenantSlug);
+  }
+
+  if (pathname === "/wfm" || pathname.startsWith("/wfm/")) {
+    if (!roleString) {
+      return applyCookies(
+        NextResponse.redirect(
+          new URL("/login/hq?error=no_portal_rank", req.url),
+        ),
+      );
+    }
+    if (!canAccessHqHub(roleString) && !profile.rbacGated) {
+      const fallback = await resolveLandingPath(roleString, profile, tenantSlug);
+      if (fallback && !fallback.startsWith("/login")) {
+        return applyCookies(NextResponse.redirect(new URL(fallback, req.url)));
+      }
+      return applyCookies(
+        NextResponse.redirect(
+          new URL(`${userLoginPath}?error=wrong_portal`, req.url),
+        ),
+      );
+    }
+    if (tenantSlug) {
+      const moduleContext = await fetchTenantModuleContextForSlug(tenantSlug);
+      if (moduleContext && moduleContext.productBundle !== "wfm_only") {
+        return applyCookies(NextResponse.redirect(new URL("/dashboard", req.url)));
+      }
+    }
+    return stampTenant(response, tenantSlug);
+  }
+
+  if (pathname === "/salon" || pathname.startsWith("/salon/")) {
+    if (!roleString) {
+      return applyCookies(
+        NextResponse.redirect(
+          new URL("/login/hq?error=no_portal_rank", req.url),
+        ),
+      );
+    }
+    if (!canAccessSalonDesk(roleString) && !profile.rbacGated) {
+      const fallback = await resolveLandingPath(roleString, profile, tenantSlug);
+      const target = fallback.startsWith("/login")
+        ? `${userLoginPath}?error=salon_denied`
+        : fallback;
+      return applyCookies(NextResponse.redirect(new URL(target, req.url)));
+    }
+    if (tenantSlug) {
+      const moduleContext = await fetchTenantModuleContextForSlug(tenantSlug);
+      if (moduleContext) {
+        const salonEnabled = await isSalonVerticalEnabled(moduleContext.companyId);
+        if (!salonEnabled) {
+          const hubPath = hubPathForBundle(moduleContext.productBundle);
+          return applyCookies(
+            NextResponse.redirect(
+              new URL(`${hubPath}?error=salon_vertical_inactive`, req.url),
+            ),
+          );
+        }
+      }
+    }
+    return stampTenant(response, tenantSlug);
+  }
+
+  if (pathname === "/retail" || pathname.startsWith("/retail/")) {
+    if (!roleString) {
+      return applyCookies(
+        NextResponse.redirect(
+          new URL("/login/hq?error=no_portal_rank", req.url),
+        ),
+      );
+    }
+    if (!canAccessRetailDesk(roleString) && !profile.rbacGated) {
+      const fallback = await resolveLandingPath(roleString, profile, tenantSlug);
+      const target = fallback.startsWith("/login")
+        ? `${userLoginPath}?error=retail_denied`
+        : fallback;
+      return applyCookies(NextResponse.redirect(new URL(target, req.url)));
+    }
+    if (tenantSlug) {
+      const moduleContext = await fetchTenantModuleContextForSlug(tenantSlug);
+      if (moduleContext) {
+        const retailEnabled = await isRetailVerticalEnabled(moduleContext.companyId);
+        if (!retailEnabled) {
+          const hubPath = hubPathForBundle(moduleContext.productBundle);
+          return applyCookies(
+            NextResponse.redirect(
+              new URL(`${hubPath}?error=retail_vertical_inactive`, req.url),
+            ),
+          );
+        }
+      }
+    }
+    return stampTenant(response, tenantSlug);
+  }
+
+  const bundleDenied = await enforceTenantBundleGate(
+    req,
+    tenantSlug,
+    pathname,
+    roleString,
+    profile,
+  );
+  if (bundleDenied) {
+    return applyCookies(stampTenant(bundleDenied, tenantSlug));
   }
 
   if (pathname.startsWith("/hq/")) {
@@ -432,12 +836,116 @@ async function runAuthProxy(
     return stampTenant(response, tenantSlug);
   }
 
+  if (pathname === '/settings' || pathname.startsWith('/settings/')) {
+    if (!canAccessPathForProfile(pathname, profile, search)) {
+      const landing = authenticatedLandingPath(roleString, profile);
+      const target = landing.startsWith('/login')
+        ? `${userLoginPath}?error=wrong_portal`
+        : landing;
+      return applyCookies(NextResponse.redirect(new URL(target, req.url)));
+    }
+    return stampTenant(response, tenantSlug);
+  }
+
   return stampTenant(response, tenantSlug);
+}
+
+function handleTenantPortalHost(
+  req: NextRequest,
+  binding: NonNullable<ReturnType<typeof parseTenantPortalHost>>,
+): NextResponse {
+  const { pathname, search } = req.nextUrl;
+  const tenantSlug = binding.tenantSlug;
+  const requestHeaders = buildRequestWithTenant(req, tenantSlug);
+
+  if (pathname.startsWith("/auth/") || pathname.startsWith("/api/")) {
+    return stampTenant(
+      NextResponse.next({ request: { headers: requestHeaders } }),
+      tenantSlug,
+    );
+  }
+
+  if (pathname === "/") {
+    const redirectUrl = req.nextUrl.clone();
+    redirectUrl.pathname = binding.loginPath;
+    return stampTenant(NextResponse.redirect(redirectUrl), tenantSlug);
+  }
+
+  if (pathname === "/login") {
+    const redirectUrl = req.nextUrl.clone();
+    redirectUrl.pathname = binding.loginPath;
+    redirectUrl.search = search;
+    return stampTenant(NextResponse.redirect(redirectUrl), tenantSlug);
+  }
+
+  if (
+    pathname.startsWith("/login/") &&
+    pathname !== binding.loginPath &&
+    !isTenantPortalAuthFlowPath(pathname)
+  ) {
+    const redirectUrl = req.nextUrl.clone();
+    redirectUrl.pathname = binding.loginPath;
+    redirectUrl.search = "";
+    return stampTenant(NextResponse.redirect(redirectUrl), tenantSlug);
+  }
+
+  if (
+    pathname.startsWith("/forge") ||
+    pathname.startsWith("/pearzen-website") ||
+    pathname.startsWith("/security-website") ||
+    pathname === "/clientlogin" ||
+    pathname.startsWith("/clientlogin/")
+  ) {
+    const redirectUrl = req.nextUrl.clone();
+    redirectUrl.pathname = binding.homePath;
+    redirectUrl.search = "";
+    return stampTenant(NextResponse.redirect(redirectUrl), tenantSlug);
+  }
+
+  if (
+    matchesAuthProxy(pathname) &&
+    !pathAllowedOnTenantPortalHost(pathname, search, binding)
+  ) {
+    const redirectUrl = req.nextUrl.clone();
+    redirectUrl.pathname = binding.homePath;
+    redirectUrl.search = "";
+    return stampTenant(NextResponse.redirect(redirectUrl), tenantSlug);
+  }
+
+  if (matchesAuthProxy(pathname)) {
+    return runAuthProxy(req, requestHeaders, tenantSlug);
+  }
+
+  if (
+    pathname === binding.loginPath ||
+    pathname.startsWith(`${binding.loginPath}/`) ||
+    isTenantPortalAuthFlowPath(pathname) ||
+    pathname === "/account/security" ||
+    pathname.startsWith("/account/security/")
+  ) {
+    return stampTenant(
+      NextResponse.next({ request: { headers: requestHeaders } }),
+      tenantSlug,
+    );
+  }
+
+  const redirectUrl = req.nextUrl.clone();
+  redirectUrl.pathname = binding.homePath;
+  redirectUrl.search = "";
+  return stampTenant(NextResponse.redirect(redirectUrl), tenantSlug);
 }
 
 export async function middleware(req: NextRequest) {
   const hostname = req.headers.get("host")?.split(":")[0] ?? "";
   const { pathname, search } = req.nextUrl;
+
+  const legacyForgeTarget = legacyForgeRedirectHost(hostname);
+  if (legacyForgeTarget) {
+    const redirectUrl = req.nextUrl.clone();
+    redirectUrl.hostname = legacyForgeTarget;
+    redirectUrl.protocol = "https:";
+    return NextResponse.redirect(redirectUrl, 308);
+  }
 
   // Staff choose their isolated portal at /login (MD · OM · TM · HQ).
   if (pathname === "/login/head-office") {
@@ -447,14 +955,68 @@ export async function middleware(req: NextRequest) {
     return NextResponse.redirect(redirectUrl);
   }
 
-  // forge.pearzen.tech is SaaS Forge only — tenant portals live on cvs.pearzen.tech.
-  const host = hostname.toLowerCase();
+  const customDomainBinding = await lookupTenantCustomDomain(hostname);
+  if (customDomainBinding && customDomainRoutesTraffic(customDomainBinding)) {
+    const customResponse = handleCustomDomainRequest(req, customDomainBinding);
+    if (customResponse) return customResponse;
+  }
+
+  // SaaS Forge hosts (superadmin / forge) — tenant portals live on {slug}.pearzen.tech.
+  const host = normalizeHostname(hostname);
   const isForgePlatformHost =
-    host === "forge.pearzen.tech" ||
-    host === "erp.pearzen.tech" ||
-    host === "pearzen.tech" ||
-    host === "www.pearzen.tech" ||
-    isTenantRedirectPlatformHost(hostname);
+    host === `erp.${tenantBaseDomain()}` || isTenantRedirectPlatformHost(hostname);
+
+  // Pearzen tech company website — pearzen.tech / www.pearzen.tech (marketing only).
+  if (isPearzenWebsiteHost(hostname)) {
+    if (pathname === "/") {
+      const redirectUrl = req.nextUrl.clone();
+      redirectUrl.pathname = "/pearzen-website";
+      return NextResponse.redirect(redirectUrl);
+    }
+    if (isPearzenWebsitePublicPath(pathname)) {
+      return NextResponse.next();
+    }
+    const redirectUrl = req.nextUrl.clone();
+    redirectUrl.pathname = "/pearzen-website";
+    redirectUrl.search = "";
+    return NextResponse.redirect(redirectUrl);
+  }
+
+  const portalBinding = parseTenantPortalHost(hostname);
+  if (portalBinding) {
+    return handleTenantPortalHost(req, portalBinding);
+  }
+
+  if (isDedicatedPartnerHost(hostname)) {
+    if (pathname === "/") {
+      const redirectUrl = req.nextUrl.clone();
+      redirectUrl.pathname = "/partners";
+      redirectUrl.search = "";
+      return NextResponse.redirect(redirectUrl);
+    }
+    if (
+      !isPartnerRoute(pathname) &&
+      !pathname.startsWith("/auth/") &&
+      !pathname.startsWith("/api/")
+    ) {
+      const redirectUrl = req.nextUrl.clone();
+      redirectUrl.pathname = "/partners";
+      redirectUrl.search = "";
+      return NextResponse.redirect(redirectUrl);
+    }
+  }
+
+  if (
+    isDedicatedForgeHost(hostname) &&
+    !isForgeOnlyPath(pathname) &&
+    !pathname.startsWith("/auth/") &&
+    !pathname.startsWith("/api/")
+  ) {
+    const redirectUrl = req.nextUrl.clone();
+    redirectUrl.pathname = pathname.startsWith("/login") ? "/login/forge" : "/forge";
+    redirectUrl.search = "";
+    return NextResponse.redirect(redirectUrl);
+  }
 
   if (
     isForgePlatformHost &&
@@ -508,11 +1070,31 @@ export async function middleware(req: NextRequest) {
     return stampTenant(redirect, queryTenant);
   }
 
-  const tenantSlug = resolveTenantSlug(req);
+  const { tenantSlug } = await resolveTenantSlugWithCustomDomain(req);
   const requestHeaders = buildRequestWithTenant(req, tenantSlug);
 
   if (matchesAuthProxy(req.nextUrl.pathname)) {
     return runAuthProxy(req, requestHeaders, tenantSlug);
+  }
+
+  const isForgeRoute =
+    pathname === "/forge" ||
+    pathname.startsWith("/forge/") ||
+    pathname === "/login/forge" ||
+    pathname.startsWith("/login/forge/");
+
+  if (isForgeRoute) {
+    return runForgeAuthGate(req, requestHeaders, (response) =>
+      stampTenant(response, tenantSlug),
+    );
+  }
+
+  const isPartnerRouteMatch = isPartnerRoute(pathname);
+
+  if (isPartnerRouteMatch) {
+    return runPartnerAuthGate(req, requestHeaders, (response) =>
+      stampTenant(response, tenantSlug),
+    );
   }
 
   return stampTenant(

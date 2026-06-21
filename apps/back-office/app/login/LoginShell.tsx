@@ -9,7 +9,7 @@ import HeadOfficeLoginForm from './HeadOfficeLoginForm';
 
 const HEAD_OFFICE_ROLES = ['MD', 'OD', 'HQ', 'OM', 'TM'];
 
-type Variant = 'head-office' | 'forge' | 'om' | 'tm' | 'md' | 'hq';
+type Variant = 'head-office' | 'forge' | 'partners' | 'om' | 'tm' | 'md' | 'hq';
 
 const VARIANT_COPY: Record<
   Variant,
@@ -46,8 +46,15 @@ const VARIANT_COPY: Record<
     title: 'SaaS Forge',
     subtitle: 'Platform Operator Console',
     roles: [],
-    signInHint: 'Sign in with your platform operator Google account',
+    signInHint: 'Step 1: Google identity · Step 2: operator password — both required',
     beam: 'indigo',
+  },
+  partners: {
+    title: 'Pearzen Partners',
+    subtitle: 'Independent Service Partner Workspace',
+    roles: [],
+    signInHint: 'Google sign-in for provisioned ISP managers',
+    beam: 'sky',
   },
   om: {
     title: 'OM Command Center',
@@ -73,6 +80,9 @@ type Props = {
   variant?: Variant;
   oauthNext?: string;
   signInDisabled?: boolean;
+  forgeEmailForm?: React.ReactNode;
+  forgeGoogleVerified?: boolean;
+  forgeOperatorEmail?: string | null;
 };
 
 const BRAND_EMBLEM_SIZE = 'clamp(3.5rem, 22vw, 5rem)';
@@ -134,11 +144,15 @@ export default function LoginShell({
   variant = 'head-office',
   oauthNext = '/',
   signInDisabled = false,
+  forgeEmailForm,
+  forgeGoogleVerified = false,
+  forgeOperatorEmail = null,
 }: Props) {
   const [armed, setArmed] = useState(false);
   const emblemRef = useRef<HTMLDivElement>(null);
   const copy = VARIANT_COPY[variant];
   const isForge = variant === 'forge';
+  const isPartners = variant === 'partners';
   const isFieldPortal = variant === 'om' || variant === 'tm';
   const isMdPortal = variant === 'md';
   const isHqPortal = variant === 'hq';
@@ -156,6 +170,8 @@ export default function LoginShell({
             ? 'radial-gradient(ellipse 90% 55% at 50% 0%, rgba(16,185,129,0.14), transparent 65%), radial-gradient(ellipse 50% 40% at 100% 100%, rgba(52,211,153,0.09), transparent 55%)'
             : isForge
           ? 'radial-gradient(ellipse 90% 55% at 50% 0%, rgba(99,102,241,0.14), transparent 65%), radial-gradient(ellipse 50% 40% at 100% 100%, rgba(129,140,248,0.09), transparent 55%)'
+          : isPartners
+            ? 'radial-gradient(ellipse 90% 55% at 50% 0%, rgba(6,182,212,0.14), transparent 65%), radial-gradient(ellipse 50% 40% at 100% 100%, rgba(34,211,238,0.09), transparent 55%)'
           : 'radial-gradient(ellipse 90% 55% at 50% 0%, rgba(239,68,68,0.14), transparent 65%), radial-gradient(ellipse 50% 40% at 100% 100%, rgba(248,113,113,0.09), transparent 55%)';
 
   const idleAccent =
@@ -169,6 +185,8 @@ export default function LoginShell({
             ? 'emerald'
             : isForge
               ? 'indigo'
+              : isPartners
+                ? 'sky'
               : 'rose';
 
   return (
@@ -284,13 +302,46 @@ export default function LoginShell({
                     ) : null}
                   </div>
                 ) : null}
-                <p className="text-center text-xs text-slate-500">{copy.signInHint}</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                  1 · Google identity
+                </p>
+                <GoogleSignInButton
+                  armed={armed || forgeGoogleVerified}
+                  onArm={() => setArmed(true)}
+                  redirectNext={oauthNext}
+                  disabled={signInDisabled || forgeGoogleVerified}
+                  completed={forgeGoogleVerified}
+                  completedLabel={
+                    forgeOperatorEmail
+                      ? `Verified · ${forgeOperatorEmail}`
+                      : 'Google verified'
+                  }
+                />
+                {forgeEmailForm ? (
+                  <>
+                    <p className="text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      2 · Operator credentials
+                    </p>
+                    {forgeEmailForm}
+                  </>
+                ) : (
+                  <p className="text-center text-xs text-slate-500">{copy.signInHint}</p>
+                )}
+              </>
+            ) : variant === 'partners' ? (
+              <>
+                {authError ? (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-center text-xs font-bold text-rose-700">
+                    {authError}
+                  </div>
+                ) : null}
                 <GoogleSignInButton
                   armed={armed}
                   onArm={() => setArmed(true)}
                   redirectNext={oauthNext}
                   disabled={signInDisabled}
                 />
+                <p className="text-center text-xs text-slate-500">{copy.signInHint}</p>
               </>
             ) : (
               <HeadOfficeLoginForm

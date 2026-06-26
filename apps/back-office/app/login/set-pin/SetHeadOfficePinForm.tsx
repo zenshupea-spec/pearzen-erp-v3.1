@@ -5,18 +5,25 @@ import { Eye, EyeOff, Shield } from 'lucide-react';
 
 import BrandWatermarkBackground from '../../../components/portal/BrandWatermarkBackground';
 import {
-  HO_PORTAL_PASSWORD_HINT,
-  HO_PORTAL_PASSWORD_MIN_LENGTH,
+  HO_PORTAL_OTP_LENGTH,
   validateHeadOfficePortalPassword,
 } from '../../../lib/head-office-portal-password';
+import {
+  executivePortalPasswordHint,
+  passwordMinLengthForRank,
+} from '../../../lib/executive-portal-auth-policy';
 import { setHeadOfficePinAction } from './actions';
 
 export default function SetHeadOfficePinForm({
   logoUrl,
   companyName,
+  portalRole,
+  rbacGated,
 }: {
   logoUrl: string | null;
   companyName?: string | null;
+  portalRole?: string | null;
+  rbacGated?: boolean;
 }) {
   const [isPending, startTransition] = useTransition();
   const [errorMsg, setErrorMsg] = useState('');
@@ -26,11 +33,15 @@ export default function SetHeadOfficePinForm({
   const [step, setStep] = useState<'choose' | 'confirm'>('choose');
 
   const displayCompanyName = companyName?.trim() || 'Classic Venture Security';
+  const passwordMinLength = passwordMinLengthForRank(portalRole, { rbacGated });
+  const passwordHint = executivePortalPasswordHint(portalRole, { rbacGated });
 
   const handleChoose = (event: React.FormEvent) => {
     event.preventDefault();
     setErrorMsg('');
-    const check = validateHeadOfficePortalPassword(password);
+    const check = validateHeadOfficePortalPassword(password, {
+      minLength: passwordMinLength,
+    });
     if (!check.ok) {
       setErrorMsg(check.error);
       return;
@@ -51,7 +62,9 @@ export default function SetHeadOfficePinForm({
     });
   };
 
-  const passwordValid = validateHeadOfficePortalPassword(password).ok;
+  const passwordValid = validateHeadOfficePortalPassword(password, {
+    minLength: passwordMinLength,
+  }).ok;
 
   return (
     <div className="relative min-h-[100dvh] w-full overflow-hidden bg-white text-slate-900 antialiased">
@@ -96,14 +109,14 @@ export default function SetHeadOfficePinForm({
                 </div>
               ) : null}
 
-              <p className="text-center text-xs text-slate-500">{HO_PORTAL_PASSWORD_HINT}</p>
+              <p className="text-center text-xs text-slate-500">{passwordHint}</p>
 
               <div className="relative">
                 <input
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  minLength={HO_PORTAL_PASSWORD_MIN_LENGTH}
+                  minLength={passwordMinLength}
                   autoComplete="new-password"
                   placeholder="New password"
                   className="w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-4 py-4 pr-12 font-mono text-sm font-normal normal-case tracking-normal text-slate-900 shadow-inner transition-all placeholder:text-slate-400 focus:border-rose-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-rose-500/10"
@@ -140,7 +153,7 @@ export default function SetHeadOfficePinForm({
                 type="password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                minLength={HO_PORTAL_PASSWORD_MIN_LENGTH}
+                minLength={passwordMinLength}
                 autoComplete="new-password"
                 placeholder="Confirm password"
                 className="w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-4 py-4 font-mono text-sm font-normal normal-case tracking-normal text-slate-900 shadow-inner transition-all placeholder:text-slate-400 focus:border-rose-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-rose-500/10"
@@ -160,7 +173,7 @@ export default function SetHeadOfficePinForm({
                 </button>
                 <button
                   type="submit"
-                  disabled={isPending || confirmPassword.length < HO_PORTAL_PASSWORD_MIN_LENGTH}
+                  disabled={isPending || confirmPassword.length < passwordMinLength}
                   className="flex-[2] rounded-xl bg-emerald-600 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-md shadow-emerald-600/25 transition-all hover:bg-emerald-500 active:scale-[0.98] disabled:opacity-50"
                 >
                   {isPending ? 'Saving…' : 'Save password'}

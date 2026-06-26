@@ -1,6 +1,13 @@
 import { createSupabaseServiceClient } from '../../../packages/supabase/service';
+import {
+  PENDING_LOGIN_TIMEOUT_MS,
+} from './portal-pending-login-constants';
+import { notifySignedInElsewhereSessionDisplacement } from './portal-session-displacement-email';
 
-export const PENDING_LOGIN_TIMEOUT_MS = 90 * 1000;
+export {
+  PENDING_LOGIN_TIMEOUT_MS,
+  PENDING_LOGIN_TIMEOUT_MINUTES,
+} from './portal-pending-login-constants';
 
 export function decodeSupabaseAccessTokenSessionId(
   accessToken: string,
@@ -235,7 +242,7 @@ export async function autoApproveExpiredPendingLogins(): Promise<void> {
   const now = new Date().toISOString();
   const { data } = await service
     .from('portal_pending_logins')
-    .select('id, incumbent_session_id')
+    .select('id, incumbent_session_id, employee_id, operator_email')
     .eq('status', 'pending')
     .lt('expires_at', now);
 
@@ -245,6 +252,13 @@ export async function autoApproveExpiredPendingLogins(): Promise<void> {
     if (row.incumbent_session_id) {
       await revokeSupabaseSession(String(row.incumbent_session_id));
     }
+    await notifySignedInElsewhereSessionDisplacement({
+      employeeId:
+        typeof row.employee_id === 'string' ? row.employee_id : null,
+      operatorEmail:
+        typeof row.operator_email === 'string' ? row.operator_email : null,
+      reason: 'auto_timeout',
+    });
   }
 
   await service
@@ -256,9 +270,84 @@ export async function autoApproveExpiredPendingLogins(): Promise<void> {
     );
 }
 
+export async function wasIncumbentDisplacedByAutoApprove(input: {
+  operatorEmail?: string | null;
+  employeeId?: string | null;
+  incumbentSessionId: string;
+}): Promise<boolean> {
+  const service = createSupabaseServiceClient();
+  let query = service
+    .from('portal_pending_logins')
+    .select('id')
+    .eq('incumbent_session_id', input.incumbentSessionId)
+    .eq('status', 'auto_approved')
+    .order('responded_at', { ascending: false })
+    .limit(1);
+
+  if (input.operatorEmail) {
+    query = query.eq('operator_email', input.operatorEmail.trim().toLowerCase());
+  } else if (input.employeeId) {
+    query = query.eq('employee_id', input.employeeId);
+  } else {
+    return false;
+  }
+
+  const { data } = await query.maybeSingle();
+  return Boolean(data);
+}
+
 export async function revokeSupabaseSession(sessionId: string): Promise<void> {
   const service = createSupabaseServiceClient();
   await service.rpc('revoke_auth_session_by_id', {
     p_session_id: sessionId,
   });
+}
+
+/** End other Supabase sessions immediately; email the account holder. No device prompt. */
+export async function displaceOtherAuthSessionsAfterLogin(input: {
+  userId: string;
+  currentSessionId: string;
+  employeeId?: string | null;
+  operatorEmail?: string | null;
+}): Promise<void> {
+  const service = createSupabaseServiceClient();
+  let displaced = false;
+
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const { data: incumbentId, error } = await service.rpc(
+      'first_other_auth_session_id',
+      {
+        p_user_id: input.userId,
+        p_current_session_id: input.currentSessionId,
+      },
+    );
+    if (error || !incumbentId) break;
+    displaced = true;
+    await revokeSupabaseSession(String(incumbentId));
+  }
+
+  const now = new Date().toISOString();
+  if (input.employeeId) {
+    await service
+      .from('portal_pending_logins')
+      .update({ status: 'expired', responded_at: now })
+      .eq('employee_id', input.employeeId)
+      .eq('status', 'pending');
+  }
+  if (input.operatorEmail) {
+    const normalized = input.operatorEmail.trim().toLowerCase();
+    await service
+      .from('portal_pending_logins')
+      .update({ status: 'expired', responded_at: now })
+      .eq('operator_email', normalized)
+      .eq('status', 'pending');
+  }
+
+  if (displaced) {
+    await notifySignedInElsewhereSessionDisplacement({
+      employeeId: input.employeeId,
+      operatorEmail: input.operatorEmail,
+      reason: 'new_login',
+    });
+  }
 }

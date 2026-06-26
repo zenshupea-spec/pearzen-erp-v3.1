@@ -1,11 +1,19 @@
 /** Edge-safe HMAC cookie signing (Web Crypto — no Node.js `crypto` module). */
 
 function pinCookieSecret(): string {
-  return (
-    process.env.PORTAL_PIN_COOKIE_SECRET ??
-    process.env.SUPABASE_SERVICE_ROLE_KEY ??
-    "dev-portal-pin-secret"
-  );
+  const dedicated = process.env.PORTAL_PIN_COOKIE_SECRET?.trim();
+  if (dedicated) return dedicated;
+
+  if (
+    process.env.NODE_ENV === "production" ||
+    process.env.VERCEL_ENV === "production"
+  ) {
+    throw new Error(
+      "PORTAL_PIN_COOKIE_SECRET is required in production deployments.",
+    );
+  }
+
+  return process.env.SUPABASE_SERVICE_ROLE_KEY ?? "dev-portal-pin-secret";
 }
 
 function bytesToHex(bytes: Uint8Array): string {

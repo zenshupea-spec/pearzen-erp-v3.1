@@ -4,7 +4,6 @@ import { getCompanyLogoUrl } from '../../../../../packages/supabase/company-bran
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import {
   getHeadOfficePortalAuthByEmail,
-  hasValidOtpSetupSessionForUser,
   requiresHeadOfficePortalPin,
 } from '../../../lib/head-office-portal-auth';
 import { buildHeadOfficePortalResetPath } from '../../../lib/head-office-portal-reset-path';
@@ -14,18 +13,15 @@ import {
 } from '../../../lib/hr-portal-access-server';
 import { loginPathForRole } from '../../../lib/portal-isolation';
 import { resolveTenantCompanyFromRequest } from '../../../lib/tenant-context-server';
+import SetUnlockCodeForm from './SetUnlockCodeForm';
 
-import SetHeadOfficePinForm from './SetHeadOfficePinForm';
-
-export default async function SetHeadOfficePinPage() {
+export default async function SetUnlockCodePage() {
   const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user?.email) {
-    redirect('/login');
-  }
+  if (!user?.email) redirect('/login');
 
   const profile = await fetchBackOfficeUserProfile(supabase, user);
   const signInPath = loginPathForRole(profile.role, profile);
@@ -35,28 +31,17 @@ export default async function SetHeadOfficePinPage() {
   }
 
   const authRecord = await getHeadOfficePortalAuthByEmail(user.email);
-  if (!authRecord || !authRecord.is_active) {
-    const error = !authRecord ? 'not_provisioned' : 'access_revoked';
-    redirect(buildHeadOfficePortalResetPath(`${signInPath}?error=${error}`));
+  if (!authRecord?.is_active) {
+    redirect(buildHeadOfficePortalResetPath(`${signInPath}?error=not_provisioned`));
   }
-
-  if (!authRecord.needs_pin_setup) {
-    redirect('/login/verify-pin');
-  }
-
-  if (!(await hasValidOtpSetupSessionForUser(profile.employeeId!, user.email))) {
-    redirect('/login/verify-pin?error=session');
+  if (authRecord.unlock_code_hash) {
+    redirect(authenticatedLandingPath(profile.role, profile));
   }
 
   const tenant = await resolveTenantCompanyFromRequest();
   const logoUrl = await getCompanyLogoUrl(tenant?.id);
 
   return (
-    <SetHeadOfficePinForm
-      logoUrl={logoUrl}
-      companyName={tenant?.name ?? null}
-      portalRole={profile.role}
-      rbacGated={profile.rbacGated}
-    />
+    <SetUnlockCodeForm logoUrl={logoUrl} companyName={tenant?.name ?? null} />
   );
 }

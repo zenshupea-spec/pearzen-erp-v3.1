@@ -52,5 +52,5 @@ export async function finishHeadOfficeTotpSetupAction() {
     session.profile.employeeId!,
     session.user.email,
   );
-  redirect(session.landing);
+  redirect('/login/set-unlock-code');
 }

@@ -9,7 +9,12 @@ export type PortalLoginEventType =
   | 'unlock_code_success'
   | 'unlock_code_failure'
   | 'daily_signout'
-  | 'session_challenge_auto';
+  | 'session_challenge_auto'
+  | 'otp_provisioned'
+  | 'otp_emailed'
+  | 'otp_email_failed'
+  | 'otp_self_service_requested'
+  | 'executive_login_notification';
 
 export async function recordPortalLoginEvent(input: {
   employeeId?: string | null;
@@ -135,4 +140,49 @@ export async function listPortalLoginEventsForCompany(
       createdAt: String(row.created_at),
     };
   });
+}
+
+export async function recordHeadOfficeOtpProvisionEvents(input: {
+  employeeId: string;
+  portalAuthEmail: string;
+  subjectRank: string | null;
+  provisionedByName?: string | null;
+  provisionedByRank?: string | null;
+  emailed: boolean;
+  emailError?: string;
+}): Promise<void> {
+  const detailBase = {
+    subjectRank: input.subjectRank,
+    provisionedBy: input.provisionedByName ?? null,
+    provisionedByRank: input.provisionedByRank ?? null,
+  };
+
+  await recordPortalLoginEvent({
+    employeeId: input.employeeId,
+    portalAuthEmail: input.portalAuthEmail,
+    eventType: 'otp_provisioned',
+    success: true,
+    detail: JSON.stringify({ ...detailBase, delivery: input.emailed ? 'email' : 'on_screen' }),
+  });
+
+  if (input.emailed) {
+    await recordPortalLoginEvent({
+      employeeId: input.employeeId,
+      portalAuthEmail: input.portalAuthEmail,
+      eventType: 'otp_emailed',
+      success: true,
+      detail: JSON.stringify(detailBase),
+    });
+    return;
+  }
+
+  if (input.emailError) {
+    await recordPortalLoginEvent({
+      employeeId: input.employeeId,
+      portalAuthEmail: input.portalAuthEmail,
+      eventType: 'otp_email_failed',
+      success: false,
+      detail: JSON.stringify({ ...detailBase, error: input.emailError }),
+    });
+  }
 }

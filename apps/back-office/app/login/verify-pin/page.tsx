@@ -94,7 +94,7 @@ export default async function VerifyPinPage({
       logoUrl={logoUrl}
       companyName={tenant?.name ?? null}
       portalTitle={portalTitle}
-      workEmail={user.email}
+      workEmail={authRecord.work_email}
       geofenceRequired={!isHeadOfficeGeofenceExempt(profile.role)}
       signInPath={signInPath}
       needsSetup={authRecord.needs_pin_setup}

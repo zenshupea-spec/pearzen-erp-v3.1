@@ -4,6 +4,10 @@ import { renderPortalLoginPage } from '../../../lib/portal-login-server';
 const HQ_ERRORS = {
   hq_denied:
     'HQ Staff Portal requires HR, FM, EA, or provisioned RBAC access on your MNR record.',
+  session_rejected:
+    'Sign-in was rejected on your other device. Your password was reset — contact HR for a new OTP.',
+  signed_in_elsewhere:
+    'Your session ended because your account was opened on another device.',
 };
 
 export default async function HqStaffPortalLoginPage({

@@ -9,7 +9,14 @@ import HeadOfficeLoginForm from './HeadOfficeLoginForm';
 
 const HEAD_OFFICE_ROLES = ['MD', 'OD', 'HQ', 'OM', 'TM'];
 
-type Variant = 'head-office' | 'forge' | 'partners' | 'om' | 'tm' | 'md' | 'hq';
+type Variant = 'head-office' | 'forge' | 'partners' | 'pears' | 'om' | 'tm' | 'md' | 'hq';
+
+function staffPortalForVariant(variant: Variant): StaffPortalId | undefined {
+  if (variant === 'md' || variant === 'om' || variant === 'tm' || variant === 'hq') {
+    return variant;
+  }
+  return undefined;
+}
 
 const VARIANT_COPY: Record<
   Variant,
@@ -30,9 +37,9 @@ const VARIANT_COPY: Record<
   },
   md: {
     title: 'MD Portal',
-    subtitle: 'Executive vault · finance · enterprise command',
+    subtitle: 'Managing Director & Operations Director',
     roles: ['MD', 'OD'],
-    signInHint: 'Work email + OTP or PIN — MD and OD only',
+    signInHint: '',
     beam: 'indigo',
   },
   hq: {
@@ -55,6 +62,13 @@ const VARIANT_COPY: Record<
     roles: [],
     signInHint: 'Google sign-in for provisioned ISP managers',
     beam: 'sky',
+  },
+  pears: {
+    title: 'PEARS Shop Profile',
+    subtitle: 'Website client self-service',
+    roles: [],
+    signInHint: 'Google sign-in with your website purchase email or tenant MD account',
+    beam: 'violet',
   },
   om: {
     title: 'OM Command Center',
@@ -81,6 +95,7 @@ type Props = {
   oauthNext?: string;
   signInDisabled?: boolean;
   forgeEmailForm?: React.ReactNode;
+  forgeDevBypass?: boolean;
   forgeGoogleVerified?: boolean;
   forgeOperatorEmail?: string | null;
 };
@@ -145,6 +160,7 @@ export default function LoginShell({
   oauthNext = '/',
   signInDisabled = false,
   forgeEmailForm,
+  forgeDevBypass = false,
   forgeGoogleVerified = false,
   forgeOperatorEmail = null,
 }: Props) {
@@ -156,6 +172,7 @@ export default function LoginShell({
   const isFieldPortal = variant === 'om' || variant === 'tm';
   const isMdPortal = variant === 'md';
   const isHqPortal = variant === 'hq';
+  const staffPortal = staffPortalForVariant(variant);
   const displayCompanyName = companyName?.trim() || 'Classic Venture Security';
 
   const beamStyle = armed
@@ -302,25 +319,34 @@ export default function LoginShell({
                     ) : null}
                   </div>
                 ) : null}
-                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                  1 · Google identity
-                </p>
-                <GoogleSignInButton
-                  armed={armed || forgeGoogleVerified}
-                  onArm={() => setArmed(true)}
-                  redirectNext={oauthNext}
-                  disabled={signInDisabled || forgeGoogleVerified}
-                  completed={forgeGoogleVerified}
-                  completedLabel={
-                    forgeOperatorEmail
-                      ? `Verified · ${forgeOperatorEmail}`
-                      : 'Google verified'
-                  }
-                />
+                {forgeDevBypass ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-center text-xs font-medium text-amber-900">
+                    Local dev — sign in with operator email and password. Google OAuth is
+                    skipped so you stay on localhost.
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      1 · Google identity
+                    </p>
+                    <GoogleSignInButton
+                      armed={armed || forgeGoogleVerified}
+                      onArm={() => setArmed(true)}
+                      redirectNext={oauthNext}
+                      disabled={signInDisabled || forgeGoogleVerified}
+                      completed={forgeGoogleVerified}
+                      completedLabel={
+                        forgeOperatorEmail
+                          ? `Verified · ${forgeOperatorEmail}`
+                          : 'Google verified'
+                      }
+                    />
+                  </>
+                )}
                 {forgeEmailForm ? (
                   <>
                     <p className="text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                      2 · Operator credentials
+                      {forgeDevBypass ? 'Operator credentials' : '2 · Operator credentials'}
                     </p>
                     {forgeEmailForm}
                   </>
@@ -348,6 +374,8 @@ export default function LoginShell({
                 authError={authError}
                 authErrorDetail={authErrorDetail}
                 nextPath={oauthNext}
+                staffPortal={staffPortal}
+                signInHint={copy.signInHint}
               />
             )}
           </div>

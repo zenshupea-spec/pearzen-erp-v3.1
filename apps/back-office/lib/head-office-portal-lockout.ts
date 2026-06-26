@@ -1,5 +1,15 @@
 import { createSupabaseServiceClient } from '../../../packages/supabase/service';
-import { normalizePortalRole } from './portal-role-utils';
+import {
+  HEAD_OFFICE_2FA_RECOVERY_COOLDOWN_ERROR,
+  HEAD_OFFICE_RECOVER_2FA_REQUIRES_BACKUP_USE_ERROR,
+} from './head-office-totp-backup-client';
+import {
+  canHrProvisionTargetRank,
+  hrProvisionTargetRankError,
+  normalizePortalRole,
+} from './portal-role-utils';
+
+export { canHrProvisionTargetRank, hrProvisionTargetRankError };
 
 export const PORTAL_MAX_FAILED_ATTEMPTS = 3;
 export const OD_TIMED_LOCK_MS = 60 * 60 * 1000;
@@ -314,13 +324,65 @@ export function canOdUnlockTargetRank(targetRank: string | null | undefined): bo
   return isMdRank(targetRank) || normalizePortalRole(targetRank) === 'HR';
 }
 
-export function canHrProvisionTargetRank(
-  actorRank: string | null | undefined,
-  targetRank: string | null | undefined,
-): boolean {
-  const actor = normalizePortalRole(actorRank);
-  const target = normalizePortalRole(targetRank);
-  if (actor === 'HR') return target !== 'MD' && target !== 'HR';
-  if (actor === 'MD' || actor === 'OD') return true;
-  return false;
+export async function startHeadOfficeOd2faRecoveryLockout(
+  employeeId: string,
+): Promise<void> {
+  const service = createSupabaseServiceClient();
+  const lockedUntil = new Date(Date.now() + OD_2FA_RECOVERY_LOCK_MS).toISOString();
+  await service
+    .from('head_office_portal_auth')
+    .update({
+      od_2fa_recovery_locked_until: lockedUntil,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('employee_id', employeeId);
+}
+
+export async function canRequestHeadOffice2faRecovery(
+  employeeId: string,
+): Promise<{ ok: boolean; error?: string; hoursLeft?: number }> {
+  const state = await getPortalLockoutState(employeeId);
+  if (!state.od2faRecoveryLockedUntil) {
+    return {
+      ok: false,
+      error: HEAD_OFFICE_RECOVER_2FA_REQUIRES_BACKUP_USE_ERROR,
+    };
+  }
+
+  const remaining =
+    new Date(state.od2faRecoveryLockedUntil).getTime() - Date.now();
+  if (remaining <= 0) {
+    return { ok: true };
+  }
+
+  const hoursLeft = Math.ceil(remaining / (60 * 60 * 1000));
+  return {
+    ok: false,
+    hoursLeft,
+    error: HEAD_OFFICE_2FA_RECOVERY_COOLDOWN_ERROR(hoursLeft),
+  };
+}
+
+export async function resetHeadOfficeTwoFactor(
+  employeeId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const cooldown = await canRequestHeadOffice2faRecovery(employeeId);
+  if (!cooldown.ok) {
+    return { ok: false, error: cooldown.error };
+  }
+
+  const service = createSupabaseServiceClient();
+  const { error } = await service
+    .from('head_office_portal_auth')
+    .update({
+      totp_secret: null,
+      two_factor_enabled: false,
+      totp_backup_code_hashes: [],
+      od_2fa_recovery_locked_until: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('employee_id', employeeId);
+
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
 }

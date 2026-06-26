@@ -3,7 +3,6 @@
 import { redirect } from 'next/navigation';
 
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
-import { fetchEmployeePortalProfileByEmail } from '../../../lib/hr-portal-access';
 import { isHeadOfficeGeofenceExempt } from '../../../lib/head-office-geofence-exempt';
 import {
   parseHeadOfficeCoordinates,
@@ -11,68 +10,164 @@ import {
 } from '../../../lib/head-office-geofence';
 import {
   clearPortal2faSessionCookiesStore,
-  getHeadOfficePortalAuthByEmail,
+  getHeadOfficePortalAuthByIdentifier,
   isHeadOfficeOtpValid,
   isHeadOfficeOtpCode,
-  normalizeWorkEmail,
   requiresHeadOfficePortalPin,
+  resolvePortalAuthEmail,
   setHeadOfficeGeofenceSessionCookies,
   setOtpSetupSessionCookies,
   setPortalPinSessionCookies,
   syncHeadOfficeSupabaseAuthPassword,
 } from '../../../lib/head-office-portal-auth';
+import {
+  assertPortalLoginNotLocked,
+  clearPortalLoginFailures,
+  recordPortalPasswordFailure,
+} from '../../../lib/head-office-portal-lockout';
 import { verifyPortalPin } from '../../../lib/head-office-portal-pin';
-import { validateHeadOfficePortalPassword } from '../../../lib/head-office-portal-password';
-import { authenticatedLandingPath } from '../../../lib/hr-portal-access-server';
+import {
+  otpExpiresMinutesForRank,
+  validateHeadOfficePortalPasswordForRank,
+} from '../../../lib/executive-portal-auth-policy';
+import { parsePortalLoginIdentifier } from '../../../lib/head-office-portal-username';
+import {
+  authenticatedLandingPath,
+  fetchEmployeePortalProfileByEmployeeId,
+} from '../../../lib/hr-portal-access-server';
+import { recordPortalLoginEvent } from '../../../lib/portal-login-events';
+import {
+  notifyExecutivePortalLoginAttempt,
+  readPortalLoginRequestMetadata,
+} from '../../../lib/head-office-portal-login-notification';
 import { resolveTenantCompanyFromRequest } from '../../../lib/tenant-context-server';
+import {
+  resolveEmployeeCompanyId,
+  setVerifiedTenantSlugCookieForCompany,
+} from '../../../lib/tenant-cookie-server';
+import type { StaffPortalId } from '../../../lib/portal-isolation';
+import {
+  canSignInAtStaffPortal,
+  staffPortalSignInError,
+} from '../../../lib/portal-isolation';
+import { maybeCreateSessionChallengeAfterLogin } from '../../actions/portal-session-actions';
 
 function safeNextPath(raw: string | null | undefined): string {
   if (!raw?.startsWith('/') || raw.startsWith('//')) return '/';
   return raw;
 }
 
-/** MD/OD sign in from anywhere — only staff need GPS at login. */
 export async function headOfficeLoginRequiresGeolocation(
-  email: string,
+  employeeId: string,
 ): Promise<boolean> {
-  const normalized = normalizeWorkEmail(email);
-  if (!normalized) return true;
-
   const tenant = await resolveTenantCompanyFromRequest();
-  const profile = await fetchEmployeePortalProfileByEmail(
-    normalized,
+  const profile = await fetchEmployeePortalProfileByEmployeeId(
+    employeeId,
     tenant?.id,
   );
   if (!profile?.role) return true;
   return !isHeadOfficeGeofenceExempt(profile.role);
 }
 
+export async function headOfficeLoginIdentifierRequiresGeolocation(
+  identifier: string,
+  staffPortal?: StaffPortalId | null,
+): Promise<boolean> {
+  if (staffPortal === 'md') return false;
+
+  const parsed = parsePortalLoginIdentifier(identifier);
+  if (!parsed) return true;
+
+  const authRecord = await getHeadOfficePortalAuthByIdentifier(identifier);
+  if (!authRecord) return true;
+  return headOfficeLoginRequiresGeolocation(authRecord.employee_id);
+}
+
+/** @deprecated Use headOfficeLoginIdentifierRequiresGeolocation */
+export async function headOfficeNicRequiresGeolocation(
+  identifier: string,
+  staffPortal?: StaffPortalId | null,
+): Promise<boolean> {
+  return headOfficeLoginIdentifierRequiresGeolocation(identifier, staffPortal);
+}
+
+function decodeAccessTokenSessionId(accessToken: string): string | null {
+  try {
+    const payload = JSON.parse(
+      Buffer.from(accessToken.split('.')[1], 'base64url').toString('utf8'),
+    ) as { session_id?: unknown };
+    return typeof payload.session_id === 'string' ? payload.session_id : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function authenticateHeadOfficeStaff(formData: FormData) {
-  const email = normalizeWorkEmail((formData.get('email') as string) ?? '');
+  const identifierRaw =
+    (formData.get('email') as string) ??
+    (formData.get('nic') as string) ??
+    '';
+  const loginIdentifier = parsePortalLoginIdentifier(identifierRaw);
   const password = ((formData.get('password') as string) ?? '').trim();
   const nextPath = safeNextPath((formData.get('next') as string) ?? '/');
+  const staffPortalRaw = (formData.get('staffPortal') as string) ?? '';
+  const staffPortal =
+    staffPortalRaw === 'md' ||
+    staffPortalRaw === 'om' ||
+    staffPortalRaw === 'tm' ||
+    staffPortalRaw === 'hq'
+      ? staffPortalRaw
+      : null;
   const coords = parseHeadOfficeCoordinates(
     formData.get('lat'),
     formData.get('lng'),
   );
 
-  if (!email) {
+  if (!loginIdentifier) {
     return { success: false, error: 'Work email is required.' };
   }
   if (!password) {
-    return { success: false, error: 'OTP or password is required.' };
+    return { success: false, error: 'OTP or portal PIN is required.' };
   }
 
-  const tenant = await resolveTenantCompanyFromRequest();
-  const profile = await fetchEmployeePortalProfileByEmail(email, tenant?.id);
-  if (!profile?.role) {
+  const authRecord = await getHeadOfficePortalAuthByIdentifier(identifierRaw);
+  if (!authRecord || !authRecord.is_active) {
     return {
       success: false,
-      error: 'Email not found on the master nominal roll or no portal rank is set.',
+      error: !authRecord
+        ? 'Portal access not provisioned. Ask HR or OD to generate an OTP.'
+        : 'Portal access has been revoked. Contact HR or OD.',
     };
   }
 
-  const geofenceExempt = isHeadOfficeGeofenceExempt(profile.role);
+  const tenant = await resolveTenantCompanyFromRequest();
+  const profile = await fetchEmployeePortalProfileByEmployeeId(
+    authRecord.employee_id,
+    tenant?.id,
+  );
+  if (!profile?.role) {
+    return {
+      success: false,
+      error: 'Employee record not found or no portal rank is set.',
+    };
+  }
+
+  if (staffPortal && !canSignInAtStaffPortal(profile.role, staffPortal, profile)) {
+    return { success: false, error: staffPortalSignInError(staffPortal) };
+  }
+
+  const lockCheck = await assertPortalLoginNotLocked(
+    authRecord.employee_id,
+    profile.role,
+  );
+  if (!lockCheck.ok) {
+    return { success: false, error: lockCheck.error };
+  }
+
+  const portalAuthEmail = resolvePortalAuthEmail(authRecord);
+  const requestMeta = await readPortalLoginRequestMetadata();
+  const geofenceExempt =
+    staffPortal === 'md' || isHeadOfficeGeofenceExempt(profile.role);
   if (!geofenceExempt) {
     if (!coords) {
       return {
@@ -93,80 +188,182 @@ export async function authenticateHeadOfficeStaff(formData: FormData) {
     }
   }
 
-  const needsPortalAuth = requiresHeadOfficePortalPin(profile, email);
-  const authRecord = await getHeadOfficePortalAuthByEmail(email);
+  const needsPortalAuth = requiresHeadOfficePortalPin(profile, portalAuthEmail);
   let portalCredentialVerified = false;
 
   if (needsPortalAuth) {
-    if (!authRecord || !authRecord.is_active) {
-      return {
-        success: false,
-        error: !authRecord
-          ? 'Portal access not provisioned. Ask OD or MD to generate an OTP.'
-          : 'Portal access has been revoked. Contact OD or MD.',
-      };
-    }
-
     if (authRecord.needs_pin_setup) {
       if (!isHeadOfficeOtpCode(password)) {
-        return { success: false, error: 'Use the 6-digit OTP from OD or MD.' };
+        return { success: false, error: 'Use the 6-digit OTP from HR or OD.' };
       }
       if (!authRecord.current_otp || password !== authRecord.current_otp) {
-        return { success: false, error: 'Invalid OTP.' };
+        const failure = await recordPortalPasswordFailure(
+          authRecord.employee_id,
+          profile.role,
+        );
+        await notifyExecutivePortalLoginAttempt({
+          employeeId: authRecord.employee_id,
+          workEmail: authRecord.work_email,
+          recoveryEmail: authRecord.recovery_email,
+          portalAuthEmail,
+          rank: profile.role,
+          success: false,
+          ipAddress: requestMeta.ipAddress,
+          deviceLabel: requestMeta.deviceLabel,
+        });
+        return { success: false, error: failure.error };
       }
       if (!isHeadOfficeOtpValid(authRecord)) {
+        const minutes = otpExpiresMinutesForRank(profile.role);
+        await notifyExecutivePortalLoginAttempt({
+          employeeId: authRecord.employee_id,
+          workEmail: authRecord.work_email,
+          recoveryEmail: authRecord.recovery_email,
+          portalAuthEmail,
+          rank: profile.role,
+          success: false,
+          ipAddress: requestMeta.ipAddress,
+          deviceLabel: requestMeta.deviceLabel,
+        });
         return {
           success: false,
-          error: 'OTP expired. Ask OD or MD for a new one.',
+          error: `OTP expired (${minutes}-minute limit). Ask HR or OD for a new one.`,
         };
       }
       portalCredentialVerified = true;
     } else {
-      const passwordCheck = validateHeadOfficePortalPassword(password);
+      const passwordCheck = validateHeadOfficePortalPasswordForRank(
+        password,
+        profile.role,
+        { rbacGated: profile.rbacGated },
+      );
       if (!passwordCheck.ok) {
         return { success: false, error: passwordCheck.error };
       }
       if (!authRecord.pin_hash || !verifyPortalPin(password, authRecord.pin_hash)) {
-        return { success: false, error: 'Invalid credentials.' };
+        const failure = await recordPortalPasswordFailure(
+          authRecord.employee_id,
+          profile.role,
+        );
+        await notifyExecutivePortalLoginAttempt({
+          employeeId: authRecord.employee_id,
+          workEmail: authRecord.work_email,
+          recoveryEmail: authRecord.recovery_email,
+          portalAuthEmail,
+          rank: profile.role,
+          success: false,
+          ipAddress: requestMeta.ipAddress,
+          deviceLabel: requestMeta.deviceLabel,
+        });
+        return { success: false, error: failure.error };
       }
       portalCredentialVerified = true;
     }
   }
 
   const supabase = await createSupabaseServerClient();
-  let { error } = await supabase.auth.signInWithPassword({ email, password });
+  let { error } = await supabase.auth.signInWithPassword({
+    email: portalAuthEmail,
+    password,
+  });
 
   if (error && portalCredentialVerified) {
-    const sync = await syncHeadOfficeSupabaseAuthPassword(email, password, {
-      employeeId: profile.employeeId ?? authRecord?.employee_id ?? undefined,
+    const sync = await syncHeadOfficeSupabaseAuthPassword(portalAuthEmail, password, {
+      employeeId: profile.employeeId ?? authRecord.employee_id,
       fullName: profile.full_name,
     });
     if (sync.ok) {
-      ({ error } = await supabase.auth.signInWithPassword({ email, password }));
+      ({ error } = await supabase.auth.signInWithPassword({
+        email: portalAuthEmail,
+        password,
+      }));
     }
   }
 
   if (error) {
-    return { success: false, error: 'Invalid credentials.' };
+    const failure = await recordPortalPasswordFailure(
+      authRecord.employee_id,
+      profile.role,
+    );
+    await recordPortalLoginEvent({
+      employeeId: authRecord.employee_id,
+      portalAuthEmail,
+      eventType: 'password_login_failure',
+      success: false,
+      detail: failure.error,
+      ipAddress: requestMeta.ipAddress,
+      deviceLabel: requestMeta.deviceLabel,
+    });
+    await notifyExecutivePortalLoginAttempt({
+      employeeId: authRecord.employee_id,
+      workEmail: authRecord.work_email,
+      recoveryEmail: authRecord.recovery_email,
+      portalAuthEmail,
+      rank: profile.role,
+      success: false,
+      ipAddress: requestMeta.ipAddress,
+      deviceLabel: requestMeta.deviceLabel,
+    });
+    return { success: false, error: failure.error };
   }
+
+  await clearPortalLoginFailures(authRecord.employee_id);
+  await recordPortalLoginEvent({
+    employeeId: authRecord.employee_id,
+    portalAuthEmail,
+    eventType: 'password_login_success',
+    success: true,
+    ipAddress: requestMeta.ipAddress,
+    deviceLabel: requestMeta.deviceLabel,
+  });
+  await notifyExecutivePortalLoginAttempt({
+    employeeId: authRecord.employee_id,
+    workEmail: authRecord.work_email,
+    recoveryEmail: authRecord.recovery_email,
+    portalAuthEmail,
+    rank: profile.role,
+    success: true,
+    ipAddress: requestMeta.ipAddress,
+    deviceLabel: requestMeta.deviceLabel,
+  });
+
+  await setVerifiedTenantSlugCookieForCompany(
+    await resolveEmployeeCompanyId(authRecord.employee_id),
+  );
+
+  const {
+    data: { session: authSession },
+  } = await supabase.auth.getSession();
+  const sessionId = authSession?.access_token
+    ? decodeAccessTokenSessionId(authSession.access_token)
+    : null;
+  const userId = authSession?.user?.id;
 
   const landing = authenticatedLandingPath(profile.role, profile);
-  const employeeId = profile.employeeId ?? authRecord?.employee_id ?? null;
+  const employeeId = profile.employeeId ?? authRecord.employee_id;
 
-  if (employeeId && !geofenceExempt) {
-    await setHeadOfficeGeofenceSessionCookies(employeeId, email);
+  if (sessionId && userId && employeeId) {
+    await maybeCreateSessionChallengeAfterLogin(
+      employeeId,
+      userId,
+      sessionId,
+    );
   }
 
-  if (needsPortalAuth && authRecord?.needs_pin_setup && employeeId) {
+  if (employeeId && !geofenceExempt) {
+    await setHeadOfficeGeofenceSessionCookies(employeeId, portalAuthEmail);
+  }
+
+  if (needsPortalAuth && authRecord.needs_pin_setup && employeeId) {
     await clearPortal2faSessionCookiesStore();
-    await setOtpSetupSessionCookies(employeeId, email);
+    await setOtpSetupSessionCookies(employeeId, portalAuthEmail);
     redirect('/login/set-pin');
   }
 
   if (needsPortalAuth && employeeId) {
     await clearPortal2faSessionCookiesStore();
-    await setPortalPinSessionCookies(employeeId, email);
-    if (!authRecord?.two_factor_enabled) {
+    await setPortalPinSessionCookies(employeeId, portalAuthEmail);
+    if (!authRecord.two_factor_enabled) {
       redirect('/login/setup-2fa');
     }
     redirect('/login/verify-2fa');

@@ -2,6 +2,7 @@
 
 import { redirect } from 'next/navigation';
 
+import { signOutHeadOfficePortalAction } from '../../../app/actions/portal-session-actions';
 import { isHeadOfficeGeofenceExempt } from '../../../lib/head-office-geofence-exempt';
 import {
   verifyHeadOfficeGeofenceForCompany,
@@ -66,4 +67,8 @@ export async function verifyHeadOfficePinAction(
     redirect('/login/setup-2fa');
   }
   redirect('/login/verify-2fa');
+}
+
+export async function signOutPortalSessionAction(redirectPath: string) {
+  await signOutHeadOfficePortalAction(redirectPath);
 }

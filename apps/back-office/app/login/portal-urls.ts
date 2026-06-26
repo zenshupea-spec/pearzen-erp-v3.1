@@ -6,4 +6,5 @@ export {
   guardPortalLoginUrl,
   guardPortalUrl,
   cafeFrontPortalLoginUrl,
+  shalomFrontPortalLoginUrl,
 } from "../../lib/tenant-host";

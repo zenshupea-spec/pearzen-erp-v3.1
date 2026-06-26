@@ -2,7 +2,7 @@
 export const HO_PORTAL_OTP_LENGTH = 6;
 
 /** How long a provisioned OTP stays valid in the portal UI countdown. */
-export const HO_PORTAL_OTP_LIFETIME_MS = 60 * 1000;
+export const HO_PORTAL_OTP_LIFETIME_MS = 10 * 60 * 1000;
 
 /** Permanent portal password after OTP setup. */
 export const HO_PORTAL_PASSWORD_MIN_LENGTH = 15;
@@ -19,12 +19,14 @@ export function isHeadOfficeOtpCode(value: string): boolean {
 
 export function validateHeadOfficePortalPassword(
   password: string,
+  options?: { minLength?: number },
 ): { ok: true } | { ok: false; error: string } {
   const trimmed = password.trim();
-  if (trimmed.length < HO_PORTAL_PASSWORD_MIN_LENGTH) {
+  const minLength = options?.minLength ?? HO_PORTAL_PASSWORD_MIN_LENGTH;
+  if (trimmed.length < minLength) {
     return {
       ok: false,
-      error: `Password must be at least ${HO_PORTAL_PASSWORD_MIN_LENGTH} characters.`,
+      error: `Password must be at least ${minLength} characters.`,
     };
   }
   if (!/[A-Z]/.test(trimmed)) {

@@ -16,8 +16,13 @@ export async function verifyHeadOfficeTotpAction(code: string) {
     session.profile.employeeId!,
     session.user.email,
     code,
+    session.profile.role,
   );
   if (!result.ok) return { error: result.error ?? 'Invalid code.' };
+
+  if (result.requires2faSetup) {
+    redirect('/login/setup-2fa');
+  }
 
   await setPortalPinSessionCookies(
     session.profile.employeeId!,

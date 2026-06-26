@@ -3,15 +3,21 @@ import { redirect } from 'next/navigation';
 import { getCompanyLogoUrl } from '../../../../../packages/supabase/company-branding';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import {
+  enforceColomboDailySignOutIfStale,
+} from '../../../lib/portal-login-server';
+import {
   getHeadOfficePortalAuthByEmail,
   hasValidPortalPinSessionForUser,
   requiresHeadOfficePortalPin,
   resolveHeadOfficePortalEntryPath,
 } from '../../../lib/head-office-portal-auth';
+import { isDailySignoutRedirectPath } from '../../../lib/portal-sl-midnight';
+import { buildHeadOfficePortalResetPath } from '../../../lib/head-office-portal-reset-path';
 import {
   authenticatedLandingPath,
   fetchBackOfficeUserProfile,
 } from '../../../lib/hr-portal-access-server';
+import { loginPathForRole } from '../../../lib/portal-isolation';
 import { resolveTenantCompanyFromRequest } from '../../../lib/tenant-context-server';
 
 import Verify2faForm from './Verify2faForm';
@@ -22,17 +28,25 @@ export default async function Verify2faPage() {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user?.email) redirect('/login/head-office');
+  if (!user?.email) redirect('/login');
 
   const profile = await fetchBackOfficeUserProfile(supabase, user);
+  const signInPath = loginPathForRole(profile.role, profile);
+
+  const dailySignOut = await enforceColomboDailySignOutIfStale(
+    supabase,
+    user,
+    profile,
+  );
+  if (dailySignOut) redirect(dailySignOut.redirectPath);
+
   if (!requiresHeadOfficePortalPin(profile, user.email)) {
     redirect(authenticatedLandingPath(profile.role, profile));
   }
 
   const authRecord = await getHeadOfficePortalAuthByEmail(user.email);
   if (!authRecord || !authRecord.is_active) {
-    await supabase.auth.signOut();
-    redirect('/login/head-office?error=not_provisioned');
+    redirect(buildHeadOfficePortalResetPath(`${signInPath}?error=not_provisioned`));
   }
 
   if (authRecord.needs_pin_setup) redirect('/login/set-pin');
@@ -44,6 +58,9 @@ export default async function Verify2faPage() {
     user.last_sign_in_at,
   );
   if (entryPath !== '/login/verify-2fa') {
+    if (isDailySignoutRedirectPath(entryPath)) {
+      redirect(buildHeadOfficePortalResetPath(entryPath));
+    }
     redirect(entryPath);
   }
 

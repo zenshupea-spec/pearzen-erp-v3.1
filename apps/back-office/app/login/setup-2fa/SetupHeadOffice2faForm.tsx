@@ -5,6 +5,7 @@ import { Shield, Smartphone } from 'lucide-react';
 
 import BrandWatermarkBackground from '../../../components/portal/BrandWatermarkBackground';
 import BackupCodesPanel from '../../../components/portal/BackupCodesPanel';
+import { HO_PORTAL_BACKUP_CODE_COUNT } from '../../../lib/head-office-totp-backup-client';
 import {
   confirmHeadOfficeTotpSetupAction,
   finishHeadOfficeTotpSetupAction,
@@ -108,7 +109,9 @@ export default function SetupHeadOffice2faForm({
               <BackupCodesPanel
                 codes={backupCodes}
                 onContinue={handleFinish}
-                continueLabel={isFinishing ? 'Continuing…' : 'Continue to portal'}
+                continueLabel={
+                  isFinishing ? 'Continuing…' : "I've saved these codes — continue"
+                }
               />
             ) : (
               <>
@@ -124,8 +127,10 @@ export default function SetupHeadOffice2faForm({
                     <p className="font-bold uppercase tracking-wider">Authenticator app</p>
                     <p>
                       Scan the setup key in Google Authenticator, Microsoft Authenticator, or
-                      Authy, then enter the 6-digit code to confirm. You will receive 5 backup
-                      codes to keep safe.
+                      Authy, then enter the 6-digit code to confirm. After confirmation, this page
+                      issues <strong>{HO_PORTAL_BACKUP_CODE_COUNT} one-time backup codes</strong>{' '}
+                      — save them before continuing. Each code works once if you lose your
+                      authenticator and routes you back here to enroll 2FA again.
                     </p>
                     {secret ? (
                       <p className="break-all font-mono text-[11px] font-bold text-violet-800">

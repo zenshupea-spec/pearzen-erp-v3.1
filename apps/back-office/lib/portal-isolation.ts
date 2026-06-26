@@ -1,6 +1,9 @@
 import type { BackOfficeUserProfile } from './hr-portal-access';
+import { isCafeFrontAuthEmail } from './cafe-front-auth-shared';
 import { EXECUTIVE_DESK_PATH, HQ_HUB_PATH } from './hq-hub';
 import { isExecutiveRank, normalizePortalRole } from './portal-role-utils';
+import { canAccessArCollections } from './ar-invoicing/payment-guards';
+import { isShalomFrontAuthEmail } from './shalom-front-auth-shared';
 
 /** Four isolated staff portals — separate sign-in URLs and route boundaries. */
 export type StaffPortalId = 'md' | 'om' | 'tm' | 'hq';
@@ -14,7 +17,117 @@ export const PORTAL_LOGIN_PATHS: Record<StaffPortalId, string> = {
 
 export const HQ_STAFF_RANKS = ['HR', 'FM', 'EA'] as const;
 
+export const SHALOM_FIELD_STAFF_RANKS = ['CARETAKER', 'SHALOM_CARETAKER'] as const;
+export const CAFE_FIELD_STAFF_RANKS = ['CAFE_STAFF'] as const;
+
 const TM_SHARED_OM_PREFIXES = ['/om/sites/location', '/om/guard-cards'] as const;
+
+function isArCollectionsPath(pathname: string): boolean {
+  return pathname === '/ar-collections' || pathname.startsWith('/ar-collections/');
+}
+
+export function isShalomFieldStaffRank(role: string | null | undefined): boolean {
+  const normalized = normalizePortalRole(role);
+  return (
+    normalized !== null &&
+    (SHALOM_FIELD_STAFF_RANKS as readonly string[]).includes(normalized)
+  );
+}
+
+export function isCafeFieldStaffRank(role: string | null | undefined): boolean {
+  const normalized = normalizePortalRole(role);
+  return (
+    normalized !== null &&
+    (CAFE_FIELD_STAFF_RANKS as readonly string[]).includes(normalized)
+  );
+}
+
+export function isFieldStaffOnlyRank(role: string | null | undefined): boolean {
+  return isShalomFieldStaffRank(role) || isCafeFieldStaffRank(role);
+}
+
+export function fieldStaffPortalHomePath(
+  email: string | null | undefined,
+  role?: string | null,
+): string | null {
+  if (email && isShalomFrontAuthEmail(email)) return '/shalom-front';
+  if (email && isCafeFrontAuthEmail(email)) return '/cafe-front';
+  if (isShalomFieldStaffRank(role)) return '/shalom-front';
+  if (isCafeFieldStaffRank(role)) return '/cafe-front';
+  return null;
+}
+
+export function fieldStaffLoginPath(
+  email: string | null | undefined,
+  role?: string | null,
+): string | null {
+  if (email && isShalomFrontAuthEmail(email)) return '/login/shalom-front';
+  if (email && isCafeFrontAuthEmail(email)) return '/login/cafe-front';
+  if (isShalomFieldStaffRank(role)) return '/login/shalom-front';
+  if (isCafeFieldStaffRank(role)) return '/login/cafe-front';
+  return null;
+}
+
+/** Routes HQ / executive staff portals that field PWA sessions must not access. */
+export function isHeadOfficeProtectedPath(pathname: string, search = ''): boolean {
+  if (pathname === '/' || pathname === '/hq') return true;
+  if (pathname.startsWith('/executive')) return true;
+  if (pathname.startsWith('/account')) return true;
+  if (pathname.startsWith('/settings')) return true;
+  if (pathname.startsWith('/ar-collections')) return true;
+  if (pathname.startsWith('/forge')) return true;
+  if (staffPortalForPath(pathname, search)) return true;
+  return false;
+}
+
+/**
+ * When a café or Shalom front session hits the wrong portal, return a redirect target.
+ * Returns null when the request may proceed.
+ */
+export function resolveFieldStaffBoundaryRedirect(
+  pathname: string,
+  email: string | null | undefined,
+  role: string | null | undefined,
+  search = '',
+): string | null {
+  if (pathname.startsWith('/auth/')) return null;
+
+  const shalomSession =
+    Boolean(email && isShalomFrontAuthEmail(email)) || isShalomFieldStaffRank(role);
+  const cafeSession =
+    Boolean(email && isCafeFrontAuthEmail(email)) || isCafeFieldStaffRank(role);
+
+  if (cafeSession && isShalomFrontPath(pathname)) {
+    return fieldStaffPortalHomePath(email, role) ?? '/login/cafe-front?error=wrong_portal';
+  }
+  if (shalomSession && isCafeFrontPath(pathname)) {
+    return fieldStaffPortalHomePath(email, role) ?? '/login/shalom-front?error=wrong_portal';
+  }
+
+  if (shalomSession) {
+    if (isShalomFrontPath(pathname)) return null;
+    if (pathname.startsWith('/login/shalom-front')) return null;
+    if (pathname.startsWith('/login')) {
+      return '/login/shalom-front?error=wrong_portal';
+    }
+    if (isHeadOfficeProtectedPath(pathname, search)) {
+      return fieldStaffPortalHomePath(email, role) ?? '/login/shalom-front?error=wrong_portal';
+    }
+  }
+
+  if (cafeSession) {
+    if (isCafeFrontPath(pathname)) return null;
+    if (pathname.startsWith('/login/cafe-front')) return null;
+    if (pathname.startsWith('/login')) {
+      return '/login/cafe-front?error=wrong_portal';
+    }
+    if (isHeadOfficeProtectedPath(pathname, search)) {
+      return fieldStaffPortalHomePath(email, role) ?? '/login/cafe-front?error=wrong_portal';
+    }
+  }
+
+  return null;
+}
 
 export function staffPortalIdForRole(
   role: string | null | undefined,
@@ -41,9 +154,24 @@ export function loginPathForStaffPortal(portal: StaffPortalId): string {
 export function loginPathForRole(
   role: string | null | undefined,
   profile?: Pick<BackOfficeUserProfile, 'rbacGated'>,
+  email?: string | null,
 ): string {
+  const fieldLogin = fieldStaffLoginPath(email, role);
+  if (fieldLogin) return fieldLogin;
   const portal = staffPortalIdForRole(role, profile);
   return portal ? loginPathForStaffPortal(portal) : '/login';
+}
+
+export function portalPathForRole(
+  role: string | null | undefined,
+  profile?: Pick<BackOfficeUserProfile, 'rbacGated'>,
+  email?: string | null,
+): string | null {
+  const fieldHome = fieldStaffPortalHomePath(email, role);
+  if (fieldHome) return fieldHome;
+  const portal = staffPortalIdForRole(role, profile);
+  if (!portal) return null;
+  return portalHomePath(portal);
 }
 
 export function portalHomePath(portal: StaffPortalId): string {
@@ -69,6 +197,30 @@ export function isCafeBackofficePath(pathname: string): boolean {
   return pathname === '/executive/cafe' || pathname.startsWith('/executive/cafe/');
 }
 
+/** Café front PWA routes on the back-office host (R-CAFE-AUTH-02). */
+export function isCafeFrontPath(pathname: string): boolean {
+  return (
+    pathname === '/cafe-front' ||
+    pathname.startsWith('/cafe-front/') ||
+    pathname === '/login/cafe-front' ||
+    pathname.startsWith('/login/cafe-front/')
+  );
+}
+
+/** Shalom front caretaker portal on the back-office host. */
+export function isShalomFrontPath(pathname: string): boolean {
+  return (
+    pathname === '/shalom-front' ||
+    pathname.startsWith('/shalom-front/') ||
+    pathname === '/login/shalom-front' ||
+    pathname.startsWith('/login/shalom-front/')
+  );
+}
+
+export function isFieldStaffPortalPath(pathname: string): boolean {
+  return isCafeFrontPath(pathname) || isShalomFrontPath(pathname);
+}
+
 /** HQ staff café backoffice (hub shell) — not the full MD executive café desk. */
 export function isHqCafeBackofficePath(pathname: string, search = ''): boolean {
   if (!isCafeBackofficePath(pathname)) return false;
@@ -86,6 +238,8 @@ export function pathBelongsToStaffPortal(
       if (isCafeBackofficePath(pathname) && isHqCafeBackofficePath(pathname, search)) {
         return false;
       }
+      if (pathname === '/settings' || pathname.startsWith('/settings/')) return true;
+      if (isArCollectionsPath(pathname)) return true;
       return pathname === '/executive' || pathname.startsWith('/executive/');
     case 'om':
       return pathname === '/om' || pathname.startsWith('/om/');
@@ -93,6 +247,9 @@ export function pathBelongsToStaffPortal(
       return pathname === '/tm' || pathname.startsWith('/tm/');
     case 'hq':
       if (pathname === '/dashboard' || pathname.startsWith('/dashboard/')) return true;
+      if (pathname === '/wfm' || pathname.startsWith('/wfm/')) return true;
+      if (pathname === '/salon' || pathname.startsWith('/salon/')) return true;
+      if (pathname === '/retail' || pathname.startsWith('/retail/')) return true;
       if (pathname === '/hq' || pathname.startsWith('/hq/')) return true;
       if (pathname === '/hr' || pathname.startsWith('/hr/')) return true;
       if (pathname === '/fm' || pathname.startsWith('/fm/')) return true;
@@ -115,6 +272,8 @@ export function staffPortalForPath(
 }
 
 export function loginPathForRequestPath(pathname: string, search = ''): string {
+  if (isCafeFrontPath(pathname)) return '/login/cafe-front';
+  if (isShalomFrontPath(pathname)) return '/login/shalom-front';
   const portal = staffPortalForPath(pathname, search);
   if (portal) return loginPathForStaffPortal(portal);
   if (pathname.startsWith('/executive')) return PORTAL_LOGIN_PATHS.md;
@@ -122,6 +281,9 @@ export function loginPathForRequestPath(pathname: string, search = ''): string {
   if (pathname.startsWith('/tm')) return PORTAL_LOGIN_PATHS.tm;
   if (
     pathname.startsWith('/dashboard') ||
+    pathname.startsWith('/wfm') ||
+    pathname.startsWith('/salon') ||
+    pathname.startsWith('/retail') ||
     pathname.startsWith('/hq') ||
     pathname.startsWith('/hr') ||
     pathname.startsWith('/fm') ||
@@ -140,8 +302,33 @@ export function roleMatchesStaffPortal(
   return staffPortalIdForRole(role, profile) === portal;
 }
 
+/** Whether this rank may authenticate on a staff portal sign-in page. */
+export function canSignInAtStaffPortal(
+  role: string | null | undefined,
+  portal: StaffPortalId,
+  profile?: Pick<BackOfficeUserProfile, 'rbacGated'>,
+): boolean {
+  if (portal === 'md') {
+    return isExecutiveRank(role);
+  }
+  if (portal === 'hq' && isExecutiveRank(role)) {
+    return true;
+  }
+  return roleMatchesStaffPortal(role, portal, profile);
+}
+
+export function staffPortalSignInError(portal: StaffPortalId): string {
+  if (portal === 'md') {
+    return 'MD Portal is for Managing Director and Operations Director only.';
+  }
+  return 'This account belongs to a different portal. Use the correct sign-in link for your role.';
+}
+
 function isExecutiveCrossPortalPath(pathname: string, search = ''): boolean {
   if (pathname === '/dashboard' || pathname.startsWith('/dashboard/')) return true;
+  if (pathname === '/wfm' || pathname.startsWith('/wfm/')) return true;
+  if (pathname === '/salon' || pathname.startsWith('/salon/')) return true;
+  if (pathname === '/retail' || pathname.startsWith('/retail/')) return true;
   if (pathBelongsToStaffPortal(pathname, 'hq', search)) return true;
   if (pathBelongsToStaffPortal(pathname, 'om', search)) return true;
   if (pathBelongsToStaffPortal(pathname, 'tm', search)) return true;
@@ -153,6 +340,10 @@ export function canAccessPathInStaffPortal(
   profile: BackOfficeUserProfile,
   search = '',
 ): boolean {
+  if (isArCollectionsPath(pathname)) {
+    return canAccessArCollections(profile.role);
+  }
+
   const portal = staffPortalIdForRole(profile.role, profile);
   if (!portal) return false;
 

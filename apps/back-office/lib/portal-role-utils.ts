@@ -26,3 +26,34 @@ export function canManageExecutiveAccess(
   const role = normalizePortalRole(editorRole);
   return role === "MD" || role === "OD";
 }
+
+/** HR desk may provision HQ staff OTP — not MD, OD, or HR (executives use MD Portal). */
+export function canHrProvisionTargetRank(
+  actorRank: string | null | undefined,
+  targetRank: string | null | undefined,
+): boolean {
+  const actor = normalizePortalRole(actorRank);
+  const target = normalizePortalRole(targetRank);
+  if (actor === "HR") {
+    if (target === "HR") return false;
+    if (isExecutiveRank(target)) return false;
+    return true;
+  }
+  if (actor === "MD" || actor === "OD") return true;
+  return false;
+}
+
+export function hrProvisionTargetRankError(
+  actorRank: string | null | undefined,
+  targetRank: string | null | undefined,
+): string {
+  const actor = normalizePortalRole(actorRank);
+  const target = normalizePortalRole(targetRank);
+  if (actor === "HR" && isExecutiveRank(target)) {
+    return "HR cannot provision OTP for MD or OD. Use Security & Access in the MD Portal.";
+  }
+  if (actor === "HR" && target === "HR") {
+    return "HR cannot provision OTP for HR. Ask OD or MD.";
+  }
+  return "You cannot provision OTP for this rank.";
+}

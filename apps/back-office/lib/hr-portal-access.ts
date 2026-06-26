@@ -11,8 +11,13 @@ import {
 import { createSupabaseServiceClient } from "../../../packages/supabase/service";
 import { resolveCompanyIdForSession } from "./company-context";
 import { EXECUTIVE_DESK_PATH, HQ_HUB_PATH } from "./hq-hub";
+import { isPortalAuthEmail } from "./head-office-portal-username";
 import { resolveEmployeePortalRbacRow } from "./portal-rbac-store";
-import { canAccessPathInStaffPortal } from "./portal-isolation";
+import {
+  canAccessPathInStaffPortal,
+  fieldStaffPortalHomePath,
+  portalPathForRole,
+} from "./portal-isolation";
 import {
   HR_PORTAL_EDITOR_ROLES,
   isExecutiveRank,
@@ -50,18 +55,7 @@ export function isPortalRank(
   );
 }
 
-export function portalPathForRole(
-  role: string | null | undefined,
-): string | null {
-  const normalized = normalizePortalRole(role);
-  if (!normalized) return null;
-  if (normalized === "MD" || normalized === "OD") return "/executive/finance";
-  if (normalized === "OM") return "/om";
-  if (normalized === "TM") return "/tm";
-  if (normalized === "HR") return "/hr";
-  if (normalized === "FM") return "/fm";
-  return null;
-}
+export { portalPathForRole } from "./portal-isolation";
 
 /** Post-auth landing path for a signed-in user (no public module hub). */
 export function authenticatedLandingPath(
@@ -80,7 +74,9 @@ export function authenticatedLandingPath(
       : "/login/hq";
   }
   if (normalized === "EA") return HQ_HUB_PATH;
-  return portalPathForRole(normalized) ?? "/login";
+  const fieldHome = fieldStaffPortalHomePath(undefined, normalized);
+  if (fieldHome) return fieldHome;
+  return portalPathForRole(normalized, profile) ?? "/login";
 }
 
 export function canAccessPathForProfile(
@@ -136,23 +132,10 @@ function profileFromRow(
   };
 }
 
-/** MNR: match signed-in email to employees.email; Head Office staff are RBAC-gated. */
-export async function fetchEmployeePortalProfileByEmail(
-  email: string,
+async function buildHeadOfficePortalProfile(
+  data: Record<string, unknown>,
   companyId?: string | null,
 ): Promise<BackOfficeUserProfile | null> {
-  const trimmed = email.trim();
-  if (!trimmed) return null;
-
-  const service = createSupabaseServiceClient();
-  const { data } = await service
-    .from("employees")
-    .select("id, full_name, rank, status, id_photo_url, group, company_id")
-    .ilike("email", trimmed)
-    .maybeSingle();
-
-  if (!data) return null;
-
   const status = typeof data.status === "string" ? data.status.toUpperCase() : "";
   if (status && status !== "ACTIVE") return null;
 
@@ -233,6 +216,53 @@ export async function fetchEmployeePortalProfileByEmail(
   };
 }
 
+export async function fetchEmployeePortalProfileByEmployeeId(
+  employeeId: string,
+  companyId?: string | null,
+): Promise<BackOfficeUserProfile | null> {
+  if (!employeeId) return null;
+
+  const service = createSupabaseServiceClient();
+  let query = service
+    .from("employees")
+    .select("id, full_name, rank, status, id_photo_url, group, company_id")
+    .eq("id", employeeId);
+
+  if (companyId) {
+    query = query.eq("company_id", companyId);
+  }
+
+  const { data } = await query.maybeSingle();
+  if (!data) return null;
+
+  return buildHeadOfficePortalProfile(data as Record<string, unknown>, companyId);
+}
+
+/** MNR: match signed-in email to employees.email; Head Office staff are RBAC-gated. */
+export async function fetchEmployeePortalProfileByEmail(
+  email: string,
+  companyId?: string | null,
+): Promise<BackOfficeUserProfile | null> {
+  const trimmed = email.trim();
+  if (!trimmed) return null;
+
+  const service = createSupabaseServiceClient();
+  let query = service
+    .from("employees")
+    .select("id, full_name, rank, status, id_photo_url, group, company_id")
+    .ilike("email", trimmed);
+
+  if (companyId) {
+    query = query.eq("company_id", companyId);
+  }
+
+  const { data } = await query.maybeSingle();
+
+  if (!data) return null;
+
+  return buildHeadOfficePortalProfile(data as Record<string, unknown>, companyId);
+}
+
 /**
  * Resolve portal clearance for a signed-in user.
  * Priority: MNR employee (email → rank) → legacy users table → auth metadata.
@@ -243,6 +273,23 @@ export async function fetchBackOfficeUserProfile(
   tenantSlug?: string | null,
 ): Promise<BackOfficeUserProfile> {
   const companyId = await resolveCompanyIdForSession(supabase, tenantSlug);
+
+  const metaEmployeeId = user.user_metadata?.employee_id;
+  if (typeof metaEmployeeId === "string" && metaEmployeeId.trim()) {
+    const fromMeta = await fetchEmployeePortalProfileByEmployeeId(
+      metaEmployeeId.trim(),
+      companyId,
+    );
+    if (fromMeta) return fromMeta;
+  }
+
+  if (user.email && isPortalAuthEmail(user.email) && metaEmployeeId) {
+    const fromPortalEmail = await fetchEmployeePortalProfileByEmployeeId(
+      String(metaEmployeeId),
+      companyId,
+    );
+    if (fromPortalEmail) return fromPortalEmail;
+  }
 
   if (user.email) {
     const fromMnr = await fetchEmployeePortalProfileByEmail(user.email, companyId);

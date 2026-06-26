@@ -1,10 +1,14 @@
 'use client';
 
+import Link from 'next/link';
 import { useState, useTransition } from 'react';
 import { Shield } from 'lucide-react';
 
 import BrandWatermarkBackground from '../../../components/portal/BrandWatermarkBackground';
-import { isHeadOfficeBackupCodeInput } from '../../../lib/head-office-totp-backup-client';
+import {
+  HEAD_OFFICE_FORGE_2FA_ESCALATION_HINT,
+  isHeadOfficeBackupCodeInput,
+} from '../../../lib/head-office-totp-backup-client';
 import { verifyHeadOfficeTotpAction } from './actions';
 
 export default function Verify2faForm({
@@ -103,8 +107,17 @@ export default function Verify2faForm({
               }}
               className="w-full text-center text-xs font-bold uppercase tracking-wider text-slate-500 hover:text-slate-800"
             >
-              {useBackupCode ? 'Use authenticator code instead' : "Can't reach authenticator? Use backup code"}
+              {useBackupCode
+                ? 'Use authenticator code instead'
+                : 'Lost authenticator? Use a backup code'}
             </button>
+
+            {useBackupCode ? (
+              <p className="text-center text-[11px] font-medium leading-relaxed text-slate-500">
+                A valid backup code clears your authenticator and sends you to{' '}
+                <strong className="text-slate-700">/login/setup-2fa</strong> to enroll again.
+              </p>
+            ) : null}
 
             <button
               type="submit"
@@ -116,6 +129,16 @@ export default function Verify2faForm({
             >
               {isPending ? 'Verifying…' : 'Continue'}
             </button>
+
+            <p className="text-center text-[11px] font-medium leading-relaxed text-slate-500">
+              <Link href="/login/recover-2fa" className="font-semibold text-slate-700 hover:text-slate-900">
+                Used a backup code before?
+              </Link>{' '}
+              Try <span className="font-mono text-[10px]">/login/recover-2fa</span> after the cooldown.
+            </p>
+            <p className="text-center text-[11px] font-medium leading-relaxed text-slate-500">
+              Lost everything? {HEAD_OFFICE_FORGE_2FA_ESCALATION_HINT}
+            </p>
           </form>
         </div>
       </main>

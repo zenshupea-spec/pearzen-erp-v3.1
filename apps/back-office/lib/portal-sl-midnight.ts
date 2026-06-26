@@ -1,3 +1,6 @@
+import type { BackOfficeUserProfile } from './hr-portal-access';
+import { loginPathForRole } from './portal-isolation';
+
 const COLOMBO_TZ = 'Asia/Colombo';
 
 /** Start of the current calendar day in Sri Lanka (as UTC ms). */
@@ -30,4 +33,17 @@ export function isSignInBeforeLatestColomboMidnight(
 export function msUntilNextColomboMidnight(at = Date.now()): number {
   const next = colomboMidnightUtcMs(at) + 24 * 60 * 60 * 1000;
   return Math.max(0, next - at);
+}
+
+/** True when a redirect target is the daily Colombo-midnight sign-out login URL. */
+export function isDailySignoutRedirectPath(path: string): boolean {
+  return path.includes('error=daily_signout');
+}
+
+export function buildDailySignoutRedirectPath(
+  profile: Pick<BackOfficeUserProfile, 'role' | 'rbacGated'>,
+): string {
+  const loginPath = loginPathForRole(profile.role, profile);
+  const base = loginPath === '/login' ? '/login/hq' : loginPath;
+  return `${base}?error=daily_signout`;
 }

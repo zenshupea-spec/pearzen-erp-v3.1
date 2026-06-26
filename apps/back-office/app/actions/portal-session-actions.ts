@@ -5,22 +5,29 @@ import { redirect } from 'next/navigation';
 
 import {
   PORTAL_IDLE_LOCK_MINUTES,
+  clearPortalPinSessionCookiesStore,
   invalidatePortalPasswordAfterRejectedLogin,
   resetHeadOfficeUnlockCodeWithPassword,
+  resolveHeadOfficePortalEntryPath,
   setHeadOfficeUnlockCode,
   setPortalPinSessionCookies,
   verifyHeadOfficeUnlockCode,
 } from '../../lib/head-office-portal-auth';
+import { clearVaultUnlockSessionCookiesStore } from '../../lib/executive-vault-session';
+import { clearHeadOfficePortalSession } from '../../lib/head-office-portal-sign-out';
 import { getAuthenticatedPortalSession } from '../../lib/head-office-portal-session';
 import { recordPortalLoginEvent } from '../../lib/portal-login-events';
+import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access-server';
+import { loginPathForRole } from '../../lib/portal-isolation';
+import { isExecutiveRank } from '../../lib/portal-role-utils';
 import {
-  autoApproveExpiredPendingLogins,
-  createPendingLoginChallenge,
+  displaceOtherAuthSessionsAfterLogin,
   getActivePendingLoginForEmployee,
   getPendingLoginById,
   resolvePendingLoginChallenge,
   revokeSupabaseSession,
 } from '../../lib/portal-pending-login';
+import { notifySignedInElsewhereSessionDisplacement } from '../../lib/portal-session-displacement-email';
 import {
   createSupabaseServerClient,
   createSupabaseServiceClient,
@@ -79,7 +86,31 @@ export async function verifyHeadOfficeUnlockCodeAction(code: string) {
   });
 
   if (!result.ok) return { error: result.error ?? 'Invalid unlock code.' };
+
+  await setPortalPinSessionCookies(
+    session.profile.employeeId!,
+    session.user.email,
+  );
   return { success: true as const };
+}
+
+export async function invalidatePortalIdleLockAction() {
+  await clearPortalPinSessionCookiesStore();
+  await clearVaultUnlockSessionCookiesStore();
+  return { ok: true as const };
+}
+
+/** Voluntary HO sign-out — clears `pz_ho_*` cookies and Supabase session. */
+export async function signOutHeadOfficePortalAction(redirectPath?: string) {
+  await clearHeadOfficePortalSession();
+  if (redirectPath !== undefined) {
+    const path =
+      redirectPath.startsWith('/') && !redirectPath.startsWith('//')
+        ? redirectPath
+        : '/login/hq';
+    redirect(path);
+  }
+  return { ok: true as const };
 }
 
 export async function resetHeadOfficeUnlockCodeAction(
@@ -103,50 +134,39 @@ export async function getPortalIdleLockMinutesAction() {
   return { minutes: PORTAL_IDLE_LOCK_MINUTES };
 }
 
-export async function pollSessionChallengeAction() {
+export async function getHeadOfficePortalSessionContextAction() {
   const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user?.id) return { pending: null as null };
-
-  const profile = await getAuthenticatedPortalSession();
-  if ('error' in profile || !profile.profile.employeeId) {
-    return { pending: null as null };
+  if (!user?.email) {
+    return { signInPath: '/login' as const, isExecutive: false as const };
   }
 
-  await autoApproveExpiredPendingLogins();
-
-  const pending = await getActivePendingLoginForEmployee(
-    profile.profile.employeeId,
-  );
-  if (!pending) return { pending: null as null };
-
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  const currentSessionId = session?.access_token
-    ? decodeAccessTokenSessionId(session.access_token)
-    : null;
-
-  const isIncumbent =
-    pending.incumbentSessionId &&
-    currentSessionId &&
-    pending.incumbentSessionId === currentSessionId;
-  const isChallenger =
-    currentSessionId && pending.challengerSessionId === currentSessionId;
-
-  if (!isIncumbent && !isChallenger) {
-    return { pending: null as null };
-  }
-
+  const profile = await fetchBackOfficeUserProfile(supabase, user);
   return {
-    pending: {
-      id: pending.id,
-      role: isChallenger ? ('challenger' as const) : ('incumbent' as const),
-      expiresAt: pending.expiresAt,
-    },
+    signInPath: loginPathForRole(profile.role, profile),
+    isExecutive: isExecutiveRank(profile.role),
   };
+}
+
+export async function resolveHeadOfficePostChallengeLandingAction(): Promise<string> {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user?.email) return '/login';
+
+  const profile = await fetchBackOfficeUserProfile(supabase, user);
+  return resolveHeadOfficePortalEntryPath(
+    profile,
+    user.email,
+    user.last_sign_in_at,
+  );
+}
+
+export async function pollSessionChallengeAction() {
+  return { pending: null as null };
 }
 
 export async function respondSessionChallengeAction(
@@ -189,29 +209,17 @@ export async function respondSessionChallengeAction(
 
   if (pending.incumbentSessionId) {
     await revokeSupabaseSession(pending.incumbentSessionId);
+    await notifySignedInElsewhereSessionDisplacement({
+      employeeId: pending.employeeId,
+      reason: 'approved_elsewhere',
+    });
   }
-  await supabase.auth.signOut();
+  await clearHeadOfficePortalSession();
   return { success: true, signedOut: true as const };
 }
 
-export async function awaitSessionChallengeAction(pendingId: string) {
-  await autoApproveExpiredPendingLogins();
-  const pending = await getPendingLoginById(pendingId);
-  if (!pending) return { status: 'expired' as const };
-
-  if (pending.status === 'approved' || pending.status === 'rejected') {
-    return { status: pending.status };
-  }
-
-  if (pending.status === 'auto_approved') {
-    return { status: 'auto_approved' as const };
-  }
-
-  if (new Date(pending.expiresAt).getTime() <= Date.now()) {
-    return { status: 'expired' as const };
-  }
-
-  return { status: 'pending' as const, expiresAt: pending.expiresAt };
+export async function awaitSessionChallengeAction(_pendingId: string) {
+  return { status: 'auto_approved' as const };
 }
 
 export async function maybeCreateSessionChallengeAfterLogin(
@@ -219,22 +227,10 @@ export async function maybeCreateSessionChallengeAfterLogin(
   userId: string,
   currentSessionId: string,
 ): Promise<string | null> {
-  const service = createSupabaseServiceClient();
-  const { data: incumbentId, error: incumbentError } = await service.rpc(
-    'first_other_auth_session_id',
-    {
-      p_user_id: userId,
-      p_current_session_id: currentSessionId,
-    },
-  );
-
-  if (incumbentError || !incumbentId) return null;
-
-  const pending = await createPendingLoginChallenge({
+  await displaceOtherAuthSessionsAfterLogin({
+    userId,
+    currentSessionId,
     employeeId,
-    challengerSessionId: currentSessionId,
-    incumbentSessionId: String(incumbentId),
   });
-
-  return pending?.id ?? null;
+  return null;
 }

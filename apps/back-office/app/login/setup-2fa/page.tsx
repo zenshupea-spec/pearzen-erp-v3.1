@@ -7,10 +7,12 @@ import {
   hasValidPortalPinSessionForUser,
   requiresHeadOfficePortalPin,
 } from '../../../lib/head-office-portal-auth';
+import { buildHeadOfficePortalResetPath } from '../../../lib/head-office-portal-reset-path';
 import {
   authenticatedLandingPath,
   fetchBackOfficeUserProfile,
 } from '../../../lib/hr-portal-access-server';
+import { loginPathForRole } from '../../../lib/portal-isolation';
 import { resolveTenantCompanyFromRequest } from '../../../lib/tenant-context-server';
 
 import SetupHeadOffice2faForm from './SetupHeadOffice2faForm';
@@ -21,17 +23,18 @@ export default async function Setup2faPage() {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user?.email) redirect('/login/head-office');
+  if (!user?.email) redirect('/login');
 
   const profile = await fetchBackOfficeUserProfile(supabase, user);
+  const signInPath = loginPathForRole(profile.role, profile);
+
   if (!requiresHeadOfficePortalPin(profile, user.email)) {
     redirect(authenticatedLandingPath(profile.role, profile));
   }
 
   const authRecord = await getHeadOfficePortalAuthByEmail(user.email);
   if (!authRecord || !authRecord.is_active) {
-    await supabase.auth.signOut();
-    redirect('/login/head-office?error=not_provisioned');
+    redirect(buildHeadOfficePortalResetPath(`${signInPath}?error=not_provisioned`));
   }
 
   if (authRecord.needs_pin_setup) redirect('/login/set-pin');

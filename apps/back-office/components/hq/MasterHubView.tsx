@@ -9,6 +9,7 @@ import {
   Crosshair,
   FileText,
   Globe,
+  Home,
   Layers,
   Scissors,
   ShieldAlert,
@@ -18,20 +19,24 @@ import {
 import {
   CAFE_FRONT_PORTAL_ROUTE,
   GUARD_FIELD_PORTAL_ROUTE,
+  SHALOM_FRONT_PORTAL_ROUTE,
   SM_PORTAL_ROUTE,
-  MASTER_HUB_PILLARS,
   type MasterHubModule,
   type MasterHubPillar,
 } from '../../lib/master-hub-pillars';
 import {
   cafeFrontPortalLoginUrl,
   guardPortalUrl,
+  shalomFrontPortalLoginUrl,
   smPortalLoginUrl,
 } from '../../app/login/portal-urls';
-import { canSeeMasterHubModule } from '../../lib/master-hub-access';
+import { canSeeMasterHubModule, type MasterHubAccessContext } from '../../lib/master-hub-access';
+import { canAccessFrontOfficeAsExecutive } from '../../lib/front-office-executive-access';
 import type { MasterHubBadges } from '../../lib/master-hub-actions';
-import { CAFE_HUB_ENTRY_PATH, EXECUTIVE_DESK_PATH } from '../../lib/hq-hub';
-import { isExecutiveRank } from '../../lib/portal-role-utils';
+import { filterHubPillarsByModules } from '../../lib/tenant-product-bundle';
+import { CAFE_HUB_ENTRY_PATH, EXECUTIVE_DESK_PATH, OM_HUB_ENTRY_PATH } from '../../lib/hq-hub';
+import { ExecutiveGlassCard } from '../executive/ExecutiveVaultShell';
+import { CVS_BRAND_CLASSES } from '../../lib/cvs-brand-tokens';
 
 const MODULE_ICONS: Record<string, LucideIcon> = {
   '/executive/operations': Crosshair,
@@ -40,6 +45,7 @@ const MODULE_ICONS: Record<string, LucideIcon> = {
   [SM_PORTAL_ROUTE]: Briefcase,
   [GUARD_FIELD_PORTAL_ROUTE]: ShieldAlert,
   [CAFE_FRONT_PORTAL_ROUTE]: Coffee,
+  [SHALOM_FRONT_PORTAL_ROUTE]: Home,
   '/fm': Calculator,
   '/hq/deductions': Scissors,
   '/invoice-desk': FileText,
@@ -49,38 +55,59 @@ const MODULE_ICONS: Record<string, LucideIcon> = {
   '/executive/cafe': Coffee,
   '/security-website': Globe,
   '/hq/audit': BookOpen,
+  '/hq/guard-proxy': ShieldAlert,
+  '/hr/mnr': Users,
 };
 
 function iconForRoute(route: string): LucideIcon {
   return MODULE_ICONS[route] ?? FileText;
 }
 
-function filterPillars(role: string, badges: MasterHubBadges): MasterHubPillar[] {
-  return MASTER_HUB_PILLARS.map((pillar) => ({
-    ...pillar,
-    modules: pillar.modules
-      .filter((mod) => canSeeMasterHubModule(mod.route, role))
-      .map((mod) => ({
-        ...mod,
-        badge: badges[mod.route] ?? mod.badge,
-      })),
-  })).filter((pillar) => pillar.modules.length > 0);
+function filterPillars(
+  role: string,
+  badges: MasterHubBadges,
+  pillars: MasterHubPillar[],
+  enabledModules: string[] | null,
+  accessContext?: MasterHubAccessContext,
+): MasterHubPillar[] {
+  const moduleFiltered = filterHubPillarsByModules(pillars, enabledModules);
+  return moduleFiltered
+    .map((pillar) => ({
+      ...pillar,
+      modules: pillar.modules
+        .filter((mod) => canSeeMasterHubModule(mod.route, role, accessContext))
+        .map((mod) => ({
+          ...mod,
+          badge: badges[mod.route] ?? mod.badge,
+        })),
+    }))
+    .filter((pillar) => pillar.modules.length > 0);
 }
 
-function moduleHref(mod: MasterHubModule): string {
+function moduleHref(mod: MasterHubModule, role: string): string {
   if (mod.route === GUARD_FIELD_PORTAL_ROUTE) return guardPortalUrl();
   if (mod.route === SM_PORTAL_ROUTE) return smPortalLoginUrl();
-  if (mod.route === CAFE_FRONT_PORTAL_ROUTE) return cafeFrontPortalLoginUrl();
+  if (mod.route === CAFE_FRONT_PORTAL_ROUTE) {
+    return canAccessFrontOfficeAsExecutive({ role })
+      ? '/cafe-front'
+      : cafeFrontPortalLoginUrl();
+  }
+  if (mod.route === SHALOM_FRONT_PORTAL_ROUTE) {
+    return canAccessFrontOfficeAsExecutive({ role })
+      ? '/shalom-front'
+      : shalomFrontPortalLoginUrl();
+  }
   if (mod.route === '/executive/cafe') return CAFE_HUB_ENTRY_PATH;
+  if (mod.route === '/om') return OM_HUB_ENTRY_PATH;
   return mod.route;
 }
 
-function ModuleCard({ module: mod }: { module: MasterHubModule }) {
+function ModuleCard({ module: mod, role }: { module: MasterHubModule; role: string }) {
   const Icon = iconForRoute(mod.route);
-  const href = moduleHref(mod);
+  const href = moduleHref(mod, role);
 
   const card = (
-      <div className="relative flex h-full cursor-pointer flex-col gap-4 rounded-2xl border border-white/50 bg-white/70 p-6 shadow-xl backdrop-blur-xl transition-all hover:scale-[1.02] hover:bg-white/85">
+      <ExecutiveGlassCard className="relative flex h-full cursor-pointer flex-col gap-4 p-6 transition-all hover:scale-[1.02] hover:bg-white/70">
         {mod.badge ? (
           <span className="absolute right-4 top-4 z-10 inline-flex items-center rounded-full bg-red-600 px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wider text-white shadow">
             {mod.badge}
@@ -88,7 +115,7 @@ function ModuleCard({ module: mod }: { module: MasterHubModule }) {
         ) : null}
 
         <div className="flex items-start gap-3">
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-blue-100 bg-blue-50 text-blue-700">
+          <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border ${CVS_BRAND_CLASSES.rankBadge}`}>
             <Icon className="h-5 w-5" strokeWidth={1.5} />
           </div>
 
@@ -113,14 +140,14 @@ function ModuleCard({ module: mod }: { module: MasterHubModule }) {
         </div>
 
         <div className="mt-auto pt-2">
-          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 transition-colors group-hover:text-blue-900">
+          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[color:var(--cvs-accent)] transition-colors group-hover:text-[color:var(--cvs-accent-hover)]">
             Open module
             <span className="translate-x-0 transition-transform group-hover:translate-x-0.5">
               →
             </span>
           </span>
         </div>
-      </div>
+      </ExecutiveGlassCard>
   );
 
   if (mod.external) {
@@ -147,70 +174,69 @@ type Props = {
   role: string;
   profileName: string;
   badges?: MasterHubBadges;
+  pillars: MasterHubPillar[];
+  hubTitle?: string;
+  hubSubtitle?: string;
+  brandLabel?: string;
+  enabledModules?: string[] | null;
+  showExecutiveDeskLink?: boolean;
+  rbacGated?: boolean;
+  portalRbac?: MasterHubAccessContext['portalRbac'];
 };
 
 export default function MasterHubView({
   role,
   profileName,
   badges = {},
+  pillars,
+  hubTitle = 'PEARZEN HQ — MASTER HUB',
+  hubSubtitle = 'Pearzen Technologies',
+  brandLabel = 'PEARZEN TECH — INTERNAL SYSTEMS',
+  enabledModules = null,
+  showExecutiveDeskLink,
+  rbacGated = false,
+  portalRbac = null,
 }: Props) {
-  const pillars = filterPillars(role, badges);
-  const showExecutiveDeskLink = isExecutiveRank(role);
+  const filteredPillars = filterPillars(role, badges, pillars, enabledModules, {
+    rbacGated,
+    portalRbac,
+  });
+  const executiveDeskLink =
+    showExecutiveDeskLink ?? (role === 'MD' || role === 'OD');
 
   return (
-    <div className="relative min-h-screen overflow-x-hidden bg-slate-100">
-      <style>{`
-        @keyframes aurora {
-          0%   { transform: translate(0, 0) scale(1); }
-          33%  { transform: translate(10%, 10%) scale(1.1); }
-          66%  { transform: translate(-5%, 5%) scale(0.9); }
-          100% { transform: translate(0, 0) scale(1); }
-        }
-        @keyframes aurora-alt {
-          0%   { transform: translate(0, 0) scale(1.05); }
-          33%  { transform: translate(-8%, -6%) scale(0.95); }
-          66%  { transform: translate(6%, -10%) scale(1.1); }
-          100% { transform: translate(0, 0) scale(1.05); }
-        }
-        @keyframes aurora-slow {
-          0%   { transform: translate(0, 0) scale(0.95); }
-          33%  { transform: translate(5%, -8%) scale(1.1); }
-          66%  { transform: translate(-10%, 4%) scale(1.0); }
-          100% { transform: translate(0, 0) scale(0.95); }
-        }
-        @keyframes aurora-drift {
-          0%   { transform: translate(0, 0) scale(1); }
-          33%  { transform: translate(-6%, 12%) scale(1.05); }
-          66%  { transform: translate(8%, -5%) scale(0.92); }
-          100% { transform: translate(0, 0) scale(1); }
-        }
-      `}</style>
-
-      <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
-        <div
-          className="absolute -left-48 -top-48 h-[700px] w-[700px] rounded-full bg-blue-400 opacity-30 blur-[120px]"
-          style={{ animation: 'aurora 20s ease-in-out infinite' }}
-        />
-        <div
-          className="absolute -right-56 top-1/4 h-[650px] w-[650px] rounded-full bg-purple-400 opacity-30 blur-[120px]"
-          style={{ animation: 'aurora-alt 24s ease-in-out infinite' }}
-        />
-        <div
-          className="absolute bottom-0 left-1/4 h-[600px] w-[600px] rounded-full bg-teal-400 opacity-30 blur-[120px]"
-          style={{ animation: 'aurora-slow 22s ease-in-out infinite' }}
-        />
-        <div
-          className="absolute left-1/2 top-1/2 h-[550px] w-[550px] rounded-full bg-rose-300 opacity-30 blur-[120px]"
-          style={{ animation: 'aurora-drift 26s ease-in-out infinite' }}
-        />
-      </div>
+    <div className="relative min-h-screen overflow-x-hidden bg-[#eef2f6] text-slate-900 antialiased">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 opacity-[0.48]"
+        style={{
+          backgroundImage:
+            'radial-gradient(rgb(148 163 184 / 0.42) 1.1px, transparent 1.1px)',
+          backgroundSize: '24px 24px',
+        }}
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-40 right-[-8%] h-[min(520px,85vw)] w-[min(520px,85vw)] rounded-full blur-[100px]"
+        style={{ backgroundColor: 'var(--cvs-glow)' }}
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute top-[26%] left-[-20%] h-[440px] w-[440px] rounded-full blur-[92px]"
+        style={{ backgroundColor: 'var(--cvs-glow-teal)' }}
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute bottom-[-12%] right-[18%] h-[400px] w-[400px] rounded-full blur-[88px]"
+        style={{ backgroundColor: 'var(--cvs-glow-lime)' }}
+      />
 
       <main className="relative z-10 flex flex-col items-center px-6 py-14 md:px-12">
-        {showExecutiveDeskLink ? (
+        {executiveDeskLink ? (
           <div className="absolute left-6 top-6 z-50">
             <Link
               href={EXECUTIVE_DESK_PATH}
-              className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-white/80 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-600 shadow-sm backdrop-blur-md transition-all hover:bg-slate-50"
+              className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-white/80 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-600 shadow-sm backdrop-blur-md transition-all hover:border-[color:var(--cvs-accent-muted)] hover:bg-[var(--cvs-accent-soft)] hover:text-[color:var(--cvs-accent)]"
             >
               <ArrowLeft className="h-3 w-3" />
               Return to Executive Desk
@@ -219,11 +245,11 @@ export default function MasterHubView({
         ) : null}
 
         <div className="mb-14 w-full max-w-2xl text-center">
-          <p className="mb-3 text-xs font-bold uppercase tracking-[0.3em] text-blue-700">
-            Pearzen Security Services
+          <p className={`mb-3 text-xs font-bold uppercase tracking-[0.3em] ${CVS_BRAND_CLASSES.portalEyebrow}`}>
+            {hubSubtitle}
           </p>
           <h1 className="text-3xl font-extrabold tracking-tight text-slate-900 md:text-4xl">
-            PEARZEN HQ — MASTER HUB
+            {hubTitle}
           </h1>
           <p className="mt-3 text-sm font-bold text-slate-600">
             Welcome, {profileName}
@@ -231,27 +257,28 @@ export default function MasterHubView({
               <span className="font-medium text-slate-500"> · {role}</span>
             ) : null}
           </p>
-          <p className="mt-1 text-sm text-slate-500">
+          <p className="mt-1 flex items-center justify-center gap-1.5 text-sm text-slate-500">
+            <span className={`h-1.5 w-1.5 rounded-full ${CVS_BRAND_CLASSES.portalDot} shadow-[0_0_8px_var(--cvs-glow)]`} />
             Select a module below. All actions are logged.
           </p>
-          <div className="mt-6 h-px w-full bg-gradient-to-r from-transparent via-slate-300 to-transparent" />
+          <div className="mt-6 h-px w-full bg-gradient-to-r from-transparent via-[color:var(--cvs-accent-muted)] to-transparent" />
         </div>
 
-        {pillars.length === 0 ? (
+        {filteredPillars.length === 0 ? (
           <div className="w-full max-w-2xl rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-center text-sm font-semibold text-amber-900 shadow-sm">
             No portal modules are assigned to your rank. Contact HR to update your MNR
             record.
           </div>
         ) : (
           <div className="w-full max-w-6xl space-y-12">
-            {pillars.map((pillar) => (
+            {filteredPillars.map((pillar) => (
               <section key={pillar.title}>
-                <h2 className="mb-4 border-b border-slate-200/80 pb-2 text-xl font-bold tracking-tight text-slate-800">
+                <h2 className="mb-4 border-b border-[color:var(--cvs-accent-muted)]/50 pb-2 text-xl font-bold tracking-tight text-slate-800">
                   {pillar.title}
                 </h2>
                 <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
                   {pillar.modules.map((mod) => (
-                    <ModuleCard key={mod.route} module={mod} />
+                    <ModuleCard key={mod.route} module={mod} role={role} />
                   ))}
                 </div>
               </section>
@@ -260,7 +287,7 @@ export default function MasterHubView({
         )}
 
         <p className="mt-20 text-xs font-bold uppercase tracking-widest text-slate-500">
-          PEARZEN TECH — INTERNAL SYSTEMS
+          {brandLabel}
         </p>
       </main>
     </div>

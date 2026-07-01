@@ -2,7 +2,7 @@ import { headers } from 'next/headers';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { createSupabaseServerClient } from '../../../packages/supabase/server';
-import { createSupabaseServiceClient } from '../../../packages/supabase/service';
+import { recordStaffAuditLog } from '../../../packages/supabase/staff-audit-log';
 import { resolveCompanyIdForSession } from './company-context-server';
 import { fetchBackOfficeUserProfile } from './hr-portal-access-server';
 
@@ -18,7 +18,8 @@ export type StaffAuditPortal =
   | 'checkin'
   | 'invoice'
   | 'cafe'
-  | 'cafe-front';
+  | 'cafe-front'
+  | 'shalom-front';
 
 export type StaffAuditContext = {
   companyId: string;
@@ -92,22 +93,17 @@ export async function recordStaffAudit({
   ipAddress = null,
   details = {},
 }: RecordStaffAuditInput) {
-  const db = createSupabaseServiceClient();
-  const { error } = await db.from('audit_logs').insert({
-    company_id: companyId,
-    profile_id: profileId,
+  await recordStaffAuditLog({
+    companyId,
+    profileId,
     portal,
     action,
-    target_entity: targetEntity ?? null,
-    actor_name: actorName ?? null,
-    actor_role: actorRole ?? null,
-    ip_address: ipAddress,
+    targetEntity,
+    actorName,
+    actorRole,
+    ipAddress,
     details,
   });
-
-  if (error) {
-    console.error('❌ staff audit insert failed:', error.message);
-  }
 }
 
 type AuditStaffActionInput = {

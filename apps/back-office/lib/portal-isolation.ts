@@ -239,6 +239,9 @@ export function pathBelongsToStaffPortal(
         return false;
       }
       if (pathname === '/settings' || pathname.startsWith('/settings/')) return true;
+      if (pathname === '/security-website' || pathname.startsWith('/security-website/')) {
+        return true;
+      }
       if (isArCollectionsPath(pathname)) return true;
       return pathname === '/executive' || pathname.startsWith('/executive/');
     case 'om':
@@ -255,6 +258,9 @@ export function pathBelongsToStaffPortal(
       if (pathname === '/fm' || pathname.startsWith('/fm/')) return true;
       if (pathname === '/fm-dashboard' || pathname.startsWith('/fm-dashboard/')) return true;
       if (pathname === '/invoice-desk' || pathname.startsWith('/invoice-desk/')) return true;
+      if (pathname === '/security-website' || pathname.startsWith('/security-website/')) {
+        return true;
+      }
       if (isCafeBackofficePath(pathname)) return true;
       return false;
   }
@@ -329,6 +335,11 @@ function isExecutiveCrossPortalPath(pathname: string, search = ''): boolean {
   if (pathname === '/wfm' || pathname.startsWith('/wfm/')) return true;
   if (pathname === '/salon' || pathname.startsWith('/salon/')) return true;
   if (pathname === '/retail' || pathname.startsWith('/retail/')) return true;
+  if (isCafeFrontPath(pathname)) return true;
+  if (isShalomFrontPath(pathname)) return true;
+  if (pathname === '/security-website' || pathname.startsWith('/security-website/')) {
+    return true;
+  }
   if (pathBelongsToStaffPortal(pathname, 'hq', search)) return true;
   if (pathBelongsToStaffPortal(pathname, 'om', search)) return true;
   if (pathBelongsToStaffPortal(pathname, 'tm', search)) return true;

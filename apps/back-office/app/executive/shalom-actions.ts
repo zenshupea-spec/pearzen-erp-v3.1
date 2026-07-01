@@ -19,6 +19,34 @@ import {
 } from './shalom/shalom-ical-import';
 import { appendIcalCancellation, pearzenIcalUid } from './shalom/shalom-ical-cancel';
 import { SHALOM_ICAL_EXPORT_CHANNELS } from './shalom/shalom-ical-export';
+import {
+  findShalomEmployeeByEpf,
+  getShalomPortalAuthRecord,
+  isShalomEmployeeActive,
+  normalizeShalomEpfNo,
+  shalomEmployeeEpfKey,
+  type ShalomEmployeeRow,
+} from '../../lib/shalom-front-auth';
+import { signShalomGuestIdRef } from '../../../../packages/supabase/shalom-guest-id-storage';
+import { provisionShalomPortalOtp } from '../../lib/shalom-front-auth-server';
+import { shalomMonthRange } from '../../lib/shalom-calendar';
+import {
+  mapShalomBookingStayOpsFromRow,
+  normalizeCollectInquiryPhone,
+  parseShalomStayOpsSettings,
+  sanitizeShalomDamagePresetsInput,
+  sanitizeShalomHandoverRoomsInput,
+  type ShalomDamagePreset,
+  type ShalomHandoverRoom,
+  type ShalomPreHandoverPhoto,
+  type ShalomRecordedDamage,
+} from '../../lib/shalom-stay-ops';
+
+export type ShalomCaretakerOption = {
+  epf: string;
+  fullName: string;
+  site: string;
+};
 
 export type ShalomChannel = 'AIRBNB' | 'BOOKING' | 'DIRECT' | 'BLOCKED' | 'AUTO_BLOCK';
 
@@ -39,6 +67,13 @@ export type ShalomBookingRecord = {
   otaImported?: boolean;
   /** Amount caretaker should collect; null = personnel use only */
   caretakerCollectLkr?: number | null;
+  damages: ShalomRecordedDamage[];
+  guestIdDocumentUrl: string | null;
+  invoiceEmail: string | null;
+  invoiceSentAt: string | null;
+  invoiceReference: string | null;
+  preHandoverPhotos: Array<ShalomPreHandoverPhoto & { signedUrl?: string | null }>;
+  preHandoverVerifiedAt: string | null;
 };
 
 export type ShalomOtaFeedEvent = {
@@ -66,10 +101,16 @@ export type ShalomPropertyRecord = {
   airbnbIcalUrl: string;
   bookingIcalUrl: string;
   settings: Record<string, unknown>;
+  collectInquiryPhone: string;
+  damagePresets: ShalomDamagePreset[];
+  handoverRooms: ShalomHandoverRoom[];
+  caretakerEpf: string | null;
+  caretakerName: string | null;
   bookings: ShalomBookingRecord[];
 };
 
 const SHALOM_PATH = '/executive/shalom';
+const SHALOM_FRONT_PATH = '/shalom-front';
 
 function isMissingTable(error: { code?: string; message?: string } | null) {
   if (!error) return false;
@@ -97,6 +138,7 @@ async function requireExecutiveRole() {
 }
 
 function rowToBooking(row: Record<string, unknown>): ShalomBookingRecord {
+  const stayOps = mapShalomBookingStayOpsFromRow(row);
   return {
     id: String(row.id),
     guestName: String(row.guest_name ?? ''),
@@ -112,18 +154,53 @@ function rowToBooking(row: Record<string, unknown>): ShalomBookingRecord {
     enrichedContact: row.enriched_contact ? String(row.enriched_contact) : undefined,
     otaIcalUid: row.ota_ical_uid ? String(row.ota_ical_uid) : undefined,
     otaImported: Boolean(row.ota_imported),
-    caretakerCollectLkr:
-      row.caretaker_collect_lkr != null && row.caretaker_collect_lkr !== ''
-        ? Number(row.caretaker_collect_lkr)
-        : null,
+    caretakerCollectLkr: stayOps.caretakerCollectLkr,
+    damages: stayOps.damages,
+    guestIdDocumentUrl: stayOps.guestIdDocumentUrl,
+    invoiceEmail: stayOps.invoiceEmail,
+    invoiceSentAt: stayOps.invoiceSentAt,
+    invoiceReference: stayOps.invoiceReference,
+    preHandoverPhotos: stayOps.preHandoverPhotos,
+    preHandoverVerifiedAt: stayOps.preHandoverVerifiedAt,
+  };
+}
+
+async function enrichPreHandoverPhotoUrls(
+  db: ReturnType<typeof createSupabaseServiceClient>,
+  photos: ShalomPreHandoverPhoto[],
+): Promise<Array<ShalomPreHandoverPhoto & { signedUrl?: string | null }>> {
+  return Promise.all(
+    photos.map(async (photo) => ({
+      ...photo,
+      signedUrl: await signShalomGuestIdRef(db, photo.photoUrl),
+    })),
+  );
+}
+
+async function rowToBookingWithSignedPhotos(
+  db: ReturnType<typeof createSupabaseServiceClient>,
+  row: Record<string, unknown>,
+): Promise<ShalomBookingRecord> {
+  const booking = rowToBooking(row);
+  if (booking.preHandoverPhotos.length === 0) return booking;
+  return {
+    ...booking,
+    preHandoverPhotos: await enrichPreHandoverPhotoUrls(db, booking.preHandoverPhotos),
   };
 }
 
 function rowToProperty(
   row: Record<string, unknown>,
   bookings: ShalomBookingRecord[],
+  caretakerName: string | null,
 ): ShalomPropertyRecord {
   const ota = row.ota_channels;
+  const rawCaretakerEpf = row.caretaker_epf;
+  const caretakerEpf =
+    rawCaretakerEpf != null && String(rawCaretakerEpf).trim()
+      ? normalizeShalomEpfNo(String(rawCaretakerEpf))
+      : null;
+  const stayOps = parseShalomStayOpsSettings(row.settings);
   return {
     id: String(row.id),
     name: String(row.name ?? ''),
@@ -137,8 +214,55 @@ function rowToProperty(
     airbnbIcalUrl: String(row.airbnb_ical_url ?? ''),
     bookingIcalUrl: String(row.booking_ical_url ?? ''),
     settings: (row.settings as Record<string, unknown>) ?? {},
+    collectInquiryPhone: stayOps.collectInquiryPhone,
+    damagePresets: stayOps.damagePresets,
+    handoverRooms: stayOps.handoverRooms,
+    caretakerEpf,
+    caretakerName,
     bookings,
   };
+}
+
+function mapShalomEmployeeRow(row: Record<string, unknown>): ShalomEmployeeRow {
+  const epfNum = row.epf_num != null ? String(row.epf_num) : null;
+  const epfNo = row.epf_no != null ? String(row.epf_no) : epfNum;
+  return {
+    id: String(row.id ?? ''),
+    full_name: (row.full_name as string | null) ?? null,
+    emp_number: (row.emp_number as string | null) ?? null,
+    epf_no: epfNo,
+    epf_num: epfNum,
+    status: (row.status as string | null) ?? null,
+    group: (row.group as string | null) ?? null,
+    rank: (row.rank as string | null) ?? null,
+    site: (row.site as string | null) ?? null,
+    company_id: row.company_id != null ? String(row.company_id) : null,
+  };
+}
+
+async function loadShalomCaretakerNameMap(
+  db: ReturnType<typeof createSupabaseServiceClient>,
+  companyId: string,
+  epfs: string[],
+): Promise<Map<string, string>> {
+  const unique = [...new Set(epfs.map((epf) => normalizeShalomEpfNo(epf)).filter(Boolean))];
+  const out = new Map<string, string>();
+  if (unique.length === 0) return out;
+
+  const { data: employees } = await db
+    .from('employees')
+    .select('full_name, epf_no, epf_num, emp_number, group, rank, status')
+    .eq('company_id', companyId)
+    .eq('status', 'ACTIVE');
+
+  for (const row of employees ?? []) {
+    const employee = mapShalomEmployeeRow(row as Record<string, unknown>);
+    const epf = shalomEmployeeEpfKey(employee);
+    if (!epf || !unique.includes(epf)) continue;
+    out.set(epf, employee.full_name?.trim() || epf);
+  }
+
+  return out;
 }
 
 export async function fetchShalomProperties(): Promise<{
@@ -183,14 +307,29 @@ export async function fetchShalomProperties(): Promise<{
     for (const row of bookings) {
       const pid = String(row.property_id);
       const list = bookingsByProp.get(pid) ?? [];
-      list.push(rowToBooking(row as Record<string, unknown>));
+      list.push(await rowToBookingWithSignedPhotos(db, row as Record<string, unknown>));
       bookingsByProp.set(pid, list);
     }
 
+    const caretakerEpfs = (props ?? [])
+      .map((row) => row.caretaker_epf)
+      .filter((epf): epf is string => epf != null && String(epf).trim().length > 0)
+      .map((epf) => normalizeShalomEpfNo(String(epf)));
+    const caretakerNames = await loadShalomCaretakerNameMap(db, companyId, caretakerEpfs);
+
     return {
-      properties: (props ?? []).map((row) =>
-        rowToProperty(row as Record<string, unknown>, bookingsByProp.get(String(row.id)) ?? []),
-      ),
+      properties: (props ?? []).map((row) => {
+        const record = row as Record<string, unknown>;
+        const epf =
+          record.caretaker_epf != null && String(record.caretaker_epf).trim()
+            ? normalizeShalomEpfNo(String(record.caretaker_epf))
+            : null;
+        return rowToProperty(
+          record,
+          bookingsByProp.get(String(row.id)) ?? [],
+          epf ? (caretakerNames.get(epf) ?? null) : null,
+        );
+      }),
       tableReady: true,
     };
   } catch (err) {
@@ -226,104 +365,215 @@ export type ShalomHostGlance = {
   error?: string;
 };
 
-function monthBounds(year: number, month: number) {
-  const mk = `${year}-${String(month).padStart(2, '0')}`;
-  const nextMonth = month === 12 ? 1 : month + 1;
-  const nextYear = month === 12 ? year + 1 : year;
+function caretakerOptionFromEmployee(employee: ShalomEmployeeRow): ShalomCaretakerOption | null {
+  const epf = shalomEmployeeEpfKey(employee);
+  if (!epf) return null;
   return {
-    monthKey: mk,
-    monthStart: `${mk}-01`,
-    monthEnd: `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`,
-    daysInMonth: new Date(year, month, 0).getDate(),
+    epf,
+    fullName: employee.full_name?.trim() || epf,
+    site: employee.site?.trim() || '—',
   };
 }
 
-function bookingInMonth(booking: ShalomBookingRecord, monthKey: string) {
-  return booking.checkIn.startsWith(monthKey) || booking.checkOut.startsWith(monthKey);
-}
+export async function fetchShalomCaretakerOptions(): Promise<{
+  caretakers: ShalomCaretakerOption[];
+  error?: string;
+}> {
+  noStore();
+  try {
+    await requireExecutiveRole();
+    const companyId = await resolveCompanyId();
+    if (!companyId) return { caretakers: [], error: 'No company context' };
 
-/** Portfolio-wide host metrics for the Executive Vault finance view. */
-export async function fetchShalomHostGlance(
-  year: number,
-  month: number,
-): Promise<ShalomHostGlance> {
-  const empty: ShalomHostGlance = {
-    properties: [],
-    totalPaidRevenue: 0,
-    totalPendingRevenue: 0,
-    portfolioOccupancyPct: 0,
-    totalBookedNights: 0,
-    daysInMonth: monthBounds(year, month).daysInMonth,
-    checkInsToday: 0,
-    checkInsNext7d: 0,
-    unenrichedBookings: 0,
-    tableReady: false,
-  };
+    const db = createSupabaseServiceClient();
+    const [{ data: employees, error }, { data: authRows, error: authError }] =
+      await Promise.all([
+        db
+          .from('employees')
+          .select('id, full_name, epf_no, epf_num, emp_number, site, group, rank, status')
+          .eq('company_id', companyId)
+          .order('full_name', { ascending: true }),
+        db.from('shalom_portal_auth').select('epf_number').eq('is_active', true),
+      ]);
 
-  const { properties, tableReady, error } = await fetchShalomProperties();
-  if (!tableReady) return { ...empty, error };
-
-  const { monthKey, daysInMonth } = monthBounds(year, month);
-  const today = new Date().toISOString().slice(0, 10);
-  const weekAhead = new Date();
-  weekAhead.setDate(weekAhead.getDate() + 7);
-  const weekAheadIso = weekAhead.toISOString().slice(0, 10);
-
-  let totalPaidRevenue = 0;
-  let totalPendingRevenue = 0;
-  let totalBookedNights = 0;
-  let checkInsToday = 0;
-  let checkInsNext7d = 0;
-  let unenrichedBookings = 0;
-
-  const propertyGlances: ShalomPropertyGlance[] = properties.map((prop) => {
-    const monthBookings = prop.bookings.filter((b) => bookingInMonth(b, monthKey));
-    const revenueBookings = monthBookings.filter((b) => b.channel !== 'BLOCKED' && b.channel !== 'AUTO_BLOCK');
-    const paidRevenue = revenueBookings.filter((b) => b.paid).reduce((s, b) => s + b.totalRevenue, 0);
-    const pendingRevenue = revenueBookings.filter((b) => !b.paid).reduce((s, b) => s + b.totalRevenue, 0);
-    const bookedNights = revenueBookings.reduce((s, b) => s + b.nights, 0);
-    const occupancyPct = daysInMonth > 0 ? Math.round((bookedNights / daysInMonth) * 100) : 0;
-
-    for (const b of prop.bookings) {
-      if (b.channel === 'BLOCKED' || b.channel === 'AUTO_BLOCK') continue;
-      if (b.checkIn === today) checkInsToday += 1;
-      if (b.checkIn > today && b.checkIn <= weekAheadIso) checkInsNext7d += 1;
-      if (!b.enriched && b.channel === 'AIRBNB' && b.totalRevenue <= 0) unenrichedBookings += 1;
+    if (error) return { caretakers: [], error: error.message };
+    if (authError && !isMissingTable(authError)) {
+      return { caretakers: [], error: authError.message };
     }
 
-    totalPaidRevenue += paidRevenue;
-    totalPendingRevenue += pendingRevenue;
-    totalBookedNights += bookedNights;
+    const byEpf = new Map<string, ShalomCaretakerOption>();
+
+    for (const row of employees ?? []) {
+      const employee = mapShalomEmployeeRow(row as Record<string, unknown>);
+      if (!isShalomEmployeeActive(employee)) continue;
+      const option = caretakerOptionFromEmployee(employee);
+      if (option) byEpf.set(option.epf, option);
+    }
+
+    for (const row of authRows ?? []) {
+      const epf = normalizeShalomEpfNo(String(row.epf_number ?? ''));
+      if (!epf || byEpf.has(epf)) continue;
+      const employee = await findShalomEmployeeByEpf(db, epf, companyId);
+      if (!employee || !isShalomEmployeeActive(employee)) continue;
+      const option = caretakerOptionFromEmployee(employee);
+      if (option) byEpf.set(option.epf, option);
+    }
+
+    const caretakers = [...byEpf.values()].sort((a, b) =>
+      a.fullName.localeCompare(b.fullName, undefined, { sensitivity: 'base' }),
+    );
+
+    return { caretakers };
+  } catch (err) {
+    return {
+      caretakers: [],
+      error: err instanceof Error ? err.message : 'Failed to load caretakers',
+    };
+  }
+}
+
+export async function fetchShalomCaretakerLoginDates(
+  caretakerEpf: string,
+  year: number,
+  month: number,
+): Promise<{ loginDates: string[]; error?: string }> {
+  noStore();
+  try {
+    await requireExecutiveRole();
+    const companyId = await resolveCompanyId();
+    if (!companyId) return { loginDates: [], error: 'No company context' };
+
+    const epf = normalizeShalomEpfNo(caretakerEpf);
+    if (!epf) return { loginDates: [] };
+
+    const { monthStart, monthEndExclusive } = shalomMonthRange(year, month);
+    const db = createSupabaseServiceClient();
+    const { data, error } = await db
+      .from('shalom_portal_daily_logins')
+      .select('login_date')
+      .eq('company_id', companyId)
+      .eq('epf_number', epf)
+      .gte('login_date', monthStart)
+      .lt('login_date', monthEndExclusive);
+
+    if (error) {
+      if (isMissingTable(error)) return { loginDates: [] };
+      return { loginDates: [], error: error.message };
+    }
 
     return {
-      id: prop.id,
-      name: prop.name,
-      occupancyPct,
-      occupancyTarget: prop.occupancyTarget,
-      paidRevenue,
-      pendingRevenue,
-      bookedNights,
+      loginDates: (data ?? []).map((row) => String(row.login_date).slice(0, 10)),
     };
-  });
+  } catch (err) {
+    return {
+      loginDates: [],
+      error: err instanceof Error ? err.message : 'Failed to load caretaker logins',
+    };
+  }
+}
 
-  const portfolioOccupancyPct =
-    properties.length > 0 && daysInMonth > 0
-      ? Math.round((totalBookedNights / (daysInMonth * properties.length)) * 100)
-      : 0;
+export async function assignShalomCaretakerAction(
+  propertyId: string,
+  caretakerEpfInput: string | null,
+): Promise<{
+  success: boolean;
+  error?: string;
+  provisionedOtp?: string;
+  provisionedEpf?: string;
+}> {
+  try {
+    await requireExecutiveRole();
+    const companyId = await resolveCompanyId();
+    if (!companyId) return { success: false, error: 'No company context' };
 
-  return {
-    properties: propertyGlances,
-    totalPaidRevenue,
-    totalPendingRevenue,
-    portfolioOccupancyPct,
-    totalBookedNights,
-    daysInMonth,
-    checkInsToday,
-    checkInsNext7d,
-    unenrichedBookings,
-    tableReady: true,
-    error,
-  };
+    const db = createSupabaseServiceClient();
+    const { data: property, error: propertyError } = await db
+      .from('shalom_properties')
+      .select('id, name')
+      .eq('id', propertyId)
+      .eq('company_id', companyId)
+      .maybeSingle();
+
+    if (propertyError) return { success: false, error: propertyError.message };
+    if (!property) return { success: false, error: 'Property not found.' };
+
+    const caretakerEpf = caretakerEpfInput?.trim()
+      ? normalizeShalomEpfNo(caretakerEpfInput)
+      : null;
+
+    let provisionedOtp: string | undefined;
+    let provisionedEpf: string | undefined;
+
+    if (caretakerEpf) {
+      const employee = await findShalomEmployeeByEpf(db, caretakerEpf, companyId);
+      if (!employee) {
+        return { success: false, error: `Employee EPF ${caretakerEpf} not found on the MNR.` };
+      }
+      if (!isShalomEmployeeActive(employee)) {
+        return { success: false, error: `${caretakerEpf} is not an active employee.` };
+      }
+
+      const auth = await getShalomPortalAuthRecord(db, caretakerEpf);
+      if (!auth?.is_active) {
+        const otp = String(Math.floor(100000 + Math.random() * 900000));
+        const provision = await provisionShalomPortalOtp(db, employee, otp);
+        if (!provision.ok) {
+          return {
+            success: false,
+            error: provision.error ?? 'Failed to provision Shalom front-office access.',
+          };
+        }
+        provisionedOtp = otp;
+        provisionedEpf = caretakerEpf;
+      }
+    }
+
+    const { error: updateError } = await db
+      .from('shalom_properties')
+      .update({
+        caretaker_epf: caretakerEpf,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', propertyId)
+      .eq('company_id', companyId);
+
+    if (updateError) return { success: false, error: updateError.message };
+
+    await db
+      .from('shalom_caretaker_property_assignments')
+      .delete()
+      .eq('property_id', propertyId)
+      .eq('company_id', companyId);
+
+    if (caretakerEpf) {
+      const { error: assignError } = await db.from('shalom_caretaker_property_assignments').upsert(
+        {
+          epf_number: caretakerEpf,
+          property_id: propertyId,
+          company_id: companyId,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'epf_number,property_id' },
+      );
+      if (assignError) {
+        if (isMissingTable(assignError)) {
+          return {
+            success: false,
+            error: 'Shalom caretaker tables not applied yet. Run the Shalom portal migration on Supabase.',
+          };
+        }
+        return { success: false, error: assignError.message };
+      }
+    }
+
+    revalidatePath(SHALOM_PATH);
+    return { success: true, provisionedOtp, provisionedEpf };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Failed to assign caretaker',
+    };
+  }
 }
 
 export async function upsertShalomProperty(input: {
@@ -337,6 +587,7 @@ export async function upsertShalomProperty(input: {
   airbnbIcalUrl?: string;
   bookingIcalUrl?: string;
   settings?: Record<string, unknown>;
+  caretakerEpf?: string | null;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   try {
     await requireExecutiveRole();
@@ -344,7 +595,7 @@ export async function upsertShalomProperty(input: {
     if (!companyId) return { success: false, error: 'No company context' };
 
     const db = createSupabaseServiceClient();
-    const row = {
+    const row: Record<string, unknown> = {
       company_id: companyId,
       name: input.name.trim(),
       location: input.location.trim(),
@@ -357,6 +608,11 @@ export async function upsertShalomProperty(input: {
       settings: input.settings ?? {},
       updated_at: new Date().toISOString(),
     };
+    if (input.caretakerEpf !== undefined) {
+      row.caretaker_epf = input.caretakerEpf?.trim()
+        ? normalizeShalomEpfNo(input.caretakerEpf)
+        : null;
+    }
 
     if (input.id) {
       const { data: existing, error: existsError } = await db
@@ -436,12 +692,14 @@ export async function upsertShalomBooking(input: {
       const { error } = await db.from('shalom_bookings').update(row).eq('id', input.id);
       if (error) return { success: false, error: error.message };
       revalidatePath(SHALOM_PATH);
+      revalidatePath(SHALOM_FRONT_PATH);
       return { success: true, id: input.id };
     }
 
     const { data, error } = await db.from('shalom_bookings').insert(row).select('id').single();
     if (error) return { success: false, error: error.message };
     revalidatePath(SHALOM_PATH);
+    revalidatePath(SHALOM_FRONT_PATH);
     return { success: true, id: String(data.id) };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : 'Save failed' };
@@ -804,6 +1062,187 @@ export async function syncShalomPropertyFromOtas(propertyId: string): Promise<{
       imported: 0,
       removed: 0,
       errors: [err instanceof Error ? err.message : 'OTA sync failed'],
+    };
+  }
+}
+
+export async function updateShalomStayOpsSettingsAction(
+  propertyId: string,
+  input: {
+    collectInquiryPhone?: string;
+    damagePresets?: ShalomDamagePreset[];
+    handoverRooms?: ShalomHandoverRoom[];
+  },
+): Promise<{
+  success: boolean;
+  collectInquiryPhone?: string;
+  damagePresets?: ShalomDamagePreset[];
+  handoverRooms?: ShalomHandoverRoom[];
+  error?: string;
+}> {
+  try {
+    await requireExecutiveRole();
+    const companyId = await resolveCompanyId();
+    if (!companyId) return { success: false, error: 'No company context' };
+
+    if (
+      input.collectInquiryPhone == null &&
+      input.damagePresets == null &&
+      input.handoverRooms == null
+    ) {
+      return { success: false, error: 'Nothing to save.' };
+    }
+
+    const db = createSupabaseServiceClient();
+    const { data: property, error: fetchError } = await db
+      .from('shalom_properties')
+      .select('settings')
+      .eq('id', propertyId)
+      .eq('company_id', companyId)
+      .maybeSingle();
+
+    if (fetchError) {
+      if (isMissingTable(fetchError)) {
+        return { success: false, error: 'Shalom tables not applied yet.' };
+      }
+      return { success: false, error: fetchError.message };
+    }
+    if (!property) return { success: false, error: 'Property not found.' };
+
+    const existingSettings =
+      property.settings && typeof property.settings === 'object'
+        ? (property.settings as Record<string, unknown>)
+        : {};
+    const stayOps = parseShalomStayOpsSettings(existingSettings);
+
+    let nextPhone = stayOps.collectInquiryPhone;
+    if (input.collectInquiryPhone != null) {
+      const trimmed = input.collectInquiryPhone.trim();
+      if (!trimmed) {
+        nextPhone = '';
+      } else {
+        const normalized = normalizeCollectInquiryPhone(trimmed);
+        const digits = normalized.replace(/\D/g, '');
+        if (digits.length < 9) {
+          return { success: false, error: 'Enter a valid phone number for caretakers to call.' };
+        }
+        nextPhone = normalized;
+      }
+    }
+
+    let nextDamagePresets = stayOps.damagePresets;
+    if (input.damagePresets != null) {
+      const validated = sanitizeShalomDamagePresetsInput(input.damagePresets);
+      if (!validated.ok) return { success: false, error: validated.error };
+      nextDamagePresets = validated.presets;
+    }
+
+    let nextHandoverRooms = stayOps.handoverRooms;
+    if (input.handoverRooms != null) {
+      const validated = sanitizeShalomHandoverRoomsInput(input.handoverRooms);
+      if (!validated.ok) return { success: false, error: validated.error };
+      nextHandoverRooms = validated.rooms;
+    }
+
+    const settings = {
+      ...existingSettings,
+      collectInquiryPhone: nextPhone,
+      damagePresets: nextDamagePresets,
+      handoverRooms: nextHandoverRooms,
+    };
+
+    const { error: updateError } = await db
+      .from('shalom_properties')
+      .update({ settings, updated_at: new Date().toISOString() })
+      .eq('id', propertyId)
+      .eq('company_id', companyId);
+
+    if (updateError) return { success: false, error: updateError.message };
+
+    revalidatePath(SHALOM_PATH);
+    return {
+      success: true,
+      collectInquiryPhone: nextPhone,
+      damagePresets: nextDamagePresets,
+      handoverRooms: nextHandoverRooms,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Could not save stay-ops settings.',
+    };
+  }
+}
+
+export async function updateShalomCollectInquiryPhoneAction(
+  propertyId: string,
+  collectInquiryPhone: string,
+): Promise<{ success: boolean; phone?: string; error?: string }> {
+  const result = await updateShalomStayOpsSettingsAction(propertyId, { collectInquiryPhone });
+  return {
+    success: result.success,
+    phone: result.collectInquiryPhone,
+    error: result.error,
+  };
+}
+
+export async function updateShalomDamagePresetsAction(
+  propertyId: string,
+  damagePresets: ShalomDamagePreset[],
+): Promise<{ success: boolean; damagePresets?: ShalomDamagePreset[]; error?: string }> {
+  const result = await updateShalomStayOpsSettingsAction(propertyId, { damagePresets });
+  return {
+    success: result.success,
+    damagePresets: result.damagePresets,
+    error: result.error,
+  };
+}
+
+export async function updateShalomHandoverRoomsAction(
+  propertyId: string,
+  handoverRooms: ShalomHandoverRoom[],
+): Promise<{ success: boolean; handoverRooms?: ShalomHandoverRoom[]; error?: string }> {
+  const result = await updateShalomStayOpsSettingsAction(propertyId, { handoverRooms });
+  return {
+    success: result.success,
+    handoverRooms: result.handoverRooms,
+    error: result.error,
+  };
+}
+
+export async function getShalomGuestIdSignedUrlAction(
+  bookingId: string,
+): Promise<{ success: boolean; signedUrl?: string | null; error?: string }> {
+  try {
+    await requireExecutiveRole();
+    const companyId = await resolveCompanyId();
+    if (!companyId) return { success: false, error: 'No company context' };
+
+    const db = createSupabaseServiceClient();
+    const { data: booking, error } = await db
+      .from('shalom_bookings')
+      .select('id, guest_id_document_url')
+      .eq('id', bookingId)
+      .eq('company_id', companyId)
+      .maybeSingle();
+
+    if (error) {
+      if (isMissingTable(error)) {
+        return { success: false, error: 'Shalom stay-ops tables not applied yet.' };
+      }
+      return { success: false, error: error.message };
+    }
+    if (!booking) return { success: false, error: 'Booking not found.' };
+
+    const signedUrl = await signShalomGuestIdRef(
+      db,
+      booking.guest_id_document_url ? String(booking.guest_id_document_url) : null,
+    );
+    return { success: true, signedUrl };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Could not load guest ID photo.',
     };
   }
 }

@@ -1,8 +1,6 @@
-import { CVS_TENANT_SLUG } from '../../../lib/company-ids';
 import {
   isLocalDevHost,
   tenantBaseDomain,
-  tenantSubdomainsLive,
 } from '../../../lib/tenant-host';
 
 /** HTTPS origin Airbnb / Booking.com can fetch — never localhost. */
@@ -21,17 +19,20 @@ export function publicOtaBackOfficeOrigin(): string {
     }
   }
 
-  const slug = process.env.NEXT_PUBLIC_DEV_TENANT_SLUG?.trim() || CVS_TENANT_SLUG;
+  const devSlug = process.env.NEXT_PUBLIC_DEV_TENANT_SLUG?.trim();
   const base = tenantBaseDomain();
 
   if (process.env.NODE_ENV === 'production') {
-    return tenantSubdomainsLive()
-      ? `https://${slug}.${base}`
-      : `https://${base}`;
+    throw new Error(
+      'NEXT_PUBLIC_BACK_OFFICE_URL must be set in production for Shalom OTA iCal links.',
+    );
   }
 
-  // Local dev: copy link targets live Vercel host so OTAs can import the feed
-  return `https://${slug}.${base}`;
+  if (!devSlug) {
+    return `http://127.0.0.1:${process.env.PORT ?? process.env.BACK_OFFICE_PORT ?? '3002'}`;
+  }
+
+  return `https://${devSlug}.${base}`;
 }
 
 /** Public iCal export URL for a Shalom property (paste into Airbnb calendar import). */

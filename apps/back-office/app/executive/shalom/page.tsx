@@ -27,25 +27,67 @@ import {
   ShieldCheck,
   Trash2,
   Settings2,
+  Phone,
+  Copy,
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
 import {
+  ExecutivePageBody,
+  ExecutivePageHeader,
+  ExecutivePageLiveSubtitle,
+  ExecutivePageShell,
+} from '../../../components/executive/ExecutivePageChrome';
+import { CVS_BRAND_CLASSES } from '../../../lib/cvs-brand-tokens';
+import { ShalomLoginDayDot } from '../../../components/shalom/ShalomLoginDayDot';
+import {
+  buildShalomLoginDateSet,
+  formatShalomCollectLkr,
+  hasCaretakerCollectAmount,
+  parseCaretakerCollectLkr,
+  resolveShalomLoginDotStatus,
+} from '../../../lib/shalom-calendar';
+import {
+  SHALOM_DEFAULT_COLLECT_INQUIRY_PHONE,
+  SHALOM_DEFAULT_HANDOVER_ROOM_TEMPLATES,
+  SHALOM_HANDOVER_PHOTO_RETENTION_DAYS,
+  parseShalomStayOpsSettings,
+  resolveHandoverRooms,
+  stayOpsTotalDamages,
+  type ShalomDamagePreset,
+  type ShalomHandoverRoom,
+  type ShalomPreHandoverPhoto,
+  type ShalomRecordedDamage,
+} from '../../../lib/shalom-stay-ops';
+import {
+  SHALOM_FRONT_EPF_MAX_LENGTH,
+  shalomPortalLoginDateColombo,
+} from '../../../lib/shalom-front-auth-shared';
+import {
+  deleteShalomBooking,
   deleteShalomProperty,
+  assignShalomCaretakerAction,
+  fetchShalomCaretakerLoginDates,
   fetchShalomProperties,
+  getShalomGuestIdSignedUrlAction,
   syncShalomPropertyFromOtas,
   upsertShalomProperty,
   upsertShalomBooking,
+  updateShalomStayOpsSettingsAction,
   type ShalomPropertyRecord,
 } from '../shalom-actions';
+import { buildShalomIcalExportUrl } from './shalom-ical-url';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Channel = 'AIRBNB' | 'BOOKING' | 'BLOCKED';
 
+const MANUAL_DELETABLE_CHANNELS = new Set(['DIRECT', 'BLOCKED', 'AUTO_BLOCK']);
+
 interface Booking {
   id: string;
   guestName: string;
   channel: Channel;
+  sourceChannel?: string;
   checkIn: string;
   checkOut: string;
   nights: number;
@@ -60,6 +102,13 @@ interface Booking {
   enrichedContact?: string;
   /** Amount caretaker should collect; undefined/null = personnel use only */
   caretakerCollectLkr?: number | null;
+  damages?: ShalomRecordedDamage[];
+  guestIdDocumentUrl?: string | null;
+  invoiceEmail?: string | null;
+  invoiceSentAt?: string | null;
+  invoiceReference?: string | null;
+  preHandoverPhotos?: Array<ShalomPreHandoverPhoto & { signedUrl?: string | null }>;
+  preHandoverVerifiedAt?: string | null;
 }
 
 interface Property {
@@ -72,6 +121,8 @@ interface Property {
   otaChannels: ('AIRBNB' | 'BOOKING')[];
   airbnbIcalUrl: string;
   bookingIcalUrl: string;
+  caretakerEpf: string | null;
+  caretakerName: string | null;
   bookings: Booking[];
 }
 
@@ -92,6 +143,9 @@ interface PropSettings {
   airbnbCommissionPct: number;
   bookingCommissionPct: number;
   seasonalRates: SeasonalRate[];
+  collectInquiryPhone: string;
+  damagePresets: ShalomDamagePreset[];
+  handoverRooms: ShalomHandoverRoom[];
 }
 
 // ── Caretaker Pre-Handover Audit ─────────────────────────────────────────────
@@ -102,62 +156,14 @@ interface AuditPhoto {
   label: string;
   /** Display timestamp taken just before guest arrival */
   timestamp: string;
-  bgGradient: string;
-  iconColor: string;
+  signedUrl?: string | null;
 }
 
 interface AuditRecord {
-  status: 'WAITING' | 'VERIFIED';
+  status: 'WAITING' | 'IN_PROGRESS' | 'VERIFIED';
   verifiedAt?: string;
   photos?: AuditPhoto[];
 }
-
-// ─── Property Data ────────────────────────────────────────────────────────────
-
-const NAWALA_BOOKINGS: Booking[] = [
-  { id: 'N001', guestName: 'Amelia Chen',     channel: 'AIRBNB',  checkIn: '2026-05-01', checkOut: '2026-05-05', nights: 4, ratePerNight: 8500, totalRevenue: 34000, paid: true  },
-  { id: 'N002', guestName: 'Ravi & Family',   channel: 'BOOKING', checkIn: '2026-05-06', checkOut: '2026-05-10', nights: 4, ratePerNight: 7800, totalRevenue: 31200, paid: true  },
-  { id: 'N003', guestName: 'Thomas Müller',   channel: 'BOOKING', checkIn: '2026-05-12', checkOut: '2026-05-16', nights: 4, ratePerNight: 9200, totalRevenue: 36800, paid: true  },
-  { id: 'N004', guestName: 'Priya Sharma',    channel: 'AIRBNB',  checkIn: '2026-05-17', checkOut: '2026-05-21', nights: 4, ratePerNight: 8500, totalRevenue: 34000, paid: false, notes: 'Balance LKR 17,000 due on check-in' },
-  { id: 'N005', guestName: 'Blocked',         channel: 'BLOCKED', checkIn: '2026-05-21', checkOut: '2026-05-23', nights: 2, ratePerNight: 0,    totalRevenue: 0,     paid: true  },
-  { id: 'N006', guestName: 'Kenji Tanaka',    channel: 'BOOKING', checkIn: '2026-05-23', checkOut: '2026-05-28', nights: 5, ratePerNight: 9200, totalRevenue: 46000, paid: false, notes: 'Booking.com guarantee pending' },
-  { id: 'N007', guestName: 'Airbnb Guest',   channel: 'AIRBNB',  checkIn: '2026-05-29', checkOut: '2026-06-01', nights: 3, ratePerNight: 0,    totalRevenue: 0,     paid: false, notes: 'Synced via Airbnb iCal — guest details not included in feed.' },
-];
-
-const KANDY_BOOKINGS: Booking[] = [
-  { id: 'K001', guestName: 'Sophie Laurent',  channel: 'AIRBNB',  checkIn: '2026-05-03', checkOut: '2026-05-07', nights: 4, ratePerNight: 6200, totalRevenue: 24800, paid: true  },
-  { id: 'K002', guestName: 'Dev Patel',        channel: 'BOOKING', checkIn: '2026-05-09', checkOut: '2026-05-13', nights: 4, ratePerNight: 5800, totalRevenue: 23200, paid: true  },
-  { id: 'K003', guestName: 'Blocked',          channel: 'BLOCKED', checkIn: '2026-05-13', checkOut: '2026-05-14', nights: 1, ratePerNight: 0,    totalRevenue: 0,     paid: true  },
-  { id: 'K004', guestName: 'Yuki Tanaka',      channel: 'BOOKING', checkIn: '2026-05-18', checkOut: '2026-05-22', nights: 4, ratePerNight: 6800, totalRevenue: 27200, paid: false },
-  { id: 'K005', guestName: 'Maria García',     channel: 'AIRBNB',  checkIn: '2026-05-25', checkOut: '2026-05-29', nights: 4, ratePerNight: 6200, totalRevenue: 24800, paid: false },
-];
-
-const PROPERTIES: Property[] = [
-  {
-    id: 'prop-nawala',
-    name: 'Shalom Nawala',
-    location: 'Nawala, Colombo',
-    bedrooms: 3,
-    overhead: 185_000,
-    occupancyTarget: 65,
-    otaChannels: ['AIRBNB', 'BOOKING'],
-    airbnbIcalUrl: '',
-    bookingIcalUrl: '',
-    bookings: NAWALA_BOOKINGS,
-  },
-  {
-    id: 'prop-kandy',
-    name: 'Kandy Apartment',
-    location: 'Kandy City Centre',
-    bedrooms: 2,
-    overhead: 120_000,
-    occupancyTarget: 55,
-    otaChannels: ['AIRBNB', 'BOOKING'],
-    airbnbIcalUrl: '',
-    bookingIcalUrl: '',
-    bookings: KANDY_BOOKINGS,
-  },
-];
 
 // ─── Channel meta ─────────────────────────────────────────────────────────────
 
@@ -179,6 +185,11 @@ function lkr(n: number) {
   if (n >= 1_000_000) return `LKR ${(n / 1_000_000).toFixed(2)}M`;
   if (n >= 1_000)     return `LKR ${(n / 1_000).toFixed(1)}K`;
   return `LKR ${n.toLocaleString()}`;
+}
+
+function lkrCost(n: number) {
+  if (n <= 0) return '—';
+  return `− ${lkr(n)}`;
 }
 
 function dateKey(year: number, month: number, day: number) {
@@ -246,6 +257,13 @@ function isAvailabilityBlock(booking: Booking): boolean {
   );
 }
 
+function isManualDeletableBooking(booking: Booking): boolean {
+  if (booking.otaImported) return false;
+  const source = (booking.sourceChannel ?? '').toUpperCase();
+  if (MANUAL_DELETABLE_CHANNELS.has(source)) return true;
+  return !booking.sourceChannel && normalizeChannel(booking.channel) === 'BLOCKED';
+}
+
 function isOtaReservation(booking: Booking): boolean {
   return Boolean(booking.otaImported) && !isAvailabilityBlock(booking);
 }
@@ -264,45 +282,54 @@ const DAY_NAMES    = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTH_NAMES  = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const MONTH_SHORT  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-// ─── Audit Photo Factory & Data ───────────────────────────────────────────────
-
-const ROOM_PALETTE: { label: string; bg: string; icon: string }[] = [
-  { label: 'Living Room',    bg: 'bg-gradient-to-br from-amber-100/80 to-orange-50/60',  icon: 'text-amber-600'  },
-  { label: 'Master Bedroom', bg: 'bg-gradient-to-br from-blue-100/80 to-indigo-50/60',   icon: 'text-blue-600'   },
-  { label: 'Kitchen',        bg: 'bg-gradient-to-br from-teal-100/80 to-emerald-50/60',  icon: 'text-teal-600'   },
-  { label: 'Main Bathroom',  bg: 'bg-gradient-to-br from-sky-100/80 to-cyan-50/60',      icon: 'text-sky-600'    },
-  { label: 'Bedroom 2',      bg: 'bg-gradient-to-br from-violet-100/80 to-purple-50/60', icon: 'text-violet-600' },
-];
-
-function makePhotos(checkIn: string, count = 4): AuditPhoto[] {
-  const [y, m, d] = checkIn.split('-');
-  const dateLabel = `${d} ${MONTH_SHORT[parseInt(m) - 1]} ${y}`;
-  const mins = [12, 17, 21, 26, 30];
-  return ROOM_PALETTE.slice(0, count).map((r, i) => ({
-    photoId: `${checkIn}-p${i + 1}`,
-    label: r.label,
-    timestamp: `${dateLabel} · 08:${mins[i]} AM`,
-    bgGradient: r.bg,
-    iconColor: r.icon,
-  }));
+function formatAuditDisplayTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const day = date.getUTCDate().toString().padStart(2, '0');
+  const month = MONTH_SHORT[date.getUTCMonth()];
+  const year = date.getUTCFullYear();
+  let hours = date.getUTCHours();
+  const minutes = date.getUTCMinutes().toString().padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12 || 12;
+  return `${day} ${month} ${year} · ${hours}:${minutes} ${ampm}`;
 }
 
-function defaultPropSettings(propId: string): PropSettings {
-  const nawalaRates: SeasonalRate[] = [
-    { id: 'n-s1', name: 'December Peak',  startDate: '2026-12-15', endDate: '2027-01-05', ratePerNight: 14_000 },
-    { id: 'n-s2', name: 'Long Weekend',   startDate: '2026-05-17', endDate: '2026-05-18', ratePerNight: 10_500 },
-  ];
-  const kandyRates: SeasonalRate[] = [
-    { id: 'k-s1', name: 'Kandy Esala',   startDate: '2026-08-01', endDate: '2026-08-15', ratePerNight: 9_500 },
-    { id: 'k-s2', name: 'Year-End',      startDate: '2026-12-20', endDate: '2027-01-03', ratePerNight: 10_000 },
-  ];
+function auditFromBooking(booking: Booking): AuditRecord {
+  const photos = booking.preHandoverPhotos ?? [];
+  const mapped = photos.map((photo) => ({
+    photoId: photo.id,
+    label: photo.label,
+    timestamp: formatAuditDisplayTime(photo.capturedAt),
+    signedUrl: photo.signedUrl,
+  }));
+
+  if (photos.length === 0) {
+    return { status: 'WAITING' };
+  }
+
+  if (booking.preHandoverVerifiedAt) {
+    return {
+      status: 'VERIFIED',
+      verifiedAt: formatAuditDisplayTime(booking.preHandoverVerifiedAt),
+      photos: mapped,
+    };
+  }
+
+  return { status: 'IN_PROGRESS', photos: mapped };
+}
+
+function defaultPropSettings(_propId: string): PropSettings {
   return {
     cleanBufferEnabled: true,
     cleanBufferDays: 1,
-    defaultRate: propId === 'prop-nawala' ? 8_500 : propId === 'prop-kandy' ? 6_200 : 0,
+    defaultRate: 0,
     airbnbCommissionPct: 3,
     bookingCommissionPct: 15,
-    seasonalRates: propId === 'prop-nawala' ? nawalaRates : propId === 'prop-kandy' ? kandyRates : [],
+    seasonalRates: [],
+    collectInquiryPhone: '',
+    damagePresets: [],
+    handoverRooms: [],
   };
 }
 
@@ -313,6 +340,7 @@ function settingsFromRecord(raw: Record<string, unknown> | undefined, propId: st
   const seasonal = Array.isArray(raw.seasonalRates)
     ? (raw.seasonalRates as SeasonalRate[])
     : base.seasonalRates;
+  const stayOps = parseShalomStayOpsSettings(raw);
 
   return {
     cleanBufferEnabled:
@@ -325,26 +353,15 @@ function settingsFromRecord(raw: Record<string, unknown> | undefined, propId: st
     bookingCommissionPct:
       typeof raw.bookingCommissionPct === 'number' ? raw.bookingCommissionPct : base.bookingCommissionPct,
     seasonalRates: seasonal,
+    collectInquiryPhone: stayOps.collectInquiryPhone,
+    damagePresets: stayOps.damagePresets,
+    handoverRooms: stayOps.handoverRooms,
   };
 }
 
-/**
- * Keyed by booking ID. Bookings not listed here show no audit section.
- * BLOCKED / AUTO_BLOCK bookings are intentionally excluded.
- */
-const BOOKING_AUDIT: Partial<Record<string, AuditRecord>> = {
-  // Shalom Nawala — 3BR (5 rooms)
-  N001: { status: 'VERIFIED', verifiedAt: '01 May 2026 · 08:45 AM', photos: makePhotos('2026-05-01', 5) },
-  N002: { status: 'VERIFIED', verifiedAt: '06 May 2026 · 08:45 AM', photos: makePhotos('2026-05-06', 5) },
-  N003: { status: 'VERIFIED', verifiedAt: '12 May 2026 · 08:45 AM', photos: makePhotos('2026-05-12', 5) },
-  N004: { status: 'WAITING' },
-  N006: { status: 'WAITING' },
-  // Kandy Apartment — 2BR (4 rooms)
-  K001: { status: 'VERIFIED', verifiedAt: '03 May 2026 · 08:45 AM', photos: makePhotos('2026-05-03', 4) },
-  K002: { status: 'VERIFIED', verifiedAt: '09 May 2026 · 08:45 AM', photos: makePhotos('2026-05-09', 4) },
-  K004: { status: 'WAITING' },
-  K005: { status: 'WAITING' },
-};
+function handoverRoomsEqual(a: ShalomHandoverRoom[], b: ShalomHandoverRoom[]): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
 
@@ -359,6 +376,106 @@ function OtaToast({ msg, onDone }: { msg: string; onDone: () => void }) {
         <CheckCircle2 className="h-4 w-4" />
         {msg}
       </div>
+    </div>
+  );
+}
+
+// ─── Caretaker assignment (MD desk) ───────────────────────────────────────────
+
+function CaretakerAssignPanel({
+  property,
+  saving,
+  assignError,
+  onAssign,
+}: {
+  property: Property;
+  saving: boolean;
+  assignError?: string | null;
+  onAssign: (epf: string | null) => void | Promise<void>;
+}) {
+  const [epfDraft, setEpfDraft] = useState(property.caretakerEpf ?? '');
+
+  useEffect(() => {
+    setEpfDraft(property.caretakerEpf ?? '');
+  }, [property.id, property.caretakerEpf]);
+
+  const trimmed = epfDraft.trim();
+  const assigned = property.caretakerEpf;
+  const dirty = trimmed !== (assigned ?? '');
+  const canSave = dirty && trimmed.length > 0;
+
+  const handleSave = () => {
+    if (!canSave || saving) return;
+    void onAssign(trimmed);
+  };
+
+  const handleClear = () => {
+    if (!assigned || saving) return;
+    setEpfDraft('');
+    void onAssign(null);
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-emerald-100/90 bg-emerald-50/60 px-4 py-3">
+        <div className="flex items-center gap-2 text-emerald-900">
+          <User className="h-4 w-4 shrink-0" />
+          <span className="text-[10px] font-black uppercase tracking-widest">Caretaker</span>
+        </div>
+        <input
+          type="text"
+          value={epfDraft}
+          disabled={saving}
+          onChange={(e) =>
+            setEpfDraft(e.target.value.toUpperCase().slice(0, SHALOM_FRONT_EPF_MAX_LENGTH))
+          }
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleSave();
+          }}
+          placeholder="EPF number"
+          maxLength={SHALOM_FRONT_EPF_MAX_LENGTH}
+          className="w-36 rounded-xl border border-emerald-200 bg-white px-3 py-2 font-mono text-sm font-semibold text-slate-800 shadow-sm placeholder:font-sans placeholder:font-medium placeholder:text-slate-400 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-60"
+        />
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={!canSave || saving}
+          className="rounded-xl bg-emerald-700 px-3 py-2 text-xs font-bold uppercase tracking-wider text-white shadow-sm transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Assign
+        </button>
+        {assigned ? (
+          <button
+            type="button"
+            onClick={handleClear}
+            disabled={saving}
+            className="rounded-xl border border-emerald-200 bg-white px-3 py-2 text-xs font-bold uppercase tracking-wider text-emerald-800 shadow-sm transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Clear
+          </button>
+        ) : null}
+        {property.caretakerEpf ? (
+          <p className="text-xs font-semibold text-emerald-900">
+            <span className="font-black">{property.caretakerName ?? 'Caretaker'}</span>
+            <span className="mx-1.5 text-emerald-600">·</span>
+            <span className="font-mono">{property.caretakerEpf}</span>
+          </p>
+        ) : (
+          <p className="text-xs font-semibold text-slate-500">
+            Enter any active MNR EPF — they will see this property on the front portal calendar.
+          </p>
+        )}
+        {saving ? (
+          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+            Saving…
+          </span>
+        ) : null}
+      </div>
+      {assignError ? (
+        <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-900">
+          {assignError}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -393,8 +510,8 @@ function PropertySelector({
           className="flex items-center gap-2.5 rounded-2xl border border-white/70 bg-white/55 px-4 py-2 text-sm font-bold text-slate-800 shadow-sm backdrop-blur-xl hover:bg-white/70 transition-all"
         >
           <Building2 className="h-4 w-4 text-slate-500" />
-          <span>{selected.name}</span>
-          <span className="text-[10px] font-semibold text-slate-400">{selected.location}</span>
+          <span className="uppercase">{selected.name}</span>
+          <span className="text-[10px] font-semibold uppercase text-slate-400">{selected.location}</span>
           <ChevronDown className={`h-3.5 w-3.5 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
         </button>
 
@@ -409,14 +526,21 @@ function PropertySelector({
                 const active = p.id === selected.id;
                 return (
                   <button key={p.id} type="button" onClick={() => { onSelect(p); setOpen(false); }}
-                    className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors ${active ? 'bg-emerald-50/80' : 'hover:bg-slate-50/80'}`}
+                    className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors ${active ? 'bg-[var(--cvs-accent-soft)]/80' : 'hover:bg-slate-50/80'}`}
                   >
-                    <div className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl border text-[10px] font-black ${active ? 'border-emerald-200 bg-emerald-100/80 text-emerald-800' : 'border-slate-200 bg-slate-100/80 text-slate-600'}`}>
+                    <div className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl border text-[10px] font-black ${active ? 'border-[color:var(--cvs-accent-muted)] bg-[var(--cvs-accent-soft)] text-[color:var(--cvs-accent)]' : 'border-slate-200 bg-slate-100/80 text-slate-600'}`}>
                       {p.bedrooms}BR
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className={`text-sm font-bold ${active ? 'text-emerald-900' : 'text-slate-800'}`}>{p.name}</p>
-                      <p className="text-[10px] text-slate-500">{p.location}</p>
+                      <p className={`text-sm font-bold uppercase ${active ? 'text-[color:var(--cvs-accent)]' : 'text-slate-800'}`}>{p.name}</p>
+                      <p className="text-[10px] uppercase text-slate-500">{p.location}</p>
+                      {p.caretakerEpf ? (
+                        <p className="mt-0.5 text-[9px] font-semibold text-emerald-700">
+                          {p.caretakerName ?? 'Caretaker'} · {p.caretakerEpf}
+                        </p>
+                      ) : (
+                        <p className="mt-0.5 text-[9px] font-semibold text-slate-400">No caretaker</p>
+                      )}
                     </div>
                     <div className="flex gap-1">
                       {p.otaChannels.map((ch) => {
@@ -424,7 +548,7 @@ function PropertySelector({
                         return <cm.icon key={ch} className={`h-3.5 w-3.5 ${cm.text}`} />;
                       })}
                     </div>
-                    {active && <Check className="h-4 w-4 text-emerald-600" />}
+                    {active && <Check className="h-4 w-4 text-[color:var(--cvs-accent)]" />}
                   </button>
                 );
               })}
@@ -437,7 +561,7 @@ function PropertySelector({
       <button
         type="button"
         onClick={onAdd}
-        className="flex items-center gap-1.5 rounded-2xl border border-dashed border-slate-300/80 bg-white/40 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-white/60 hover:border-emerald-300 hover:text-emerald-800 transition-all"
+        className="flex items-center gap-1.5 rounded-2xl border border-dashed border-slate-300/80 bg-white/40 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-white/60 hover:border-[color:var(--cvs-accent-muted)] hover:text-[color:var(--cvs-accent)] transition-all"
       >
         <Plus className="h-3.5 w-3.5" />
         Add Property (OTA Sync)
@@ -447,7 +571,7 @@ function PropertySelector({
       <button
         type="button"
         onClick={onOpenSettings}
-        className="flex items-center gap-1.5 rounded-2xl border border-slate-200/80 bg-white/55 px-3 py-2 text-xs font-bold text-slate-700 shadow-sm backdrop-blur-xl hover:bg-white/75 hover:border-emerald-300 hover:text-emerald-800 transition-all"
+        className="flex items-center gap-1.5 rounded-2xl border border-slate-200/80 bg-white/55 px-3 py-2 text-xs font-bold text-slate-700 shadow-sm backdrop-blur-xl hover:bg-white/75 hover:border-[color:var(--cvs-accent-muted)] hover:text-[color:var(--cvs-accent)] transition-all"
       >
         <Settings2 className="h-3.5 w-3.5" />
         Property Settings
@@ -583,7 +707,7 @@ function AddPropertyModal({
 
           <div className="space-y-4">
             <ExecutiveGlassCard className="p-4 space-y-3">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-indigo-800">Property Details</p>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--cvs-accent)]">Property Details</p>
               <div className="grid grid-cols-2 gap-3">
                 <div className="col-span-2">
                   <label className={labelCls}>Property Name</label>
@@ -666,7 +790,7 @@ function AddPropertyModal({
                 title={!canSubmit ? 'Enter a property name to continue' : undefined}
                 className={`flex-[2] rounded-xl py-3 text-sm font-bold uppercase tracking-widest text-white shadow-lg transition-all ${
                   canSubmit
-                    ? 'bg-emerald-600 shadow-emerald-600/25 hover:bg-emerald-500'
+                    ? 'bg-[color:var(--cvs-accent)] shadow-[color:var(--cvs-glow)] hover:bg-[color:var(--cvs-accent-hover)]'
                     : 'cursor-not-allowed bg-slate-300 shadow-none'
                 }`}
               >
@@ -703,6 +827,12 @@ function PropertyConfigModal({
   const [airbnbIcalUrl, setAirbnbIcalUrl] = useState(property.airbnbIcalUrl);
   const [bookingIcalUrl, setBookingIcalUrl] = useState(property.bookingIcalUrl);
   const [saving, setSaving] = useState(false);
+  const [exportUrlCopied, setExportUrlCopied] = useState(false);
+
+  const pearzenIcalExportUrl = useMemo(
+    () => buildShalomIcalExportUrl(property.id),
+    [property.id],
+  );
 
   useEffect(() => {
     if (open) {
@@ -710,6 +840,7 @@ function PropertyConfigModal({
       setAirbnbIcalUrl(property.airbnbIcalUrl);
       setBookingIcalUrl(property.bookingIcalUrl);
       setSaving(false);
+      setExportUrlCopied(false);
     }
   }, [open, settings, property.airbnbIcalUrl, property.bookingIcalUrl]);
 
@@ -735,6 +866,16 @@ function PropertyConfigModal({
       ...prev,
       seasonalRates: prev.seasonalRates.map((r) => (r.id === id ? { ...r, [field]: value } : r)),
     }));
+
+  const handleCopyExportUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(pearzenIcalExportUrl);
+      setExportUrlCopied(true);
+      window.setTimeout(() => setExportUrlCopied(false), 2000);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
 
   return (
     <div
@@ -794,15 +935,49 @@ function PropertyConfigModal({
                   />
                 </div>
               </div>
+
+              <div className="mt-5 border-t border-slate-200/80 pt-4">
+                <p className={labelCls}>Pearzen iCal export URL</p>
+                <p className="mb-2 text-[9px] leading-relaxed text-slate-500">
+                  Paste this into Airbnb or Booking.com as the import calendar link so OTAs see direct
+                  bookings and blocked dates from Pearzen.
+                </p>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <input
+                    type="url"
+                    readOnly
+                    value={pearzenIcalExportUrl}
+                    className={`${inputCls} font-mono text-xs text-slate-700`}
+                    aria-label="Pearzen iCal export URL"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyExportUrl()}
+                    className="inline-flex min-h-[42px] flex-shrink-0 items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 text-xs font-bold text-emerald-800 transition-colors hover:bg-emerald-100"
+                  >
+                    {exportUrlCopied ? (
+                      <>
+                        <Check className="h-3.5 w-3.5" />
+                        Copied
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3.5 w-3.5" />
+                        Copy URL
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
             </ExecutiveGlassCard>
 
             {/* ── Dynamic Rate Engine ── */}
             <ExecutiveGlassCard className="p-5">
               <div className="mb-4 flex items-center gap-2">
-                <div className="flex h-7 w-7 items-center justify-center rounded-xl border border-indigo-200/80 bg-indigo-50/80">
-                  <TrendingUp className="h-3.5 w-3.5 text-indigo-600" />
+                <div className="flex h-7 w-7 items-center justify-center rounded-xl border border-[color:var(--cvs-accent-muted)] bg-[var(--cvs-accent-soft)]">
+                  <TrendingUp className="h-3.5 w-3.5 text-[color:var(--cvs-accent)]" />
                 </div>
-                <p className="text-[10px] font-black uppercase tracking-widest text-indigo-800">
+                <p className="text-[10px] font-black uppercase tracking-widest text-[color:var(--cvs-accent)]">
                   Dynamic Rate Engine
                 </p>
               </div>
@@ -836,7 +1011,7 @@ function PropertyConfigModal({
                   <button
                     type="button"
                     onClick={addRate}
-                    className="flex items-center gap-1 rounded-xl border border-indigo-200/80 bg-indigo-50/80 px-3 py-1.5 text-[10px] font-bold text-indigo-700 hover:bg-indigo-100/80 transition-all"
+                    className="flex items-center gap-1 rounded-xl border border-[color:var(--cvs-accent-muted)] bg-[var(--cvs-accent-soft)] px-3 py-1.5 text-[10px] font-bold text-[color:var(--cvs-accent)] hover:bg-[var(--cvs-accent-soft)] transition-all"
                   >
                     <Plus className="h-3 w-3" />
                     Add Seasonal Rate
@@ -867,19 +1042,19 @@ function PropertyConfigModal({
                           placeholder="e.g. December Peak"
                           value={r.name}
                           onChange={(e) => updateRate(r.id, 'name', e.target.value)}
-                          className="rounded-lg border border-slate-200 bg-white/80 px-2 py-1.5 text-xs font-semibold text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400/40"
+                          className={`rounded-lg border border-slate-200 bg-white/80 px-2 py-1.5 text-xs font-semibold text-slate-900 placeholder:text-slate-400 focus:outline-none ${CVS_BRAND_CLASSES.focusRing}`}
                         />
                         <input
                           type="date"
                           value={r.startDate}
                           onChange={(e) => updateRate(r.id, 'startDate', e.target.value)}
-                          className="rounded-lg border border-slate-200 bg-white/80 px-2 py-1.5 text-xs font-semibold text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-400/40"
+                          className={`rounded-lg border border-slate-200 bg-white/80 px-2 py-1.5 text-xs font-semibold text-slate-700 focus:outline-none ${CVS_BRAND_CLASSES.focusRing}`}
                         />
                         <input
                           type="date"
                           value={r.endDate}
                           onChange={(e) => updateRate(r.id, 'endDate', e.target.value)}
-                          className="rounded-lg border border-slate-200 bg-white/80 px-2 py-1.5 text-xs font-semibold text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-400/40"
+                          className={`rounded-lg border border-slate-200 bg-white/80 px-2 py-1.5 text-xs font-semibold text-slate-700 focus:outline-none ${CVS_BRAND_CLASSES.focusRing}`}
                         />
                         <div className="relative">
                           <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[9px] font-mono text-slate-400">
@@ -890,7 +1065,7 @@ function PropertyConfigModal({
                             min={0}
                             value={r.ratePerNight}
                             onChange={(e) => updateRate(r.id, 'ratePerNight', parseInt(e.target.value) || 0)}
-                            className="w-28 rounded-lg border border-slate-200 bg-white/80 pl-8 pr-2 py-1.5 text-xs font-black tabular-nums text-slate-900 focus:outline-none focus:ring-1 focus:ring-indigo-400/40"
+                            className={`w-28 rounded-lg border border-slate-200 bg-white/80 pl-8 pr-2 py-1.5 text-xs font-black tabular-nums text-slate-900 focus:outline-none ${CVS_BRAND_CLASSES.focusRing}`}
                           />
                         </div>
                         <button
@@ -940,7 +1115,7 @@ function PropertyConfigModal({
                   }
                 })();
               }}
-              className="flex-[2] rounded-xl bg-emerald-600 py-3 text-sm font-bold uppercase tracking-widest text-white shadow-lg shadow-emerald-600/25 hover:bg-emerald-500 transition-all disabled:opacity-60"
+              className="flex-[2] rounded-xl bg-[color:var(--cvs-accent)] py-3 text-sm font-bold uppercase tracking-widest text-white shadow-lg shadow-[color:var(--cvs-glow)] hover:bg-[color:var(--cvs-accent-hover)] transition-all disabled:opacity-60"
             >
               {saving ? 'Saving…' : 'Save Configuration'}
             </button>
@@ -952,6 +1127,191 @@ function PropertyConfigModal({
 }
 
 // ─── Month Selector Bar ───────────────────────────────────────────────────────
+
+function CollectInquiryPhonePanel({
+  phone,
+  savedPhone,
+  saving,
+  error,
+  onChange,
+  onSave,
+}: {
+  phone: string;
+  savedPhone: string;
+  saving: boolean;
+  error: string | null;
+  onChange: (value: string) => void;
+  onSave: () => void;
+}) {
+  const unchanged = phone.trim() === savedPhone.trim();
+
+  return (
+    <div className="border-b border-slate-200/80 bg-amber-50/40 px-5 py-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <Phone className="h-4 w-4 text-amber-800" />
+            <label
+              htmlFor="shalom-collect-inquiry-phone"
+              className="text-xs font-black uppercase tracking-widest text-slate-800"
+            >
+              Call for collect amount
+            </label>
+          </div>
+          <p className="mt-1 text-[11px] leading-relaxed text-slate-600">
+            Caretakers tap <span className="font-bold text-slate-800">Call MD</span> when no collect amount is set.
+            Leave blank to clear; caretakers still reach the platform default until you save a number.
+          </p>
+          <input
+            id="shalom-collect-inquiry-phone"
+            type="tel"
+            inputMode="tel"
+            autoComplete="tel"
+            value={phone}
+            onChange={(e) => onChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') onSave();
+            }}
+            placeholder={`e.g. ${SHALOM_DEFAULT_COLLECT_INQUIRY_PHONE}`}
+            className="mt-3 w-full max-w-md rounded-xl border border-amber-200/80 bg-white px-4 py-3 text-base font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-400/50"
+          />
+          {error ? <p className="mt-2 text-xs font-semibold text-rose-700">{error}</p> : null}
+        </div>
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={saving || unchanged}
+          className="shrink-0 rounded-xl border border-amber-300/80 bg-amber-600 px-5 py-3 text-sm font-bold uppercase tracking-wider text-white shadow-md hover:bg-amber-700 disabled:opacity-60"
+        >
+          {saving ? 'Saving…' : 'Save phone'}
+        </button>
+      </div>
+      {!savedPhone.trim() && unchanged ? (
+        <p className="mt-2 text-[10px] text-slate-500">
+          No number saved. Caretakers call the platform default ({SHALOM_DEFAULT_COLLECT_INQUIRY_PHONE}).
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function HandoverRoomsPanel({
+  rooms,
+  savedRooms,
+  open,
+  saving,
+  error,
+  onToggle,
+  onChange,
+  onAdd,
+  onAddTemplates,
+  onRemove,
+  onSave,
+}: {
+  rooms: ShalomHandoverRoom[];
+  savedRooms: ShalomHandoverRoom[];
+  open: boolean;
+  saving: boolean;
+  error: string | null;
+  onToggle: () => void;
+  onChange: (id: string, label: string) => void;
+  onAdd: () => void;
+  onAddTemplates: () => void;
+  onRemove: (id: string) => void;
+  onSave: () => void;
+}) {
+  const unchanged = handoverRoomsEqual(rooms, savedRooms);
+  const inputCls =
+    'w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-500/40';
+
+  return (
+    <div className="border-b border-slate-200/80 bg-white/50 px-5 py-3">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center justify-between gap-3 text-left"
+      >
+        <div>
+          <p className="text-xs font-black uppercase tracking-widest text-slate-800">
+            Pre-handover photo rooms
+          </p>
+          <p className="mt-0.5 text-[11px] text-slate-600">
+            Caretakers photograph each room live before guest arrival. Photos auto-delete after{' '}
+            {SHALOM_HANDOVER_PHOTO_RETENTION_DAYS} days.
+          </p>
+        </div>
+        <ChevronDown
+          className={`h-4 w-4 shrink-0 text-slate-500 transition-transform ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+
+      {open ? (
+        <div className="mt-4 space-y-3">
+          {rooms.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-600">
+              No rooms yet. Add names below or load the starter list (Bedroom 1–3, Kitchen, Washroom
+              1–3, Living Room).
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {rooms.map((room) => (
+                <div
+                  key={room.id}
+                  className="grid grid-cols-1 gap-2 rounded-xl border border-slate-200/80 bg-white p-3 sm:grid-cols-[1fr_40px] sm:items-center sm:border-0 sm:bg-transparent sm:p-0"
+                >
+                  <input
+                    type="text"
+                    value={room.label}
+                    onChange={(e) => onChange(room.id, e.target.value)}
+                    placeholder="e.g. Bedroom 1"
+                    className={inputCls}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => onRemove(room.id)}
+                    className="flex h-10 w-10 items-center justify-center rounded-lg border border-rose-200 text-rose-700 hover:bg-rose-50 sm:mx-auto"
+                    aria-label={`Remove ${room.label || 'room'}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {error ? <p className="text-xs font-semibold text-rose-700">{error}</p> : null}
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={onAdd}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-700 hover:bg-slate-50"
+            >
+              + Add room
+            </button>
+            {rooms.length === 0 ? (
+              <button
+                type="button"
+                onClick={onAddTemplates}
+                className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-2 text-xs font-bold uppercase tracking-wider text-sky-800 hover:bg-sky-100"
+              >
+                Load starter rooms
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={onSave}
+              disabled={saving || unchanged}
+              className="rounded-xl border border-sky-300/80 bg-sky-600 px-4 py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-sky-700 disabled:opacity-60"
+            >
+              {saving ? 'Saving…' : 'Save rooms'}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function MonthSelectorBar({
   year, month,
@@ -986,7 +1346,7 @@ function MonthSelectorBar({
               onClick={() => onSelect(mNum)}
               className={`rounded-xl py-1.5 text-xs font-bold transition-all ${
                 active
-                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
+                  ? `${CVS_BRAND_CLASSES.mobileTabActive} border-transparent`
                   : 'text-slate-600 hover:bg-white/70'
               }`}
             >
@@ -1001,45 +1361,265 @@ function MonthSelectorBar({
 
 // ─── Booking Detail Modal ─────────────────────────────────────────────────────
 
+function CaretakerStayOpsSummary({
+  booking,
+  onSaveCollect,
+  savingCollect = false,
+}: {
+  booking: Booking;
+  onSaveCollect?: (rawValue: string) => void;
+  savingCollect?: boolean;
+}) {
+  const [guestIdUrl, setGuestIdUrl] = useState<string | null>(null);
+  const [loadingGuestId, setLoadingGuestId] = useState(false);
+  const [collectDraft, setCollectDraft] = useState('');
+
+  useEffect(() => {
+    setCollectDraft(
+      booking.caretakerCollectLkr != null && booking.caretakerCollectLkr > 0
+        ? String(booking.caretakerCollectLkr)
+        : '',
+    );
+  }, [booking.id, booking.caretakerCollectLkr]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!booking.guestIdDocumentUrl) {
+      setGuestIdUrl(null);
+      return;
+    }
+
+    setLoadingGuestId(true);
+    void getShalomGuestIdSignedUrlAction(booking.id).then((result) => {
+      if (cancelled) return;
+      setLoadingGuestId(false);
+      if (result.success && result.signedUrl) {
+        setGuestIdUrl(result.signedUrl);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [booking.id, booking.guestIdDocumentUrl]);
+
+  const damages = booking.damages ?? [];
+  const damagesTotal = stayOpsTotalDamages(damages);
+  const collectAmount = parseCaretakerCollectLkr(booking.caretakerCollectLkr);
+  const rowLabelCls = 'text-[10px] font-bold uppercase tracking-widest text-slate-500';
+  const rowValueCls = 'mt-1 text-sm font-semibold text-slate-900';
+
+  const parsedDraft =
+    collectDraft.trim() === '' ? null : Math.max(0, parseInt(collectDraft, 10) || 0);
+  const nextCollect = parsedDraft === 0 ? null : parsedDraft;
+  const currentCollect = booking.caretakerCollectLkr ?? null;
+  const collectUnchanged =
+    nextCollect === currentCollect || (nextCollect === 0 && currentCollect == null);
+
+  const handleSaveCollect = () => {
+    if (!onSaveCollect || collectUnchanged) return;
+    onSaveCollect(collectDraft);
+  };
+
+  return (
+    <div className="mt-5 rounded-2xl border border-slate-200/80 bg-white/70 p-4">
+      <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">
+        Caretaker stay ops
+      </p>
+      <p className="mt-1 text-[11px] text-slate-500">
+        Mirrors the caretaker view. Set collect amount below; other fields are read-only.
+      </p>
+
+      <div className="mt-4 space-y-4">
+        <div>
+          <p className={rowLabelCls}>Collect amount</p>
+          {hasCaretakerCollectAmount(booking) && collectAmount != null ? (
+            <p className={`${rowValueCls} text-emerald-800`}>
+              Current: {formatShalomCollectLkr(collectAmount)}
+            </p>
+          ) : (
+            <p className={`${rowValueCls} text-slate-600`}>Not set — caretaker sees “Call MD”</p>
+          )}
+          {onSaveCollect ? (
+            <div className="mt-3 space-y-2">
+              <div className="relative">
+                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-mono text-slate-400">
+                  LKR
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  value={collectDraft}
+                  onChange={(e) => setCollectDraft(e.target.value)}
+                  placeholder="Amount caretaker collects"
+                  disabled={savingCollect}
+                  className="w-full rounded-xl border border-slate-200 bg-white/95 py-2.5 pl-10 pr-3 text-sm font-bold tabular-nums text-slate-900 placeholder:font-normal placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500/40 disabled:opacity-60"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={handleSaveCollect}
+                disabled={savingCollect || collectUnchanged}
+                className="w-full rounded-xl bg-amber-600 py-2.5 text-sm font-black uppercase tracking-widest text-white shadow-md shadow-amber-600/25 transition-all hover:bg-amber-500 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+              >
+                {savingCollect ? 'Saving…' : 'Save collect amount'}
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        <div>
+          <p className={rowLabelCls}>Damages</p>
+          {damages.length > 0 ? (
+            <ul className="mt-2 space-y-1.5">
+              {damages.map((damage, index) => (
+                <li
+                  key={`${damage.id}-${damage.recordedAt}-${index}`}
+                  className="flex items-center justify-between gap-2 rounded-lg border border-slate-200/80 bg-slate-50/80 px-3 py-2 text-sm"
+                >
+                  <span className="font-semibold text-slate-800">{damage.label}</span>
+                  <span className="font-bold text-slate-900">
+                    {formatShalomCollectLkr(damage.amountLkr)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className={`${rowValueCls} text-slate-600`}>None recorded</p>
+          )}
+          {damagesTotal > 0 ? (
+            <p className="mt-2 text-sm font-bold text-slate-900">
+              Damages total: {formatShalomCollectLkr(damagesTotal)}
+            </p>
+          ) : null}
+        </div>
+
+        <div>
+          <p className={rowLabelCls}>Guest ID</p>
+          {booking.guestIdDocumentUrl ? (
+            loadingGuestId ? (
+              <p className={`${rowValueCls} text-slate-600`}>Loading photo…</p>
+            ) : guestIdUrl ? (
+              <a
+                href={guestIdUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-2 inline-block"
+              >
+                <img
+                  src={guestIdUrl}
+                  alt="Guest NIC or passport"
+                  className="max-h-36 rounded-xl border border-slate-200 object-contain bg-slate-50"
+                />
+                <p className="mt-1 text-xs font-semibold text-emerald-700">Open full size</p>
+              </a>
+            ) : (
+              <p className={`${rowValueCls} text-slate-600`}>Uploaded — preview unavailable</p>
+            )
+          ) : (
+            <p className={`${rowValueCls} text-slate-600`}>Not uploaded</p>
+          )}
+        </div>
+
+        <div>
+          <p className={rowLabelCls}>Invoice</p>
+          {booking.invoiceReference ? (
+            <div className="mt-1 space-y-1">
+              <p className="text-sm font-black text-slate-900">{booking.invoiceReference}</p>
+              {booking.invoiceSentAt ? (
+                <p className="text-xs font-semibold text-emerald-700">
+                  Sent {new Date(booking.invoiceSentAt).toLocaleString('en-GB')}
+                  {booking.invoiceEmail ? ` to ${booking.invoiceEmail}` : ''}
+                </p>
+              ) : (
+                <p className="text-xs text-slate-600">Generated — not emailed yet</p>
+              )}
+              {booking.invoiceEmail && !booking.invoiceSentAt ? (
+                <p className="text-xs text-slate-600">Guest email: {booking.invoiceEmail}</p>
+              ) : null}
+            </div>
+          ) : (
+            <p className={`${rowValueCls} text-slate-600`}>Not generated</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function BookingModal({
   booking,
+  handoverRoomCount,
   onClose,
   onEnrich,
+  onSaveCollect,
+  onDelete,
+  savingCollect = false,
+  savingEnrich = false,
+  deleting = false,
 }: {
   booking: Booking | null;
+  handoverRoomCount: number;
   onClose: () => void;
-  onEnrich: (bookingId: string, data: { name: string; contact: string; payout: number }) => void;
+  onEnrich: (
+    bookingId: string,
+    data: {
+      name: string;
+      contact: string;
+      payout: number;
+      caretakerCollectLkr?: number | null;
+    },
+  ) => void | Promise<void>;
+  onSaveCollect?: (rawValue: string) => void;
+  onDelete?: () => void | Promise<void>;
+  savingCollect?: boolean;
+  savingEnrich?: boolean;
+  deleting?: boolean;
 }) {
   const [photoViewOpen, setPhotoViewOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [enrichName,    setEnrichName]    = useState('');
   const [enrichContact, setEnrichContact] = useState('');
   const [enrichPayout,  setEnrichPayout]  = useState('');
+  const [enrichCollect, setEnrichCollect] = useState('');
 
   useEffect(() => {
     setPhotoViewOpen(false);
+    setConfirmDelete(false);
     setEnrichName('');
     setEnrichContact('');
     setEnrichPayout('');
+    setEnrichCollect('');
   }, [booking?.id]);
 
   if (!booking) return null;
 
   const cm             = CHANNEL_META[normalizeChannel(booking.channel)];
   const isGuest        = !isAvailabilityBlock(booking);
-  const audit          = isGuest ? BOOKING_AUDIT[booking.id] : undefined;
+  const audit          = isGuest ? auditFromBooking(booking) : undefined;
   const isVerified     = audit?.status === 'VERIFIED';
+  const isInProgress   = audit?.status === 'IN_PROGRESS';
   const isWaiting      = audit?.status === 'WAITING';
+  const hasAuditPhotos = Boolean(audit?.photos && audit.photos.length > 0);
   const needsEnrichment = isGuest && booking.totalRevenue === 0 && !booking.enriched;
   const isEnriched     = !!booking.enriched;
+  const canDelete      = isManualDeletableBooking(booking);
+  const deleteLabel    = isAvailabilityBlock(booking) ? 'Remove block' : 'Delete booking';
 
   const canSaveEnrich = enrichName.trim().length > 0 && Number(enrichPayout) > 0;
 
   const handleEnrichSave = () => {
-    if (!canSaveEnrich) return;
-    onEnrich(booking.id, {
+    if (!canSaveEnrich || savingEnrich) return;
+    const collectRaw = enrichCollect.trim();
+    const caretakerCollectLkr =
+      collectRaw === ''
+        ? null
+        : Math.max(0, parseInt(collectRaw, 10) || 0) || null;
+    void onEnrich(booking.id, {
       name:    enrichName.trim(),
       contact: enrichContact.trim(),
       payout:  parseInt(enrichPayout) || 0,
+      caretakerCollectLkr: caretakerCollectLkr === 0 ? null : caretakerCollectLkr,
     });
   };
 
@@ -1164,17 +1744,34 @@ function BookingModal({
                       />
                     </div>
                   </div>
+                  <div>
+                    <label className={labelCls}>Caretaker collect (LKR)</label>
+                    <div className="relative">
+                      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-mono text-slate-400">LKR</span>
+                      <input
+                        type="number"
+                        min={0}
+                        value={enrichCollect}
+                        onChange={(e) => setEnrichCollect(e.target.value)}
+                        placeholder="Amount guest pays caretaker at check-in"
+                        className={`${inputCls} pl-10`}
+                      />
+                    </div>
+                    <p className="mt-1 text-[10px] text-amber-800">
+                      Shown on caretaker front office ① Collect — leave blank to set later.
+                    </p>
+                  </div>
                   <button
                     type="button"
                     onClick={handleEnrichSave}
-                    disabled={!canSaveEnrich}
+                    disabled={!canSaveEnrich || savingEnrich}
                     className={`w-full rounded-xl py-2.5 text-sm font-black uppercase tracking-widest text-white shadow-md transition-all ${
-                      canSaveEnrich
+                      canSaveEnrich && !savingEnrich
                         ? 'bg-amber-600 shadow-amber-600/25 hover:bg-amber-500'
                         : 'cursor-not-allowed bg-slate-300 shadow-none'
                     }`}
                   >
-                    Save &amp; Enrich Booking
+                    {savingEnrich ? 'Saving…' : 'Save & Enrich Booking'}
                   </button>
                 </div>
               )}
@@ -1219,6 +1816,14 @@ function BookingModal({
             </div>
           )}
 
+          {isGuest ? (
+            <CaretakerStayOpsSummary
+              booking={booking}
+              onSaveCollect={onSaveCollect}
+              savingCollect={savingCollect}
+            />
+          ) : null}
+
           {/* ── Caretaker Pre-Handover Audit ── */}
           {isGuest && audit && (
             <div className="mt-5">
@@ -1232,17 +1837,18 @@ function BookingModal({
                 </p>
               </div>
 
-              {/* ── 14-Day Auto-Purge badge ── */}
+              {/* ── 2-week auto-purge badge ── */}
               <div className="mb-3 flex items-start gap-2.5 rounded-xl border border-amber-200/70 bg-amber-50/70 px-3 py-2.5">
                 <span className="mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center">
                   <span className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
                 </span>
                 <div>
                   <p className="text-[9px] font-black uppercase tracking-wider text-amber-800">
-                    14-Day Photo Auto-Purge Active
+                    {SHALOM_HANDOVER_PHOTO_RETENTION_DAYS}-Day Photo Auto-Purge Active
                   </p>
                   <p className="mt-0.5 text-[9px] leading-relaxed text-amber-700">
-                    Condition photos are permanently deleted 14 days after check-in to optimise storage. The &apos;Verified&apos; compliance status remains permanently logged.
+                    Condition photos are permanently deleted {SHALOM_HANDOVER_PHOTO_RETENTION_DAYS} days
+                    after upload. The verified compliance timestamp stays on the booking record.
                   </p>
                 </div>
               </div>
@@ -1253,17 +1859,25 @@ function BookingModal({
                 <div className={`flex flex-1 flex-col gap-1 rounded-2xl border px-3 py-2.5 transition-colors ${
                   isWaiting
                     ? 'border-amber-300/70 bg-amber-50/80'
-                    : 'border-slate-200/50 bg-slate-50/50'
+                    : isInProgress
+                      ? 'border-sky-300/70 bg-sky-50/80'
+                      : 'border-slate-200/50 bg-slate-50/50'
                 }`}>
                   <div className="flex items-center gap-1.5">
                     {isVerified
                       ? <CheckCircle2 className="h-3.5 w-3.5 flex-shrink-0 text-slate-400" />
-                      : <span className="h-3.5 w-3.5 flex-shrink-0 animate-pulse rounded-full border-2 border-amber-400 bg-amber-100" />
+                      : isInProgress
+                        ? <span className="h-3.5 w-3.5 flex-shrink-0 animate-pulse rounded-full border-2 border-sky-400 bg-sky-100" />
+                        : <span className="h-3.5 w-3.5 flex-shrink-0 animate-pulse rounded-full border-2 border-amber-400 bg-amber-100" />
                     }
                     <p className={`text-[9px] font-black uppercase tracking-wider ${
-                      isWaiting ? 'text-amber-800' : 'text-slate-400'
+                      isWaiting ? 'text-amber-800' : isInProgress ? 'text-sky-800' : 'text-slate-400'
                     }`}>
-                      {isVerified ? 'Photos Uploaded' : 'Waiting for Caretaker Upload'}
+                      {isVerified
+                        ? 'Photos Uploaded'
+                        : isInProgress
+                          ? `${audit.photos?.length ?? 0} of ${handoverRoomCount} rooms`
+                          : 'Waiting for Caretaker Upload'}
                     </p>
                   </div>
                   <p className="pl-5 text-[9px] text-slate-400">
@@ -1300,7 +1914,7 @@ function BookingModal({
               </div>
 
               {/* ── View Condition Photos button ── */}
-              {isVerified && audit.photos && (
+              {hasAuditPhotos && audit.photos && (
                 <>
                   <button
                     type="button"
@@ -1322,11 +1936,23 @@ function BookingModal({
                           key={photo.photoId}
                           className="overflow-hidden rounded-2xl border border-slate-200/60 shadow-sm"
                         >
-                          {/* Simulated photo thumbnail */}
-                          <div className={`flex h-24 items-center justify-center ${photo.bgGradient}`}>
-                            <Camera className={`h-9 w-9 opacity-25 ${photo.iconColor}`} />
-                          </div>
-                          {/* Photo metadata */}
+                          {photo.signedUrl ? (
+                            <button
+                              type="button"
+                              onClick={() => window.open(photo.signedUrl!, '_blank', 'noopener,noreferrer')}
+                              className="block w-full"
+                            >
+                              <img
+                                src={photo.signedUrl}
+                                alt={`${photo.label} condition`}
+                                className="h-24 w-full cursor-zoom-in object-cover bg-slate-100"
+                              />
+                            </button>
+                          ) : (
+                            <div className="flex h-24 items-center justify-center bg-slate-100">
+                              <Camera className="h-9 w-9 text-slate-300" />
+                            </div>
+                          )}
                           <div className="bg-white/75 px-3 py-2">
                             <p className="text-[10px] font-black text-slate-800">{photo.label}</p>
                             <div className="mt-0.5 flex items-center gap-1">
@@ -1346,6 +1972,51 @@ function BookingModal({
               )}
             </div>
           )}
+
+          {canDelete && onDelete ? (
+            <div className="mt-5 border-t border-slate-200/80 pt-4">
+              {!confirmDelete ? (
+                <button
+                  type="button"
+                  onClick={() => setConfirmDelete(true)}
+                  disabled={deleting}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-rose-200 bg-rose-50/70 py-2.5 text-sm font-bold text-rose-700 transition-colors hover:border-rose-300 hover:bg-rose-100/80 disabled:opacity-60"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  {deleteLabel}
+                </button>
+              ) : (
+                <div className="rounded-2xl border border-rose-200/80 bg-rose-50/80 px-4 py-3">
+                  <p className="text-sm font-bold text-rose-900">
+                    {isAvailabilityBlock(booking)
+                      ? 'Remove this blocked period from the calendar?'
+                      : `Delete "${booking.guestName}" (${booking.checkIn} → ${booking.checkOut})?`}
+                  </p>
+                  <p className="mt-1 text-[11px] text-rose-800">
+                    This cannot be undone. OTA export calendars receive a cancellation when applicable.
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDelete(false)}
+                      disabled={deleting}
+                      className="flex-1 rounded-xl border border-slate-200 bg-white py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={deleting}
+                      onClick={() => void onDelete()}
+                      className="flex-1 rounded-xl bg-rose-600 py-2 text-sm font-bold text-white hover:bg-rose-700 disabled:opacity-60"
+                    >
+                      {deleting ? 'Removing…' : 'Confirm delete'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : null}
 
           <button
             type="button"
@@ -1469,7 +2140,7 @@ function BreakEvenCalculator({
         </div>
       </div>
 
-      <div className="mb-4 flex items-center gap-2 rounded-xl border border-indigo-200/70 bg-indigo-50/50 px-3 py-2 text-[10px] text-indigo-800">
+      <div className="mb-4 flex items-center gap-2 rounded-xl border border-[color:var(--cvs-accent-muted)]/70 bg-[var(--cvs-accent-soft)]/50 px-3 py-2 text-[10px] text-[color:var(--cvs-accent)]">
         <Building2 className="h-3 w-3 flex-shrink-0" />
         <span>
           Pricing for <strong>{property.name}</strong> — {property.location}. Saved per property for caretaker collection.
@@ -1498,15 +2169,15 @@ function BreakEvenCalculator({
         </div>
       </div>
 
-      <div className="mt-5 flex items-center gap-4 rounded-2xl border border-emerald-200/70 bg-gradient-to-br from-emerald-50/70 to-white/70 px-5 py-4 shadow-inner">
+      <div className="mt-5 flex items-center gap-4 rounded-2xl border border-rose-200/70 bg-gradient-to-br from-rose-50/70 to-white/70 px-5 py-4 shadow-inner">
         <div className="flex-1">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-800">Minimum Nightly Base Rate — {property.name}</p>
-          <p className="mt-1 text-3xl font-black tabular-nums text-emerald-900">{lkr(minRate)}</p>
-          <p className="mt-1 text-[10px] text-emerald-700">Break-even floor from overhead and occupancy target.</p>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-rose-800">Minimum nightly cost floor — {property.name}</p>
+          <p className="mt-1 text-3xl font-black tabular-nums text-rose-900">{lkrCost(minRate)}</p>
+          <p className="mt-1 text-[10px] text-rose-700">Break-even floor from overhead and occupancy target.</p>
         </div>
         <div className="hidden flex-shrink-0 sm:block">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-emerald-200/80 bg-white/70 shadow-sm">
-            <TrendingUp className="h-8 w-8 text-emerald-600" />
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-rose-200/80 bg-white/70 shadow-sm">
+            <TrendingDown className="h-8 w-8 text-rose-600" />
           </div>
         </div>
       </div>
@@ -1646,11 +2317,13 @@ function CalendarGrid({
   year,
   month,
   bookings,
+  caretakerLoginDates,
   onBookingClick,
 }: {
   year: number;
   month: number;
   bookings: Booking[];
+  caretakerLoginDates: Set<string>;
   onBookingClick: (b: Booking) => void;
 }) {
   const bookingForDay = useCallback((day: number) => {
@@ -1672,6 +2345,7 @@ function CalendarGrid({
 
   const today = new Date();
   const isCurrentMonth = today.getFullYear() === year && today.getMonth() + 1 === month;
+  const todayKey = shalomPortalLoginDateColombo(today);
 
   return (
     <div>
@@ -1690,6 +2364,13 @@ function CalendarGrid({
           const channel = booking ? normalizeChannel(booking.channel) : null;
           const cm = channel ? CHANNEL_META[channel] : null;
           const isBlockDay = Boolean(booking && isAvailabilityBlock(booking));
+          const hasReservation = Boolean(booking && !isBlockDay);
+          const loginDotStatus = resolveShalomLoginDotStatus(
+            key,
+            caretakerLoginDates,
+            todayKey,
+            { onlyOnBookingDays: true, hasBooking: hasReservation },
+          );
 
           return (
             <div
@@ -1698,11 +2379,15 @@ function CalendarGrid({
                 if (booking) onBookingClick(booking);
               }}
               title={
-                booking
-                  ? isBlockDay
-                    ? 'Blocked — synced from OTA'
-                    : 'Reserved — synced from OTA'
-                  : undefined
+                loginDotStatus
+                  ? loginDotStatus === 'green'
+                    ? 'Caretaker logged in'
+                    : 'No login'
+                  : booking
+                    ? isBlockDay
+                      ? 'Blocked — synced from OTA'
+                      : 'Reserved — synced from OTA'
+                    : undefined
               }
               className={[
                 'group relative flex h-14 flex-col items-center justify-start overflow-hidden rounded-xl border pt-1.5 transition-all select-none',
@@ -1712,6 +2397,7 @@ function CalendarGrid({
                 isToday ? 'ring-2 ring-emerald-500/60' : '',
               ].join(' ')}
             >
+              <ShalomLoginDayDot status={loginDotStatus} />
               <span className={['text-xs font-bold',
                 isToday ? 'text-emerald-700' : cm ? cm.text : 'text-slate-600',
               ].join(' ')}>
@@ -1755,10 +2441,13 @@ function recordToProperty(row: ShalomPropertyRecord): Property {
     otaChannels: row.otaChannels,
     airbnbIcalUrl: row.airbnbIcalUrl,
     bookingIcalUrl: row.bookingIcalUrl,
+    caretakerEpf: row.caretakerEpf,
+    caretakerName: row.caretakerName,
     bookings: row.bookings.map((b) => ({
       id: b.id,
       guestName: b.guestName,
       channel: normalizeChannel(b.channel),
+      sourceChannel: b.channel,
       checkIn: b.checkIn,
       checkOut: b.checkOut,
       nights: b.nights,
@@ -1770,6 +2459,13 @@ function recordToProperty(row: ShalomPropertyRecord): Property {
       enriched: b.enriched,
       enrichedContact: b.enrichedContact,
       caretakerCollectLkr: b.caretakerCollectLkr ?? null,
+      damages: b.damages ?? [],
+      guestIdDocumentUrl: b.guestIdDocumentUrl ?? null,
+      invoiceEmail: b.invoiceEmail ?? null,
+      invoiceSentAt: b.invoiceSentAt ?? null,
+      invoiceReference: b.invoiceReference ?? null,
+      preHandoverPhotos: b.preHandoverPhotos ?? [],
+      preHandoverVerifiedAt: b.preHandoverVerifiedAt ?? null,
     })),
   };
 }
@@ -1786,13 +2482,25 @@ export default function ShalomPage() {
   const [registerYear, setRegisterYear] = useState(now.getFullYear());
   const [registerMonth, setRegisterMonth] = useState(now.getMonth() + 1);
   const [savingCollectId, setSavingCollectId] = useState<string | null>(null);
+  const [savingEnrichId, setSavingEnrichId] = useState<string | null>(null);
+  const [deletingBookingId, setDeletingBookingId] = useState<string | null>(null);
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
   const [propSettings,    setPropSettings]    = useState<Record<string, PropSettings>>({});
   const [addPropOpen,     setAddPropOpen]     = useState(false);
   const [propSettingsOpen, setPropSettingsOpen] = useState(false);
   const [importingOta,   setImportingOta]    = useState(false);
   const [savingPricing, setSavingPricing] = useState(false);
+  const [caretakerLoginDates, setCaretakerLoginDates] = useState<Set<string>>(new Set());
+  const [savingCaretaker, setSavingCaretaker] = useState(false);
+  const [caretakerAssignError, setCaretakerAssignError] = useState<string | null>(null);
   const [toast, setToast]                    = useState<string | null>(null);
+  const [collectPhoneDraft, setCollectPhoneDraft] = useState('');
+  const [savingCollectPhone, setSavingCollectPhone] = useState(false);
+  const [collectPhoneError, setCollectPhoneError] = useState<string | null>(null);
+  const [handoverRoomsDraft, setHandoverRoomsDraft] = useState<ShalomHandoverRoom[]>([]);
+  const [handoverRoomsOpen, setHandoverRoomsOpen] = useState(false);
+  const [savingHandoverRooms, setSavingHandoverRooms] = useState(false);
+  const [handoverRoomsError, setHandoverRoomsError] = useState<string | null>(null);
   const syncedOtaPropsRef = useRef(new Set<string>());
 
   const applyPropertyRecords = useCallback((records: ShalomPropertyRecord[], focusId?: string) => {
@@ -1834,6 +2542,25 @@ export default function ShalomPage() {
       setLoadError(syncErrors.length > 0 ? syncErrors.join(' · ') : result.error ?? null);
     })();
   }, [applyPropertyRecords]);
+
+  useEffect(() => {
+    const epf = selectedProp?.caretakerEpf;
+    if (!epf) {
+      setCaretakerLoginDates(new Set());
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      const result = await fetchShalomCaretakerLoginDates(epf, viewYear, viewMonth);
+      if (cancelled) return;
+      setCaretakerLoginDates(buildShalomLoginDateSet(result.loginDates));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProp?.caretakerEpf, viewYear, viewMonth]);
 
   // Sync OTA calendars when switching to a property that has not been imported this session.
   useEffect(() => {
@@ -1883,6 +2610,131 @@ export default function ShalomPage() {
   const currentSettings: PropSettings = selectedProp
     ? (propSettings[selectedProp.id] ?? defaultPropSettings(selectedProp.id))
     : defaultPropSettings('');
+
+  useEffect(() => {
+    setCollectPhoneDraft(currentSettings.collectInquiryPhone);
+    setCollectPhoneError(null);
+    setHandoverRoomsDraft(currentSettings.handoverRooms);
+    setHandoverRoomsError(null);
+  }, [
+    selectedProp?.id,
+    currentSettings.collectInquiryPhone,
+    currentSettings.handoverRooms,
+  ]);
+
+  const handleSaveCollectInquiryPhone = useCallback(async () => {
+    if (!selectedProp) return;
+    setSavingCollectPhone(true);
+    setCollectPhoneError(null);
+    const result = await updateShalomStayOpsSettingsAction(selectedProp.id, {
+      collectInquiryPhone: collectPhoneDraft,
+    });
+    setSavingCollectPhone(false);
+    if (!result.success) {
+      setCollectPhoneError(result.error ?? 'Could not save phone.');
+      return;
+    }
+    const savedPhone = result.collectInquiryPhone ?? currentSettings.collectInquiryPhone;
+    setCollectPhoneDraft(savedPhone);
+    setPropSettings((prev) => ({
+      ...prev,
+      [selectedProp.id]: {
+        ...(prev[selectedProp.id] ?? defaultPropSettings(selectedProp.id)),
+        collectInquiryPhone: savedPhone,
+      },
+    }));
+    setToast('Saved caretaker call number.');
+  }, [collectPhoneDraft, currentSettings.collectInquiryPhone, selectedProp]);
+
+  const handleHandoverRoomChange = useCallback((id: string, label: string) => {
+    setHandoverRoomsDraft((prev) =>
+      prev.map((room) => (room.id === id ? { ...room, label } : room)),
+    );
+    setHandoverRoomsError(null);
+  }, []);
+
+  const handleAddHandoverRoom = useCallback(() => {
+    setHandoverRoomsDraft((prev) => [...prev, { id: `room-${Date.now()}`, label: '' }]);
+    setHandoverRoomsOpen(true);
+  }, []);
+
+  const handleAddHandoverRoomTemplates = useCallback(() => {
+    setHandoverRoomsDraft(SHALOM_DEFAULT_HANDOVER_ROOM_TEMPLATES.map((room) => ({ ...room })));
+    setHandoverRoomsOpen(true);
+    setHandoverRoomsError(null);
+  }, []);
+
+  const handleRemoveHandoverRoom = useCallback((id: string) => {
+    setHandoverRoomsDraft((prev) => prev.filter((room) => room.id !== id));
+    setHandoverRoomsError(null);
+  }, []);
+
+  const handleSaveHandoverRooms = useCallback(async () => {
+    if (!selectedProp) return;
+    setSavingHandoverRooms(true);
+    setHandoverRoomsError(null);
+    const result = await updateShalomStayOpsSettingsAction(selectedProp.id, {
+      handoverRooms: handoverRoomsDraft,
+    });
+    setSavingHandoverRooms(false);
+    if (!result.success) {
+      setHandoverRoomsError(result.error ?? 'Could not save rooms.');
+      return;
+    }
+    const saved = result.handoverRooms ?? handoverRoomsDraft;
+    setHandoverRoomsDraft(saved);
+    setPropSettings((prev) => ({
+      ...prev,
+      [selectedProp.id]: {
+        ...(prev[selectedProp.id] ?? defaultPropSettings(selectedProp.id)),
+        handoverRooms: saved,
+      },
+    }));
+    setToast('Saved pre-handover rooms.');
+  }, [handoverRoomsDraft, selectedProp]);
+
+  const handleAssignCaretaker = useCallback(
+    async (caretakerEpf: string | null) => {
+      if (!selectedProp) return;
+      setCaretakerAssignError(null);
+      setSavingCaretaker(true);
+      const result = await assignShalomCaretakerAction(selectedProp.id, caretakerEpf);
+      setSavingCaretaker(false);
+      if (!result.success) {
+        const message = result.error ?? 'Failed to assign caretaker';
+        setCaretakerAssignError(message);
+        setToast(message);
+        return;
+      }
+
+      const refresh = await fetchShalomProperties();
+      if (refresh.properties.length > 0) {
+        applyPropertyRecords(refresh.properties, selectedProp.id);
+      } else {
+        setProperties((prev) =>
+          prev.map((p) =>
+            p.id === selectedProp.id
+              ? { ...p, caretakerEpf, caretakerName: caretakerEpf ? p.caretakerName : null }
+              : p,
+          ),
+        );
+        setSelectedProp((prev) =>
+          prev && prev.id === selectedProp.id
+            ? { ...prev, caretakerEpf, caretakerName: caretakerEpf ? prev.caretakerName : null }
+            : prev,
+        );
+      }
+
+      setToast(
+        result.provisionedOtp && result.provisionedEpf
+          ? `Assigned. One-time login code for EPF ${result.provisionedEpf}: ${result.provisionedOtp} (valid 60s)`
+          : caretakerEpf
+            ? 'Caretaker assigned.'
+            : 'Caretaker unassigned.',
+      );
+    },
+    [applyPropertyRecords, selectedProp],
+  );
 
   const handleSavePropSettings = useCallback(
     async (payload: {
@@ -2001,6 +2853,8 @@ export default function ShalomPage() {
       otaChannels: input.otaChannels,
       airbnbIcalUrl: input.airbnbIcalUrl,
       bookingIcalUrl: input.bookingIcalUrl,
+      caretakerEpf: null,
+      caretakerName: null,
       bookings: [],
     };
 
@@ -2142,25 +2996,116 @@ export default function ShalomPage() {
     }
   }, [applyPropertyRecords, selectedProp]);
 
-  const handleEnrich = useCallback((
-    bookingId: string,
-    data: { name: string; contact: string; payout: number },
-  ) => {
-    const updater = (b: Booking): Booking => {
-      if (b.id !== bookingId) return b;
-      return {
-        ...b,
-        guestName:       data.name,
-        totalRevenue:    data.payout,
-        ratePerNight:    b.nights > 0 ? Math.round(data.payout / b.nights) : 0,
-        paid:            false,
-        enriched:        true,
-        enrichedContact: data.contact || undefined,
+  const handleEnrich = useCallback(
+    async (
+      bookingId: string,
+      data: {
+        name: string;
+        contact: string;
+        payout: number;
+        caretakerCollectLkr?: number | null;
+      },
+    ) => {
+      if (!selectedProp) return;
+      const booking = selectedProp.bookings.find((b) => b.id === bookingId);
+      if (!booking) return;
+
+      const ratePerNight =
+        booking.nights > 0 ? Math.round(data.payout / booking.nights) : 0;
+      const collectLkr =
+        data.caretakerCollectLkr !== undefined
+          ? data.caretakerCollectLkr
+          : booking.caretakerCollectLkr ?? null;
+
+      const updater = (b: Booking): Booking => {
+        if (b.id !== bookingId) return b;
+        return {
+          ...b,
+          guestName: data.name,
+          totalRevenue: data.payout,
+          ratePerNight,
+          paid: false,
+          enriched: true,
+          enrichedContact: data.contact || undefined,
+          caretakerCollectLkr: collectLkr,
+        };
       };
-    };
-    setProperties((prev) => prev.map((p) => ({ ...p, bookings: p.bookings.map(updater) })));
-    setSelectedBooking((prev) => (prev ? updater(prev) : null));
-  }, []);
+
+      setProperties((prev) =>
+        prev.map((p) =>
+          p.id === selectedProp.id ? { ...p, bookings: p.bookings.map(updater) } : p,
+        ),
+      );
+      setSelectedProp((prev) =>
+        prev ? { ...prev, bookings: prev.bookings.map(updater) } : prev,
+      );
+      setSelectedBooking((prev) => (prev ? updater(prev) : null));
+
+      setSavingEnrichId(bookingId);
+      const channel =
+        booking.channel === 'BLOCKED' ? 'BLOCKED' : (booking.channel as 'AIRBNB' | 'BOOKING');
+      const result = await upsertShalomBooking({
+        id: bookingId,
+        propertyId: selectedProp.id,
+        guestName: data.name,
+        channel,
+        checkIn: booking.checkIn,
+        checkOut: booking.checkOut,
+        nights: booking.nights,
+        ratePerNight,
+        totalRevenue: data.payout,
+        paid: false,
+        notes: booking.notes,
+        enriched: true,
+        enrichedContact: data.contact || undefined,
+        caretakerCollectLkr: collectLkr,
+      });
+      setSavingEnrichId(null);
+
+      if (!result.success) {
+        setToast(result.error ?? 'Failed to save enrichment');
+        return;
+      }
+      setToast('Booking enriched and saved.');
+    },
+    [selectedProp],
+  );
+
+  const handleDeleteBooking = useCallback(async () => {
+    if (!selectedBooking || !selectedProp) return;
+    if (!isManualDeletableBooking(selectedBooking)) return;
+
+    const bookingId = selectedBooking.id;
+    setDeletingBookingId(bookingId);
+    const result = await deleteShalomBooking(bookingId);
+    setDeletingBookingId(null);
+
+    if (!result.success) {
+      setToast(result.error ?? 'Could not delete booking.');
+      return;
+    }
+
+    const removeBooking = (bookings: Booking[]) => bookings.filter((b) => b.id !== bookingId);
+    setProperties((prev) =>
+      prev.map((p) =>
+        p.id === selectedProp.id ? { ...p, bookings: removeBooking(p.bookings) } : p,
+      ),
+    );
+    setSelectedProp((prev) =>
+      prev && prev.id === selectedProp.id
+        ? { ...prev, bookings: removeBooking(prev.bookings) }
+        : prev,
+    );
+    setSelectedBooking(null);
+
+    let message = isAvailabilityBlock(selectedBooking)
+      ? 'Blocked period removed.'
+      : 'Booking deleted.';
+    if (result.pushedCancelToAirbnb) {
+      message += ' OTA export calendar updated with cancellation.';
+    }
+    setToast(message);
+  }, [selectedBooking, selectedProp]);
 
   const handleUpdateCaretakerCollect = useCallback(
     async (booking: Booking, rawValue: string) => {
@@ -2178,6 +3123,9 @@ export default function ShalomPage() {
       );
       setSelectedProp((prev) =>
         prev ? { ...prev, bookings: prev.bookings.map(updater) } : prev,
+      );
+      setSelectedBooking((prev) =>
+        prev && prev.id === booking.id ? updater(prev) : prev,
       );
 
       setSavingCollectId(booking.id);
@@ -2254,29 +3202,38 @@ export default function ShalomPage() {
 
   if (!selectedProp) {
     return (
-      <div className="min-h-screen p-8 font-sans">
-        <h1 className="text-2xl font-black text-slate-900">Shalom Residences</h1>
-        {loadError ? (
-          <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
-            {loadError}
-          </p>
-        ) : null}
-        <p className="mt-4 text-sm font-semibold text-slate-600">
-          No rental properties in Supabase yet. Use Add Property to register your first Shalom residence.
-        </p>
-        <button
-          type="button"
-          onClick={() => setAddPropOpen(true)}
-          className="mt-4 rounded-xl bg-teal-600 px-4 py-2 text-sm font-bold text-white"
-        >
-          Add Property
-        </button>
-        <AddPropertyModal
-          open={addPropOpen}
-          onClose={() => setAddPropOpen(false)}
-          onConnect={handleConnect}
+      <ExecutivePageShell>
+        <ExecutivePageHeader
+          title="Shalom Residences"
+          subtitle={
+            <ExecutivePageLiveSubtitle>
+              Multi-Property OTA Manager · Channel Calendar · Break-Even Pricing
+            </ExecutivePageLiveSubtitle>
+          }
         />
-      </div>
+        <ExecutivePageBody>
+          {loadError ? (
+            <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
+              {loadError}
+            </p>
+          ) : null}
+          <p className="text-sm font-semibold text-slate-600">
+            No rental properties in Supabase yet. Use Add Property to register your first Shalom residence.
+          </p>
+          <button
+            type="button"
+            onClick={() => setAddPropOpen(true)}
+            className="rounded-xl bg-[color:var(--cvs-accent)] px-4 py-2 text-sm font-bold text-white shadow-lg shadow-[color:var(--cvs-glow)] hover:bg-[color:var(--cvs-accent-hover)] transition-all"
+          >
+            Add Property
+          </button>
+          <AddPropertyModal
+            open={addPropOpen}
+            onClose={() => setAddPropOpen(false)}
+            onConnect={handleConnect}
+          />
+        </ExecutivePageBody>
+      </ExecutivePageShell>
     );
   }
 
@@ -2285,8 +3242,22 @@ export default function ShalomPage() {
       {toast && <OtaToast msg={toast} onDone={() => setToast(null)} />}
       <BookingModal
         booking={selectedBooking}
+        handoverRoomCount={resolveHandoverRooms(currentSettings.handoverRooms).length}
         onClose={() => setSelectedBooking(null)}
         onEnrich={handleEnrich}
+        onSaveCollect={(raw) => {
+          if (selectedBooking) void handleUpdateCaretakerCollect(selectedBooking, raw);
+        }}
+        onDelete={() => void handleDeleteBooking()}
+        savingCollect={
+          selectedBooking != null && savingCollectId === selectedBooking.id
+        }
+        savingEnrich={
+          selectedBooking != null && savingEnrichId === selectedBooking.id
+        }
+        deleting={
+          selectedBooking != null && deletingBookingId === selectedBooking.id
+        }
       />
       <AddPropertyModal
         open={addPropOpen}
@@ -2301,28 +3272,34 @@ export default function ShalomPage() {
         onSave={handleSavePropSettings}
       />
 
-      <div className="w-full flex-grow flex flex-col pb-12 font-sans">
-        {/* ── Header ── */}
-        <header className="sticky top-0 z-40 border-b border-white/60 bg-white/45 px-4 py-4 shadow-[0_8px_32px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl backdrop-saturate-150 md:px-12 2xl:px-24">
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h1 className="text-2xl md:text-3xl font-black text-slate-900 uppercase tracking-tight">Shalom Residences</h1>
-                <p className="text-sm font-bold text-slate-500 uppercase tracking-widest mt-1">Multi-Property OTA Manager · Channel Calendar · Break-Even Pricing</p>
-              </div>
-              <PropertySelector
-                properties={properties}
-                selected={selectedProp}
-                onSelect={setSelectedProp}
-                onAdd={() => setAddPropOpen(true)}
-                onRemove={handleRemoveProp}
-                onOpenSettings={() => setPropSettingsOpen(true)}
-              />
-            </div>
-          </div>
-        </header>
+      <ExecutivePageShell>
+        <ExecutivePageHeader
+          title="Shalom Residences"
+          subtitle={
+            <ExecutivePageLiveSubtitle>
+              Multi-Property OTA Manager · Channel Calendar · Break-Even Pricing
+            </ExecutivePageLiveSubtitle>
+          }
+          actions={
+            <PropertySelector
+              properties={properties}
+              selected={selectedProp}
+              onSelect={setSelectedProp}
+              onAdd={() => setAddPropOpen(true)}
+              onRemove={handleRemoveProp}
+              onOpenSettings={() => setPropSettingsOpen(true)}
+            />
+          }
+        />
 
-        <div className="px-6 md:px-12 2xl:px-24 space-y-6 pt-8">
+        <ExecutivePageBody spacing="relaxed">
+          <CaretakerAssignPanel
+            property={selectedProp}
+            saving={savingCaretaker}
+            assignError={caretakerAssignError}
+            onAssign={handleAssignCaretaker}
+          />
+
           {loadError ? (
             <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
               {loadError}
@@ -2410,17 +3387,42 @@ export default function ShalomPage() {
               </button>
             </div>
 
+            <CollectInquiryPhonePanel
+              phone={collectPhoneDraft}
+              saving={savingCollectPhone}
+              error={collectPhoneError}
+              savedPhone={currentSettings.collectInquiryPhone}
+              onChange={setCollectPhoneDraft}
+              onSave={() => void handleSaveCollectInquiryPhone()}
+            />
+
+            <HandoverRoomsPanel
+              rooms={handoverRoomsDraft}
+              savedRooms={currentSettings.handoverRooms}
+              open={handoverRoomsOpen}
+              saving={savingHandoverRooms}
+              error={handoverRoomsError}
+              onToggle={() => setHandoverRoomsOpen((open) => !open)}
+              onChange={handleHandoverRoomChange}
+              onAdd={handleAddHandoverRoom}
+              onAddTemplates={handleAddHandoverRoomTemplates}
+              onRemove={handleRemoveHandoverRoom}
+              onSave={() => void handleSaveHandoverRooms()}
+            />
+
             <div className="p-5">
               <CalendarGrid
                 year={viewYear}
                 month={viewMonth}
                 bookings={selectedProp.bookings}
+                caretakerLoginDates={caretakerLoginDates}
                 onBookingClick={setSelectedBooking}
               />
             </div>
 
             <div className="border-t border-slate-200/80 bg-slate-50/60 px-5 py-2.5 text-[10px] text-slate-500">
-              Read-only OTA sync. Empty days = available on the platform (not in iCal). Click a coloured day for details. Green ring = today.
+              Read-only OTA sync. Empty days = available on the platform (not in iCal). Click a coloured day for details.
+              Green ring = today. Green dot on reservation days = caretaker logged in; red = no login.
             </div>
           </ExecutiveGlassCard>
 
@@ -2487,7 +3489,7 @@ export default function ShalomPage() {
                         <td className="px-5 py-3.5 text-sm font-medium text-slate-800 font-mono">{b.checkOut}</td>
                         <td className="px-5 py-3.5 text-sm font-medium text-slate-800 text-center font-bold">{b.nights}</td>
                         <td className="px-5 py-3.5 text-sm font-medium text-slate-800 text-right font-black tabular-nums">
-                          {isAvailabilityBlock(b) ? '—' : lkr(b.totalRevenue)}
+                          {isAvailabilityBlock(b) || b.totalRevenue <= 0 ? '—' : lkr(b.totalRevenue)}
                         </td>
                         <td className="px-5 py-3.5 text-sm font-medium text-slate-800 text-right">
                           {isAvailabilityBlock(b) ? (
@@ -2536,8 +3538,8 @@ export default function ShalomPage() {
             ) : null}
           </ExecutiveGlassCard>
 
-        </div>
-      </div>
+        </ExecutivePageBody>
+      </ExecutivePageShell>
     </>
   );
 }

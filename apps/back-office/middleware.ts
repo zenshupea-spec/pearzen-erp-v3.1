@@ -55,12 +55,14 @@ import {
   loginPathForRequestPath,
   loginPathForRole,
   resolveFieldStaffBoundaryRedirect,
+  staffPortalIdForRole,
 } from "./lib/portal-isolation";
 import {
   cafeEmployeeEpfKey,
   getCafePortalAuthRecord,
   resolveCafeEmployeeForUser,
 } from "./lib/cafe-front-auth";
+import { canAccessFrontOfficeAsExecutive } from "./lib/front-office-executive-access";
 import {
   getShalomPortalAuthRecord,
   resolveShalomEmployeeForUser,
@@ -218,10 +220,10 @@ async function resolveTenantSlugWithCustomDomain(
   return { tenantSlug: resolveTenantSlug(req), customDomain: null };
 }
 
-function handleCustomDomainRequest(
+async function handleCustomDomainRequest(
   req: NextRequest,
   binding: TenantCustomDomainBinding,
-): NextResponse | null {
+): Promise<NextResponse | null> {
   const { pathname, search } = req.nextUrl;
   const tenantSlug = binding.tenantSlug;
   const requestHeaders = buildRequestWithTenant(req, tenantSlug);
@@ -236,7 +238,7 @@ function handleCustomDomainRequest(
   switch (binding.domainType) {
     case "erp_staff": {
       if (matchesAuthProxy(pathname)) {
-        return runAuthProxy(req, requestHeaders, tenantSlug);
+        return await runAuthProxy(req, requestHeaders, tenantSlug);
       }
 
       const isForgeRoute =
@@ -246,19 +248,19 @@ function handleCustomDomainRequest(
         pathname.startsWith("/login/forge/");
 
       if (isForgeRoute) {
-        return runForgeAuthGate(req, requestHeaders, (response) =>
+        return await runForgeAuthGate(req, requestHeaders, (response) =>
           stampTenant(response, tenantSlug),
         );
       }
 
       if (isPartnerRoute(pathname)) {
-        return runPartnerAuthGate(req, requestHeaders, (response) =>
+        return await runPartnerAuthGate(req, requestHeaders, (response) =>
           stampTenant(response, tenantSlug),
         );
       }
 
       if (isPearsRoute(pathname)) {
-        return runPearsAuthGate(req, requestHeaders, (response) =>
+        return await runPearsAuthGate(req, requestHeaders, (response) =>
           stampTenant(response, tenantSlug),
         );
       }
@@ -572,6 +574,14 @@ async function runAuthProxy(
     return denied;
   }
 
+  if (portalGate === "setup_sign_in") {
+    const loginUrl = new URL(userLoginPath, req.url);
+    loginUrl.searchParams.set("error", "setup_session");
+    const redirectResponse = applyCookies(NextResponse.redirect(loginUrl));
+    clearPortalPinSessionCookies(redirectResponse);
+    return redirectResponse;
+  }
+
   if (
     portalGate === "verify_pin" &&
     pathname !== "/login/verify-pin" &&
@@ -823,10 +833,13 @@ async function runAuthProxy(
 
   if (pathname === "/cafe-front" || pathname.startsWith("/cafe-front/")) {
     const cafeEmployee = await resolveCafeEmployeeForUser(user);
-    if (!cafeEmployee) {
+    if (!cafeEmployee && !canAccessFrontOfficeAsExecutive(profile)) {
       const deniedUrl = new URL("/login/cafe-front", req.url);
       deniedUrl.searchParams.set("error", "cafe_denied");
       return applyCookies(NextResponse.redirect(deniedUrl));
+    }
+    if (!cafeEmployee) {
+      return stampTenant(response, tenantSlug);
     }
 
     const epf = cafeEmployeeEpfKey(cafeEmployee);
@@ -850,10 +863,13 @@ async function runAuthProxy(
 
   if (pathname === "/shalom-front" || pathname.startsWith("/shalom-front/")) {
     const shalomEmployee = await resolveShalomEmployeeForUser(user);
-    if (!shalomEmployee) {
+    if (!shalomEmployee && !canAccessFrontOfficeAsExecutive(profile)) {
       const deniedUrl = new URL("/login/shalom-front", req.url);
       deniedUrl.searchParams.set("error", "shalom_denied");
       return applyCookies(NextResponse.redirect(deniedUrl));
+    }
+    if (!shalomEmployee) {
+      return stampTenant(response, tenantSlug);
     }
 
     const epf = shalomEmployeeEpfKey(shalomEmployee);
@@ -932,13 +948,25 @@ async function runAuthProxy(
     return stampTenant(response, tenantSlug);
   }
 
+  // Signed-in staff with a bound portal should never see the /login gateway picker.
+  if (pathname === "/login" && staffPortalIdForRole(roleString, profile)) {
+    const landing = await resolveLandingPath(roleString, profile, tenantSlug);
+    const target =
+      portalGate === "ok"
+        ? landing.startsWith("/login")
+          ? userLoginPath
+          : landing
+        : userLoginPath;
+    return applyCookies(NextResponse.redirect(new URL(target, req.url)));
+  }
+
   return stampTenant(response, tenantSlug);
 }
 
-function handleTenantPortalHost(
+async function handleTenantPortalHost(
   req: NextRequest,
   binding: NonNullable<ReturnType<typeof parseTenantPortalHost>>,
-): NextResponse {
+): Promise<NextResponse> {
   const { pathname, search } = req.nextUrl;
   const tenantSlug = binding.tenantSlug;
   const requestHeaders = buildRequestWithTenant(req, tenantSlug);
@@ -993,7 +1021,7 @@ function handleTenantPortalHost(
   }
 
   if (matchesAuthProxy(pathname)) {
-    return runAuthProxy(req, requestHeaders, tenantSlug);
+    return await runAuthProxy(req, requestHeaders, tenantSlug);
   }
 
   if (
@@ -1067,7 +1095,7 @@ export async function middleware(req: NextRequest) {
 
   const customDomainBinding = await lookupTenantCustomDomain(hostname);
   if (customDomainBinding && customDomainRoutesTraffic(customDomainBinding)) {
-    const customResponse = handleCustomDomainRequest(req, customDomainBinding);
+    const customResponse = await handleCustomDomainRequest(req, customDomainBinding);
     if (customResponse) return customResponse;
   }
 
@@ -1078,7 +1106,7 @@ export async function middleware(req: NextRequest) {
 
   const portalBinding = parseTenantPortalHost(hostname);
   if (portalBinding) {
-    return handleTenantPortalHost(req, portalBinding);
+    return await handleTenantPortalHost(req, portalBinding);
   }
 
   if (isDedicatedPartnerHost(hostname)) {
@@ -1226,7 +1254,7 @@ export async function middleware(req: NextRequest) {
   const requestHeaders = buildRequestWithTenant(req, tenantSlug);
 
   if (matchesAuthProxy(req.nextUrl.pathname)) {
-    return runAuthProxy(req, requestHeaders, tenantSlug);
+    return await runAuthProxy(req, requestHeaders, tenantSlug);
   }
 
   const isForgeRoute =
@@ -1238,7 +1266,7 @@ export async function middleware(req: NextRequest) {
   if (isForgeRoute) {
     const forgeSlug = isDedicatedForgeHost(hostname) ? null : tenantSlug;
     const forgeHeaders = buildRequestWithTenant(req, forgeSlug);
-    return runForgeAuthGate(req, forgeHeaders, (response) => {
+    return await runForgeAuthGate(req, forgeHeaders, (response) => {
       if (isDedicatedForgeHost(hostname)) {
         clearTenantSlugCookie(response);
       }
@@ -1250,13 +1278,13 @@ export async function middleware(req: NextRequest) {
   const isPearsRouteMatch = isPearsRoute(pathname);
 
   if (isPearsRouteMatch) {
-    return runPearsAuthGate(req, requestHeaders, (response) =>
+    return await runPearsAuthGate(req, requestHeaders, (response) =>
       stampTenant(response, tenantSlug),
     );
   }
 
   if (isPartnerRouteMatch) {
-    return runPartnerAuthGate(req, requestHeaders, (response) =>
+    return await runPartnerAuthGate(req, requestHeaders, (response) =>
       stampTenant(response, tenantSlug),
     );
   }

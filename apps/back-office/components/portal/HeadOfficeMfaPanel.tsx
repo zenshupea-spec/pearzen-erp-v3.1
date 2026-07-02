@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useState, useTransition } from 'react';
 import {
   AlertTriangle,
@@ -7,6 +8,7 @@ import {
   CircleDot,
   KeyRound,
   Lock,
+  Mail,
   ShieldAlert,
   ShieldCheck,
   Smartphone,
@@ -17,6 +19,11 @@ import {
 import { ExecutiveGlassCard } from '../executive/ExecutiveVaultShell';
 import BackupCodesPanel from './BackupCodesPanel';
 import { isHeadOfficeBackupCodeInput } from '../../lib/head-office-totp-backup-client';
+import {
+  EXECUTIVE_PORTAL_OTP_EXPIRES_MINUTES,
+  EXECUTIVE_PORTAL_PASSWORD_MIN_LENGTH,
+} from '../../lib/executive-portal-auth-policy';
+import { HEAD_OFFICE_FORGE_2FA_ESCALATION_HINT } from '../../lib/head-office-totp-backup-client';
 import {
   confirmHeadOfficeMfaEnrollmentAction,
   loadHeadOfficeMfaEnrollmentAction,
@@ -261,9 +268,10 @@ function MfaActivePanel({
       <div className="flex items-start gap-3 rounded-xl border border-emerald-200/80 bg-emerald-50/60 px-4 py-3 text-sm text-emerald-900">
         <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
         <div>
-          <p className="font-bold">Authenticator bound to {enrollment.email}</p>
+          <p className="font-bold">2FA active for {enrollment.email}</p>
           <p className="mt-1 text-emerald-800">
-            Vault login for your {enrollment.role} account requires a time-based 6-digit code from your authenticator app.
+            Your {enrollment.role} portal sign-in requires a time-based 6-digit code from your
+            authenticator app.
           </p>
         </div>
       </div>
@@ -493,6 +501,53 @@ export default function HeadOfficeMfaPanel({
         ) : enrollment ? (
           <MfaSlot enrollment={enrollment} onReload={reloadEnrollment} />
         ) : null}
+
+        <div className="rounded-xl border border-violet-200/80 bg-violet-50/60 px-4 py-3 text-sm text-violet-900">
+          <div className="flex items-start gap-2">
+            <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-violet-700" />
+            <div>
+              <p className="font-bold">Lost authenticator at sign-in?</p>
+              <p className="mt-1 text-violet-800">
+                Use a backup code on{' '}
+                <Link
+                  href="/login/verify-2fa"
+                  className="font-semibold underline underline-offset-2 hover:text-violet-950"
+                >
+                  /login/verify-2fa
+                </Link>
+                . After backup-code use and the cooldown, try{' '}
+                <Link
+                  href="/login/recover-2fa"
+                  className="font-semibold underline underline-offset-2 hover:text-violet-950"
+                >
+                  /login/recover-2fa
+                </Link>
+                . {HEAD_OFFICE_FORGE_2FA_ESCALATION_HINT}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-indigo-200/80 bg-indigo-50/60 px-4 py-3 text-sm text-indigo-900">
+          <div className="flex items-start gap-2">
+            <Mail className="mt-0.5 h-4 w-4 shrink-0 text-indigo-700" />
+            <div>
+              <p className="font-bold">Forgot your MD Portal password?</p>
+              <p className="mt-1 text-indigo-800">
+                Request a new 6-digit access code at{' '}
+                <Link
+                  href="/login/md/request-code"
+                  className="font-semibold underline underline-offset-2 hover:text-indigo-950"
+                >
+                  /login/md/request-code
+                </Link>
+                . Codes expire in {EXECUTIVE_PORTAL_OTP_EXPIRES_MINUTES} minutes. After sign-in,
+                set a new {EXECUTIVE_PORTAL_PASSWORD_MIN_LENGTH}-character portal password and
+                re-enroll 2FA.
+              </p>
+            </div>
+          </div>
+        </div>
 
         <div className="flex items-start gap-2 rounded-xl border border-amber-200/80 bg-amber-50/60 px-3 py-2.5 text-sm text-amber-900">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-amber-600" />

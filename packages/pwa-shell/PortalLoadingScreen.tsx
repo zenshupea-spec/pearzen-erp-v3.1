@@ -24,6 +24,7 @@ export default function PortalLoadingScreen({
   accent = 'indigo',
   overlay = false,
   fullscreen = true,
+  compact = false,
   variant = 'light',
   scrim = false,
   className = '',
@@ -33,6 +34,8 @@ export default function PortalLoadingScreen({
   /** Floats over the current UI — does not replace the page. */
   overlay?: boolean;
   fullscreen?: boolean;
+  /** Inline card/section loader — no viewport-height stretch. */
+  compact?: boolean;
   variant?: 'light' | 'dark';
   /** Opaque veil — hides FOUC / layout jank behind the spinner. */
   scrim?: boolean;
@@ -103,7 +106,9 @@ export default function PortalLoadingScreen({
         'flex flex-col items-center justify-center',
         fullscreen
           ? 'fixed inset-0 z-[120]'
-          : 'min-h-[min(100dvh,28rem)] w-full flex-1 py-20',
+          : compact
+            ? 'w-full'
+            : 'min-h-[min(100dvh,28rem)] w-full flex-1 py-20',
         fullscreen ? scrimClass : '',
         className,
       ]

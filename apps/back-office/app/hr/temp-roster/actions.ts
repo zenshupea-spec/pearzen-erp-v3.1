@@ -8,10 +8,12 @@ import {
   resolveCompanyIdForSession,
   rosterCompanyId,
 } from '../../../lib/company-context-server';
+import { resolveGuardRosterKey } from '../../../lib/employee-epf';
 import {
   assertHrPortalEditor,
   fetchBackOfficeUserProfile,
 } from '../../../lib/hr-portal-access-server';
+import { fetchActiveSectorManagersForCompany } from '../../../lib/sector-manager-roster';
 import type {
   SectorManagerRoster,
   TempGuard,
@@ -118,19 +120,11 @@ async function resolveCompanyScope() {
 
 async function fetchSectorManagers(companyId: string | null): Promise<SectorManagerRoster[]> {
   const db = createSupabaseServiceClient();
-  let query = db
-    .from('employees')
-    .select('emp_number, full_name, site')
-    .eq('group', 'SECTOR_MANAGER')
-    .eq('status', 'ACTIVE')
-    .order('full_name', { ascending: true });
-  if (companyId) query = query.eq('company_id', companyId);
-  const { data, error } = await query;
-  if (error) return [];
-  return (data ?? []).map((row) => ({
-    smId: String(row.emp_number),
-    name: String(row.full_name ?? row.emp_number),
-    sector: String(row.site ?? '—'),
+  const managers = await fetchActiveSectorManagersForCompany(db, companyId);
+  return managers.map((row) => ({
+    smId: row.epf_number,
+    name: row.full_name,
+    sector: row.site,
   }));
 }
 
@@ -306,18 +300,108 @@ export async function archiveTempGuardAction(tempId: string): Promise<{ ok?: boo
   }
 }
 
-export async function executeRosterMerge(tempEmpId: string, permEmpId: string) {
-  const db = createSupabaseServiceClient();
+export type RosterMergeResult =
+  | { success: true }
+  | { success: false; error: string };
 
-  const { error } = await db.rpc('merge_shadow_roster_profile', {
-    p_temp_emp_id: tempEmpId,
-    p_perm_emp_id: permEmpId,
-  });
+export async function executeRosterMerge(
+  tempEmpId: string,
+  permEmpId: string,
+): Promise<RosterMergeResult> {
+  try {
+    await requireHrEditor();
+    const companyId = await resolveCompanyScope();
+    const db = createSupabaseServiceClient();
+    const tempId = tempEmpId.trim().toUpperCase();
 
-  if (error) {
-    console.error('\n[SHADOW ROSTER] MERGE FAILED:', error.message, '\n');
-    throw new Error('Failed to merge shadow roster profile.');
+    if (!tempId) {
+      return { success: false, error: 'Temp guard id is required.' };
+    }
+
+    let slotQuery = db
+      .from('shadow_roster_slots')
+      .select('temp_id, status, company_id')
+      .eq('temp_id', tempId)
+      .maybeSingle();
+    if (companyId) slotQuery = slotQuery.eq('company_id', companyId);
+
+    const { data: slot, error: slotError } = await slotQuery;
+    if (slotError) {
+      console.error('[Shadow Roster] merge slot lookup failed:', slotError.message);
+      return { success: false, error: 'Failed to verify temp guard slot.' };
+    }
+    if (!slot || slot.status !== 'ACTIVE') {
+      return {
+        success: false,
+        error: 'Temp guard slot is not active or was already merged.',
+      };
+    }
+
+    let employeeQuery = db
+      .from('employees')
+      .select('id, company_id, emp_number, epf_no, epf_num')
+      .eq('id', permEmpId)
+      .maybeSingle();
+    if (companyId) employeeQuery = employeeQuery.eq('company_id', companyId);
+
+    const { data: employee, error: employeeError } = await employeeQuery;
+    if (employeeError || !employee) {
+      console.error('[Shadow Roster] merge employee lookup failed:', employeeError?.message);
+      return { success: false, error: 'Permanent employee not found for this tenant.' };
+    }
+
+    const permRosterKey = resolveGuardRosterKey(employee);
+    if (!permRosterKey) {
+      return {
+        success: false,
+        error:
+          'Permanent employee needs an EPF or employee number before merging shadow roster history.',
+      };
+    }
+
+    const storedEmpNumber = String(employee.emp_number ?? '').trim().toUpperCase();
+    if (storedEmpNumber !== permRosterKey) {
+      const { error: syncError } = await db
+        .from('employees')
+        .update({ emp_number: permRosterKey })
+        .eq('id', permEmpId);
+      if (syncError) {
+        console.error('[Shadow Roster] emp_number sync failed:', syncError.message);
+        return { success: false, error: 'Failed to align employee roster key before merge.' };
+      }
+    }
+
+    const { error } = await db.rpc('merge_shadow_roster_profile', {
+      p_temp_emp_id: tempId,
+      p_perm_emp_id: permEmpId,
+    });
+
+    if (error) {
+      console.error('\n[SHADOW ROSTER] MERGE FAILED:', error.message, '\n');
+      return { success: false, error: 'Failed to merge shadow roster profile.' };
+    }
+
+    const { count: orphanCount, error: orphanError } = await db
+      .from('sm_guard_attendance')
+      .select('id', { count: 'exact', head: true })
+      .eq('guard_epf', tempId);
+
+    if (orphanError) {
+      console.error('[Shadow Roster] orphan attendance check failed:', orphanError.message);
+    } else if ((orphanCount ?? 0) > 0) {
+      return {
+        success: false,
+        error: 'Merge completed but temp attendance rows were left behind.',
+      };
+    }
+
+    revalidatePath('/hr/temp-roster');
+    revalidatePath('/hr/mnr');
+    return { success: true };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Failed to merge shadow roster.',
+    };
   }
-
-  revalidatePath('/hr/temp-roster');
 }

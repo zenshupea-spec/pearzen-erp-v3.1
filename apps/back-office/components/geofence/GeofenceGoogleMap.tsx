@@ -86,7 +86,7 @@ async function resolveMapsApiKey(): Promise<string | null> {
   if (fromBuild) return fromBuild;
 
   try {
-    const res = await fetch('/api/maps-key', { cache: 'no-store' });
+    const res = await fetch('/api/maps-key', { cache: 'no-store', credentials: 'include' });
     if (!res.ok) return null;
     const data = (await res.json()) as { key?: string | null };
     return data.key?.trim() || null;

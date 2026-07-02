@@ -11,14 +11,16 @@ import {
   isMissingColumnError,
   loadSettingEnvelope,
   MD_SETTINGS_ENVELOPE_KEYS,
-  mergeSettingEnvelope,
 } from '../../../../../packages/supabase/md-settings-envelope';
 import {
   getExecutiveMdSettingsContext,
   getMdSettingsDb,
   resolveExecutiveCompanyId,
+  assertExecutiveMdSettingsWrite,
+  upsertMdSettings,
 } from './lib/executive-md-settings-db';
-import { writeSettingsAuditLog } from './settings-audit';
+import { revalidateMdSettingsConsumers } from './lib/revalidate-md-settings-consumers';
+import { writeSettingsAuditLog, persistMdSettingEnvelopeWithAudit } from './settings-audit';
 
 export async function getAdvanceSalarySettings(): Promise<AdvanceSalarySettings> {
   const companyId = await resolveExecutiveCompanyId();
@@ -49,28 +51,44 @@ export async function getAdvanceSalarySettings(): Promise<AdvanceSalarySettings>
 }
 
 export async function saveAdvanceSalarySettings(settings: AdvanceSalarySettings) {
+  const vaultGate = await assertExecutiveMdSettingsWrite();
+  if (!vaultGate.ok) return { success: false, error: vaultGate.error };
+
   const companyId = await resolveExecutiveCompanyId();
   const supabase = getMdSettingsDb();
 
   const sanitized = parseAdvanceSalarySettings(settings);
 
-  let { error } = await supabase.from('md_settings').upsert(
-    { company_id: companyId, advance_salary_settings: sanitized },
-    { onConflict: 'company_id' },
-  );
+  let { error } = await upsertMdSettings(supabase, companyId, { advance_salary_settings: sanitized });
 
   if (error && isMissingColumnError(error.message)) {
-    return mergeSettingEnvelope(supabase, companyId, {
-      [MD_SETTINGS_ENVELOPE_KEYS.advanceSalarySettings]: sanitized,
-    });
+    const res = await persistMdSettingEnvelopeWithAudit(
+      supabase,
+      companyId,
+      { [MD_SETTINGS_ENVELOPE_KEYS.advanceSalarySettings]: sanitized },
+      'UPDATE_ADVANCE_SALARY_SETTINGS',
+      sanitized,
+    );
+    if (!res.success) return res;
+    revalidateMdSettingsConsumers();
+    revalidatePath('/fm/settings');
+    revalidatePath('/fm/advance');
+    revalidatePath('/executive/advance');
+    return { success: true };
   }
 
   if (error) return { success: false, error: error.message };
 
   const { session, companyId: auditCompanyId } = await getExecutiveMdSettingsContext();
-  await writeSettingsAuditLog(session, auditCompanyId, 'UPDATE_ADVANCE_SALARY_SETTINGS', sanitized);
+  const audit = await writeSettingsAuditLog(
+    session,
+    auditCompanyId,
+    'UPDATE_ADVANCE_SALARY_SETTINGS',
+    sanitized,
+  );
+  if (!audit.ok) return { success: false, error: audit.error };
 
-  revalidatePath('/executive/settings');
+  revalidateMdSettingsConsumers();
   revalidatePath('/fm/settings');
   revalidatePath('/fm/advance');
   revalidatePath('/executive/advance');

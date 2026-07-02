@@ -110,12 +110,21 @@ export function verifyHeadOfficeTotpCode(
 }
 
 function totpCryptoSecret(): string {
-  return (
-    process.env.PORTAL_TOTP_ENCRYPTION_SECRET ??
-    process.env.PORTAL_PIN_COOKIE_SECRET ??
-    process.env.SUPABASE_SERVICE_ROLE_KEY ??
-    'dev-portal-totp-secret'
-  );
+  const dedicated =
+    process.env.PORTAL_TOTP_ENCRYPTION_SECRET?.trim() ??
+    process.env.PORTAL_PIN_COOKIE_SECRET?.trim();
+  if (dedicated) return dedicated;
+
+  if (
+    process.env.NODE_ENV === "production" ||
+    process.env.VERCEL_ENV === "production"
+  ) {
+    throw new Error(
+      "PORTAL_PIN_COOKIE_SECRET (or PORTAL_TOTP_ENCRYPTION_SECRET) is required in production.",
+    );
+  }
+
+  return process.env.SUPABASE_SERVICE_ROLE_KEY ?? "dev-portal-totp-secret";
 }
 
 export function encryptHeadOfficeTotpSecret(secret: string): string {
@@ -135,4 +144,27 @@ export function decryptHeadOfficeTotpSecret(stored: string): string | null {
   } catch {
     return null;
   }
+}
+
+const PLAIN_TOTP_SECRET_PATTERN = /^[A-Z2-7]+=*$/i;
+
+export function isEncryptedHeadOfficeTotpSecret(stored: string): boolean {
+  return decryptHeadOfficeTotpSecret(stored.trim()) !== null;
+}
+
+export function resolveHeadOfficeTotpSecret(
+  stored: string | null | undefined,
+): string | null {
+  if (!stored?.trim()) return null;
+  const trimmed = stored.trim();
+
+  const decrypted = decryptHeadOfficeTotpSecret(trimmed);
+  if (decrypted) return decrypted;
+
+  const normalized = trimmed.replace(/\s/g, '').toUpperCase();
+  if (PLAIN_TOTP_SECRET_PATTERN.test(normalized)) {
+    return normalized;
+  }
+
+  return null;
 }

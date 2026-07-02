@@ -181,14 +181,15 @@ async function main() {
   await upsertEnv(projectId, 'PAYHERE_MERCHANT_SECRET', process.env.PAYHERE_MERCHANT_SECRET?.trim(), {
     sensitive: true,
   });
-
-  await triggerRedeploy(projectId, CLIENT_PWA_PROJECT);
+  await upsertEnv(projectId, 'ENCRYPTION_KEY', process.env.ENCRYPTION_KEY?.trim(), {
+    sensitive: true,
+  });
 
   const missingPayHere =
     !process.env.PAYHERE_MERCHANT_ID?.trim() || !process.env.PAYHERE_MERCHANT_SECRET?.trim();
   if (missingPayHere) {
     console.log(`
-PayHere keys not in .env.seed.tmp — card checkout will show "not configured" until you:
+PayHere keys not in .env.seed.tmp — card checkout can still work via tenant_payhere_credentials when ENCRYPTION_KEY + service role are set. For env fallback:
   1. Sign up at https://www.payhere.lk and get sandbox Merchant ID + Secret
   2. Add PAYHERE_MERCHANT_ID and PAYHERE_MERCHANT_SECRET to .env.seed.tmp
   3. Re-run: npm run setup:customer-menu-vercel-env

@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { ExecutiveGlassCard } from '../../../../components/executive/ExecutiveVaultShell';
+import { ExecutivePageLoading } from '../../../../components/executive/ExecutivePageChrome';
 import {
   fetchExecutiveSessionProfile,
   type ExecutiveSessionProfile,
@@ -33,6 +34,7 @@ export default function CafeIngredientsPage() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const fromHub = searchParams.get('hub') === '1';
+  const focusIngredientId = searchParams.get('ingredient');
   const {
     branches,
     locationId,
@@ -149,15 +151,14 @@ export default function CafeIngredientsPage() {
       ) : null}
 
       {!dashboardReady ? (
-        <ExecutiveGlassCard className="p-8 text-center text-sm text-slate-500">
-          Loading ingredients ledger…
-        </ExecutiveGlassCard>
+        <ExecutivePageLoading message="Loading ingredients ledger…" />
       ) : (
         <IngredientsLedgerPanel
           ingredients={ingredients}
           setIngredients={setIngredients}
           menuItems={menuItems}
           setMenuItems={setMenuItems}
+          focusIngredientId={focusIngredientId}
         />
       )}
     </CafePortalShell>

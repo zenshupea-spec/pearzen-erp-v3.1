@@ -1,9 +1,17 @@
 'use client';
 
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, createContext, useContext } from 'react';
 import { setFmDiscrepancyUnresolvedCount } from '../use-fm-discrepancy-count';
 import Link from 'next/link';
 import FmSubnav from '../components/FmSubnav';
+import { useFmHolidayCalendarIncomplete } from '../use-fm-holiday-calendar-incomplete';
+import { getFmDiscrepancyQueueData } from '../lib/fm-discrepancy-actions';
+import { getFmLivePayrollPeriod } from '../lib/payroll-period';
+import type {
+  FmDiscrepancyDeficit,
+  FmDiscrepancyGuardProfile,
+  FmDiscrepancySubmittedStructure,
+} from '../lib/fm-discrepancy-data';
 import {
   ArrowRight,
   Check,
@@ -46,43 +54,18 @@ function DarkGlassCard({
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type RankKey = 'CSO' | 'OIC' | 'SSO' | 'JSO' | 'LSO';
-type DeficitStatus = 'UNRESOLVED' | 'SUBMITTED';
+type RankKey = FmDiscrepancyGuardProfile['rank'];
+type DeficitStatus = FmDiscrepancyDeficit['status'];
 
-interface GuardProfile {
-  empNo: string;
-  name: string;
-  rank: RankKey;
-  basicSalary: number;
-  unpaidShiftsLastMonth: number;
-}
+type GuardProfile = FmDiscrepancyGuardProfile;
 
-interface SubmittedStructure {
-  guardEmpNos: string[];
-  totalLoss: number;
-  monthlyDeduction: number;
-  durationMonths: number;
-  finalMonthDeductionLkr?: number | null;
-  deductionMethod: 'MONTHLY' | 'CUT_SHIFTS';
-  guardPercentages?: Record<string, number>;
-  guardShiftsPerMonth?: Record<string, number>;
-  perShiftValueLkr?: number;
-  perShiftValuesLkr?: Record<string, number>;
-  omNote: string;
-  submittedAt: string;
-}
+interface SubmittedStructure extends FmDiscrepancySubmittedStructure {}
 
-interface UnresolvedDeficit {
-  deficitId: string;
-  incidentRef: string;
-  clientName: string;
-  invoiceNo: string;
-  invoiceMonth: string;
-  deficitAmount: number;
-  incidentDate: string;
-  description: string;
-  status: DeficitStatus;
-  submittedStructure?: SubmittedStructure;
+interface UnresolvedDeficit extends FmDiscrepancyDeficit {}
+
+const GuardRosterContext = createContext<GuardProfile[]>([]);
+function useGuardRoster() {
+  return useContext(GuardRosterContext);
 }
 
 interface FormDraft {
@@ -108,64 +91,6 @@ const RANK_STYLE: Record<RankKey, { pill: string }> = {
   JSO: { pill: 'bg-sky-50    text-sky-700    border-sky-200'   },
   LSO: { pill: 'bg-slate-100 text-slate-600  border-slate-300' },
 };
-
-const INITIAL_DEFICITS: UnresolvedDeficit[] = [
-  {
-    deficitId: 'DEF-001',
-    incidentRef: 'INC-2026-047',
-    clientName: 'Arpico Supercentre',
-    invoiceNo: 'INV-2605-003',
-    invoiceMonth: 'May 2026',
-    deficitAmount: 75_000,
-    incidentDate: '2026-05-04',
-    description: 'Unauthorized access via unmanned rear gate on night shift. Security post abandoned — client CCTV evidence submitted.',
-    status: 'UNRESOLVED',
-  },
-  {
-    deficitId: 'DEF-002',
-    incidentRef: 'INC-2026-052',
-    clientName: 'Lanka Hospitals',
-    invoiceNo: 'INV-2605-002',
-    invoiceMonth: 'May 2026',
-    deficitAmount: 45_000,
-    incidentDate: '2026-05-11',
-    description: 'Guard confirmed asleep on duty during overnight shift. Client VIP corridor left unmonitored for 3+ hours. Formal complaint lodged.',
-    status: 'UNRESOLVED',
-  },
-  {
-    deficitId: 'DEF-003',
-    incidentRef: 'INC-2026-031',
-    clientName: 'Dialog Axiata HQ',
-    invoiceNo: 'INV-2604-004',
-    invoiceMonth: 'April 2026',
-    deficitAmount: 32_500,
-    incidentDate: '2026-04-28',
-    description: 'Uniform violation and failure to conduct prescribed perimeter checks. Client raised formal written complaint referencing SLA Clause 7(b).',
-    status: 'SUBMITTED',
-    submittedStructure: {
-      guardEmpNos: ['EMP-1091', 'EMP-1115'],
-      totalLoss: 32_500,
-      monthlyDeduction: 16_250,
-      durationMonths: 2,
-      deductionMethod: 'MONTHLY',
-      omNote: 'Both guards confirmed on shift during the complaint window. Patrol log discrepancy noted. Training breach escalated to HR.',
-      submittedAt: '2026-05-19T10:32:00Z',
-    },
-  },
-];
-
-const GUARD_ROSTER: GuardProfile[] = [
-  { empNo: 'EMP-1042', name: 'Suresh Bandara',       rank: 'JSO', basicSalary: 32_000, unpaidShiftsLastMonth: 22 },
-  { empNo: 'EMP-1087', name: 'Ranjith Perera',       rank: 'JSO', basicSalary: 32_000, unpaidShiftsLastMonth: 26 },
-  { empNo: 'EMP-1103', name: 'Chaminda Silva',        rank: 'JSO', basicSalary: 32_000, unpaidShiftsLastMonth: 18 },
-  { empNo: 'EMP-1024', name: 'Kasun Fernando',        rank: 'SSO', basicSalary: 42_000, unpaidShiftsLastMonth: 24 },
-  { empNo: 'EMP-1056', name: 'Pradeep Rajapaksa',     rank: 'SSO', basicSalary: 42_000, unpaidShiftsLastMonth: 20 },
-  { empNo: 'EMP-1078', name: 'Nimal Jayawardena',     rank: 'OIC', basicSalary: 52_000, unpaidShiftsLastMonth: 26 },
-  { empNo: 'EMP-1091', name: 'Roshan Dissanayake',    rank: 'JSO', basicSalary: 32_000, unpaidShiftsLastMonth: 14 },
-  { empNo: 'EMP-1115', name: 'Thilak Gunasekara',     rank: 'JSO', basicSalary: 32_000, unpaidShiftsLastMonth: 19 },
-  { empNo: 'EMP-1033', name: 'Madhawa Seneviratne',   rank: 'SSO', basicSalary: 42_000, unpaidShiftsLastMonth: 25 },
-  { empNo: 'EMP-1099', name: 'Vimukthi Bandara',      rank: 'LSO', basicSalary: 28_000, unpaidShiftsLastMonth: 16 },
-];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -196,25 +121,26 @@ function fmtTs(iso: string) {
 // ─── Guard Selector ───────────────────────────────────────────────────────────
 
 function GuardSelector({ selected, onChange }: { selected: string[]; onChange: (empNos: string[]) => void }) {
+  const guardRoster = useGuardRoster();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
 
   const filtered = useMemo(
     () =>
-      GUARD_ROSTER.filter(
+      guardRoster.filter(
         (g) =>
           g.name.toLowerCase().includes(search.toLowerCase()) ||
           g.empNo.toLowerCase().includes(search.toLowerCase()) ||
           g.rank.toLowerCase().includes(search.toLowerCase()),
       ),
-    [search],
+    [search, guardRoster],
   );
 
   const toggle = (empNo: string) => {
     onChange(selected.includes(empNo) ? selected.filter((e) => e !== empNo) : [...selected, empNo]);
   };
 
-  const selectedGuards = GUARD_ROSTER.filter((g) => selected.includes(g.empNo));
+  const selectedGuards = guardRoster.filter((g) => selected.includes(g.empNo));
 
   return (
     <div className="relative">
@@ -285,7 +211,9 @@ function GuardSelector({ selected, onChange }: { selected: string[]; onChange: (
                 );
               })}
               {filtered.length === 0 && (
-                <p className="py-8 text-center text-sm text-slate-400">No guards match your search</p>
+                <p className="py-8 text-center text-sm text-slate-400">
+                  {guardRoster.length === 0 ? 'No active guards in MNR roster' : 'No guards match your search'}
+                </p>
               )}
             </div>
           </div>
@@ -374,15 +302,16 @@ function DeficitQueueCard({ deficit, isActive, onSelect }: { deficit: Unresolved
 // ─── Submitted View ───────────────────────────────────────────────────────────
 
 function SubmittedView({ deficit }: { deficit: UnresolvedDeficit }) {
+  const guardRoster = useGuardRoster();
   const s = deficit.submittedStructure!;
-  const guards = GUARD_ROSTER.filter((g) => s.guardEmpNos.includes(g.empNo));
+  const guards = guardRoster.filter((g) => s.guardEmpNos.includes(g.empNo));
   const isCutShifts = s.deductionMethod === 'CUT_SHIFTS';
   const multiGuard  = guards.length > 1;
 
   const getGuardMonthly = (empNo: string) => {
     if (isCutShifts) {
       const shifts = s.guardShiftsPerMonth?.[empNo] ?? 0;
-      const guard = GUARD_ROSTER.find((g) => g.empNo === empNo);
+      const guard = guardRoster.find((g) => g.empNo === empNo);
       const perShift = s.perShiftValuesLkr?.[empNo]
         ?? (guard ? guard.basicSalary / WB_WORKING_DAYS : (s.perShiftValueLkr ?? 0));
       return shifts * perShift;
@@ -487,7 +416,8 @@ function RecoveryConfigForm({
   onSubmit: () => void;
   isSubmitting: boolean;
 }) {
-  const selectedGuards = GUARD_ROSTER.filter((g) => draft.selectedEmpNos.includes(g.empNo));
+  const guardRoster = useGuardRoster();
+  const selectedGuards = guardRoster.filter((g) => draft.selectedEmpNos.includes(g.empNo));
   const multiGuard = selectedGuards.length > 1;
   const isCutShifts = (draft.deductionMethod ?? 'CUT_SHIFTS') === 'CUT_SHIFTS';
 
@@ -950,12 +880,31 @@ function RecoveryConfigForm({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function DiscrepancyQueuePage() {
-  const holidayCalendarIncomplete = true;
+  const holidayCalendarIncomplete = useFmHolidayCalendarIncomplete();
+  const livePayrollPeriod = useMemo(() => getFmLivePayrollPeriod(), []);
 
-  const [deficits, setDeficits]       = useState<UnresolvedDeficit[]>(INITIAL_DEFICITS);
-  const [activeId, setActiveId]       = useState<string>(INITIAL_DEFICITS[0].deficitId);
-  const [draft, setDraft]             = useState<FormDraft>(emptyDraft(INITIAL_DEFICITS[0].deficitAmount));
+  const [deficits, setDeficits]       = useState<UnresolvedDeficit[]>([]);
+  const [guardRoster, setGuardRoster] = useState<GuardProfile[]>([]);
+  const [queueLoading, setQueueLoading] = useState(true);
+  const [queueError, setQueueError]   = useState<string | null>(null);
+  const [activeId, setActiveId]       = useState<string>('');
+  const [draft, setDraft]             = useState<FormDraft>(emptyDraft(0));
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setQueueLoading(true);
+    void getFmDiscrepancyQueueData(livePayrollPeriod).then((payload) => {
+      if (cancelled) return;
+      setDeficits(payload.deficits);
+      setGuardRoster(payload.guardRoster);
+      setQueueError(payload.error ?? null);
+      setQueueLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [livePayrollPeriod]);
 
   const activeDeficit = useMemo(
     () => deficits.find((d) => d.deficitId === activeId) ?? null,
@@ -990,7 +939,6 @@ export default function DiscrepancyQueuePage() {
   const handleSubmit = useCallback(async () => {
     if (!activeDeficit) return;
     setIsSubmitting(true);
-    await new Promise((r) => setTimeout(r, 1100));
 
     const totalLossNum    = parseFloat(draft.totalLoss) || 0;
     let monthlyDeductNum  = parseFloat(draft.monthlyDeduction) || 0;
@@ -1002,7 +950,7 @@ export default function DiscrepancyQueuePage() {
 
     const perShiftValuesLkr: Record<string, number> = {};
     draft.selectedEmpNos.forEach((empNo) => {
-      const guard = GUARD_ROSTER.find((g) => g.empNo === empNo);
+      const guard = guardRoster.find((g) => g.empNo === empNo);
       if (guard) perShiftValuesLkr[empNo] = guard.basicSalary / WB_WORKING_DAYS;
     });
 
@@ -1052,9 +1000,10 @@ export default function DiscrepancyQueuePage() {
     );
 
     setIsSubmitting(false);
-  }, [activeDeficit, draft]);
+  }, [activeDeficit, draft, guardRoster]);
 
   return (
+    <GuardRosterContext.Provider value={guardRoster}>
     <div className="min-h-screen bg-slate-50">
       <div
         aria-hidden
@@ -1089,6 +1038,12 @@ export default function DiscrepancyQueuePage() {
 
         <div className="mb-6 border-t border-slate-200" />
 
+        {queueError && (
+          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            Could not load live discrepancy data: {queueError}
+          </div>
+        )}
+
         {/* Stats */}
         <div className="grid grid-cols-3 gap-3 mb-6">
           {[
@@ -1119,14 +1074,28 @@ export default function DiscrepancyQueuePage() {
               )}
             </div>
 
-            {deficits.map((d) => (
-              <DeficitQueueCard
-                key={d.deficitId}
-                deficit={d}
-                isActive={d.deficitId === activeId}
-                onSelect={() => handleSelectDeficit(d)}
-              />
-            ))}
+            {queueLoading ? (
+              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-10 text-center text-sm font-semibold text-slate-500">
+                Loading live client deficits…
+              </div>
+            ) : deficits.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 px-4 py-8 text-center">
+                <FileWarning className="mx-auto mb-2 h-8 w-8 text-slate-300" />
+                <p className="text-sm font-bold text-slate-700">No client deficits pending</p>
+                <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                  Approved client pass-through penalties from the Invoice Desk appear here when outstanding guard recovery is required.
+                </p>
+              </div>
+            ) : (
+              deficits.map((d) => (
+                <DeficitQueueCard
+                  key={d.deficitId}
+                  deficit={d}
+                  isActive={d.deficitId === activeId}
+                  onSelect={() => handleSelectDeficit(d)}
+                />
+              ))
+            )}
 
             <div className="rounded-2xl border border-sky-200 bg-sky-50 p-3 mt-2">
               <div className="flex items-start gap-2">
@@ -1142,7 +1111,11 @@ export default function DiscrepancyQueuePage() {
             {!activeDeficit ? (
               <div className="flex flex-col items-center justify-center py-20 text-center">
                 <FileWarning className="h-12 w-12 text-slate-300 mb-3" />
-                <p className="text-base font-bold text-slate-400">Select a deficit from the queue</p>
+                <p className="text-base font-bold text-slate-500">
+                  {deficits.length === 0
+                    ? 'No deficits to configure'
+                    : 'Select a deficit from the queue'}
+                </p>
               </div>
             ) : activeDeficit.status === 'SUBMITTED' ? (
               <>
@@ -1172,5 +1145,6 @@ export default function DiscrepancyQueuePage() {
         </div>
       </div>
     </div>
+    </GuardRosterContext.Provider>
   );
 }

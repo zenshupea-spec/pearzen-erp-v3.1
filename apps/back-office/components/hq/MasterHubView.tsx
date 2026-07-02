@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   BookOpen,
   Briefcase,
+  Building2,
   Calculator,
   Coffee,
   Crosshair,
@@ -36,6 +37,7 @@ import type { MasterHubBadges } from '../../lib/master-hub-actions';
 import { filterHubPillarsByModules } from '../../lib/tenant-product-bundle';
 import { CAFE_HUB_ENTRY_PATH, EXECUTIVE_DESK_PATH, OM_HUB_ENTRY_PATH } from '../../lib/hq-hub';
 import { ExecutiveGlassCard } from '../executive/ExecutiveVaultShell';
+import HqPortalSessionBar from './HqPortalSessionBar';
 import { CVS_BRAND_CLASSES } from '../../lib/cvs-brand-tokens';
 
 const MODULE_ICONS: Record<string, LucideIcon> = {
@@ -54,6 +56,7 @@ const MODULE_ICONS: Record<string, LucideIcon> = {
   '/hr/onboarding': FileText,
   '/executive/cafe': Coffee,
   '/security-website': Globe,
+  '/shalom-public': Building2,
   '/hq/audit': BookOpen,
   '/hq/guard-proxy': ShieldAlert,
   '/hr/mnr': Users,
@@ -233,7 +236,7 @@ export default function MasterHubView({
 
       <main className="relative z-10 flex flex-col items-center px-6 py-14 md:px-12">
         {executiveDeskLink ? (
-          <div className="absolute left-6 top-6 z-50">
+          <div className="absolute left-4 top-4 z-50 sm:left-6 sm:top-6">
             <Link
               href={EXECUTIVE_DESK_PATH}
               className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-white/80 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-600 shadow-sm backdrop-blur-md transition-all hover:border-[color:var(--cvs-accent-muted)] hover:bg-[var(--cvs-accent-soft)] hover:text-[color:var(--cvs-accent)]"
@@ -244,6 +247,10 @@ export default function MasterHubView({
           </div>
         ) : null}
 
+        <div className="absolute right-4 top-4 z-50 sm:right-6 sm:top-6">
+          <HqPortalSessionBar />
+        </div>
+
         <div className="mb-14 w-full max-w-2xl text-center">
           <p className={`mb-3 text-xs font-bold uppercase tracking-[0.3em] ${CVS_BRAND_CLASSES.portalEyebrow}`}>
             {hubSubtitle}
@@ -251,11 +258,8 @@ export default function MasterHubView({
           <h1 className="text-3xl font-extrabold tracking-tight text-slate-900 md:text-4xl">
             {hubTitle}
           </h1>
-          <p className="mt-3 text-sm font-bold text-slate-600">
-            Welcome, {profileName}
-            {role ? (
-              <span className="font-medium text-slate-500"> · {role}</span>
-            ) : null}
+          <p className="mt-3 text-sm font-medium text-slate-500">
+            Welcome back{profileName ? `, ${profileName.split(/\s+/)[0]}` : ''}
           </p>
           <p className="mt-1 flex items-center justify-center gap-1.5 text-sm text-slate-500">
             <span className={`h-1.5 w-1.5 rounded-full ${CVS_BRAND_CLASSES.portalDot} shadow-[0_0_8px_var(--cvs-glow)]`} />

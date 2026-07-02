@@ -1,6 +1,15 @@
 import type { ReactNode } from 'react';
-import { InvoiceDeskShell } from '../../components/invoice-desk/InvoiceDeskShell';
 
-export default function InvoiceDeskLayout({ children }: { children: ReactNode }) {
-  return <InvoiceDeskShell>{children}</InvoiceDeskShell>;
+import { ExecutiveBrandThemeProvider } from '../../components/executive/ExecutiveBrandTheme';
+import { InvoiceDeskShell } from '../../components/invoice-desk/InvoiceDeskShell';
+import { loadExecutiveBrandTokens } from '../../lib/cvs-brand-tokens-server';
+
+export default async function InvoiceDeskLayout({ children }: { children: ReactNode }) {
+  const brandTokens = await loadExecutiveBrandTokens();
+
+  return (
+    <ExecutiveBrandThemeProvider initialTokens={brandTokens}>
+      <InvoiceDeskShell>{children}</InvoiceDeskShell>
+    </ExecutiveBrandThemeProvider>
+  );
 }

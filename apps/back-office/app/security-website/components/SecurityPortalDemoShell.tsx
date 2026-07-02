@@ -38,7 +38,7 @@ export default function SecurityPortalDemoShell({
   return (
     <div className={`${styles.wrapper} ${className}`}>
       <div className={styles.frame}>
-        <div className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain">
+        <div className="flex h-full min-h-0 flex-col overflow-hidden">
           {children}
         </div>
       </div>

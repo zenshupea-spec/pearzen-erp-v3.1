@@ -1,15 +1,17 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useActionState, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { AlertTriangle, Loader2, ShieldAlert, ShieldCheck } from 'lucide-react';
+
+import type { OnboardEmployeeState } from './onboarding-actions';
 
 import {
   findRankPayEntry,
-  isRankValidForCorporateGroup,
-  ranksForCorporateGroup,
+  isRankValidForHrAssignment,
+  ranksForHrAssignmentSelect,
   type RankPayEntry,
 } from '../../../../packages/rank-pay-matrix';
-import { filterRanksForEditor } from '../../lib/executive-rank-guard';
 import { normalizeEpfNo, sanitizeEpfNoInput } from '../../lib/employee-epf';
 import { HR_DOCUMENT_TYPES } from '../../../../packages/supabase/employee-hr-documents';
 import EmployeeDocumentField from './EmployeeDocumentField';
@@ -17,10 +19,17 @@ import { isNicLookupReady } from '../../lib/employee-nic';
 import { checkEpfNoAvailable, lookupPriorRecordsByNic, type PriorEmployeeMatch } from './epf-actions';
 import { ONBOARDING_BENCH_SITE } from './onboarding-types';
 import type { OnboardingGuardSite } from './onboarding-types';
+import { mergePendingHrDocumentsIntoFormData, getPendingHrDocument } from '../../lib/hr-document-pending-registry';
+import HrRankSelectField, { HR_RANK_ASSIGN_LATER } from './HrRankSelectField';
+import HrSectorSelectField from './HrSectorSelectField';
+import { getRankPayMatrix } from '../executive/settings/rank-matrix-actions';
+import { getInternalWorkLocationsForMnr } from '../executive/settings/internal-work-locations-actions';
+import type { InternalWorkLocationsSettings } from '../../lib/internal-work-locations';
+import { formatInternalBranchLabel } from '../../lib/internal-work-locations';
+import { showHeadOfficeWorkEmailInMnr } from '../../lib/head-office-work-email';
 
 const CORPORATE_GROUPS = [
   { value: 'GUARD', label: 'Guard' },
-  { value: 'SECTOR_MANAGER', label: 'Sector Manager' },
   { value: 'HEAD_OFFICE', label: 'Head Office' },
   { value: 'CAFE', label: 'Café' },
 ] as const;
@@ -39,19 +48,30 @@ export default function InductionForm({
   action,
   rankMatrix,
   guardSites,
+  internalWorkLocations,
+  sectorNames = [],
+  occupiedSingletonRanks = [],
   editorRole = null,
-  canManageExecutive = false,
   mergeContext,
+  disabled = false,
 }: {
-  action: (formData: FormData) => Promise<void>;
+  action: (
+    prev: OnboardEmployeeState | null,
+    formData: FormData,
+  ) => Promise<OnboardEmployeeState>;
   rankMatrix: RankPayEntry[];
   guardSites: OnboardingGuardSite[];
+  internalWorkLocations: InternalWorkLocationsSettings;
+  sectorNames?: string[];
+  /** MD / OD / FM ranks already provisioned with portal work email — hidden from picker. */
+  occupiedSingletonRanks?: string[];
   editorRole?: string | null;
-  canManageExecutive?: boolean;
   mergeContext?: { tempId: string; nameHint?: string };
+  disabled?: boolean;
 }) {
   const [selectedGroup, setSelectedGroup] = useState(mergeContext ? 'GUARD' : '');
   const [selectedRank, setSelectedRank] = useState('');
+  const [assignedSector, setAssignedSector] = useState('');
   const [assignedSite, setAssignedSite] = useState(ONBOARDING_BENCH_SITE);
   const [salaryType, setSalaryType] = useState('BANK');
   const [baseSalary, setBaseSalary] = useState('');
@@ -63,16 +83,52 @@ export default function InductionForm({
   const [nicLookupError, setNicLookupError] = useState<string | null>(null);
   const [epfCheckLoading, setEpfCheckLoading] = useState(false);
   const [epfUnavailable, setEpfUnavailable] = useState<string | null>(null);
+  const epfCheckSeq = useRef(0);
+  const epfVerifiedRef = useRef<{ epf: string; previousEpf: string } | null>(null);
+  const [gramaExpiryError, setGramaExpiryError] = useState<string | null>(null);
+  const [formState, formAction, isPending] = useActionState(action, null);
+  const router = useRouter();
+  const [liveRankMatrix, setLiveRankMatrix] = useState(rankMatrix);
+  const [liveSectorNames, setLiveSectorNames] = useState(sectorNames);
+  const [liveInternalWorkLocations, setLiveInternalWorkLocations] =
+    useState(internalWorkLocations);
 
-  const selectableRanks = useMemo(
-    () => filterRanksForEditor(rankMatrix, editorRole),
-    [rankMatrix, editorRole],
-  );
+  useEffect(() => {
+    setLiveRankMatrix(rankMatrix);
+  }, [rankMatrix]);
+
+  useEffect(() => {
+    setLiveInternalWorkLocations(internalWorkLocations);
+  }, [internalWorkLocations]);
+
+  useEffect(() => {
+    const reloadDeskData = () => {
+      if (document.visibilityState !== 'visible') return;
+      getRankPayMatrix()
+        .then(setLiveRankMatrix)
+        .catch(() => {});
+      getInternalWorkLocationsForMnr()
+        .then(setLiveInternalWorkLocations)
+        .catch(() => {});
+    };
+    window.addEventListener('focus', reloadDeskData);
+    document.addEventListener('visibilitychange', reloadDeskData);
+    return () => {
+      window.removeEventListener('focus', reloadDeskData);
+      document.removeEventListener('visibilitychange', reloadDeskData);
+    };
+  }, []);
+
+  useEffect(() => {
+    setLiveSectorNames(sectorNames);
+  }, [sectorNames]);
 
   const rankOptions = useMemo(() => {
     if (!selectedGroup) return [];
-    return ranksForCorporateGroup(selectableRanks, selectedGroup);
-  }, [selectableRanks, selectedGroup]);
+    return ranksForHrAssignmentSelect(liveRankMatrix, selectedGroup, {
+      excludeRankCodes: occupiedSingletonRanks,
+    });
+  }, [liveRankMatrix, selectedGroup, occupiedSingletonRanks]);
 
   const siteOptions = useMemo(() => {
     const names = guardSites.map((s) => s.siteName);
@@ -81,19 +137,33 @@ export default function InductionForm({
 
   const autoRank = useMemo(() => {
     if (!selectedGroup) return '';
-    if (selectedGroup === 'SECTOR_MANAGER') {
-      const sm = rankOptions.find((r) => r.rankCode === 'SM');
-      if (sm) return sm.rankCode;
-    }
     return rankOptions.length === 1 ? rankOptions[0].rankCode : '';
   }, [selectedGroup, rankOptions]);
   const rankLocked = Boolean(selectedGroup && autoRank);
-  const effectiveRank = rankLocked ? autoRank : selectedRank;
+  const effectiveRank =
+    rankLocked ? autoRank : selectedRank === HR_RANK_ASSIGN_LATER ? '' : selectedRank;
   const isGuard = selectedGroup === 'GUARD';
-  const isSm = selectedGroup === 'SECTOR_MANAGER';
+  const isCafe = selectedGroup === 'CAFE';
+  const isHeadOffice = selectedGroup === 'HEAD_OFFICE';
+  const isSmRank = effectiveRank.trim().toUpperCase() === 'SM';
+  const internalBranchApplicable = (isCafe || isHeadOffice) && !isSmRank;
+  const internalBranchOptions = (isCafe
+    ? liveInternalWorkLocations.cafe
+    : isHeadOffice
+      ? liveInternalWorkLocations.headOffice
+      : []
+  ).map((loc) => ({
+    id: loc.id,
+    name: formatInternalBranchLabel(loc.name),
+  })).filter((loc) => loc.name.length > 0);
+  const internalBranchLabel = isCafe ? 'Café Branch' : 'Head Office Branch';
+  const showWorkEmail = showHeadOfficeWorkEmailInMnr({
+    group: selectedGroup,
+    rank: effectiveRank,
+  });
   const rankEntry = useMemo(
-    () => findRankPayEntry(rankMatrix, effectiveRank),
-    [rankMatrix, effectiveRank],
+    () => findRankPayEntry(liveRankMatrix, effectiveRank),
+    [liveRankMatrix, effectiveRank],
   );
 
   useEffect(() => {
@@ -107,6 +177,7 @@ export default function InductionForm({
 
   useEffect(() => {
     setSelectedRank('');
+    setAssignedSector('');
     if (selectedGroup === 'GUARD') {
       setAssignedSite((prev) => prev || ONBOARDING_BENCH_SITE);
     } else {
@@ -115,15 +186,29 @@ export default function InductionForm({
   }, [selectedGroup]);
 
   useEffect(() => {
-    if (!selectedRank || !selectedGroup) return;
-    if (!isRankValidForCorporateGroup(rankMatrix, selectedGroup, selectedRank)) {
+    if (!isSmRank) setAssignedSector('');
+  }, [isSmRank]);
+
+  useEffect(() => {
+    if (!selectedRank || selectedRank === HR_RANK_ASSIGN_LATER || !selectedGroup) return;
+    if (
+      !isRankValidForHrAssignment(liveRankMatrix, selectedGroup, selectedRank, {
+        excludeRankCodes: occupiedSingletonRanks,
+      })
+    ) {
       setSelectedRank('');
     }
-  }, [selectedGroup, selectedRank, rankMatrix]);
+  }, [selectedGroup, selectedRank, liveRankMatrix, occupiedSingletonRanks]);
 
   useEffect(() => {
     if (autoRank) setSelectedRank(autoRank);
   }, [autoRank]);
+
+  useEffect(() => {
+    const target = formState?.redirectTo;
+    if (!target) return;
+    router.replace(target);
+  }, [formState?.redirectTo, router]);
 
   const lookupNicHistory = useCallback(async (nic: string) => {
     const trimmed = nic.trim();
@@ -162,45 +247,164 @@ export default function InductionForm({
     return () => window.clearTimeout(timer);
   }, [nicValue, lookupNicHistory]);
 
-  const verifyEpfAvailable = useCallback(async (epf: string) => {
-    const trimmed = epf.trim();
-    if (!trimmed) {
-      setEpfUnavailable(null);
-      return;
-    }
-    if (previousEpfNo && normalizeEpfNo(trimmed) === normalizeEpfNo(previousEpfNo)) {
-      setEpfUnavailable('New EPF must differ from the previous EPF number.');
-      return;
-    }
-    setEpfCheckLoading(true);
-    try {
-      const result = await checkEpfNoAvailable(trimmed);
-      if (result.available) {
-        setEpfUnavailable(null);
-      } else {
-        setEpfUnavailable(
-          result.usedBy
-            ? `Already in use by ${result.usedBy}. EPF numbers are never reused.`
-            : 'EPF number is already in use.',
-        );
+  const resolveEpfLocalConflict = useCallback(
+    (epf: string, previousEpf: string) => {
+      const trimmed = epf.trim();
+      if (!trimmed) {
+        return { blocked: false as const, message: null };
       }
-    } catch {
-      setEpfUnavailable(null);
-    } finally {
-      setEpfCheckLoading(false);
-    }
-  }, [previousEpfNo]);
+      if (previousEpf && normalizeEpfNo(trimmed) === normalizeEpfNo(previousEpf)) {
+        return {
+          blocked: true as const,
+          message: 'New EPF must differ from the previous EPF number.',
+        };
+      }
+      return { blocked: false as const, message: null };
+    },
+    [],
+  );
+
+  const verifyEpfAvailable = useCallback(
+    async (epf: string, previousEpf: string) => {
+      const trimmed = epf.trim();
+      const local = resolveEpfLocalConflict(trimmed, previousEpf);
+      if (!trimmed) {
+        epfVerifiedRef.current = null;
+        setEpfUnavailable(null);
+        return;
+      }
+      if (local.blocked) {
+        epfVerifiedRef.current = null;
+        setEpfUnavailable(local.message);
+        return;
+      }
+
+      const normEpf = normalizeEpfNo(trimmed);
+      const normPrevious = normalizeEpfNo(previousEpf);
+      if (
+        epfVerifiedRef.current?.epf === normEpf &&
+        epfVerifiedRef.current.previousEpf === normPrevious
+      ) {
+        setEpfUnavailable(null);
+        return;
+      }
+
+      const seq = ++epfCheckSeq.current;
+      setEpfCheckLoading(true);
+      try {
+        const result = await checkEpfNoAvailable(trimmed);
+        if (seq !== epfCheckSeq.current) return;
+        if (result.available) {
+          epfVerifiedRef.current = { epf: normEpf, previousEpf: normPrevious };
+          setEpfUnavailable(null);
+        } else {
+          epfVerifiedRef.current = null;
+          setEpfUnavailable(
+            result.usedBy
+              ? `Already in use by ${result.usedBy}. EPF numbers are never reused.`
+              : 'EPF number is already in use.',
+          );
+        }
+      } catch {
+        if (seq !== epfCheckSeq.current) return;
+        epfVerifiedRef.current = null;
+        setEpfUnavailable(null);
+      } finally {
+        if (seq === epfCheckSeq.current) {
+          setEpfCheckLoading(false);
+        }
+      }
+    },
+    [resolveEpfLocalConflict],
+  );
 
   useEffect(() => {
-    if (epfValue.trim()) {
-      void verifyEpfAvailable(epfValue);
-    } else {
+    const trimmed = epfValue.trim();
+    if (!trimmed) {
+      epfVerifiedRef.current = null;
       setEpfUnavailable(null);
+      return;
     }
-  }, [epfValue, previousEpfNo, verifyEpfAvailable]);
+
+    const local = resolveEpfLocalConflict(trimmed, previousEpfNo);
+    if (local.blocked) {
+      epfVerifiedRef.current = null;
+      setEpfUnavailable(local.message);
+      return;
+    }
+
+    const normEpf = normalizeEpfNo(trimmed);
+    const normPrevious = normalizeEpfNo(previousEpfNo);
+    if (
+      epfVerifiedRef.current?.epf === normEpf &&
+      epfVerifiedRef.current.previousEpf === normPrevious
+    ) {
+      setEpfUnavailable(null);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void verifyEpfAvailable(trimmed, previousEpfNo);
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [epfValue, previousEpfNo, resolveEpfLocalConflict, verifyEpfAvailable]);
+
+  const epfBlocksSubmit = Boolean(epfUnavailable) || epfCheckLoading;
+
+  /** Guard / Café need a rank; Head Office may defer rank to MD Portal Staff Command Center. */
+  const rankRequirementMet = isHeadOffice || Boolean(effectiveRank.trim());
+
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (
+      epfBlocksSubmit ||
+      disabled ||
+      isPending ||
+      !selectedGroup ||
+      !rankRequirementMet ||
+      (isSmRank && !assignedSector.trim())
+    ) {
+      return;
+    }
+    const gramaDoc = getPendingHrDocument('grama_niladari');
+    const gramaExpiry = (event.currentTarget.elements.namedItem('grama_niladari_expiry') as HTMLInputElement | null)?.value?.trim() ?? '';
+    if (gramaDoc && gramaDoc.size > 0 && !gramaExpiry) {
+      setGramaExpiryError('Grama Niladari expiry date is required when a certificate scan is attached.');
+      return;
+    }
+    setGramaExpiryError(null);
+    const formData = new FormData(event.currentTarget);
+    mergePendingHrDocumentsIntoFormData(formData);
+    formAction(formData);
+  };
 
   return (
-    <form action={action} encType="multipart/form-data" className="p-8 space-y-10">
+    <form onSubmit={handleSubmit} className="p-8 space-y-10">
+      {liveRankMatrix.length === 0 ? (
+        <div
+          role="status"
+          className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900"
+        >
+          No ranks in MD Settings — configure Rank Pay Matrix under Executive Settings before
+          assigning ranks.
+        </div>
+      ) : null}
+      {formState?.error && (
+        <div
+          role="alert"
+          className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-800"
+        >
+          {formState.error}
+        </div>
+      )}
+      {formState?.warning && (
+        <div
+          role="status"
+          className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900"
+        >
+          {formState.warning}
+        </div>
+      )}
       {mergeContext && <input type="hidden" name="temp_emp_id" value={mergeContext.tempId} />}
       {/* ── Section 1: Identity & Demographics ── */}
       <div className="space-y-5">
@@ -346,16 +550,24 @@ export default function InductionForm({
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           <div>
             <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
-              New EPF No
+              New EPF No{isSmRank ? ' *' : ''}
             </label>
+            {isSmRank && (
+              <p className="mb-2 text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                Required for Sector Managers — this number is the SM portal login ID.
+              </p>
+            )}
             <div className="relative">
               <input
                 type="text"
                 name="epf_no"
                 value={epfValue}
-                onChange={(e) => setEpfValue(sanitizeEpfNoInput(e.target.value))}
-                onBlur={() => void verifyEpfAvailable(epfValue)}
-                placeholder="New EPF membership number"
+                required={isSmRank}
+                onChange={(e) => {
+                  epfVerifiedRef.current = null;
+                  setEpfValue(sanitizeEpfNoInput(e.target.value));
+                }}
+                placeholder={isSmRank ? 'SM portal login ID (EPF number)' : 'New EPF membership number'}
                 className={`w-full bg-white border rounded-lg px-4 py-3 text-sm text-slate-900 font-mono placeholder:text-slate-400 focus:ring-2 outline-none ${
                   epfUnavailable
                     ? 'border-red-300 focus:ring-red-400'
@@ -480,70 +692,107 @@ export default function InductionForm({
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
-              Assigned Rank *
+              Assigned Rank{isHeadOffice ? ' (optional)' : ' *'}
             </label>
-            <select
-              {...(rankLocked ? {} : { name: 'rank' })}
-              required
-              value={effectiveRank}
-              onChange={(e) => setSelectedRank(e.target.value)}
-              disabled={!selectedGroup || rankLocked}
-              className={`w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono focus:ring-2 focus:ring-blue-500 outline-none uppercase appearance-none ${
-                !selectedGroup || rankLocked ? 'opacity-60' : ''
-              }`}
-            >
-              <option value="" disabled>
-                {selectedGroup ? 'Select rank…' : 'Select corporate group first'}
-              </option>
-              {rankOptions.map((r) => (
-                <option key={r.id} value={r.rankCode}>
-                  {r.rankCode} — {r.fullTitle}
-                </option>
-              ))}
-            </select>
-            {rankLocked && <input type="hidden" name="rank" value={autoRank} />}
-            {selectedGroup && rankOptions.length === 0 && (
-              <p className="mt-2 text-[10px] font-bold text-amber-800">
-                No ranks for{' '}
-                {CORPORATE_GROUPS.find((g) => g.value === selectedGroup)?.label ?? selectedGroup} in
-                MD Settings → Rank Pay Matrix. Add ranks with the matching operational group, then
-                save the matrix.
-              </p>
+            {rankLocked ? (
+              <>
+                <select
+                  required
+                  value={effectiveRank}
+                  disabled
+                  className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono focus:ring-2 focus:ring-blue-500 outline-none uppercase appearance-none opacity-60"
+                >
+                  <option value={autoRank}>
+                    {rankOptions.find((r) => r.rankCode === autoRank)?.fullTitle
+                      ? `${autoRank} — ${rankOptions.find((r) => r.rankCode === autoRank)?.fullTitle}`
+                      : autoRank}
+                  </option>
+                </select>
+                <input type="hidden" name="rank" value={autoRank} />
+              </>
+            ) : (
+              <HrRankSelectField
+                name="rank"
+                corporateGroup={selectedGroup}
+                rankMatrix={liveRankMatrix}
+                onRankMatrixUpdated={setLiveRankMatrix}
+                occupiedSingletonRanks={occupiedSingletonRanks}
+                value={selectedRank}
+                onChange={setSelectedRank}
+                disabled={!selectedGroup}
+                required={!isHeadOffice}
+                allowAssignLater={isHeadOffice}
+                selectClassName={`w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono focus:ring-2 focus:ring-blue-500 outline-none uppercase appearance-none ${
+                  !selectedGroup ? 'opacity-60' : ''
+                }`}
+              />
             )}
-            {selectedGroup && rankOptions.length > 0 && (
+            {isHeadOffice && !rankLocked ? (
               <p className="mt-1.5 text-[10px] font-semibold text-slate-500">
-                Only ranks tagged for this corporate group in the pay matrix are listed.
+                Choose <strong>Assign later</strong> for FM / MD / OD (set in MD Portal → Security
+                &amp; Access → Staff Command Center). Drivers and caretakers can skip rank and work
+                email here.
               </p>
-            )}
-            {!canManageExecutive && selectedGroup && (
-              <p className="mt-1.5 text-[10px] font-bold text-indigo-800">
-                MD and OD ranks are hidden — only MD or OD can assign executive portal access.
-              </p>
-            )}
+            ) : null}
           </div>
-          {isSm && (
+          {showWorkEmail ? (
+            <div>
+              <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
+                Work Email (optional)
+              </label>
+              <input
+                type="email"
+                name="email"
+                autoComplete="email"
+                placeholder="name@company.com"
+                className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono focus:ring-2 focus:ring-blue-500 outline-none"
+              />
+              <p className="mt-1.5 text-[10px] font-semibold text-slate-500">
+                Optional for non-portal HO staff (e.g. driver, caretaker). Portal ranks (FM, HR, OM,
+                etc.) need work email in MNR; OTP and module access are issued in MD Portal →
+                Security &amp; Access → Staff Command Center.
+              </p>
+            </div>
+          ) : null}
+          {isSmRank && (
+            <div>
+              <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
+                Assigned Sector *
+              </label>
+              <HrSectorSelectField
+                name="assigned_sector"
+                sectorNames={liveSectorNames}
+                onSectorNamesUpdated={setLiveSectorNames}
+                value={assignedSector}
+                onChange={setAssignedSector}
+                selectClassName="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono focus:ring-2 focus:ring-blue-500 outline-none uppercase appearance-none"
+              />
+            </div>
+          )}
+          {isSmRank && (
             <div>
               <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
                 Employee No / Portal Login ID *
               </label>
-              <input
-                type="text"
-                name="emp_number"
-                required
-                value={epfValue}
-                readOnly
-                placeholder="Auto-filled from New EPF No"
-                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-sm text-slate-700 font-mono placeholder:text-slate-400 outline-none uppercase"
-              />
+              {epfValue.trim() ? (
+                <input type="hidden" name="emp_number" value={epfValue.trim()} />
+              ) : null}
+              <div className="w-full rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-mono text-slate-700 uppercase">
+                {epfValue.trim() || 'Enter New EPF No in Section 1 above'}
+              </div>
               <p className="mt-1.5 text-[10px] font-semibold text-amber-800">
-                Matches the new EPF number — used for SM portal login. Access is provisioned
-                automatically on induction.
+                Mirrors New EPF No — used for SM portal login. Access is provisioned automatically on
+                induction.
               </p>
             </div>
           )}
           <div>
             <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
-              Assigned Site{isGuard ? '' : ' (guards only)'}
+              {isGuard
+                ? 'Assigned Site'
+                : internalBranchApplicable
+                  ? `${internalBranchLabel}${internalBranchOptions.length ? ' *' : ''}`
+                  : 'Assigned Site (guards only)'}
             </label>
             {isGuard ? (
               <select
@@ -559,11 +808,41 @@ export default function InductionForm({
                   </option>
                 ))}
               </select>
+            ) : internalBranchApplicable ? (
+              <>
+                {internalBranchOptions.length === 0 ? (
+                  <div className="w-full rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
+                    No branches configured yet. Add GPS branches in MD Settings → Operations, save,
+                    then return here.
+                  </div>
+                ) : (
+                  <select
+                    name="assigned_site"
+                    required
+                    value={formatInternalBranchLabel(assignedSite)}
+                    onChange={(e) => setAssignedSite(formatInternalBranchLabel(e.target.value))}
+                    className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono focus:ring-2 focus:ring-blue-500 outline-none uppercase appearance-none"
+                  >
+                    <option value="">
+                      Select branch…
+                    </option>
+                    {internalBranchOptions.map((loc) => (
+                      <option key={loc.id} value={loc.name}>
+                        {loc.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <p className="mt-1.5 text-[10px] font-semibold text-slate-500">
+                  Branches are defined in MD Settings → Operations. Café roster and check-in use this
+                  assignment.
+                </p>
+              </>
             ) : (
               <div className="w-full rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-400 uppercase">
                 {selectedGroup
                   ? 'Site assignment applies to field guards only'
-                  : 'Select Guard as corporate group to assign a site'}
+                  : 'Select corporate group to assign a site or branch'}
               </div>
             )}
             {isGuard && guardSites.length === 0 && (
@@ -604,7 +883,7 @@ export default function InductionForm({
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
-              Base Salary (LKR)
+              Basic Salary (B) — LKR
             </label>
             <input
               type="number"
@@ -613,7 +892,7 @@ export default function InductionForm({
               step={1}
               value={baseSalary}
               onChange={(e) => setBaseSalary(e.target.value)}
-              placeholder={rankEntry?.basicPay ? String(rankEntry.basicPay) : '45000.00'}
+              placeholder={rankEntry?.basicPay ? String(rankEntry.basicPay) : '45000'}
               className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono focus:ring-2 focus:ring-emerald-500 outline-none"
             />
             {rankEntry?.basicPay ? (
@@ -639,12 +918,59 @@ export default function InductionForm({
 
         <div>
           <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-emerald-700">
-            Fixed Monthly Allowances
+            Fixed Monthly Allowances (LKR)
           </p>
-          <p className="text-xs text-slate-500">
-            Site allowance is set by FM in payroll earnings each month. Arrears and performance
-            incentive are added there as well — not at induction.
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            {(
+              [
+                ['fixed_allowance_lkr', 'Fixed Allowance'],
+                ['special_allowance_lkr', 'Special Allowance'],
+                ['site_allowance_lkr', 'Site Allowance'],
+                ['meal_allowance_lkr', 'Meal Allowance'],
+                ['transport_allowance_lkr', 'Transport Allowance'],
+              ] as const
+            ).map(([name, label]) => (
+              <div key={name}>
+                <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
+                  {label}
+                </label>
+                <input
+                  type="number"
+                  name={name}
+                  min={0}
+                  step={1}
+                  defaultValue={0}
+                  placeholder="0"
+                  className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono focus:ring-2 focus:ring-emerald-500 outline-none"
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-rose-700">
+            Fixed Monthly Deduction (LKR)
           </p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            <div>
+              <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
+                Fixed Deduction
+              </label>
+              <input
+                type="number"
+                name="fixed_deduction_lkr"
+                min={0}
+                step={1}
+                defaultValue={0}
+                placeholder="0"
+                className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono focus:ring-2 focus:ring-rose-500 outline-none"
+              />
+              <p className="mt-1.5 text-[10px] font-semibold text-slate-500">
+                Recurring payroll deduction each month (e.g. society, levy). FM applies automatically.
+              </p>
+            </div>
+          </div>
         </div>
 
         {salaryType === 'BANK' && (
@@ -704,16 +1030,6 @@ export default function InductionForm({
             inductionMode
             canUpload
           />
-          <div>
-            <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
-              Police Clearance Expiry
-            </label>
-            <input
-              type="date"
-              name="police_expiry"
-              className="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 font-mono focus:ring-2 focus:ring-amber-500 outline-none "
-            />
-          </div>
         </div>
 
         <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">
@@ -721,24 +1037,68 @@ export default function InductionForm({
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {HR_DOCUMENT_TYPES.filter((docType) => docType !== 'nic_passport').map((docType) => (
-            <EmployeeDocumentField
-              key={docType}
-              employeeId=""
-              docType={docType}
-              inductionMode
-              canUpload
-            />
+            <React.Fragment key={docType}>
+              <EmployeeDocumentField
+                employeeId=""
+                docType={docType}
+                inductionMode
+                canUpload
+              />
+              {docType === 'grama_niladari' && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">
+                    Grama Niladari Expiry
+                    <span className="text-slate-400 font-semibold normal-case tracking-normal ml-1">
+                      (required if certificate uploaded)
+                    </span>
+                  </label>
+                  <input
+                    type="date"
+                    name="grama_niladari_expiry"
+                    className={`w-full bg-white border rounded-lg px-4 py-3 text-sm text-slate-900 font-mono focus:ring-2 focus:ring-amber-500 outline-none ${
+                      gramaExpiryError ? 'border-red-400 ring-2 ring-red-100' : 'border-slate-300'
+                    }`}
+                    onChange={() => setGramaExpiryError(null)}
+                  />
+                  {gramaExpiryError && (
+                    <p className="mt-1.5 text-[11px] font-bold text-red-700">{gramaExpiryError}</p>
+                  )}
+                </div>
+              )}
+            </React.Fragment>
           ))}
         </div>
       </div>
 
-      <div className="pt-4">
+      <div className="pt-4 space-y-2">
+        {epfBlocksSubmit && (
+          <p className="text-[11px] font-bold text-red-700 text-center">
+            {epfCheckLoading
+              ? 'Checking EPF availability…'
+              : 'Resolve the EPF issue above before submitting.'}
+          </p>
+        )}
         <button
           type="submit"
-          disabled={!selectedGroup || !effectiveRank}
+          disabled={
+            disabled ||
+            isPending ||
+            !selectedGroup ||
+            !rankRequirementMet ||
+            epfBlocksSubmit ||
+            (isSmRank && !assignedSector.trim())
+          }
           className="w-full flex items-center justify-center gap-3 bg-gradient-to-r from-rose-600 to-fuchsia-700 hover:from-rose-500 hover:to-fuchsia-600 text-white font-black py-4 rounded-xl uppercase tracking-widest text-sm transition-all shadow-lg hover:shadow-rose-500/25 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          <ShieldCheck className="w-5 h-5" /> Initiate Secure Onboarding
+          {isPending ? (
+            <>
+              <Loader2 className="w-5 h-5 animate-spin" /> Processing…
+            </>
+          ) : (
+            <>
+              <ShieldCheck className="w-5 h-5" /> Initiate Secure Onboarding
+            </>
+          )}
         </button>
       </div>
     </form>

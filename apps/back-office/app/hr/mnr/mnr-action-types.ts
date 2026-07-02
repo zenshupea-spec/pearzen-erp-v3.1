@@ -1,6 +1,6 @@
 /** Types for MNR server actions — keep out of `"use server"` files. */
 
-export type MnrSectionKey = 'personal' | 'employment' | 'bank' | 'vetting';
+export type MnrSectionKey = 'personal' | 'employment' | 'bank' | 'vetting' | 'offboarding';
 
 export type SectionEditMeta = {
   at: string;

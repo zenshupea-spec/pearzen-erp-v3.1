@@ -27,10 +27,19 @@ import {
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
 import {
+  ExecutivePageBody,
+  ExecutivePageHeader,
+  ExecutivePageLiveSubtitle,
+  ExecutivePageLoading,
+  ExecutivePageShell,
+} from '../../../components/executive/ExecutivePageChrome';
+import { CVS_BRAND_CLASSES } from '../../../lib/cvs-brand-tokens';
+import {
   approveExpenseBill,
+  fetchExpenseBillReceiptSignedUrl,
   fetchExpenseBills,
   rejectExpenseBill,
-  submitExpenseBill,
+  submitExpenseBillFromForm,
   type ExpenseBillRecord,
 } from '../bill-actions';
 import { useMonthYear } from '../month-context';
@@ -87,7 +96,13 @@ const STATUS_META: Record<BillStatus, { label: string; cls: string }> = {
 };
 
 const COST_CENTER_META: Record<CostCenter, { label: string; company: string; Icon: React.ElementType; cls: string; bar: string }> = {
-  Security: { label: 'Security', company: 'Security',          Icon: Building2, cls: 'text-indigo-700 bg-indigo-50/80 border-indigo-200/80', bar: 'bg-indigo-500' },
+  Security: {
+    label: 'Security',
+    company: 'Security',
+    Icon: Building2,
+    cls: 'text-[color:var(--cvs-accent)] bg-[var(--cvs-accent-soft)] border-[color:var(--cvs-accent-muted)]',
+    bar: 'bg-[color:var(--cvs-accent)]',
+  },
   Café:     { label: 'Café',     company: 'Café Tasha',        Icon: Coffee,    cls: 'text-amber-700  bg-amber-50/80  border-amber-200/80',   bar: 'bg-amber-500'  },
   BnB:      { label: 'BnB',      company: 'Shalom Residence',  Icon: Home,      cls: 'text-teal-700   bg-teal-50/80   border-teal-200/80',    bar: 'bg-teal-500'   },
 };
@@ -138,10 +153,10 @@ function CompanyFilterDropdown({ value, onChange }: { value: CompanyKey; onChang
               const OptionIcon = ICONS[opt];
               const active = value === opt;
               return (
-                <button key={opt} type="button" onClick={() => { onChange(opt); setOpen(false); }} className={`flex w-full items-center gap-2.5 px-4 py-2.5 text-sm font-bold text-left transition-colors ${active ? 'bg-emerald-50/80 text-emerald-900' : 'text-slate-700 hover:bg-slate-50/80'}`}>
-                  <OptionIcon className={`h-4 w-4 ${active ? 'text-emerald-700' : 'text-slate-400'}`} />
+                <button key={opt} type="button" onClick={() => { onChange(opt); setOpen(false); }} className={`flex w-full items-center gap-2.5 px-4 py-2.5 text-sm font-bold text-left transition-colors ${active ? 'bg-[var(--cvs-accent-soft)] text-[color:var(--cvs-accent)]' : 'text-slate-700 hover:bg-slate-50/80'}`}>
+                  <OptionIcon className={`h-4 w-4 ${active ? 'text-[color:var(--cvs-accent)]' : 'text-slate-400'}`} />
                   {opt === 'ALL' ? 'All Companies' : opt}
-                  {active && <CheckCircle2 className="ml-auto h-3.5 w-3.5 text-emerald-600" />}
+                  {active && <CheckCircle2 className={`ml-auto h-3.5 w-3.5 ${CVS_BRAND_CLASSES.navActiveIconFg}`} />}
                 </button>
               );
             })}
@@ -157,7 +172,7 @@ function CompanyFilterDropdown({ value, onChange }: { value: CompanyKey; onChang
 function DateRangeFilter({
   from, to, onFrom, onTo,
 }: { from: string; to: string; onFrom: (v: string) => void; onTo: (v: string) => void }) {
-  const inputCls = 'rounded-xl border border-white/70 bg-white/55 px-3 py-2 text-xs font-semibold text-slate-800 shadow-sm backdrop-blur-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/40 transition-all cursor-pointer';
+  const inputCls = `rounded-xl border border-white/70 bg-white/55 px-3 py-2 text-xs font-semibold text-slate-800 shadow-sm backdrop-blur-xl focus:outline-none ${CVS_BRAND_CLASSES.focusRing} transition-all cursor-pointer`;
   return (
     <div className="flex items-center gap-2 rounded-2xl border border-white/70 bg-white/55 px-3 py-2 shadow-sm backdrop-blur-xl">
       <Calendar className="h-3.5 w-3.5 flex-shrink-0 text-slate-400" />
@@ -171,6 +186,35 @@ function DateRangeFilter({
 // ─── Receipt Modal ────────────────────────────────────────────────────────────
 
 function ReceiptModal({ bill, onClose }: { bill: Bill | null; onClose: () => void }) {
+  const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  const [contentType, setContentType] = useState<'image' | 'pdf' | null>(null);
+  const [loadingReceipt, setLoadingReceipt] = useState(false);
+  const [receiptError, setReceiptError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!bill?.id || !bill.receiptUrl) {
+      setSignedUrl(null);
+      setContentType(null);
+      setReceiptError(bill && !bill.receiptUrl ? 'Receipt was purged or not uploaded.' : null);
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingReceipt(true);
+    setReceiptError(null);
+    void fetchExpenseBillReceiptSignedUrl(bill.id).then((result) => {
+      if (cancelled) return;
+      setSignedUrl(result.url);
+      setContentType(result.contentType);
+      setReceiptError(result.error ?? (result.url ? null : 'Receipt unavailable.'));
+      setLoadingReceipt(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [bill?.id, bill?.receiptUrl]);
+
   if (!bill) return null;
   const cc        = COST_CENTER_META[bill.costCenter];
   const permanent = isPermanentRecord(bill);
@@ -187,9 +231,35 @@ function ReceiptModal({ bill, onClose }: { bill: Bill | null; onClose: () => voi
             </div>
             <button type="button" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200/80 bg-white/70 text-slate-500 hover:text-slate-900 transition-colors"><X className="h-4 w-4" /></button>
           </div>
-          <ExecutiveGlassCard className="flex flex-col items-center justify-center gap-3 py-12">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-slate-200/80 bg-slate-100/80"><Receipt className="h-7 w-7 text-slate-400" /></div>
-            <p className="text-xs font-semibold text-slate-500">Physical receipt photo</p>
+          <ExecutiveGlassCard className="flex flex-col items-center justify-center gap-3 py-6 min-h-[220px]">
+            {loadingReceipt ? (
+              <ExecutivePageLoading
+                message="Loading receipt…"
+                className="min-h-[6rem] py-4"
+              />
+            ) : signedUrl && contentType === 'image' ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={signedUrl}
+                alt={`Receipt for ${bill.description}`}
+                className="max-h-72 w-full rounded-xl border border-slate-200/80 object-contain bg-white"
+              />
+            ) : signedUrl && contentType === 'pdf' ? (
+              <iframe
+                title={`Receipt for ${bill.description}`}
+                src={signedUrl}
+                className="h-72 w-full rounded-xl border border-slate-200/80 bg-white"
+              />
+            ) : (
+              <>
+                <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-slate-200/80 bg-slate-100/80">
+                  <Receipt className="h-7 w-7 text-slate-400" />
+                </div>
+                <p className="text-xs font-semibold text-slate-500">
+                  {receiptError ?? 'Physical receipt photo'}
+                </p>
+              </>
+            )}
             <p className="text-[10px] text-slate-400">Uploaded by {bill.submittedBy}</p>
           </ExecutiveGlassCard>
           {permanent ? (
@@ -226,12 +296,12 @@ function SubmitBillModal({
 }: {
   open: boolean;
   onClose: () => void;
-  onSubmit: (form: NewBillForm) => void;
+  onSubmit: (form: NewBillForm, receiptFile: File) => void;
   activeLabel: string;
 }) {
   const [form, setForm]       = useState<NewBillForm>(BLANK_FORM);
   const [fileHover, setFileHover] = useState(false);
-  const [fileName, setFileName]   = useState<string | null>(null);
+  const [receiptFile, setReceiptFile] = useState<File | null>(null);
 
   const set = <K extends keyof NewBillForm>(k: K, v: NewBillForm[K]) =>
     setForm((p) => ({ ...p, [k]: v }));
@@ -251,18 +321,19 @@ function SubmitBillModal({
     form.date &&
     form.description.trim() &&
     parseFloat(form.amount) > 0 &&
+    receiptFile &&
     (form.costCenterMode === 'SINGLE' || allocValid);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canSubmit) return;
-    onSubmit(form);
+    if (!canSubmit || !receiptFile) return;
+    onSubmit(form, receiptFile);
     setForm(BLANK_FORM);
-    setFileName(null);
+    setReceiptFile(null);
     onClose();
   };
 
-  const inputCls = 'w-full rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 transition-all';
+  const inputCls = `w-full rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm placeholder:text-slate-400 focus:outline-none ${CVS_BRAND_CLASSES.focusRing} transition-all`;
   const labelCls = 'mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-600';
 
   if (!open) return null;
@@ -296,7 +367,7 @@ function SubmitBillModal({
 
             {/* Date + Description */}
             <ExecutiveGlassCard className="p-5">
-              <p className="mb-4 text-[10px] font-bold uppercase tracking-widest text-indigo-800">Bill Details</p>
+              <p className="mb-4 text-[10px] font-bold uppercase tracking-widest text-[color:var(--cvs-accent)]">Bill Details</p>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
                   <label className={labelCls}>Date</label>
@@ -331,7 +402,7 @@ function SubmitBillModal({
                   e.preventDefault();
                   setFileHover(false);
                   const f = e.dataTransfer.files[0];
-                  if (f) setFileName(f.name);
+                  if (f) setReceiptFile(f);
                 }}
                 className={`flex flex-col items-center justify-center gap-3 py-8 transition-all ${fileHover ? 'bg-emerald-50/60' : ''}`}
               >
@@ -340,16 +411,23 @@ function SubmitBillModal({
                 </div>
                 <div className="text-center">
                   <p className="text-xs font-bold text-slate-700">
-                    {fileName ? fileName : 'Drag receipt photo here or'}
+                    {receiptFile ? receiptFile.name : 'Drag receipt photo here or'}
                   </p>
-                  {!fileName && (
+                  {!receiptFile && (
                     <label className="mt-1 cursor-pointer text-[10px] font-bold text-emerald-700 underline underline-offset-2">
                       click to upload
-                      <input type="file" accept="image/*" className="sr-only" onChange={(e) => { if (e.target.files?.[0]) setFileName(e.target.files[0].name); }} />
+                      <input
+                        type="file"
+                        accept="image/*,application/pdf"
+                        className="sr-only"
+                        onChange={(e) => {
+                          if (e.target.files?.[0]) setReceiptFile(e.target.files[0]);
+                        }}
+                      />
                     </label>
                   )}
-                  {fileName && (
-                    <button type="button" onClick={() => setFileName(null)} className="mt-1 text-[10px] font-bold text-rose-600 underline">remove</button>
+                  {receiptFile && (
+                    <button type="button" onClick={() => setReceiptFile(null)} className="mt-1 text-[10px] font-bold text-rose-600 underline">remove</button>
                   )}
                 </div>
                 <p className="text-[9px] text-slate-400">JPG, PNG or PDF · max 10 MB</p>
@@ -483,7 +561,7 @@ function SubmitBillModal({
               <button
                 type="submit"
                 disabled={!canSubmit}
-                className="flex-[2] rounded-xl bg-emerald-600 py-3 text-sm font-bold uppercase tracking-widest text-white shadow-lg shadow-emerald-600/25 hover:bg-emerald-500 transition-all disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex-[2] rounded-xl bg-[color:var(--cvs-accent)] py-3 text-sm font-bold uppercase tracking-widest text-white shadow-lg shadow-[color:var(--cvs-glow)] hover:bg-[color:var(--cvs-accent-hover)] transition-all disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Submit for MD Approval
               </button>
@@ -556,36 +634,31 @@ export default function AccountsPayablePage() {
     });
   };
 
-  const handleNewBill = (form: NewBillForm) => {
+  const handleNewBill = (form: NewBillForm, receiptFile: File) => {
     const isSplit = form.costCenterMode === 'SPLIT';
     const enabledCCs = COST_CENTERS.filter((cc) => form.splitEnabled[cc]);
     const primaryCC: CostCenter = isSplit
       ? (enabledCCs[0] ?? 'Security')
       : form.singleCostCenter;
 
-    const newBill: Bill = {
-      id: `B${String(Date.now()).slice(-4)}`,
-      date:        form.date,
-      submittedBy: 'Executive Admin',
-      costCenter:  primaryCC,
-      description: form.description,
-      amount:      parseFloat(form.amount) || 0,
-      receiptUrl:  '',
-      status:      'PENDING_APPROVAL',
-      isSplit,
-      splitAllocations: isSplit
-        ? Object.fromEntries(enabledCCs.map((cc) => [cc, form.splitAllocations[cc]])) as Partial<Record<CostCenter, number>>
-        : undefined,
-    };
-    void submitExpenseBill({
-      date: newBill.date,
-      description: newBill.description,
-      amount: newBill.amount,
-      costCenter: newBill.costCenter,
-      submittedBy: newBill.submittedBy,
-      isSplit: newBill.isSplit,
-      splitAllocations: newBill.splitAllocations,
-    }).then((result) => {
+    const payload = new FormData();
+    payload.append('date', form.date);
+    payload.append('description', form.description);
+    payload.append('amount', String(parseFloat(form.amount) || 0));
+    payload.append('costCenter', primaryCC);
+    payload.append('submittedBy', 'Executive Admin');
+    payload.append('isSplit', String(isSplit));
+    if (isSplit) {
+      payload.append(
+        'splitAllocations',
+        JSON.stringify(
+          Object.fromEntries(enabledCCs.map((cc) => [cc, form.splitAllocations[cc]])),
+        ),
+      );
+    }
+    payload.append('receipt', receiptFile);
+
+    void submitExpenseBillFromForm(payload).then((result) => {
       if (result.success) {
         setSubmitOpen(false);
         void refreshBills();
@@ -598,44 +671,38 @@ export default function AccountsPayablePage() {
       <ReceiptModal bill={receiptBill} onClose={() => setReceiptBill(null)} />
       <SubmitBillModal open={submitOpen} onClose={() => setSubmitOpen(false)} onSubmit={handleNewBill} activeLabel={activeLabel} />
 
-      <div className="w-full flex-grow flex flex-col pb-12 font-sans">
-
-        {/* ── Header ── */}
-        <header className="sticky top-0 z-40 border-b border-white/60 bg-white/45 px-6 md:px-12 2xl:px-24 py-4 shadow-[0_8px_32px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl backdrop-saturate-150">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h1 className="text-2xl md:text-3xl font-black text-slate-900 uppercase tracking-tight">Accounts Payable</h1>
-              <p className="text-sm font-bold text-slate-500 uppercase tracking-widest mt-1">
-                OpEx & Bills Ledger · Execution Lock · {activeLabel}
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {/* Company Filter */}
+      <ExecutivePageShell>
+        <ExecutivePageHeader
+          title="Accounts Payable"
+          subtitle={
+            <ExecutivePageLiveSubtitle>
+              OpEx &amp; Bills Ledger · Execution Lock · {activeLabel}
+            </ExecutivePageLiveSubtitle>
+          }
+          actions={
+            <>
               <CompanyFilterDropdown value={companyFilter} onChange={setCompanyFilter} />
-              {/* Date Range */}
               <DateRangeFilter from={dateFrom} to={dateTo} onFrom={setDateFrom} onTo={setDateTo} />
-              {/* Submit button */}
               <button
                 type="button"
                 onClick={() => setSubmitOpen(true)}
-                className="flex items-center gap-2 rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white shadow-lg shadow-emerald-600/25 hover:bg-emerald-500 transition-all"
+                className="flex items-center gap-2 rounded-2xl bg-[color:var(--cvs-accent)] px-4 py-2 text-sm font-bold text-white shadow-lg shadow-[color:var(--cvs-glow)] hover:bg-[color:var(--cvs-accent-hover)] transition-all"
               >
                 <Plus className="h-4 w-4" />
                 Submit Bill
               </button>
-            </div>
-          </div>
-        </header>
+            </>
+          }
+        />
 
-        <div className="px-6 md:px-12 2xl:px-24 space-y-6 pt-8">
-
+        <ExecutivePageBody>
           {loadError ? (
             <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
               {loadError}
             </p>
           ) : null}
           {billsLoading ? (
-            <p className="text-sm font-semibold text-slate-500">Loading bills from Supabase…</p>
+            <ExecutivePageLoading message="Loading bills from Supabase…" />
           ) : null}
 
           {/* ── Summary Cards ── */}
@@ -698,7 +765,7 @@ export default function AccountsPayablePage() {
             <Filter className="h-3.5 w-3.5 text-slate-400" />
             <div className="flex items-center gap-1 rounded-2xl border border-white/70 bg-white/50 p-1 shadow-inner backdrop-blur-xl">
               {STATUS_FILTERS.map((f) => (
-                <button key={f} type="button" onClick={() => setStatusFilter(f)} className={`rounded-xl px-3 py-1.5 text-xs font-bold transition-all ${statusFilter === f ? 'bg-white shadow-md text-slate-900 ring-1 ring-slate-900/10' : 'text-slate-500 hover:text-slate-800'}`}>
+                <button key={f} type="button" onClick={() => setStatusFilter(f)} className={`rounded-xl px-3 py-1.5 text-xs font-bold transition-all ${statusFilter === f ? `${CVS_BRAND_CLASSES.mobileTabActive} border-transparent` : 'text-slate-500 hover:text-slate-800'}`}>
                   {STATUS_FILTER_LABELS[f]}
                   {f === 'PENDING_APPROVAL' && pending.length > 0 && (
                     <span className="ml-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[9px] font-black text-white">{pending.length}</span>
@@ -791,8 +858,14 @@ export default function AccountsPayablePage() {
                           </td>
 
                           <td className="px-5 py-6 text-sm font-medium text-slate-800">
-                            <button type="button" onClick={() => setReceiptBill(bill)} className="flex items-center gap-1.5 rounded-lg border border-slate-200/80 bg-white/70 px-2.5 py-1.5 text-[10px] font-bold text-slate-700 shadow-sm hover:bg-white transition-all">
-                              <Eye className="h-3 w-3" />View
+                            <button
+                              type="button"
+                              onClick={() => setReceiptBill(bill)}
+                              disabled={!bill.receiptUrl}
+                              className="flex items-center gap-1.5 rounded-lg border border-slate-200/80 bg-white/70 px-2.5 py-1.5 text-[10px] font-bold text-slate-700 shadow-sm hover:bg-white transition-all disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              <Eye className="h-3 w-3" />
+                              {bill.receiptUrl ? 'View' : 'Purged'}
                             </button>
                           </td>
 
@@ -842,8 +915,8 @@ export default function AccountsPayablePage() {
             </div>
           </div>
 
-        </div>
-      </div>
+        </ExecutivePageBody>
+      </ExecutivePageShell>
     </>
   );
 }

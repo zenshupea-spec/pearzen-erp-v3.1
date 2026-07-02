@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CalendarDays } from 'lucide-react';
 
+import PwaPortalLoading from '../../../../packages/pwa-shell/PwaPortalLoading';
 import {
-  getCafeFrontRollingSchedule,
   type CafeFrontRollingSchedule,
 } from '../../app/cafe-front/actions';
 import { formatCafeShiftWindowLabel } from '../../lib/cafe-shift-hours';
@@ -77,7 +77,9 @@ function DayCell({
     <div
       title={timeHint}
       className={`flex aspect-square flex-col items-center justify-center rounded-xl border px-0.5 py-1 text-center transition-colors ${
-        chip.isToday ? 'ring-2 ring-orange-400 ring-offset-1 ring-offset-white shadow-sm' : ''
+        chip.isToday
+          ? 'ring-2 ring-[color:var(--cvs-accent-muted)] ring-offset-1 ring-offset-white shadow-sm'
+          : ''
       } ${cellClass}`}
     >
       <span className="text-[8px] font-bold uppercase leading-none opacity-75">{chip.weekday}</span>
@@ -125,7 +127,7 @@ export function CafeFrontSchedulePreview() {
   return (
     <section className="overflow-hidden rounded-2xl border border-slate-200/90 bg-white/90 shadow-sm backdrop-blur-sm">
       <div className="flex items-center gap-2 border-b border-slate-100 bg-slate-50/80 px-4 py-3">
-        <CalendarDays className="h-4 w-4 shrink-0 text-orange-600" />
+        <CalendarDays className="h-4 w-4 shrink-0 text-[color:var(--cvs-accent)]" />
         <div className="min-w-0 flex-1">
           <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-800">
             My schedule
@@ -140,14 +142,7 @@ export function CafeFrontSchedulePreview() {
 
       <div className="p-4">
         {loading ? (
-          <div className="grid grid-cols-7 gap-1.5">
-            {Array.from({ length: 14 }).map((_, i) => (
-              <div
-                key={i}
-                className="aspect-square animate-pulse rounded-xl border border-slate-100 bg-slate-100/80"
-              />
-            ))}
-          </div>
+          <PwaPortalLoading portal="cafe-front" message="Loading schedule…" className="min-h-[8rem] py-6" />
         ) : !schedule?.days.length ? (
           <p className="py-4 text-center text-xs font-semibold text-slate-400">
             Schedule unavailable

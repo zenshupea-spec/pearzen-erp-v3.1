@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { ExecutiveGlassCard } from '../../../../components/executive/ExecutiveVaultShell';
+import { ExecutivePageLoading } from '../../../../components/executive/ExecutivePageChrome';
 import {
   fetchExecutiveSessionProfile,
   type ExecutiveSessionProfile,
@@ -17,10 +18,18 @@ import {
   syncMenuRecipeCosts,
   type CafeMenuRecipeItem,
 } from '../cafe-menu-sync';
+import { type MenuDailySaleRecord } from '../cafe-menu-velocity';
 import { isCafeHubView } from '../../../../lib/hq-hub';
 import { reconcilePrepWithMenu, setMenuKitchenTrack, type KitchenTrackKind } from '../prep-menu-sync';
 import { useCafeBranchScope } from '../use-cafe-branch';
 import { useCafeDashboardSave } from '../use-cafe-dashboard-persistence';
+
+function salesMapFromPayload(
+  record?: CafeDashboardPayload['menuDailySales'],
+): Map<string, MenuDailySaleRecord[]> {
+  if (!record) return new Map();
+  return new Map(Object.entries(record));
+}
 
 export default function CafeMenuPage() {
   const pathname = usePathname();
@@ -60,14 +69,19 @@ export default function CafeMenuPage() {
       const loadedIngredients = (payload.ingredients ?? []).map((ing) =>
         normalizeIngredient(ing),
       );
-      const loadedMenu = syncMenuRecipeCosts(
-        normalizeMenuItems(payload.menuItems ?? []),
-        loadedIngredients,
-      );
+      const salesMap = salesMapFromPayload(payload.menuDailySales);
+      const normalizedMenu = normalizeMenuItems(payload.menuItems ?? []);
       const linkedPrep = reconcilePrepWithMenu(
-        loadedMenu,
+        normalizedMenu,
         payload.prepItems ?? [],
         payload.displayItems ?? [],
+      );
+      const loadedMenu = syncMenuRecipeCosts(
+        normalizedMenu,
+        loadedIngredients,
+        salesMap,
+        new Date(),
+        { prepItems: linkedPrep.prepItems, displayItems: linkedPrep.displayItems },
       );
       setDashboard({
         ...payload,
@@ -98,6 +112,7 @@ export default function CafeMenuPage() {
   const cafeOpenEnd = dashboard?.cafeOpenEnd ?? '19:00';
   const prepItems = dashboard?.prepItems ?? [];
   const displayItems = dashboard?.displayItems ?? [];
+  const menuSalesByItemId = salesMapFromPayload(dashboard?.menuDailySales);
 
   const mutateDashboard = useCallback(
     (
@@ -144,6 +159,9 @@ export default function CafeMenuPage() {
             };
           }),
           nextIngredients,
+          salesMapFromPayload(prev.menuDailySales),
+          new Date(),
+          { prepItems: prev.prepItems ?? [], displayItems: prev.displayItems ?? [] },
         );
         const linkedPrep = reconcilePrepWithMenu(
           nextMenu,
@@ -166,7 +184,13 @@ export default function CafeMenuPage() {
     mutateDashboard((prev) => {
       const current = prev.ingredients.map((ing) => normalizeIngredient(ing));
       const nextIngredients = typeof updater === 'function' ? updater(current) : updater;
-      const syncedMenu = syncMenuRecipeCosts(prev.menuItems as CafeMenuRecipeItem[], nextIngredients);
+      const syncedMenu = syncMenuRecipeCosts(
+        prev.menuItems as CafeMenuRecipeItem[],
+        nextIngredients,
+        salesMapFromPayload(prev.menuDailySales),
+        new Date(),
+        { prepItems: prev.prepItems ?? [], displayItems: prev.displayItems ?? [] },
+      );
       return {
         ...prev,
         ingredients: nextIngredients,
@@ -180,8 +204,14 @@ export default function CafeMenuPage() {
       const currentMenu = prev.menuItems as CafeMenuRecipeItem[];
       const nextMenu = typeof updater === 'function' ? updater(currentMenu) : updater;
       const normalizedIngredients = prev.ingredients.map((ing) => normalizeIngredient(ing));
-      const syncedMenu = syncMenuRecipeCosts(nextMenu, normalizedIngredients);
-      const linkedPrep = reconcilePrepWithMenu(syncedMenu, prev.prepItems ?? [], prev.displayItems ?? []);
+      const linkedPrep = reconcilePrepWithMenu(nextMenu, prev.prepItems ?? [], prev.displayItems ?? []);
+      const syncedMenu = syncMenuRecipeCosts(
+        nextMenu,
+        normalizedIngredients,
+        salesMapFromPayload(prev.menuDailySales),
+        new Date(),
+        { prepItems: linkedPrep.prepItems, displayItems: linkedPrep.displayItems },
+      );
       return {
         ...prev,
         menuItems: syncedMenu,
@@ -273,9 +303,7 @@ export default function CafeMenuPage() {
       ) : null}
 
       {!dashboardReady ? (
-        <ExecutiveGlassCard className="p-8 text-center text-sm text-slate-500">
-          Loading menu &amp; pricing…
-        </ExecutiveGlassCard>
+        <ExecutivePageLoading message="Loading menu & pricing…" />
       ) : (
         <MenuEngineeringDesk
           items={menuItems}
@@ -305,7 +333,10 @@ export default function CafeMenuPage() {
           displayItems={displayItems}
           onKitchenTrackChange={handleKitchenTrackChange}
           onCreateIngredientForRecipe={handleCreateIngredientForRecipe}
+          menuSalesByItemId={menuSalesByItemId}
           saveState={saveState}
+          hubView={hubView}
+          branchId={locationId}
         />
       )}
     </CafePortalShell>

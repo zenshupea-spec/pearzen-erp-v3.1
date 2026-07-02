@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
+import { CVS_BRAND_CLASSES } from '../../../lib/cvs-brand-tokens';
 import {
   getCafeCustomers,
   updateCafeCustomerDiscount,
@@ -169,7 +170,7 @@ export function CafeCustomersPanel({
                               [customer.id]: e.target.value,
                             }))
                           }
-                          className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-center text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
+                          className={`w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-center text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 ${CVS_BRAND_CLASSES.focusRing}`}
                         />
                         <span className="text-[10px] font-bold text-slate-500">%</span>
                       </div>
@@ -179,7 +180,7 @@ export function CafeCustomersPanel({
                         type="button"
                         onClick={() => void saveDiscount(customer)}
                         disabled={savingId === customer.id || !dirty}
-                        className="rounded-lg bg-slate-900 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-white disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                        className="rounded-lg bg-[color:var(--cvs-accent)] px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-white shadow-sm shadow-[color:var(--cvs-glow)] hover:bg-[color:var(--cvs-accent-hover)] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
                       >
                         {savingId === customer.id ? '…' : 'Save'}
                       </button>

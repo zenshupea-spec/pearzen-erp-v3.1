@@ -1,12 +1,13 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export const EMPLOYEE_HR_DOCS_BUCKET = 'employee-hr-documents';
-export const MAX_HR_DOC_BYTES = 5 * 1024 * 1024;
+export const MAX_HR_DOC_BYTES = 2 * 1024 * 1024;
 
 export const HR_DOCUMENT_TYPES = [
   'mod_clearance',
   'police_clearance',
   'grama_niladari',
+  'education_certificate_ol',
   'birth_certificate',
   'servicemen_certificate',
   'nic_passport',
@@ -17,23 +18,26 @@ export type HrDocumentType = (typeof HR_DOCUMENT_TYPES)[number];
 export type HrDocumentMeta = {
   column: string;
   label: string;
-  expiryColumn?: 'mod_expiry' | 'police_expiry';
+  expiryColumn?: 'grama_niladari_expiry';
 };
 
 export const HR_DOCUMENT_META: Record<HrDocumentType, HrDocumentMeta> = {
   mod_clearance: {
     column: 'mod_clearance_url',
     label: 'MoD Clearance',
-    expiryColumn: 'mod_expiry',
   },
   police_clearance: {
     column: 'police_clearance_url',
     label: 'Police Clearance',
-    expiryColumn: 'police_expiry',
   },
   grama_niladari: {
     column: 'grama_niladari_url',
     label: 'Grama Niladari Certificate',
+    expiryColumn: 'grama_niladari_expiry',
+  },
+  education_certificate_ol: {
+    column: 'education_certificate_ol_url',
+    label: 'Education Certificate (O/Ls)',
   },
   birth_certificate: {
     column: 'birth_certificate_url',
@@ -82,7 +86,7 @@ export async function uploadEmployeeHrDocumentBuffer(
     return { success: false, error: 'Choose a file to upload.' };
   }
   if (args.storedBytes > MAX_HR_DOC_BYTES) {
-    return { success: false, error: 'File must be 5MB or smaller after compression.' };
+    return { success: false, error: 'File must be 2MB or smaller after compression.' };
   }
 
   const meta = HR_DOCUMENT_META[docType];
@@ -127,7 +131,7 @@ export async function uploadEmployeeHrDocumentFile(
     return { success: false, error: 'Choose a file to upload.' };
   }
   if (file.size > MAX_HR_DOC_BYTES) {
-    return { success: false, error: 'File must be 5MB or smaller.' };
+    return { success: false, error: 'File must be 2MB or smaller.' };
   }
 
   const mime = file.type || 'application/octet-stream';

@@ -5,14 +5,21 @@ import { cookies } from 'next/headers';
 import { revalidatePath } from 'next/cache';
 
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
+import { resolveCompanyIdForSession } from '../../../lib/company-context-server';
 import { auditStaffAction } from '../../../lib/staff-audit';
+import {
+  assertHrPortalEditor,
+  fetchBackOfficeUserProfile,
+} from '../../../lib/hr-portal-access-server';
 import {
   findCafeEmployeeByEpf,
   isCafeEmployee,
   isEmployeeActive,
   normalizeEpfNo,
   provisionCafePortalOtp,
+  revokeCafePortalOtpCredentials,
 } from '../../../lib/cafe-front-auth';
+import { CAFE_PORTAL_OTP_LIFETIME_MS } from '../../../lib/cafe-front-auth-shared';
 
 function getAdminClient() {
   return createClient(
@@ -28,17 +35,41 @@ function generateOTP(): string {
 
 const PROVISION_FLASH_COOKIE = 'cafe_portal_provision_flash';
 
+async function requireHrEditor() {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: 'Not signed in.' as const };
+
+  const profile = await fetchBackOfficeUserProfile(supabase, user);
+  try {
+    assertHrPortalEditor(profile.role);
+  } catch (err) {
+    return {
+      error: err instanceof Error ? err.message : 'Only HR portal editors can manage café access.',
+    };
+  }
+
+  return { supabase, profile };
+}
+
 export async function clearProvisionFlashCookie() {
   const jar = await cookies();
   jar.set(PROVISION_FLASH_COOKIE, '', { maxAge: 0, path: '/' });
 }
 
 export async function provisionCafePortalAccess(epfInput: string) {
+  const gate = await requireHrEditor();
+  if ('error' in gate) return { error: gate.error };
+
   const epf = normalizeEpfNo(epfInput);
   if (!epf) return { error: 'EPF number required.' };
 
   const admin = getAdminClient();
-  const employee = await findCafeEmployeeByEpf(admin, epf);
+  const supabase = gate.supabase;
+  const companyId = await resolveCompanyIdForSession(supabase);
+  const employee = await findCafeEmployeeByEpf(admin, epf, companyId);
 
   if (!employee) return { error: `Employee with EPF ${epf} not found.` };
   if (!isCafeEmployee(employee)) return { error: `${epf} is not café operations staff.` };
@@ -48,7 +79,6 @@ export async function provisionCafePortalAccess(epfInput: string) {
   const provision = await provisionCafePortalOtp(admin, employee, otp);
   if (!provision.ok) return { error: provision.error ?? 'Provisioning failed.' };
 
-  const supabase = await createSupabaseServerClient();
   await auditStaffAction({
     supabase,
     portal: 'hr',
@@ -58,23 +88,34 @@ export async function provisionCafePortalAccess(epfInput: string) {
 
   revalidatePath('/hr/cafe-portal');
 
+  const otpExpiresAt = new Date(Date.now() + CAFE_PORTAL_OTP_LIFETIME_MS).toISOString();
+
   return {
     success: true,
     otp,
     epf,
     staffName: employee.full_name ?? epf,
+    otpExpiresAt,
   };
 }
 
 export async function getActiveCafeStaff() {
-  const admin = getAdminClient();
+  const gate = await requireHrEditor();
+  if ('error' in gate) return [];
 
-  const { data: employees, error } = await admin
+  const admin = getAdminClient();
+  const supabase = gate.supabase;
+  const companyId = await resolveCompanyIdForSession(supabase);
+
+  let query = admin
     .from('employees')
     .select('epf_no, epf_num, full_name, site')
     .eq('group', 'CAFE')
     .eq('status', 'ACTIVE')
     .order('full_name', { ascending: true });
+  if (companyId) query = query.eq('company_id', companyId);
+
+  const { data: employees, error } = await query;
 
   if (error || !employees) return [];
 
@@ -93,6 +134,9 @@ export async function getActiveCafeStaff() {
 }
 
 export async function deactivateCafePortalAccess(epfInput: string) {
+  const gate = await requireHrEditor();
+  if ('error' in gate) return { error: gate.error };
+
   const epf = normalizeEpfNo(epfInput);
   const admin = getAdminClient();
 
@@ -103,9 +147,8 @@ export async function deactivateCafePortalAccess(epfInput: string) {
 
   if (error) return { error: error.message };
 
-  const supabase = await createSupabaseServerClient();
   await auditStaffAction({
-    supabase,
+    supabase: gate.supabase,
     portal: 'hr',
     action: 'Deactivate Café Portal Access',
     targetEntity: epf,

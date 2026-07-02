@@ -45,7 +45,9 @@ export default async function SetHeadOfficePinPage() {
   }
 
   if (!(await hasValidOtpSetupSessionForUser(profile.employeeId!, user.email))) {
-    redirect('/login/verify-pin?error=session');
+    redirect(
+      buildHeadOfficePortalResetPath(`${signInPath}?error=setup_session`),
+    );
   }
 
   const tenant = await resolveTenantCompanyFromRequest();

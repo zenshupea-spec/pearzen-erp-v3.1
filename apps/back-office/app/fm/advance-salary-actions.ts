@@ -10,6 +10,7 @@ import {
 import { auditStaffAction } from '../../lib/staff-audit';
 import { isAdvanceWorkflowGroup } from '../../lib/advance-run-types';
 import { upsertAdvanceRunTotals } from './advance-run-actions';
+import { validateAdvanceRowsForPeriod } from './lib/fm-advance-validation';
 import type { PayrollPeriod } from './lib/payroll-period';
 
 export type FmAdvanceSelectionRecord = {
@@ -113,14 +114,34 @@ export async function saveFmAdvanceSelections(input: {
     }
   }
 
-  for (const row of input.selections) {
-    const amount = Math.max(1, Math.round(Number(row.amount) || 0));
+  const normalizedSelections = input.selections.map((row) => ({
+    profileId: row.profileId,
+    empNumber: row.empNumber,
+    amount: Math.max(1, Math.round(Number(row.amount) || 0)),
+    payrollGroup,
+  }));
+
+  const validation = await validateAdvanceRowsForPeriod(
+    companyId,
+    input.period.year,
+    input.period.month,
+    normalizedSelections.map((row) => ({
+      profileId: row.profileId,
+      amount: row.amount,
+      payrollGroup: row.payrollGroup,
+    })),
+  );
+  if (!validation.ok) {
+    return { success: false, error: validation.error };
+  }
+
+  for (const row of normalizedSelections) {
     const { error } = await db.from('salary_advances').upsert(
       {
         company_id: companyId,
         profile_id: row.profileId,
         emp_number: row.empNumber,
-        amount,
+        amount: row.amount,
         period_year: input.period.year,
         period_month: input.period.month,
         payroll_group: payrollGroup,
@@ -141,10 +162,7 @@ export async function saveFmAdvanceSelections(input: {
   }
 
   if (payrollGroup && isAdvanceWorkflowGroup(payrollGroup)) {
-    const totalAmount = input.selections.reduce(
-      (sum, row) => sum + Math.max(1, Math.round(Number(row.amount) || 0)),
-      0,
-    );
+    const totalAmount = normalizedSelections.reduce((sum, row) => sum + row.amount, 0);
     await upsertAdvanceRunTotals(
       payrollGroup,
       input.period.year,

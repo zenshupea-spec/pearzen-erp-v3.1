@@ -23,10 +23,18 @@ import {
   Shield,
   Receipt,
   Store,
+  KeyRound,
 } from 'lucide-react';
 
 import { fetchAuditLogs, type AuditRow } from '../../app/executive/audit/actions';
 import type { PortalTab } from '../../lib/audit-portals';
+import {
+  ExecutivePageBody,
+  ExecutivePageHeader,
+  ExecutivePageLiveSubtitle,
+  ExecutivePageLoading,
+  ExecutivePageShell,
+} from '../executive/ExecutivePageChrome';
 
 interface TabDef {
   id: PortalTab;
@@ -49,14 +57,28 @@ const TAB_DEFS: TabDef[] = [
     label: 'MD / OD Vault',
     sub: 'Executive overrides',
     Icon: ShieldCheck,
-    accent: 'emerald',
-    iconBg: 'bg-emerald-500/12',
-    iconText: 'text-emerald-700',
+    accent: 'brand',
+    iconBg: 'bg-[var(--cvs-accent-soft)]',
+    iconText: 'text-[color:var(--cvs-accent)]',
     activeBg: 'bg-white/80',
-    activeBorder: 'border-emerald-200/80',
-    activeText: 'text-emerald-900',
-    badgeBg: 'bg-emerald-100/80',
-    badgeText: 'text-emerald-800',
+    activeBorder: 'border-[color:var(--cvs-accent-muted)]/80',
+    activeText: 'text-[color:var(--cvs-accent)]',
+    badgeBg: 'bg-[var(--cvs-accent-soft)]/80',
+    badgeText: 'text-[color:var(--cvs-accent)]',
+  },
+  {
+    id: 'security',
+    label: 'HO Security',
+    sub: 'Login & lockout feed',
+    Icon: KeyRound,
+    accent: 'rose',
+    iconBg: 'bg-rose-500/12',
+    iconText: 'text-rose-700',
+    activeBg: 'bg-white/80',
+    activeBorder: 'border-rose-200/80',
+    activeText: 'text-rose-900',
+    badgeBg: 'bg-rose-100/80',
+    badgeText: 'text-rose-800',
   },
   {
     id: 'hq-staff',
@@ -170,6 +192,20 @@ const TAB_DEFS: TabDef[] = [
     badgeBg: 'bg-orange-100/80',
     badgeText: 'text-orange-800',
   },
+  {
+    id: 'shalom-front',
+    label: 'Shalom Front Office',
+    sub: 'Caretaker stay-ops',
+    Icon: Home,
+    accent: 'teal',
+    iconBg: 'bg-teal-500/12',
+    iconText: 'text-teal-700',
+    activeBg: 'bg-white/80',
+    activeBorder: 'border-teal-200/80',
+    activeText: 'text-teal-900',
+    badgeBg: 'bg-teal-100/80',
+    badgeText: 'text-teal-800',
+  },
 ];
 
 function roleBadgeClass(role: string): string {
@@ -202,6 +238,7 @@ export default function AuditLedgerView({ variant, allowedTabs, defaultTab }: Pr
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [liveRows, setLiveRows] = useState<AuditRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [accessDenied, setAccessDenied] = useState(false);
 
   useEffect(() => {
     if (!allowedTabs.includes(activeTab)) {
@@ -212,9 +249,11 @@ export default function AuditLedgerView({ variant, allowedTabs, defaultTab }: Pr
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setAccessDenied(false);
     (async () => {
       const result = await fetchAuditLogs(activeTab);
       if (cancelled) return;
+      setAccessDenied(Boolean(result.forbidden));
       setLiveRows(result.data ?? []);
       setLoading(false);
     })();
@@ -238,12 +277,12 @@ export default function AuditLedgerView({ variant, allowedTabs, defaultTab }: Pr
     }
 
     if (filterDate) {
-      data = data.filter((r) => r.timestamp.startsWith(filterDate));
+      data = data.filter((r) => r.createdAt.slice(0, 10) === filterDate);
     }
 
     data.sort((a, b) => {
-      const aVal = sortField === 'timestamp' ? a.timestamp : a.userName;
-      const bVal = sortField === 'timestamp' ? b.timestamp : b.userName;
+      const aVal = sortField === 'timestamp' ? a.createdAt : a.userName;
+      const bVal = sortField === 'timestamp' ? b.createdAt : b.userName;
       const cmp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
       return sortDir === 'asc' ? cmp : -cmp;
     });
@@ -271,55 +310,29 @@ export default function AuditLedgerView({ variant, allowedTabs, defaultTab }: Pr
 
   const isPortalActivity = variant === 'portal-activity';
 
-  return (
-    <main
-      className={`w-full flex-grow flex flex-col pb-12 pt-8 text-slate-900 antialiased ${
-        isPortalActivity ? 'px-6 md:px-10' : 'px-6 md:px-12 2xl:px-24'
-      }`}
-    >
-      <div className="space-y-7">
-        {isPortalActivity ? (
-          <Link
-            href="/dashboard"
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-600 shadow-sm transition hover:bg-slate-50"
-          >
-            <ArrowLeft className="h-3 w-3" />
-            Return to HQ Hub
-          </Link>
-        ) : null}
+  const liveStatusBadge = (
+    <div className="flex items-center gap-2 rounded-2xl border border-white/70 bg-white/45 px-4 py-2.5 shadow-sm backdrop-blur-xl">
+      <span
+        className={`h-1.5 w-1.5 rounded-full ${
+          loading
+            ? 'animate-pulse bg-amber-500'
+            : liveRows.length > 0
+              ? isPortalActivity
+                ? 'bg-emerald-500'
+                : 'bg-[color:var(--cvs-accent)] shadow-[0_0_8px_var(--cvs-glow)]'
+              : 'bg-slate-300'
+        }`}
+      />
+      <span className="text-[10px] font-bold uppercase tracking-widest text-slate-600">
+        {loading
+          ? 'Loading ledger…'
+          : `${liveRows.length} entr${liveRows.length === 1 ? 'y' : 'ies'} in tab`}
+      </span>
+    </div>
+  );
 
-        <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p className="text-sm font-bold uppercase tracking-widest text-slate-500">
-              {isPortalActivity ? 'Governance' : 'Executive Vault'}
-            </p>
-            <h1 className="text-2xl font-black uppercase tracking-tight text-slate-900 md:text-3xl">
-              {isPortalActivity ? 'Portal Activity Ledger' : 'Master Audit Ledger'}
-            </h1>
-            <p className="mt-1 text-sm font-bold uppercase tracking-widest text-slate-500">
-              {isPortalActivity
-                ? 'Immutable cross-portal activity log — every staff portal action is recorded and append-only.'
-                : 'Immutable cross-portal activity log — all privileged actions captured in real time.'}
-            </p>
-          </div>
-          <div className="flex items-center gap-2 rounded-2xl border border-white/70 bg-white/45 px-4 py-2.5 shadow-sm backdrop-blur-xl">
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                loading
-                  ? 'animate-pulse bg-amber-500'
-                  : liveRows.length > 0
-                    ? 'bg-emerald-500'
-                    : 'bg-slate-300'
-              }`}
-            />
-            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-600">
-              {loading
-                ? 'Loading ledger…'
-                : `${liveRows.length} entr${liveRows.length === 1 ? 'y' : 'ies'} in tab`}
-            </span>
-          </div>
-        </div>
-
+  const ledgerBody = (
+    <>
         {visibleTabs.length > 0 ? (
           <div className="overflow-hidden rounded-2xl border border-white/70 bg-white/40 p-1.5 shadow-[0_8px_32px_-8px_rgba(15,23,42,0.10)] ring-1 ring-slate-900/[0.04] backdrop-blur-2xl backdrop-saturate-[1.3]">
             <div
@@ -547,11 +560,11 @@ export default function AuditLedgerView({ variant, allowedTabs, defaultTab }: Pr
               <tbody className="divide-y divide-slate-200/60">
                 {loading ? (
                   <tr>
-                    <td
-                      colSpan={5}
-                      className="px-6 py-12 text-center text-sm font-semibold text-slate-500"
-                    >
-                      Loading audit trail…
+                    <td colSpan={5} className="px-6 py-6">
+                      <ExecutivePageLoading
+                        message="Loading audit trail…"
+                        className="min-h-[10rem] py-6"
+                      />
                     </td>
                   </tr>
                 ) : rows.length === 0 ? (
@@ -560,7 +573,9 @@ export default function AuditLedgerView({ variant, allowedTabs, defaultTab }: Pr
                       colSpan={5}
                       className="px-6 py-12 text-center text-sm font-semibold text-slate-500"
                     >
-                      No audit entries recorded yet. Actions in your portal will append here.
+                      {accessDenied
+                        ? 'You do not have permission to view this ledger tab.'
+                        : 'No audit entries recorded yet. Actions in your portal will append here.'}
                     </td>
                   </tr>
                 ) : null}
@@ -611,7 +626,52 @@ export default function AuditLedgerView({ variant, allowedTabs, defaultTab }: Pr
             {rows.length} entries displayed — read-only immutable ledger — data is append-only
           </div>
         </div>
-      </div>
-    </main>
+    </>
+  );
+
+  if (isPortalActivity) {
+    return (
+      <main className="w-full flex-grow flex flex-col pb-12 pt-8 px-6 text-slate-900 antialiased md:px-10">
+        <div className="space-y-7">
+          <Link
+            href="/dashboard"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-600 shadow-sm transition hover:bg-slate-50"
+          >
+            <ArrowLeft className="h-3 w-3" />
+            Return to HQ Hub
+          </Link>
+
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-sm font-bold uppercase tracking-widest text-slate-500">Governance</p>
+              <h1 className="text-2xl font-black uppercase tracking-tight text-slate-900 md:text-3xl">
+                Portal Activity Ledger
+              </h1>
+              <p className="mt-1 text-sm font-bold uppercase tracking-widest text-slate-500">
+                Immutable cross-portal activity log — every staff portal action is recorded and append-only.
+              </p>
+            </div>
+            {liveStatusBadge}
+          </div>
+
+          {ledgerBody}
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <ExecutivePageShell>
+      <ExecutivePageHeader
+        title="Master Audit Ledger"
+        subtitle={
+          <ExecutivePageLiveSubtitle>
+            Immutable cross-portal activity log — all privileged actions captured in real time
+          </ExecutivePageLiveSubtitle>
+        }
+        actions={liveStatusBadge}
+      />
+      <ExecutivePageBody spacing="relaxed">{ledgerBody}</ExecutivePageBody>
+    </ExecutivePageShell>
   );
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
@@ -12,7 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { LOGO_STORAGE_KEY } from '../../../../../packages/supabase/branding-constants';
-import { createSupabaseBrowserClient } from '../../../../../packages/supabase/client';
+import { signOutHeadOfficePortalAction } from '../../actions/portal-session-actions';
 import { HQ_HUB_PATH } from '../../../lib/hq-hub';
 import {
   ExecutiveVaultLockButton,
@@ -27,6 +27,7 @@ import {
   EXECUTIVE_MOBILE_STRIP_NAV,
   executiveNavIsActive,
 } from '../lib/executive-nav';
+import { CVS_BRAND_CLASSES } from '../../../lib/cvs-brand-tokens';
 
 function ProfileAvatar({
   profile,
@@ -62,14 +63,13 @@ export default function ExecutiveMobileNav({
   const pathname = usePathname();
   const router = useRouter();
   const navGuardRef = useExecutiveNavGuardRef();
-  const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const [moreOpen, setMoreOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
 
   const handleSignOut = async () => {
     if (signingOut) return;
     setSigningOut(true);
-    await supabase.auth.signOut();
+    await signOutHeadOfficePortalAction();
     router.replace('/login/md');
     router.refresh();
   };
@@ -89,8 +89,8 @@ export default function ExecutiveMobileNav({
                 className="h-full w-full max-h-9 max-w-9 object-contain"
               />
             ) : (
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-indigo-200 bg-indigo-50 shadow-sm">
-                <Gem className="h-[18px] w-[18px] text-indigo-700" />
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-[color:var(--cvs-accent-muted)] bg-[var(--cvs-accent-soft)] shadow-sm">
+                <Gem className="h-[18px] w-[18px] text-[color:var(--cvs-accent)]" />
               </div>
             )}
           </div>
@@ -98,7 +98,7 @@ export default function ExecutiveMobileNav({
             <p className="truncate text-sm font-black uppercase tracking-tight text-slate-900">
               MD Portal
             </p>
-            <p className="truncate text-[10px] font-bold uppercase tracking-widest text-indigo-600">
+            <p className={`truncate text-[10px] font-bold uppercase tracking-widest ${CVS_BRAND_CLASSES.portalEyebrow}`}>
               Mobile Command
             </p>
           </div>
@@ -140,9 +140,7 @@ export default function ExecutiveMobileNav({
                   }
                 }}
                 className={`flex flex-shrink-0 items-center gap-2 rounded-2xl border px-3.5 py-2.5 text-xs font-bold transition-all ${
-                  active
-                    ? 'border-indigo-300 bg-indigo-600 text-white shadow-md shadow-indigo-600/25'
-                    : 'border-slate-200/80 bg-white text-slate-700 shadow-sm hover:border-indigo-200 hover:bg-indigo-50/80'
+                  active ? CVS_BRAND_CLASSES.mobileTabActive : CVS_BRAND_CLASSES.mobileTabIdle
                 }`}
               >
                 <span
@@ -151,7 +149,7 @@ export default function ExecutiveMobileNav({
                   }`}
                 >
                   <Icon
-                    className={`h-3.5 w-3.5 ${active ? 'text-white' : 'text-indigo-600'}`}
+                    className={`h-3.5 w-3.5 ${active ? 'text-white' : 'text-[color:var(--cvs-accent)]'}`}
                   />
                 </span>
                 <span className="whitespace-nowrap">{label}</span>
@@ -183,12 +181,16 @@ export default function ExecutiveMobileNav({
                     }}
                     className={`flex items-center gap-2.5 rounded-xl border px-3 py-2.5 transition ${
                       active
-                        ? 'border-indigo-200 bg-indigo-50 ring-1 ring-indigo-100'
+                        ? `${CVS_BRAND_CLASSES.navActive} bg-[var(--cvs-accent-soft)]`
                         : 'border-slate-200 bg-slate-50/80 hover:bg-white'
                     }`}
                   >
                     <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white">
-                      <Icon className="h-4 w-4 text-indigo-600" />
+                      <Icon
+                        className={`h-4 w-4 ${
+                          active ? CVS_BRAND_CLASSES.navActiveIconFg : 'text-slate-500'
+                        }`}
+                      />
                     </div>
                     <div className="min-w-0">
                       <p className="truncate text-xs font-bold text-slate-900">{label}</p>

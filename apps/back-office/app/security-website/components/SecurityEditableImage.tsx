@@ -5,7 +5,7 @@ import Image from 'next/image';
 import { Camera, Loader2, Move, X } from 'lucide-react';
 
 import { uploadSecurityWebsiteSlotImage } from '../actions';
-import type { SecurityWebsiteImageSlot } from '../../../lib/security-website-images';
+import type { SecurityWebsiteImageSlot } from '../../../lib/security-website-image-utils';
 import {
   formatObjectPosition,
   parseObjectPosition,

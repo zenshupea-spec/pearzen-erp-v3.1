@@ -16,7 +16,20 @@ export const MD_SETTINGS_ENVELOPE_KEYS = {
   portalRbacMatrix: '_portalRbacMatrix',
   internalWorkLocations: '_internalWorkLocations',
   securityWebsite: '_securityWebsite',
+  shalomPublicWebsite: '_shalomPublicWebsite',
+  holidayCalendar: '_holidayCalendar',
+  /** Optional portal accent overrides: { accentHex?, accentHoverHex?, glowHex? } */
+  portalBrandTheme: '_portalBrandTheme',
+  hrSectorNames: '_hrSectorNames',
+  portalAfterHoursLoginAlerts: '_portalAfterHoursLoginAlerts',
 } as const;
+
+const MD_SETTINGS_GEOFENCE_INSERT_DEFAULT_M = 25;
+
+function clampMdSettingsGeofenceRadiusM(value: number): number {
+  if (!Number.isFinite(value)) return MD_SETTINGS_GEOFENCE_INSERT_DEFAULT_M;
+  return Math.min(25, Math.max(1, Math.round(value)));
+}
 
 export function isMissingColumnError(message: string | undefined): boolean {
   if (!message) return false;
@@ -87,6 +100,22 @@ export async function mergeSettingEnvelope(
     setting_value: merged,
     ...scalar,
   };
+
+  if ('default_geofence_radius_m' in row) {
+    row.default_geofence_radius_m = clampMdSettingsGeofenceRadiusM(Number(row.default_geofence_radius_m));
+  } else {
+    const { data: existing } = await supabase
+      .from('md_settings')
+      .select('default_geofence_radius_m')
+      .eq('company_id', companyId)
+      .maybeSingle();
+    const stored = (existing as { default_geofence_radius_m?: number | null } | null)
+      ?.default_geofence_radius_m;
+    row.default_geofence_radius_m =
+      stored != null
+        ? clampMdSettingsGeofenceRadiusM(stored)
+        : clampMdSettingsGeofenceRadiusM(MD_SETTINGS_GEOFENCE_INSERT_DEFAULT_M);
+  }
 
   const { error } = await supabase.from('md_settings').upsert(row, { onConflict: 'company_id' });
   if (error) return { success: false, error: error.message };

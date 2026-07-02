@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   AlertTriangle,
   ChefHat,
@@ -31,6 +32,7 @@ import {
   X,
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
+import { CVS_BRAND_CLASSES } from '../../../lib/cvs-brand-tokens';
 import {
   CUSTOMER_MENU_CLOUDFLARE_LINKS,
   CUSTOMER_MENU_SECURITY_RULES,
@@ -55,18 +57,20 @@ import {
   type IngredientUnit,
 } from './cafe-ingredient-utils';
 import {
-  calcAvailableToSell,
+  calcMenuAvailableToSell,
   calcBaseCost,
   calcMenu14dTarget,
-  calcMenuRollingAvg14d,
   calcRecipeCost,
   calcSellingPrice,
   normalizeMenuItem,
   syncMenuRecipeCosts,
   type CafeMenuRecipeItem,
+  type MenuAvailContext,
   type RecipeLine,
 } from './cafe-menu-sync';
+import { weekdayShortLabel, type MenuDailySaleRecord } from './cafe-menu-velocity';
 import { getMenuKitchenTrackKind, type KitchenTrackKind } from './prep-menu-sync';
+import { cafeIngredientLedgerHref } from './cafe-portal-nav';
 import {
   CAFE_ORDER_INPUT_CLASS,
   CAFE_ORDER_LABEL_CLASS,
@@ -74,36 +78,89 @@ import {
 } from '../../../../../packages/cafe-customer-order/order-form-styles';
 import { useCafeCustomerPhoneLookup } from '../../../../../packages/cafe-customer-order/use-cafe-customer-phone';
 import { CafeOpenStatusBadge } from '../../../../../packages/cafe-open-hours/CafeOpenStatusBadge';
+import CafeMenuItemImageEditor, {
+  CafeMenuItemImageModal,
+  CafeMenuItemImagePreview,
+} from './CafeMenuItemImageEditor';
+import {
+  DEFAULT_CAFE_MENU_ITEM_IMAGE_FRAME,
+  type CafeMenuItemImageFrame,
+} from './cafe-menu-item-image';
 
 type MenuItem = CafeMenuRecipeItem;
 
-function KitchenTrackToggle({
+function DisplayItemCheckbox({
+  checked,
+  weekdayLabel,
+  makeToday,
+  disabled,
+  onChange,
+}: {
+  checked: boolean;
+  weekdayLabel: string;
+  makeToday: number;
+  disabled?: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <label
+        className={`inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 transition-colors ${
+          checked
+            ? 'border-amber-300/80 bg-amber-50/70 text-amber-900'
+            : 'border-slate-200/80 bg-white/70 text-slate-600 hover:border-slate-300/80'
+        } ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+      >
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.checked)}
+          className={`h-3.5 w-3.5 rounded border-slate-300 ${CVS_BRAND_CLASSES.focusRing}`}
+        />
+        <span className="text-[9px] font-black uppercase tracking-wide">Display</span>
+      </label>
+      {checked ? (
+        <span
+          className="max-w-[7rem] text-center text-[9px] font-bold leading-tight text-amber-900"
+          title={`Staff make target for ${weekdayLabel} from same-weekday sales average`}
+        >
+          Make {weekdayLabel}: {makeToday.toLocaleString()}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function PrepTrackToggle({
   track,
   onChange,
 }: {
   track: KitchenTrackKind;
   onChange: (track: KitchenTrackKind) => void;
 }) {
-  const options: { key: KitchenTrackKind; label: string; Icon?: typeof ChefHat }[] = [
-    { key: 'none', label: 'Off' },
-    { key: 'prep', label: 'Prep', Icon: ChefHat },
-    { key: 'display', label: 'Display', Icon: Utensils },
-  ];
+  const prepActive = track === 'prep';
   return (
-    <div className="inline-flex rounded-xl border border-violet-200/80 bg-white/70 p-0.5 text-[9px] font-black uppercase tracking-wider">
-      {options.map(({ key, label, Icon }) => (
-        <button
-          key={key}
-          type="button"
-          onClick={() => onChange(key)}
-          className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 transition-all ${
-            track === key ? 'bg-violet-700 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          {Icon ? <Icon className="h-2.5 w-2.5" /> : null}
-          {label}
-        </button>
-      ))}
+    <div className="inline-flex rounded-xl border border-[color:var(--cvs-accent-muted)]/80 bg-white/70 p-0.5 text-[9px] font-black uppercase tracking-wider">
+      <button
+        type="button"
+        onClick={() => onChange('none')}
+        className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 transition-all ${
+          !prepActive ? `${CVS_BRAND_CLASSES.mobileTabActive} border-transparent` : 'text-slate-500 hover:text-slate-700'
+        }`}
+      >
+        Off
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange('prep')}
+        className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 transition-all ${
+          prepActive ? `${CVS_BRAND_CLASSES.mobileTabActive} border-transparent` : 'text-slate-500 hover:text-slate-700'
+        }`}
+      >
+        <ChefHat className="h-2.5 w-2.5" />
+        Prep
+      </button>
     </div>
   );
 }
@@ -258,7 +315,7 @@ function IngredientCombobox({
               key={ing.id}
               type="button"
               onClick={() => pick(ing.id)}
-              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-indigo-50/80"
+              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-[var(--cvs-accent-soft)]/80"
             >
               <span className="font-semibold text-slate-900">{ing.name}</span>
               <span className="shrink-0 font-mono text-[10px] text-slate-500">
@@ -340,7 +397,7 @@ function RecipeIngredientAddPanel({
   };
 
   return (
-    <div ref={wrapRef} className="mt-3 space-y-3 rounded-xl border border-dashed border-indigo-300/70 bg-indigo-50/30 p-3">
+    <div ref={wrapRef} className="mt-3 space-y-3 rounded-xl border border-dashed border-[color:var(--cvs-accent-muted)]/70 bg-[var(--cvs-accent-soft)]/30 p-3">
       {!showCreate ? (
         <>
           <div className="relative">
@@ -369,7 +426,7 @@ function RecipeIngredientAddPanel({
                       key={ing.id}
                       type="button"
                       onClick={() => pickExisting(ing.id)}
-                      className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-indigo-50/80"
+                      className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-[var(--cvs-accent-soft)]/80"
                     >
                       <span className="font-semibold text-slate-900">{ing.name}</span>
                       <span className="shrink-0 font-mono text-[10px] text-slate-500">
@@ -389,7 +446,7 @@ function RecipeIngredientAddPanel({
                       setShowCreate(true);
                       setOpen(false);
                     }}
-                    className="flex w-full items-center gap-2 border-t border-indigo-100 px-3 py-2.5 text-left text-xs font-bold text-indigo-800 hover:bg-indigo-50/80"
+                    className="flex w-full items-center gap-2 border-t border-[color:var(--cvs-accent-muted)]/80 px-3 py-2.5 text-left text-xs font-bold text-[color:var(--cvs-accent)] hover:bg-[var(--cvs-accent-soft)]/80"
                   >
                     <Plus className="h-3.5 w-3.5" />
                     Add &quot;{trimmed}&quot; to ingredients ledger
@@ -398,13 +455,13 @@ function RecipeIngredientAddPanel({
               </div>
             ) : null}
           </div>
-          <p className="text-[10px] text-indigo-800/70">
+          <p className="text-[10px] text-[color:var(--cvs-accent)]/70">
             Pick a suggestion to add to this recipe. New items are saved to the ingredients ledger automatically.
           </p>
         </>
       ) : (
         <div className="space-y-3">
-          <p className="text-[10px] font-black uppercase tracking-widest text-indigo-900">
+          <p className="text-[10px] font-black uppercase tracking-widest text-[color:var(--cvs-accent)]">
             New ingredient — {trimmed}
           </p>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -448,7 +505,7 @@ function RecipeIngredientAddPanel({
             <button
               type="button"
               onClick={saveNew}
-              className="rounded-xl border border-emerald-300/80 bg-emerald-600 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-white hover:bg-emerald-500"
+              className="rounded-xl bg-[color:var(--cvs-accent)] px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-white shadow-md shadow-[color:var(--cvs-glow)] hover:bg-[color:var(--cvs-accent-hover)]"
             >
               Save &amp; Add to Recipe
             </button>
@@ -478,30 +535,11 @@ function getCatPalette(cat: string) {
   return CAT_PALETTE[cat] ?? { gradFrom: '#94a3b8', gradTo: '#334155', accent: 'text-slate-600', light: 'bg-slate-50' };
 }
 
-function ItemThumb({ item, size }: { item: MenuItem; size: 'sm' | 'lg' }) {
-  const { gradFrom, gradTo } = getCatPalette(item.category);
-  const cls = size === 'sm'
-    ? 'h-11 w-11 rounded-xl flex-shrink-0'
-    : 'h-32 w-full rounded-2xl';
-  return (
-    <div
-      className={`relative overflow-hidden ${cls}`}
-      style={{ background: `linear-gradient(135deg, ${gradFrom}, ${gradTo})` }}
-    >
-      {item.hasImage ? (
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="h-5 w-5 rounded-full bg-white/20" />
-          <div className="absolute h-2.5 w-2.5 rounded-full bg-white/40" />
-        </div>
-      ) : (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-0.5 opacity-60">
-          <Upload className="h-3.5 w-3.5 text-white" />
-          <span className="text-[8px] font-black uppercase tracking-widest text-white">Upload</span>
-        </div>
-      )}
-    </div>
-  );
+function menuItemImageGradient(cat: string): string {
+  const { gradFrom, gradTo } = getCatPalette(cat);
+  return `linear-gradient(135deg, ${gradFrom}, ${gradTo})`;
 }
+
 type FulfillmentChoice = 'dine-in' | 'takeout' | 'delivery';
 
 type CafePaymentMethod = 'card_online' | 'cash_at_counter';
@@ -855,9 +893,15 @@ function CustomerMenuPreview({
                           style={qty > 0 ? { backgroundColor: 'rgba(16,185,129,0.08)' } : undefined}
                         >
                           {showItemImages ? (
-                            <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-emerald-100 text-lg">
-                              {item.hasImage ? (
-                                <div className="h-6 w-6 rounded-md bg-emerald-200/80" />
+                            <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-emerald-100">
+                              {item.imageUrl ? (
+                                <CafeMenuItemImagePreview
+                                  imageUrl={item.imageUrl}
+                                  frame={item.imageFrame ?? DEFAULT_CAFE_MENU_ITEM_IMAGE_FRAME}
+                                  size="sm"
+                                  placeholderGradient={menuItemImageGradient(item.category)}
+                                  className="h-12 w-12 rounded-lg"
+                                />
                               ) : (
                                 <Tag className="h-4 w-4 text-emerald-700" strokeWidth={1.75} />
                               )}
@@ -1169,7 +1213,10 @@ export function MenuEngineeringDesk({
   displayItems = [],
   onKitchenTrackChange,
   onCreateIngredientForRecipe,
+  menuSalesByItemId = new Map<string, MenuDailySaleRecord[]>(),
   saveState = 'idle',
+  hubView = false,
+  branchId = null,
 }: {
   items: MenuItem[];
   setItems: React.Dispatch<React.SetStateAction<MenuItem[]>>;
@@ -1194,12 +1241,16 @@ export function MenuEngineeringDesk({
   cafeName?: string;
   cafeOpenStart?: string;
   cafeOpenEnd?: string;
-  prepItems?: Array<{ menuItemId: string }>;
-  displayItems?: Array<{ menuItemId: string }>;
+  prepItems?: MenuAvailContext['prepItems'];
+  displayItems?: MenuAvailContext['displayItems'];
   onKitchenTrackChange?: (menuId: string, track: KitchenTrackKind) => void;
   onCreateIngredientForRecipe?: (menuId: string, created: Ingredient) => void;
+  menuSalesByItemId?: Map<string, MenuDailySaleRecord[]>;
   saveState?: 'idle' | 'saving' | 'saved' | 'error';
+  hubView?: boolean;
+  branchId?: string | null;
 }) {
+  const router = useRouter();
   const [activeTab,  setActiveTab] = useState<'TABLE' | 'PREVIEW'>('TABLE');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [synced,     setSynced]    = useState(false);
@@ -1211,9 +1262,25 @@ export function MenuEngineeringDesk({
   const [newCatRow,   setNewCatRow]   = useState<string | null>(null);
   const [newCatInput, setNewCatInput] = useState('');
   const [menuUrlCopied, setMenuUrlCopied] = useState(false);
+  const [editingImageItemId, setEditingImageItemId] = useState<string | null>(null);
+
+  const editingImageItem = useMemo(
+    () => items.find((item) => item.id === editingImageItemId) ?? null,
+    [editingImageItemId, items],
+  );
+
+  const menuAvailCtx = { prepItems, displayItems };
 
   const liveMenuUrl = normalizeCustomerMenuUrl(customerMenuUrl);
   const liveMenuHost = customerMenuHost(customerMenuUrl);
+
+  const openIngredientInLedger = useCallback(
+    (ingredientId: string) => {
+      if (!ingredientId) return;
+      router.push(cafeIngredientLedgerHref(ingredientId, hubView, branchId));
+    },
+    [router, hubView, branchId],
+  );
 
   const handleCopyMenuUrl = async () => {
     try {
@@ -1254,6 +1321,23 @@ export function MenuEngineeringDesk({
   const updateItem = (id: string, field: keyof MenuItem, value: string | number | boolean) =>
     setItems((prev) => prev.map((i) => (i.id === id ? { ...i, [field]: value } : i)));
 
+  const updateItemImage = (
+    id: string,
+    next: { imageUrl: string | null; frame: CafeMenuItemImageFrame },
+  ) =>
+    setItems((prev) =>
+      prev.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              imageUrl: next.imageUrl,
+              imageFrame: next.frame,
+              hasImage: Boolean(next.imageUrl),
+            }
+          : item,
+      ),
+    );
+
   const addItem = () =>
     setItems((prev) => [
       ...prev,
@@ -1264,6 +1348,8 @@ export function MenuEngineeringDesk({
         recipeCost: 0,
         targetMargin: 65,
         hasImage: false,
+        imageUrl: null,
+        imageFrame: DEFAULT_CAFE_MENU_ITEM_IMAGE_FRAME,
         recipe: [],
         availableToSell: 0,
         minReadyStock: 10,
@@ -1285,6 +1371,9 @@ export function MenuEngineeringDesk({
           return { ...item, recipe };
         }),
         ingredients,
+        menuSalesByItemId,
+        new Date(),
+        menuAvailCtx,
       ),
     );
   };
@@ -1299,6 +1388,9 @@ export function MenuEngineeringDesk({
           return { ...item, recipe: [...item.recipe, { ingredientId, quantity: 1 }] };
         }),
         ingredients,
+        menuSalesByItemId,
+        new Date(),
+        menuAvailCtx,
       ),
     );
   };
@@ -1324,6 +1416,9 @@ export function MenuEngineeringDesk({
           return { ...item, recipe: [...item.recipe, { ingredientId: created.id, quantity: 1 }] };
         }),
         nextIngredients,
+        menuSalesByItemId,
+        new Date(),
+        menuAvailCtx,
       ),
     );
   };
@@ -1337,6 +1432,9 @@ export function MenuEngineeringDesk({
             : item,
         ),
         ingredients,
+        menuSalesByItemId,
+        new Date(),
+        menuAvailCtx,
       ),
     );
   };
@@ -1367,12 +1465,15 @@ export function MenuEngineeringDesk({
     setTimeout(() => setSynced(false), 3000);
   };
 
-  const inputCls = 'w-full rounded-xl border border-slate-200/80 bg-white/80 px-2.5 py-1.5 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400/40 transition-all';
+  const inputCls = `w-full rounded-xl border border-slate-200/80 bg-white/80 px-2.5 py-1.5 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 ${CVS_BRAND_CLASSES.focusRing} transition-all`;
   const metricCellCls = 'flex flex-col items-center justify-center gap-1';
   const metricPrimaryCls = 'flex h-9 w-full items-center justify-center';
   const metricBadgeCls =
     'inline-flex h-9 min-w-[4.5rem] items-center justify-center rounded-xl border px-3 font-mono text-sm font-black tabular-nums';
+  const metricReadOnlyCls =
+    'font-mono text-sm font-black tabular-nums text-slate-800';
   const metricMetaCls = 'flex h-5 w-full items-center justify-center gap-1.5 whitespace-nowrap text-[9px] text-slate-500';
+  const weekdayLabel = weekdayShortLabel(new Date());
 
   return (
     <ExecutiveGlassCard className="overflow-hidden">
@@ -1453,7 +1554,7 @@ export function MenuEngineeringDesk({
               onClick={() => setActiveTab(key)}
               className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition-all ${
                 activeTab === key
-                  ? 'bg-slate-900 text-white shadow-sm'
+                  ? `${CVS_BRAND_CLASSES.mobileTabActive} border-transparent`
                   : 'text-slate-600 hover:bg-white/70'
               }`}
             >
@@ -1557,9 +1658,9 @@ export function MenuEngineeringDesk({
             </div>
 
             {/* BOM overhead */}
-            <div className="flex flex-wrap items-end gap-4 rounded-2xl border border-indigo-200/70 bg-indigo-50/40 px-4 py-3">
+            <div className="flex flex-wrap items-end gap-4 rounded-2xl border border-[color:var(--cvs-accent-muted)]/70 bg-[var(--cvs-accent-soft)]/40 px-4 py-3">
               <div className="min-w-[200px]">
-                <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-indigo-800">
+                <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-[color:var(--cvs-accent)]">
                   Global Operational Overhead (%)
                 </label>
                 <div className="relative max-w-[120px]">
@@ -1570,14 +1671,14 @@ export function MenuEngineeringDesk({
                     step={0.5}
                     value={globalOverhead}
                     onChange={(e) => setGlobalOverhead(Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)))}
-                    className={`${inputCls} pr-8 text-center font-black text-indigo-900`}
+                    className={`${inputCls} pr-8 text-center font-black text-[color:var(--cvs-accent)]`}
                   />
-                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-mono text-indigo-400">%</span>
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-mono text-[color:var(--cvs-accent-muted)]">%</span>
                 </div>
               </div>
-              <div className="min-w-0 flex-1 text-[10px] leading-relaxed text-indigo-900/80">
+              <div className="min-w-0 flex-1 text-[10px] leading-relaxed text-[color:var(--cvs-accent)]/80">
                 <strong>Strict BOM formula:</strong> Base Cost = (Sum of Raw Ingredients from Recipe) + Global Overhead&nbsp;%.
-                <span className="block mt-0.5 text-indigo-700/70">
+                <span className="block mt-0.5 text-[color:var(--cvs-accent-hover)]/70">
                   Example at {globalOverhead}%: LKR 100 recipe → LKR {calcBaseCost(100, globalOverhead)} base cost.
                 </span>
               </div>
@@ -1591,6 +1692,7 @@ export function MenuEngineeringDesk({
                   <th className="px-4 py-3 w-14">Image</th>
                   <th className="px-4 py-3">Item Name</th>
                   <th className="px-4 py-3">Category</th>
+                  <th className="px-4 py-3 text-center w-28">Display</th>
                   <th className="px-4 py-3 text-center">Avail. to Sell</th>
                   <th className="px-4 py-3 text-center">Base Cost (LKR)</th>
                   <th className="px-4 py-3 text-center">Target Margin (%)</th>
@@ -1607,13 +1709,20 @@ export function MenuEngineeringDesk({
                   const sellingPrice = calcSellingPrice(baseCost, item.targetMargin);
                   const isLowMargin  = item.targetMargin < 55;
                   const isExpanded   = expandedId === item.id;
-                  const availableToSell = calcAvailableToSell(item.recipe, ingredients);
-                  const rollingAvg14d = calcMenuRollingAvg14d(item.recipe, ingredients);
-                  const target14d = calcMenu14dTarget(item.minReadyStock, rollingAvg14d);
-                  const velocityBoost = rollingAvg14d > item.minReadyStock;
+                  const availableToSell = calcMenuAvailableToSell(
+                    item.id,
+                    item.recipe,
+                    ingredients,
+                    { prepItems, displayItems },
+                  );
+                  const referenceDaily = item.rollingAvg14d;
+                  const target14d = calcMenu14dTarget(item.minReadyStock, referenceDaily);
+                  const velocityBoost = referenceDaily > item.minReadyStock;
                   const stockLow = velocityBoost
                     ? availableToSell < target14d
                     : availableToSell < item.minReadyStock;
+                  const kitchenTrack = getMenuKitchenTrackKind(item.id, prepItems, displayItems);
+                  const isDisplayItem = kitchenTrack === 'display';
                   return (
                     <React.Fragment key={item.id}>
                     <tr
@@ -1622,14 +1731,34 @@ export function MenuEngineeringDesk({
                     >
                       {/* Thumbnail */}
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                        <button
-                          type="button"
-                          onClick={() => updateItem(item.id, 'hasImage', !item.hasImage)}
-                          className="transition-transform hover:scale-105"
-                          title={item.hasImage ? 'Click to remove image' : 'Click to simulate upload'}
-                        >
-                          <ItemThumb item={item} size="sm" />
-                        </button>
+                        {item.imageUrl ? (
+                          <button
+                            type="button"
+                            onClick={() => setEditingImageItemId(item.id)}
+                            className="transition-transform hover:scale-105"
+                            title="Edit item photo"
+                          >
+                            <CafeMenuItemImagePreview
+                              imageUrl={item.imageUrl}
+                              frame={item.imageFrame ?? DEFAULT_CAFE_MENU_ITEM_IMAGE_FRAME}
+                              size="sm"
+                              placeholderGradient={menuItemImageGradient(item.category)}
+                            />
+                          </button>
+                        ) : (
+                          <CafeMenuItemImageEditor
+                            imageUrl={item.imageUrl}
+                            frame={item.imageFrame ?? DEFAULT_CAFE_MENU_ITEM_IMAGE_FRAME}
+                            onChange={(next) => {
+                              updateItemImage(item.id, next);
+                              if (next.imageUrl && !item.imageUrl) {
+                                setEditingImageItemId(item.id);
+                              }
+                            }}
+                            size="sm"
+                            placeholderGradient={menuItemImageGradient(item.category)}
+                          />
+                        )}
                       </td>
 
                       {/* Name */}
@@ -1661,7 +1790,7 @@ export function MenuEngineeringDesk({
                             onChange={(e) => setNewCatInput(e.target.value)}
                             onKeyDown={(e) => { if (e.key === 'Enter') commitNewCategory(item.id); if (e.key === 'Escape') { setNewCatRow(null); } }}
                             onBlur={() => commitNewCategory(item.id)}
-                            className={`${inputCls} border-indigo-300/80 focus:ring-indigo-400/40`}
+                            className={`${inputCls} border-[color:var(--cvs-accent-muted)]/80`}
                           />
                         ) : (
                           <select
@@ -1677,17 +1806,31 @@ export function MenuEngineeringDesk({
                         )}
                       </td>
 
-                      {/* Available to sell — auto-calculated from BOM + ingredient stock */}
+                      {/* Display item — staff make target from same-weekday average */}
+                      <td className="px-4 py-3 align-middle text-center" onClick={(e) => e.stopPropagation()}>
+                        {onKitchenTrackChange ? (
+                          <DisplayItemCheckbox
+                            checked={isDisplayItem}
+                            weekdayLabel={weekdayLabel}
+                            makeToday={referenceDaily}
+                            onChange={(checked) =>
+                              onKitchenTrackChange(item.id, checked ? 'display' : 'none')
+                            }
+                          />
+                        ) : (
+                          <span className="text-[10px] text-slate-400">—</span>
+                        )}
+                      </td>
+
+                      {/* Available to sell — read-only yield from BOM + ingredient stock */}
                       <td className="px-4 py-3 align-middle text-center" onClick={(e) => e.stopPropagation()}>
                         <div className={metricCellCls}>
                           <div className={metricPrimaryCls}>
                             <span
-                              className={`${metricBadgeCls} ${
-                                stockLow
-                                  ? 'border-rose-300/80 bg-rose-50/80 text-rose-800'
-                                  : 'border-slate-200/80 bg-slate-100/80 text-slate-800'
+                              className={`${metricReadOnlyCls} ${
+                                stockLow ? 'text-rose-800' : ''
                               }`}
-                              title="Auto-calculated from recipe BOM and ingredient on-hand stock"
+                              title="Auto-calculated from recipe BOM and ingredient on-hand stock (not editable)"
                             >
                               {availableToSell.toLocaleString()}
                             </span>
@@ -1701,15 +1844,15 @@ export function MenuEngineeringDesk({
                               onChange={(e) =>
                                 updateItem(item.id, 'minReadyStock', Math.max(0, parseInt(e.target.value) || 0))
                               }
-                              className="h-5 w-11 rounded-lg border border-slate-200/80 bg-white/90 px-1 text-center font-mono text-[10px] font-bold text-slate-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
+                              className={`h-5 w-11 rounded-lg border border-slate-200/80 bg-white/90 px-1 text-center font-mono text-[10px] font-bold text-slate-800 shadow-sm focus:outline-none focus:ring-2 ${CVS_BRAND_CLASSES.focusRing}`}
                             />
                             <span className="text-slate-300">·</span>
-                            <span className="text-slate-400">14d</span>
+                            <span className="text-slate-400">{weekdayLabel} avg</span>
                             <span
                               className="font-mono text-[10px] font-bold tabular-nums text-slate-700"
-                              title="14-day ready-stock target: max(MD min/day, 14d sales velocity) × 14"
+                              title="Average of last 3 same weekdays (+2 when 2+ sold out at that avg)"
                             >
-                              {target14d.toLocaleString()}
+                              {referenceDaily.toLocaleString()}
                             </span>
                           </div>
                           <div className="flex h-4 w-full items-center justify-center gap-1 text-[8px]">
@@ -1756,7 +1899,7 @@ export function MenuEngineeringDesk({
                                 max={98}
                                 fallback={50}
                                 onCommit={(next) => updateItem(item.id, 'targetMargin', next)}
-                                className={`h-full w-full rounded-xl border bg-white/90 px-2 pr-5 text-center font-mono text-sm font-black tabular-nums shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400/40 ${
+                                className={`h-full w-full rounded-xl border bg-white/90 px-2 pr-5 text-center font-mono text-sm font-black tabular-nums shadow-sm focus:outline-none focus:ring-2 ${CVS_BRAND_CLASSES.focusRing} ${
                                   isLowMargin
                                     ? 'border-amber-300/80 text-amber-800'
                                     : 'border-slate-200/80 text-slate-800'
@@ -1802,17 +1945,17 @@ export function MenuEngineeringDesk({
                     </tr>
 
                     {isExpanded && (
-                      <tr className="bg-indigo-50/25">
-                        <td colSpan={8} className="px-5 py-4" onClick={(e) => e.stopPropagation()}>
-                          <div className="rounded-2xl border border-indigo-200/60 bg-white/70 p-4">
+                      <tr className="bg-[var(--cvs-accent-soft)]/25">
+                        <td colSpan={9} className="px-5 py-4" onClick={(e) => e.stopPropagation()}>
+                          <div className="rounded-2xl border border-[color:var(--cvs-accent-muted)]/60 bg-white/70 p-4">
                             <div className="mb-3 flex items-center justify-between gap-3">
                               <div className="flex items-center gap-2">
-                                <FlaskConical className="h-4 w-4 text-indigo-600" />
-                                <p className="text-[10px] font-black uppercase tracking-widest text-indigo-900">
+                                <FlaskConical className="h-4 w-4 text-[color:var(--cvs-accent)]" />
+                                <p className="text-[10px] font-black uppercase tracking-widest text-[color:var(--cvs-accent)]">
                                   Recipe — {item.name}
                                 </p>
                               </div>
-                              <span className="text-[10px] font-bold text-indigo-700">
+                              <span className="text-[10px] font-bold text-[color:var(--cvs-accent)]">
                                 Total recipe cost: LKR {recipeCost.toLocaleString()}
                               </span>
                             </div>
@@ -1827,7 +1970,19 @@ export function MenuEngineeringDesk({
                                   const ing = ingredients.find((i) => i.id === line.ingredientId);
                                   const lineCost = ing ? Math.round(ing.unitPrice * line.quantity * 100) / 100 : 0;
                                   return (
-                                    <div key={`${item.id}-${lineIdx}`} className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200/70 bg-slate-50/60 px-3 py-2">
+                                    <div
+                                      key={`${item.id}-${lineIdx}`}
+                                      className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200/70 bg-slate-50/60 px-3 py-2 transition-colors hover:border-[color:var(--cvs-accent-muted)]/70 hover:bg-[var(--cvs-accent-soft)]/30"
+                                      title={
+                                        line.ingredientId
+                                          ? 'Double-click to open this ingredient in the ledger'
+                                          : undefined
+                                      }
+                                      onDoubleClick={(e) => {
+                                        e.stopPropagation();
+                                        if (line.ingredientId) openIngredientInLedger(line.ingredientId);
+                                      }}
+                                    >
                                       <IngredientCombobox
                                         ingredients={ingredients}
                                         value={line.ingredientId}
@@ -1865,21 +2020,26 @@ export function MenuEngineeringDesk({
                               </div>
                             )}
 
-                            {onKitchenTrackChange ? (
-                              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-violet-200/70 bg-violet-50/40 px-3 py-2.5">
+                            {onKitchenTrackChange && !isDisplayItem ? (
+                              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[color:var(--cvs-accent-muted)]/70 bg-[var(--cvs-accent-soft)]/40 px-3 py-2.5">
                                 <div>
-                                  <p className="text-[10px] font-black uppercase tracking-widest text-violet-900">
+                                  <p className="text-[10px] font-black uppercase tracking-widest text-[color:var(--cvs-accent)]">
                                     Kitchen prep tracking
                                   </p>
                                   <p className="text-[10px] text-slate-500">
-                                    Only items set to Prep or Display appear in Predictive Prep &amp; Wastage Control.
+                                    Prep items appear in Predictive Prep &amp; Wastage Control. Use the Display column for counter display items.
                                   </p>
                                 </div>
-                                <KitchenTrackToggle
-                                  track={getMenuKitchenTrackKind(item.id, prepItems, displayItems)}
+                                <PrepTrackToggle
+                                  track={kitchenTrack}
                                   onChange={(track) => onKitchenTrackChange(item.id, track)}
                                 />
                               </div>
+                            ) : isDisplayItem ? (
+                              <p className="mt-4 rounded-xl border border-amber-200/70 bg-amber-50/50 px-3 py-2 text-[10px] text-amber-900">
+                                Display item — staff will make <strong>{referenceDaily.toLocaleString()}</strong> for {weekdayLabel} today.
+                                Uncheck Display in the row above to switch back to on-demand prep.
+                              </p>
                             ) : null}
 
                             <RecipeIngredientAddPanel
@@ -1980,9 +2140,9 @@ export function MenuEngineeringDesk({
                   aria-checked={showItemImages}
                   aria-label="Show item images on customer menu"
                   onClick={() => setShowItemImages((v) => !v)}
-                  className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full border-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-emerald-400/40 ${
+                  className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full border-2 transition-colors duration-200 focus:outline-none focus:ring-2 ${CVS_BRAND_CLASSES.focusRing} ${
                     showItemImages
-                      ? 'border-emerald-400/80 bg-emerald-600'
+                      ? 'border-[color:var(--cvs-accent-muted)]/80 bg-[color:var(--cvs-accent)]'
                       : 'border-slate-300/80 bg-slate-300'
                   }`}
                 >
@@ -2067,7 +2227,7 @@ export function MenuEngineeringDesk({
                   value={customerMenuUrl ?? ''}
                   onChange={(e) => setCustomerMenuUrl(e.target.value || null)}
                   placeholder="tasha.lk"
-                  className="w-full rounded-xl border border-slate-200/80 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
+                  className={`w-full rounded-xl border border-slate-200/80 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 ${CVS_BRAND_CLASSES.focusRing}`}
                 />
               </label>
 
@@ -2183,6 +2343,19 @@ export function MenuEngineeringDesk({
           </div>
         </div>
       )}
+      <CafeMenuItemImageModal
+        open={Boolean(editingImageItem)}
+        itemName={editingImageItem?.name ?? 'Menu item'}
+        imageUrl={editingImageItem?.imageUrl ?? null}
+        frame={editingImageItem?.imageFrame ?? DEFAULT_CAFE_MENU_ITEM_IMAGE_FRAME}
+        placeholderGradient={
+          editingImageItem ? menuItemImageGradient(editingImageItem.category) : undefined
+        }
+        onChange={(next) => {
+          if (editingImageItem) updateItemImage(editingImageItem.id, next);
+        }}
+        onClose={() => setEditingImageItemId(null)}
+      />
     </ExecutiveGlassCard>
   );
 }

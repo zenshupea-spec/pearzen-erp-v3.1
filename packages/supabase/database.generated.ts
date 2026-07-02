@@ -16,6 +16,74 @@ export type Database = {
   }
   public: {
     Tables: {
+      advance_runs: {
+        Row: {
+          approved_at: string | null
+          approved_by: string | null
+          batch_id: string
+          company_id: string
+          created_at: string
+          group_id: string
+          id: string
+          paid_at: string | null
+          paid_by: string | null
+          period_month: number
+          period_year: number
+          selection_count: number
+          status: string
+          submitted_at: string | null
+          submitted_by: string | null
+          total_amount: number
+          updated_at: string
+        }
+        Insert: {
+          approved_at?: string | null
+          approved_by?: string | null
+          batch_id: string
+          company_id: string
+          created_at?: string
+          group_id: string
+          id?: string
+          paid_at?: string | null
+          paid_by?: string | null
+          period_month: number
+          period_year: number
+          selection_count?: number
+          status?: string
+          submitted_at?: string | null
+          submitted_by?: string | null
+          total_amount?: number
+          updated_at?: string
+        }
+        Update: {
+          approved_at?: string | null
+          approved_by?: string | null
+          batch_id?: string
+          company_id?: string
+          created_at?: string
+          group_id?: string
+          id?: string
+          paid_at?: string | null
+          paid_by?: string | null
+          period_month?: number
+          period_year?: number
+          selection_count?: number
+          status?: string
+          submitted_at?: string | null
+          submitted_by?: string | null
+          total_amount?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "advance_runs_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       ar_invoices: {
         Row: {
           billing_client_id: string
@@ -176,43 +244,73 @@ export type Database = {
       attendance_logs: {
         Row: {
           action_type: string
+          biometric_check_in: string | null
           company_id: string | null
           created_at: string | null
           device_time: string
           emp_number: string
+          final_approved_time: string | null
+          guard_id: string | null
           id: string
+          is_overlap_conflict: boolean
           latitude: number | null
           longitude: number | null
+          offline_replay_key: string | null
           om_status: string | null
           photo_url: string | null
+          resolution_method: string | null
+          resolved_by: string | null
+          rostered_start: string | null
+          shift_date: string | null
+          site_profile_id: string | null
           status: string | null
           sync_type: string | null
         }
         Insert: {
           action_type: string
+          biometric_check_in?: string | null
           company_id?: string | null
           created_at?: string | null
           device_time: string
           emp_number: string
+          final_approved_time?: string | null
+          guard_id?: string | null
           id?: string
+          is_overlap_conflict?: boolean
           latitude?: number | null
           longitude?: number | null
+          offline_replay_key?: string | null
           om_status?: string | null
           photo_url?: string | null
+          resolution_method?: string | null
+          resolved_by?: string | null
+          rostered_start?: string | null
+          shift_date?: string | null
+          site_profile_id?: string | null
           status?: string | null
           sync_type?: string | null
         }
         Update: {
           action_type?: string
+          biometric_check_in?: string | null
           company_id?: string | null
           created_at?: string | null
           device_time?: string
           emp_number?: string
+          final_approved_time?: string | null
+          guard_id?: string | null
           id?: string
+          is_overlap_conflict?: boolean
           latitude?: number | null
           longitude?: number | null
+          offline_replay_key?: string | null
           om_status?: string | null
           photo_url?: string | null
+          resolution_method?: string | null
+          resolved_by?: string | null
+          rostered_start?: string | null
+          shift_date?: string | null
+          site_profile_id?: string | null
           status?: string | null
           sync_type?: string | null
         }
@@ -222,6 +320,20 @@ export type Database = {
             columns: ["company_id"]
             isOneToOne: false
             referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "attendance_logs_guard_id_fkey"
+            columns: ["guard_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "attendance_logs_site_profile_id_fkey"
+            columns: ["site_profile_id"]
+            isOneToOne: false
+            referencedRelation: "site_profiles"
             referencedColumns: ["id"]
           },
         ]
@@ -736,6 +848,48 @@ export type Database = {
           },
         ]
       }
+      cafe_menu_daily_sales: {
+        Row: {
+          company_id: string
+          id: string
+          menu_item_id: string
+          sale_date: string
+          sold_out: boolean
+          units_sold: number
+        }
+        Insert: {
+          company_id: string
+          id?: string
+          menu_item_id: string
+          sale_date: string
+          sold_out?: boolean
+          units_sold?: number
+        }
+        Update: {
+          company_id?: string
+          id?: string
+          menu_item_id?: string
+          sale_date?: string
+          sold_out?: boolean
+          units_sold?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cafe_menu_daily_sales_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cafe_menu_daily_sales_menu_item_id_fkey"
+            columns: ["menu_item_id"]
+            isOneToOne: false
+            referencedRelation: "cafe_menu_items"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cafe_menu_items: {
         Row: {
           category_id: string
@@ -853,7 +1007,9 @@ export type Database = {
           epf_number: string
           is_active: boolean
           last_login_at: string | null
+          last_login_selfie_url: string | null
           needs_pin_setup: boolean
+          otp_expires_at: string | null
           updated_at: string
         }
         Insert: {
@@ -862,7 +1018,9 @@ export type Database = {
           epf_number: string
           is_active?: boolean
           last_login_at?: string | null
+          last_login_selfie_url?: string | null
           needs_pin_setup?: boolean
+          otp_expires_at?: string | null
           updated_at?: string
         }
         Update: {
@@ -871,7 +1029,9 @@ export type Database = {
           epf_number?: string
           is_active?: boolean
           last_login_at?: string | null
+          last_login_selfie_url?: string | null
           needs_pin_setup?: boolean
+          otp_expires_at?: string | null
           updated_at?: string
         }
         Relationships: []
@@ -1000,8 +1160,12 @@ export type Database = {
           id: string
           latitude: number | null
           longitude: number | null
+          rostered_on_shift: boolean
           selfie_url: string | null
           shift_type: string
+          verification_status: string
+          verified_at: string | null
+          verified_by: string | null
         }
         Insert: {
           checked_in_at?: string
@@ -1015,8 +1179,12 @@ export type Database = {
           id?: string
           latitude?: number | null
           longitude?: number | null
+          rostered_on_shift?: boolean
           selfie_url?: string | null
           shift_type?: string
+          verification_status?: string
+          verified_at?: string | null
+          verified_by?: string | null
         }
         Update: {
           checked_in_at?: string
@@ -1030,8 +1198,12 @@ export type Database = {
           id?: string
           latitude?: number | null
           longitude?: number | null
+          rostered_on_shift?: boolean
           selfie_url?: string | null
           shift_type?: string
+          verification_status?: string
+          verified_at?: string | null
+          verified_by?: string | null
         }
         Relationships: [
           {
@@ -1127,6 +1299,8 @@ export type Database = {
           deductions_mtd_lkr: number
           employee_id: string
           id: string
+          ot_total_hours: number
+          ot_total_lkr: number
           period_month: string
           role_label: string
         }
@@ -1137,6 +1311,8 @@ export type Database = {
           deductions_mtd_lkr?: number
           employee_id: string
           id?: string
+          ot_total_hours?: number
+          ot_total_lkr?: number
           period_month: string
           role_label?: string
         }
@@ -1147,6 +1323,8 @@ export type Database = {
           deductions_mtd_lkr?: number
           employee_id?: string
           id?: string
+          ot_total_hours?: number
+          ot_total_lkr?: number
           period_month?: string
           role_label?: string
         }
@@ -1355,7 +1533,9 @@ export type Database = {
           is_suspended: boolean | null
           modules: string | null
           name: string
+          product_bundle: Database["public"]["Enums"]["company_product_bundle"]
           slug: string | null
+          subscription_status: Database["public"]["Enums"]["company_subscription_status"]
         }
         Insert: {
           billing_locked?: boolean | null
@@ -1366,7 +1546,9 @@ export type Database = {
           is_suspended?: boolean | null
           modules?: string | null
           name: string
+          product_bundle?: Database["public"]["Enums"]["company_product_bundle"]
           slug?: string | null
+          subscription_status?: Database["public"]["Enums"]["company_subscription_status"]
         }
         Update: {
           billing_locked?: boolean | null
@@ -1377,9 +1559,96 @@ export type Database = {
           is_suspended?: boolean | null
           modules?: string | null
           name?: string
+          product_bundle?: Database["public"]["Enums"]["company_product_bundle"]
           slug?: string | null
+          subscription_status?: Database["public"]["Enums"]["company_subscription_status"]
         }
         Relationships: []
+      }
+      discrepancy_recovery_plans: {
+        Row: {
+          attendance_log_id: string
+          company_id: string
+          created_at: string
+          created_by: string
+          created_by_name: string
+          deduction_method: string
+          guard_configs: Json
+          guard_id: string
+          id: string
+          months_to_recover: number
+          notes: string | null
+          per_shift_value_lkr: number
+          recovery_amount_lkr: number
+          shifts_per_month: number
+          status: string
+          updated_at: string
+          updated_by: string | null
+          updated_by_name: string | null
+        }
+        Insert: {
+          attendance_log_id: string
+          company_id: string
+          created_at?: string
+          created_by: string
+          created_by_name?: string
+          deduction_method?: string
+          guard_configs?: Json
+          guard_id: string
+          id?: string
+          months_to_recover?: number
+          notes?: string | null
+          per_shift_value_lkr?: number
+          recovery_amount_lkr?: number
+          shifts_per_month?: number
+          status?: string
+          updated_at?: string
+          updated_by?: string | null
+          updated_by_name?: string | null
+        }
+        Update: {
+          attendance_log_id?: string
+          company_id?: string
+          created_at?: string
+          created_by?: string
+          created_by_name?: string
+          deduction_method?: string
+          guard_configs?: Json
+          guard_id?: string
+          id?: string
+          months_to_recover?: number
+          notes?: string | null
+          per_shift_value_lkr?: number
+          recovery_amount_lkr?: number
+          shifts_per_month?: number
+          status?: string
+          updated_at?: string
+          updated_by?: string | null
+          updated_by_name?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "discrepancy_recovery_plans_attendance_log_id_fkey"
+            columns: ["attendance_log_id"]
+            isOneToOne: false
+            referencedRelation: "attendance_logs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "discrepancy_recovery_plans_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "discrepancy_recovery_plans_guard_id_fkey"
+            columns: ["guard_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       employees: {
         Row: {
@@ -1402,15 +1671,19 @@ export type Database = {
           emergency_contact: string | null
           emp_number: string | null
           employee_referral: string | null
+          education_certificate_ol_url: string | null
           epf_no: string | null
           epf_num: string | null
           epf_yn: boolean | null
           etf_num: string | null
+          fixed_allowance_lkr: number
+          fixed_deduction_lkr: number
           fm_offboarding_payment_confirmed_at: string | null
           fm_offboarding_payment_confirmed_by: string | null
           full_name: string
           gender: string | null
           grama_niladari_url: string | null
+          grama_niladari_expiry: string | null
           group: string | null
           home_address: string | null
           hr_offboarding_sent_to_fm_at: string | null
@@ -1446,6 +1719,7 @@ export type Database = {
           servicemen_certificate_url: string | null
           site: string | null
           site_allowance_lkr: number
+          special_allowance_lkr: number
           status: string | null
           temp_parent_id: string | null
           transport_allowance_lkr: number
@@ -1467,6 +1741,7 @@ export type Database = {
           date_joined?: string | null
           date_resigned?: string | null
           dob?: string | null
+          education_certificate_ol_url?: string | null
           email?: string | null
           emergency_contact?: string | null
           emp_number?: string | null
@@ -1475,11 +1750,14 @@ export type Database = {
           epf_num?: string | null
           epf_yn?: boolean | null
           etf_num?: string | null
+          fixed_allowance_lkr?: number
+          fixed_deduction_lkr?: number
           fm_offboarding_payment_confirmed_at?: string | null
           fm_offboarding_payment_confirmed_by?: string | null
           full_name: string
           gender?: string | null
           grama_niladari_url?: string | null
+          grama_niladari_expiry?: string | null
           group?: string | null
           home_address?: string | null
           hr_offboarding_sent_to_fm_at?: string | null
@@ -1515,6 +1793,7 @@ export type Database = {
           servicemen_certificate_url?: string | null
           site?: string | null
           site_allowance_lkr?: number
+          special_allowance_lkr?: number
           status?: string | null
           temp_parent_id?: string | null
           transport_allowance_lkr?: number
@@ -1536,6 +1815,7 @@ export type Database = {
           date_joined?: string | null
           date_resigned?: string | null
           dob?: string | null
+          education_certificate_ol_url?: string | null
           email?: string | null
           emergency_contact?: string | null
           emp_number?: string | null
@@ -1544,11 +1824,14 @@ export type Database = {
           epf_num?: string | null
           epf_yn?: boolean | null
           etf_num?: string | null
+          fixed_allowance_lkr?: number
+          fixed_deduction_lkr?: number
           fm_offboarding_payment_confirmed_at?: string | null
           fm_offboarding_payment_confirmed_by?: string | null
           full_name?: string
           gender?: string | null
           grama_niladari_url?: string | null
+          grama_niladari_expiry?: string | null
           group?: string | null
           home_address?: string | null
           hr_offboarding_sent_to_fm_at?: string | null
@@ -1584,6 +1867,7 @@ export type Database = {
           servicemen_certificate_url?: string | null
           site?: string | null
           site_allowance_lkr?: number
+          special_allowance_lkr?: number
           status?: string | null
           temp_parent_id?: string | null
           transport_allowance_lkr?: number
@@ -1630,6 +1914,68 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "executive_audit_logs_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      expense_bills: {
+        Row: {
+          amount: number
+          approved_at: string | null
+          approved_by: string | null
+          bill_date: string
+          company_id: string
+          cost_center: string
+          created_at: string
+          description: string
+          id: string
+          is_split: boolean
+          receipt_url: string
+          split_allocations: Json
+          status: string
+          submitted_by: string
+          updated_at: string
+        }
+        Insert: {
+          amount?: number
+          approved_at?: string | null
+          approved_by?: string | null
+          bill_date?: string
+          company_id: string
+          cost_center: string
+          created_at?: string
+          description?: string
+          id?: string
+          is_split?: boolean
+          receipt_url?: string
+          split_allocations?: Json
+          status?: string
+          submitted_by?: string
+          updated_at?: string
+        }
+        Update: {
+          amount?: number
+          approved_at?: string | null
+          approved_by?: string | null
+          bill_date?: string
+          company_id?: string
+          cost_center?: string
+          created_at?: string
+          description?: string
+          id?: string
+          is_split?: boolean
+          receipt_url?: string
+          split_allocations?: Json
+          status?: string
+          submitted_by?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "expense_bills_company_id_fkey"
             columns: ["company_id"]
             isOneToOne: false
             referencedRelation: "companies"
@@ -2104,23 +2450,922 @@ export type Database = {
           },
         ]
       }
+      forge_audit_log: {
+        Row: {
+          action_type: string
+          actor_email: string
+          created_at: string
+          details: Json
+          id: string
+          target_company_id: string | null
+        }
+        Insert: {
+          action_type: string
+          actor_email: string
+          created_at?: string
+          details?: Json
+          id?: string
+          target_company_id?: string | null
+        }
+        Update: {
+          action_type?: string
+          actor_email?: string
+          created_at?: string
+          details?: Json
+          id?: string
+          target_company_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "forge_audit_log_target_company_id_fkey"
+            columns: ["target_company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      forge_contact_messages: {
+        Row: {
+          body_html: string | null
+          body_text: string | null
+          created_at: string
+          direction: string
+          from_email: string
+          id: string
+          in_reply_to: string | null
+          message_id: string | null
+          operator_email: string | null
+          resend_email_id: string | null
+          subject: string
+          thread_id: string
+          to_emails: string[]
+        }
+        Insert: {
+          body_html?: string | null
+          body_text?: string | null
+          created_at?: string
+          direction: string
+          from_email: string
+          id?: string
+          in_reply_to?: string | null
+          message_id?: string | null
+          operator_email?: string | null
+          resend_email_id?: string | null
+          subject: string
+          thread_id: string
+          to_emails?: string[]
+        }
+        Update: {
+          body_html?: string | null
+          body_text?: string | null
+          created_at?: string
+          direction?: string
+          from_email?: string
+          id?: string
+          in_reply_to?: string | null
+          message_id?: string | null
+          operator_email?: string | null
+          resend_email_id?: string | null
+          subject?: string
+          thread_id?: string
+          to_emails?: string[]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "forge_contact_messages_thread_id_fkey"
+            columns: ["thread_id"]
+            isOneToOne: false
+            referencedRelation: "forge_contact_threads"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      forge_contact_threads: {
+        Row: {
+          created_at: string
+          id: string
+          last_message_at: string
+          status: string
+          subject: string
+          suggested_product_code: string | null
+          visitor_email: string
+          visitor_name: string | null
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          last_message_at?: string
+          status?: string
+          subject: string
+          suggested_product_code?: string | null
+          visitor_email: string
+          visitor_name?: string | null
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          last_message_at?: string
+          status?: string
+          subject?: string
+          suggested_product_code?: string | null
+          visitor_email?: string
+          visitor_name?: string | null
+        }
+        Relationships: []
+      }
+      forge_email_change_requests: {
+        Row: {
+          code_hash: string
+          consumed_at: string | null
+          created_at: string
+          expires_at: string
+          field: string
+          id: string
+          new_email: string
+          old_code_hash: string | null
+          operator_email: string
+        }
+        Insert: {
+          code_hash: string
+          consumed_at?: string | null
+          created_at?: string
+          expires_at: string
+          field: string
+          id?: string
+          new_email: string
+          old_code_hash?: string | null
+          operator_email: string
+        }
+        Update: {
+          code_hash?: string
+          consumed_at?: string | null
+          created_at?: string
+          expires_at?: string
+          field?: string
+          id?: string
+          new_email?: string
+          old_code_hash?: string | null
+          operator_email?: string
+        }
+        Relationships: []
+      }
+      forge_partner_assist_grants: {
+        Row: {
+          company_id: string
+          created_at: string
+          domain_setup: boolean
+          expires_at: string | null
+          granted_by: string | null
+          id: string
+          partner_id: string
+          payhere_setup: boolean
+          updated_at: string
+        }
+        Insert: {
+          company_id: string
+          created_at?: string
+          domain_setup?: boolean
+          expires_at?: string | null
+          granted_by?: string | null
+          id?: string
+          partner_id: string
+          payhere_setup?: boolean
+          updated_at?: string
+        }
+        Update: {
+          company_id?: string
+          created_at?: string
+          domain_setup?: boolean
+          expires_at?: string | null
+          granted_by?: string | null
+          id?: string
+          partner_id?: string
+          payhere_setup?: boolean
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "forge_partner_assist_grants_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "forge_partner_assist_grants_partner_id_fkey"
+            columns: ["partner_id"]
+            isOneToOne: false
+            referencedRelation: "forge_service_partners"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      forge_partner_portfolios: {
+        Row: {
+          closed_at: string
+          company_id: string
+          created_at: string
+          deal_type: Database["public"]["Enums"]["forge_partner_deal_type"]
+          id: string
+          notes: string | null
+          partner_id: string
+          referral_code: string | null
+          status: Database["public"]["Enums"]["forge_partner_portfolio_status"]
+          updated_at: string
+        }
+        Insert: {
+          closed_at?: string
+          company_id: string
+          created_at?: string
+          deal_type?: Database["public"]["Enums"]["forge_partner_deal_type"]
+          id?: string
+          notes?: string | null
+          partner_id: string
+          referral_code?: string | null
+          status?: Database["public"]["Enums"]["forge_partner_portfolio_status"]
+          updated_at?: string
+        }
+        Update: {
+          closed_at?: string
+          company_id?: string
+          created_at?: string
+          deal_type?: Database["public"]["Enums"]["forge_partner_deal_type"]
+          id?: string
+          notes?: string | null
+          partner_id?: string
+          referral_code?: string | null
+          status?: Database["public"]["Enums"]["forge_partner_portfolio_status"]
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "forge_partner_portfolios_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "forge_partner_portfolios_partner_id_fkey"
+            columns: ["partner_id"]
+            isOneToOne: false
+            referencedRelation: "forge_service_partners"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      forge_payout_ledger: {
+        Row: {
+          billing_month: string
+          created_at: string
+          id: string
+          notes: string | null
+          partner_id: string
+          partner_share_lkr: number
+          pearzen_share_lkr: number
+          portfolio_id: string | null
+          source_invoice_id: string | null
+          source_type: Database["public"]["Enums"]["forge_payout_source_type"]
+        }
+        Insert: {
+          billing_month: string
+          created_at?: string
+          id?: string
+          notes?: string | null
+          partner_id: string
+          partner_share_lkr: number
+          pearzen_share_lkr: number
+          portfolio_id?: string | null
+          source_invoice_id?: string | null
+          source_type: Database["public"]["Enums"]["forge_payout_source_type"]
+        }
+        Update: {
+          billing_month?: string
+          created_at?: string
+          id?: string
+          notes?: string | null
+          partner_id?: string
+          partner_share_lkr?: number
+          pearzen_share_lkr?: number
+          portfolio_id?: string | null
+          source_invoice_id?: string | null
+          source_type?: Database["public"]["Enums"]["forge_payout_source_type"]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "forge_payout_ledger_partner_id_fkey"
+            columns: ["partner_id"]
+            isOneToOne: false
+            referencedRelation: "forge_service_partners"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "forge_payout_ledger_portfolio_id_fkey"
+            columns: ["portfolio_id"]
+            isOneToOne: false
+            referencedRelation: "forge_partner_portfolios"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      forge_payout_rules: {
+        Row: {
+          month_one_partner_lkr: number
+          month_one_pearzen_lkr: number
+          month_two_plus_partner_lkr: number
+          month_two_plus_pearzen_lkr: number
+          singleton: boolean
+          updated_at: string
+        }
+        Insert: {
+          month_one_partner_lkr?: number
+          month_one_pearzen_lkr?: number
+          month_two_plus_partner_lkr?: number
+          month_two_plus_pearzen_lkr?: number
+          singleton?: boolean
+          updated_at?: string
+        }
+        Update: {
+          month_one_partner_lkr?: number
+          month_one_pearzen_lkr?: number
+          month_two_plus_partner_lkr?: number
+          month_two_plus_pearzen_lkr?: number
+          singleton?: boolean
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      forge_platform_health_snapshots: {
+        Row: {
+          captured_at: string
+          created_at: string
+          created_by: string | null
+          id: string
+          metrics: Json
+          notes: string | null
+        }
+        Insert: {
+          captured_at?: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          metrics: Json
+          notes?: string | null
+        }
+        Update: {
+          captured_at?: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          metrics?: Json
+          notes?: string | null
+        }
+        Relationships: []
+      }
+      forge_portal_auth: {
+        Row: {
+          failed_2fa_attempts: number
+          failed_password_attempts: number
+          is_locked: boolean
+          locked_until: string | null
+          main_email: string | null
+          needs_pin_setup: boolean
+          od_2fa_recovery_locked_until: string | null
+          od_timed_lock_strikes: number
+          operator_email: string
+          pin_hash: string | null
+          recovery_email: string | null
+          temp_password_issued_at: string | null
+          totp_backup_code_hashes: Json
+          totp_secret: string | null
+          two_factor_enabled: boolean
+          unlock_code_hash: string | null
+          updated_at: string
+        }
+        Insert: {
+          failed_2fa_attempts?: number
+          failed_password_attempts?: number
+          is_locked?: boolean
+          locked_until?: string | null
+          main_email?: string | null
+          needs_pin_setup?: boolean
+          od_2fa_recovery_locked_until?: string | null
+          od_timed_lock_strikes?: number
+          operator_email: string
+          pin_hash?: string | null
+          recovery_email?: string | null
+          temp_password_issued_at?: string | null
+          totp_backup_code_hashes?: Json
+          totp_secret?: string | null
+          two_factor_enabled?: boolean
+          unlock_code_hash?: string | null
+          updated_at?: string
+        }
+        Update: {
+          failed_2fa_attempts?: number
+          failed_password_attempts?: number
+          is_locked?: boolean
+          locked_until?: string | null
+          main_email?: string | null
+          needs_pin_setup?: boolean
+          od_2fa_recovery_locked_until?: string | null
+          od_timed_lock_strikes?: number
+          operator_email?: string
+          pin_hash?: string | null
+          recovery_email?: string | null
+          temp_password_issued_at?: string | null
+          totp_backup_code_hashes?: Json
+          totp_secret?: string | null
+          two_factor_enabled?: boolean
+          unlock_code_hash?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      forge_product_catalog: {
+        Row: {
+          base_price_lkr: number
+          billing_model: string
+          code: string
+          description: string | null
+          id: string
+          is_active: boolean
+          metadata: Json
+          name: string
+          updated_at: string
+        }
+        Insert: {
+          base_price_lkr?: number
+          billing_model: string
+          code: string
+          description?: string | null
+          id?: string
+          is_active?: boolean
+          metadata?: Json
+          name: string
+          updated_at?: string
+        }
+        Update: {
+          base_price_lkr?: number
+          billing_model?: string
+          code?: string
+          description?: string | null
+          id?: string
+          is_active?: boolean
+          metadata?: Json
+          name?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      forge_product_invoices: {
+        Row: {
+          amount_lkr: number
+          created_at: string
+          due_date: string
+          id: string
+          invoice_month: string | null
+          paid_at: string | null
+          purchase_id: string
+          resend_message_id: string | null
+          sent_at: string | null
+          status: string
+        }
+        Insert: {
+          amount_lkr: number
+          created_at?: string
+          due_date: string
+          id?: string
+          invoice_month?: string | null
+          paid_at?: string | null
+          purchase_id: string
+          resend_message_id?: string | null
+          sent_at?: string | null
+          status?: string
+        }
+        Update: {
+          amount_lkr?: number
+          created_at?: string
+          due_date?: string
+          id?: string
+          invoice_month?: string | null
+          paid_at?: string | null
+          purchase_id?: string
+          resend_message_id?: string | null
+          sent_at?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "forge_product_invoices_purchase_id_fkey"
+            columns: ["purchase_id"]
+            isOneToOne: false
+            referencedRelation: "forge_product_purchases"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      forge_product_purchases: {
+        Row: {
+          billing_interval: string | null
+          buyer_email: string
+          buyer_name: string
+          company_id: string | null
+          contact_thread_id: string | null
+          created_at: string
+          id: string
+          notes: string | null
+          partner_id: string | null
+          price_lkr: number
+          product_id: string
+          started_at: string | null
+          status: string
+        }
+        Insert: {
+          billing_interval?: string | null
+          buyer_email: string
+          buyer_name: string
+          company_id?: string | null
+          contact_thread_id?: string | null
+          created_at?: string
+          id?: string
+          notes?: string | null
+          partner_id?: string | null
+          price_lkr: number
+          product_id: string
+          started_at?: string | null
+          status?: string
+        }
+        Update: {
+          billing_interval?: string | null
+          buyer_email?: string
+          buyer_name?: string
+          company_id?: string | null
+          contact_thread_id?: string | null
+          created_at?: string
+          id?: string
+          notes?: string | null
+          partner_id?: string | null
+          price_lkr?: number
+          product_id?: string
+          started_at?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "forge_product_purchases_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "forge_product_purchases_contact_thread_id_fkey"
+            columns: ["contact_thread_id"]
+            isOneToOne: false
+            referencedRelation: "forge_contact_threads"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "forge_product_purchases_partner_id_fkey"
+            columns: ["partner_id"]
+            isOneToOne: false
+            referencedRelation: "forge_service_partners"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "forge_product_purchases_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "forge_product_catalog"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      forge_project_milestones: {
+        Row: {
+          amount_lkr: number
+          created_at: string
+          description: string | null
+          due_date: string | null
+          id: string
+          invoice_id: string | null
+          invoiced_at: string | null
+          paid_at: string | null
+          purchase_id: string
+          sort_order: number
+          status: string
+          title: string
+        }
+        Insert: {
+          amount_lkr?: number
+          created_at?: string
+          description?: string | null
+          due_date?: string | null
+          id?: string
+          invoice_id?: string | null
+          invoiced_at?: string | null
+          paid_at?: string | null
+          purchase_id: string
+          sort_order?: number
+          status?: string
+          title: string
+        }
+        Update: {
+          amount_lkr?: number
+          created_at?: string
+          description?: string | null
+          due_date?: string | null
+          id?: string
+          invoice_id?: string | null
+          invoiced_at?: string | null
+          paid_at?: string | null
+          purchase_id?: string
+          sort_order?: number
+          status?: string
+          title?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "forge_project_milestones_invoice_id_fkey"
+            columns: ["invoice_id"]
+            isOneToOne: false
+            referencedRelation: "forge_product_invoices"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "forge_project_milestones_purchase_id_fkey"
+            columns: ["purchase_id"]
+            isOneToOne: false
+            referencedRelation: "forge_product_purchases"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      forge_service_partners: {
+        Row: {
+          created_at: string
+          display_name: string
+          email: string
+          id: string
+          is_active: boolean
+          referral_code: string
+          updated_at: string
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          display_name: string
+          email: string
+          id?: string
+          is_active?: boolean
+          referral_code: string
+          updated_at?: string
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          display_name?: string
+          email?: string
+          id?: string
+          is_active?: boolean
+          referral_code?: string
+          updated_at?: string
+          user_id?: string | null
+        }
+        Relationships: []
+      }
       forge_settings: {
         Row: {
           operator_emails: string[]
+          pearzen_website_content: Json | null
           singleton: boolean
           updated_at: string
         }
         Insert: {
           operator_emails?: string[]
+          pearzen_website_content?: Json | null
           singleton?: boolean
           updated_at?: string
         }
         Update: {
           operator_emails?: string[]
+          pearzen_website_content?: Json | null
           singleton?: boolean
           updated_at?: string
         }
         Relationships: []
+      }
+      guard_blacklist_vault: {
+        Row: {
+          blacklisted_at: string
+          blacklisted_by: string | null
+          blacklisted_by_name: string
+          company_id: string
+          emp_number: string
+          employee_id: string
+          guard_name: string | null
+          guard_rank: string | null
+          id: string
+          md_removal_notes: string | null
+          reason: string | null
+          removed_at: string | null
+          removed_by: string | null
+          removed_by_name: string | null
+          status: string
+        }
+        Insert: {
+          blacklisted_at?: string
+          blacklisted_by?: string | null
+          blacklisted_by_name?: string
+          company_id: string
+          emp_number: string
+          employee_id: string
+          guard_name?: string | null
+          guard_rank?: string | null
+          id?: string
+          md_removal_notes?: string | null
+          reason?: string | null
+          removed_at?: string | null
+          removed_by?: string | null
+          removed_by_name?: string | null
+          status?: string
+        }
+        Update: {
+          blacklisted_at?: string
+          blacklisted_by?: string | null
+          blacklisted_by_name?: string
+          company_id?: string
+          emp_number?: string
+          employee_id?: string
+          guard_name?: string | null
+          guard_rank?: string | null
+          id?: string
+          md_removal_notes?: string | null
+          reason?: string | null
+          removed_at?: string | null
+          removed_by?: string | null
+          removed_by_name?: string | null
+          status?: string
+        }
+        Relationships: []
+      }
+      guard_job_applications: {
+        Row: {
+          company_id: string
+          created_at: string
+          height_ft: number
+          id: string
+          id_doc_back_url: string | null
+          id_doc_front_url: string
+          phone_primary: string
+          phone_secondary: string | null
+          reviewed_at: string | null
+          reviewed_by: string | null
+          selfie_url: string
+          servicemen_cert_url: string
+          site_label: string
+          site_profile_id: string | null
+          status: string
+          weight_kg: number
+        }
+        Insert: {
+          company_id: string
+          created_at?: string
+          height_ft: number
+          id?: string
+          id_doc_back_url?: string | null
+          id_doc_front_url: string
+          phone_primary: string
+          phone_secondary?: string | null
+          reviewed_at?: string | null
+          reviewed_by?: string | null
+          selfie_url: string
+          servicemen_cert_url: string
+          site_label: string
+          site_profile_id?: string | null
+          status?: string
+          weight_kg: number
+        }
+        Update: {
+          company_id?: string
+          created_at?: string
+          height_ft?: number
+          id?: string
+          id_doc_back_url?: string | null
+          id_doc_front_url?: string
+          phone_primary?: string
+          phone_secondary?: string | null
+          reviewed_at?: string | null
+          reviewed_by?: string | null
+          selfie_url?: string
+          servicemen_cert_url?: string
+          site_label?: string
+          site_profile_id?: string | null
+          status?: string
+          weight_kg?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "guard_job_applications_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "guard_job_applications_site_profile_id_fkey"
+            columns: ["site_profile_id"]
+            isOneToOne: false
+            referencedRelation: "site_profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      guard_offboarding_letter_tracks: {
+        Row: {
+          company_id: string
+          completed_at: string | null
+          completed_by: string | null
+          completion_notes: string | null
+          created_at: string
+          employee_id: string
+          guard_epf: string
+          id: string
+          letter_1_doc_url: string | null
+          letter_1_sent_at: string | null
+          letter_1_sent_by: string | null
+          letter_2_doc_url: string | null
+          letter_2_sent_at: string | null
+          letter_2_sent_by: string | null
+          letter_3_doc_url: string | null
+          letter_3_sent_at: string | null
+          letter_3_sent_by: string | null
+          sequence_started_at: string
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          company_id: string
+          completed_at?: string | null
+          completed_by?: string | null
+          completion_notes?: string | null
+          created_at?: string
+          employee_id: string
+          guard_epf: string
+          id?: string
+          letter_1_doc_url?: string | null
+          letter_1_sent_at?: string | null
+          letter_1_sent_by?: string | null
+          letter_2_doc_url?: string | null
+          letter_2_sent_at?: string | null
+          letter_2_sent_by?: string | null
+          letter_3_doc_url?: string | null
+          letter_3_sent_at?: string | null
+          letter_3_sent_by?: string | null
+          sequence_started_at: string
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          company_id?: string
+          completed_at?: string | null
+          completed_by?: string | null
+          completion_notes?: string | null
+          created_at?: string
+          employee_id?: string
+          guard_epf?: string
+          id?: string
+          letter_1_doc_url?: string | null
+          letter_1_sent_at?: string | null
+          letter_1_sent_by?: string | null
+          letter_2_doc_url?: string | null
+          letter_2_sent_at?: string | null
+          letter_2_sent_by?: string | null
+          letter_3_doc_url?: string | null
+          letter_3_sent_at?: string | null
+          letter_3_sent_by?: string | null
+          sequence_started_at?: string
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "guard_offboarding_letter_tracks_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "guard_offboarding_letter_tracks_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       guard_sector_assignments: {
         Row: {
@@ -2177,8 +3422,205 @@ export type Database = {
           },
         ]
       }
+      head_office_portal_auth: {
+        Row: {
+          created_at: string
+          current_otp: string | null
+          employee_id: string
+          failed_2fa_attempts: number
+          failed_password_attempts: number
+          is_active: boolean
+          is_username_locked: boolean
+          last_login_at: string | null
+          last_otp_provisioned_at: string | null
+          last_otp_provisioned_by_employee_id: string | null
+          last_otp_provisioned_by_name: string | null
+          last_otp_provisioned_lat: number | null
+          last_otp_provisioned_lng: number | null
+          last_otp_provisioned_location_label: string | null
+          locked_until: string | null
+          login_username: string | null
+          needs_pin_setup: boolean
+          od_2fa_recovery_locked_until: string | null
+          od_timed_lock_strikes: number
+          otp_expires_at: string | null
+          pin_hash: string | null
+          portal_auth_email: string | null
+          recovery_email: string | null
+          recovery_email_verified_at: string | null
+          totp_backup_code_hashes: Json
+          totp_secret: string | null
+          two_factor_enabled: boolean
+          unlock_code_hash: string | null
+          unlock_code_set_at: string | null
+          updated_at: string
+          work_email: string
+        }
+        Insert: {
+          created_at?: string
+          current_otp?: string | null
+          employee_id: string
+          failed_2fa_attempts?: number
+          failed_password_attempts?: number
+          is_active?: boolean
+          is_username_locked?: boolean
+          last_login_at?: string | null
+          last_otp_provisioned_at?: string | null
+          last_otp_provisioned_by_employee_id?: string | null
+          last_otp_provisioned_by_name?: string | null
+          last_otp_provisioned_lat?: number | null
+          last_otp_provisioned_lng?: number | null
+          last_otp_provisioned_location_label?: string | null
+          locked_until?: string | null
+          login_username?: string | null
+          needs_pin_setup?: boolean
+          od_2fa_recovery_locked_until?: string | null
+          od_timed_lock_strikes?: number
+          otp_expires_at?: string | null
+          pin_hash?: string | null
+          portal_auth_email?: string | null
+          recovery_email?: string | null
+          recovery_email_verified_at?: string | null
+          totp_backup_code_hashes?: Json
+          totp_secret?: string | null
+          two_factor_enabled?: boolean
+          unlock_code_hash?: string | null
+          unlock_code_set_at?: string | null
+          updated_at?: string
+          work_email: string
+        }
+        Update: {
+          created_at?: string
+          current_otp?: string | null
+          employee_id?: string
+          failed_2fa_attempts?: number
+          failed_password_attempts?: number
+          is_active?: boolean
+          is_username_locked?: boolean
+          last_login_at?: string | null
+          last_otp_provisioned_at?: string | null
+          last_otp_provisioned_by_employee_id?: string | null
+          last_otp_provisioned_by_name?: string | null
+          last_otp_provisioned_lat?: number | null
+          last_otp_provisioned_lng?: number | null
+          last_otp_provisioned_location_label?: string | null
+          locked_until?: string | null
+          login_username?: string | null
+          needs_pin_setup?: boolean
+          od_2fa_recovery_locked_until?: string | null
+          od_timed_lock_strikes?: number
+          otp_expires_at?: string | null
+          pin_hash?: string | null
+          portal_auth_email?: string | null
+          recovery_email?: string | null
+          recovery_email_verified_at?: string | null
+          totp_backup_code_hashes?: Json
+          totp_secret?: string | null
+          two_factor_enabled?: boolean
+          unlock_code_hash?: string | null
+          unlock_code_set_at?: string | null
+          updated_at?: string
+          work_email?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "head_office_portal_auth_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: true
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "head_office_portal_auth_last_otp_provisioned_by_employee_i_fkey"
+            columns: ["last_otp_provisioned_by_employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      head_office_recovery_email_change_requests: {
+        Row: {
+          code_hash: string
+          consumed_at: string | null
+          created_at: string
+          employee_id: string
+          expires_at: string
+          id: string
+          new_recovery_email: string
+        }
+        Insert: {
+          code_hash: string
+          consumed_at?: string | null
+          created_at?: string
+          employee_id: string
+          expires_at: string
+          id?: string
+          new_recovery_email: string
+        }
+        Update: {
+          code_hash?: string
+          consumed_at?: string | null
+          created_at?: string
+          employee_id?: string
+          expires_at?: string
+          id?: string
+          new_recovery_email?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "head_office_recovery_email_change_requests_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      head_office_work_email_change_requests: {
+        Row: {
+          code_hash: string
+          consumed_at: string | null
+          created_at: string
+          employee_id: string
+          expires_at: string
+          id: string
+          new_work_email: string
+          send_otp_to: string
+        }
+        Insert: {
+          code_hash: string
+          consumed_at?: string | null
+          created_at?: string
+          employee_id: string
+          expires_at: string
+          id?: string
+          new_work_email: string
+          send_otp_to: string
+        }
+        Update: {
+          code_hash?: string
+          consumed_at?: string | null
+          created_at?: string
+          employee_id?: string
+          expires_at?: string
+          id?: string
+          new_work_email?: string
+          send_otp_to?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "head_office_work_email_change_requests_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       incidents: {
         Row: {
+          company_id: string
           created_at: string | null
           description: string
           emp_number: string
@@ -2188,6 +3630,7 @@ export type Database = {
           synced_at: string | null
         }
         Insert: {
+          company_id: string
           created_at?: string | null
           description: string
           emp_number: string
@@ -2197,6 +3640,7 @@ export type Database = {
           synced_at?: string | null
         }
         Update: {
+          company_id?: string
           created_at?: string | null
           description?: string
           emp_number?: string
@@ -2205,7 +3649,15 @@ export type Database = {
           status?: string | null
           synced_at?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "incidents_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       locations: {
         Row: {
@@ -2244,6 +3696,7 @@ export type Database = {
       }
       md_settings: {
         Row: {
+          advance_salary_settings: Json | null
           advanced_geofencing: boolean | null
           auto_approve_payroll: boolean | null
           bank_export_settings: Json | null
@@ -2255,7 +3708,9 @@ export type Database = {
           company_logo_url: string | null
           created_at: string | null
           default_geofence_radius_m: number | null
+          enabled_modules: Json | null
           gratuity_settings: Json | null
+          holiday_calendar: Json
           hospitality_module: boolean | null
           id: string
           invoice_email: string | null
@@ -2265,6 +3720,7 @@ export type Database = {
           max_deduction_pct: number | null
           pay_formulas: Json | null
           penalty_catalog: Json | null
+          portal_rbac_matrix: Json | null
           rank_pay_matrix: Json | null
           replacement_catalog: Json | null
           security_day_end: string | null
@@ -2293,6 +3749,7 @@ export type Database = {
           welfare_fund_settings: Json | null
         }
         Insert: {
+          advance_salary_settings?: Json | null
           advanced_geofencing?: boolean | null
           auto_approve_payroll?: boolean | null
           bank_export_settings?: Json | null
@@ -2304,7 +3761,9 @@ export type Database = {
           company_logo_url?: string | null
           created_at?: string | null
           default_geofence_radius_m?: number | null
+          enabled_modules?: Json | null
           gratuity_settings?: Json | null
+          holiday_calendar?: Json
           hospitality_module?: boolean | null
           id?: string
           invoice_email?: string | null
@@ -2314,6 +3773,7 @@ export type Database = {
           max_deduction_pct?: number | null
           pay_formulas?: Json | null
           penalty_catalog?: Json | null
+          portal_rbac_matrix?: Json | null
           rank_pay_matrix?: Json | null
           replacement_catalog?: Json | null
           security_day_end?: string | null
@@ -2342,6 +3802,7 @@ export type Database = {
           welfare_fund_settings?: Json | null
         }
         Update: {
+          advance_salary_settings?: Json | null
           advanced_geofencing?: boolean | null
           auto_approve_payroll?: boolean | null
           bank_export_settings?: Json | null
@@ -2353,7 +3814,9 @@ export type Database = {
           company_logo_url?: string | null
           created_at?: string | null
           default_geofence_radius_m?: number | null
+          enabled_modules?: Json | null
           gratuity_settings?: Json | null
+          holiday_calendar?: Json
           hospitality_module?: boolean | null
           id?: string
           invoice_email?: string | null
@@ -2363,6 +3826,7 @@ export type Database = {
           max_deduction_pct?: number | null
           pay_formulas?: Json | null
           penalty_catalog?: Json | null
+          portal_rbac_matrix?: Json | null
           rank_pay_matrix?: Json | null
           replacement_catalog?: Json | null
           security_day_end?: string | null
@@ -2751,6 +4215,149 @@ export type Database = {
           },
         ]
       }
+      portal_login_events: {
+        Row: {
+          created_at: string
+          detail: string | null
+          device_label: string | null
+          employee_id: string | null
+          event_type: string
+          id: string
+          ip_address: string | null
+          portal_auth_email: string | null
+          success: boolean
+        }
+        Insert: {
+          created_at?: string
+          detail?: string | null
+          device_label?: string | null
+          employee_id?: string | null
+          event_type: string
+          id?: string
+          ip_address?: string | null
+          portal_auth_email?: string | null
+          success?: boolean
+        }
+        Update: {
+          created_at?: string
+          detail?: string | null
+          device_label?: string | null
+          employee_id?: string | null
+          event_type?: string
+          id?: string
+          ip_address?: string | null
+          portal_auth_email?: string | null
+          success?: boolean
+        }
+        Relationships: [
+          {
+            foreignKeyName: "portal_login_events_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      portal_pending_logins: {
+        Row: {
+          challenger_session_id: string
+          created_at: string
+          employee_id: string | null
+          expires_at: string
+          id: string
+          incumbent_session_id: string | null
+          operator_email: string | null
+          responded_at: string | null
+          status: string
+        }
+        Insert: {
+          challenger_session_id: string
+          created_at?: string
+          employee_id?: string | null
+          expires_at: string
+          id?: string
+          incumbent_session_id?: string | null
+          operator_email?: string | null
+          responded_at?: string | null
+          status?: string
+        }
+        Update: {
+          challenger_session_id?: string
+          created_at?: string
+          employee_id?: string | null
+          expires_at?: string
+          id?: string
+          incumbent_session_id?: string | null
+          operator_email?: string | null
+          responded_at?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "portal_pending_logins_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      portal_security_notifications: {
+        Row: {
+          company_id: string | null
+          created_at: string
+          event_type: string
+          id: string
+          message: string
+          read_at: string | null
+          subject_employee_id: string | null
+          target_employee_id: string | null
+        }
+        Insert: {
+          company_id?: string | null
+          created_at?: string
+          event_type: string
+          id?: string
+          message: string
+          read_at?: string | null
+          subject_employee_id?: string | null
+          target_employee_id?: string | null
+        }
+        Update: {
+          company_id?: string | null
+          created_at?: string
+          event_type?: string
+          id?: string
+          message?: string
+          read_at?: string | null
+          subject_employee_id?: string | null
+          target_employee_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "portal_security_notifications_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "portal_security_notifications_subject_employee_id_fkey"
+            columns: ["subject_employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "portal_security_notifications_target_employee_id_fkey"
+            columns: ["target_employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       profiles: {
         Row: {
           company_id: string | null
@@ -2817,6 +4424,254 @@ export type Database = {
             columns: ["company_id"]
             isOneToOne: false
             referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      retail_carts: {
+        Row: {
+          cart_code: string
+          company_id: string
+          created_at: string
+          id: string
+          line_items: Json
+          notes: string | null
+          status: Database["public"]["Enums"]["retail_cart_status"]
+          updated_at: string
+        }
+        Insert: {
+          cart_code: string
+          company_id: string
+          created_at?: string
+          id?: string
+          line_items?: Json
+          notes?: string | null
+          status?: Database["public"]["Enums"]["retail_cart_status"]
+          updated_at?: string
+        }
+        Update: {
+          cart_code?: string
+          company_id?: string
+          created_at?: string
+          id?: string
+          line_items?: Json
+          notes?: string | null
+          status?: Database["public"]["Enums"]["retail_cart_status"]
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "retail_carts_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      retail_order_lines: {
+        Row: {
+          company_id: string
+          created_at: string
+          id: string
+          line_total_lkr: number
+          order_id: string
+          product_id: string | null
+          product_name: string
+          quantity: number
+          unit_price_lkr: number
+        }
+        Insert: {
+          company_id: string
+          created_at?: string
+          id?: string
+          line_total_lkr?: number
+          order_id: string
+          product_id?: string | null
+          product_name: string
+          quantity?: number
+          unit_price_lkr?: number
+        }
+        Update: {
+          company_id?: string
+          created_at?: string
+          id?: string
+          line_total_lkr?: number
+          order_id?: string
+          product_id?: string | null
+          product_name?: string
+          quantity?: number
+          unit_price_lkr?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "retail_order_lines_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "retail_order_lines_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "retail_orders"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "retail_order_lines_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "retail_products"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      retail_orders: {
+        Row: {
+          cart_id: string | null
+          company_id: string
+          created_at: string
+          created_by_email: string | null
+          customer_name: string | null
+          customer_phone: string | null
+          id: string
+          notes: string | null
+          order_number: string
+          payment_method: Database["public"]["Enums"]["retail_payment_method"]
+          status: Database["public"]["Enums"]["retail_order_status"]
+          total_lkr: number
+          updated_at: string
+        }
+        Insert: {
+          cart_id?: string | null
+          company_id: string
+          created_at?: string
+          created_by_email?: string | null
+          customer_name?: string | null
+          customer_phone?: string | null
+          id?: string
+          notes?: string | null
+          order_number: string
+          payment_method?: Database["public"]["Enums"]["retail_payment_method"]
+          status?: Database["public"]["Enums"]["retail_order_status"]
+          total_lkr?: number
+          updated_at?: string
+        }
+        Update: {
+          cart_id?: string | null
+          company_id?: string
+          created_at?: string
+          created_by_email?: string | null
+          customer_name?: string | null
+          customer_phone?: string | null
+          id?: string
+          notes?: string | null
+          order_number?: string
+          payment_method?: Database["public"]["Enums"]["retail_payment_method"]
+          status?: Database["public"]["Enums"]["retail_order_status"]
+          total_lkr?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "retail_orders_cart_id_fkey"
+            columns: ["cart_id"]
+            isOneToOne: false
+            referencedRelation: "retail_carts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "retail_orders_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      retail_products: {
+        Row: {
+          company_id: string
+          created_at: string
+          id: string
+          is_active: boolean
+          name: string
+          published: boolean
+          sku: string | null
+          unit_price_lkr: number
+          updated_at: string
+        }
+        Insert: {
+          company_id: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name: string
+          published?: boolean
+          sku?: string | null
+          unit_price_lkr?: number
+          updated_at?: string
+        }
+        Update: {
+          company_id?: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name?: string
+          published?: boolean
+          sku?: string | null
+          unit_price_lkr?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "retail_products_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      retail_stock_levels: {
+        Row: {
+          company_id: string
+          id: string
+          product_id: string
+          quantity_on_hand: number
+          reorder_level: number
+          updated_at: string
+        }
+        Insert: {
+          company_id: string
+          id?: string
+          product_id: string
+          quantity_on_hand?: number
+          reorder_level?: number
+          updated_at?: string
+        }
+        Update: {
+          company_id?: string
+          id?: string
+          product_id?: string
+          quantity_on_hand?: number
+          reorder_level?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "retail_stock_levels_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "retail_stock_levels_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "retail_products"
             referencedColumns: ["id"]
           },
         ]
@@ -3035,6 +4890,406 @@ export type Database = {
           },
         ]
       }
+      salon_appointments: {
+        Row: {
+          client_name: string
+          client_phone: string | null
+          company_id: string
+          created_at: string
+          id: string
+          notes: string | null
+          scheduled_end: string
+          scheduled_start: string
+          service_id: string | null
+          status: Database["public"]["Enums"]["salon_appointment_status"]
+          updated_at: string
+        }
+        Insert: {
+          client_name: string
+          client_phone?: string | null
+          company_id: string
+          created_at?: string
+          id?: string
+          notes?: string | null
+          scheduled_end: string
+          scheduled_start: string
+          service_id?: string | null
+          status?: Database["public"]["Enums"]["salon_appointment_status"]
+          updated_at?: string
+        }
+        Update: {
+          client_name?: string
+          client_phone?: string | null
+          company_id?: string
+          created_at?: string
+          id?: string
+          notes?: string | null
+          scheduled_end?: string
+          scheduled_start?: string
+          service_id?: string | null
+          status?: Database["public"]["Enums"]["salon_appointment_status"]
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "salon_appointments_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "salon_appointments_service_id_fkey"
+            columns: ["service_id"]
+            isOneToOne: false
+            referencedRelation: "salon_services"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      salon_inventory_lots: {
+        Row: {
+          company_id: string
+          created_at: string
+          expires_on: string | null
+          id: string
+          lot_code: string
+          product_id: string
+          quantity: number
+        }
+        Insert: {
+          company_id: string
+          created_at?: string
+          expires_on?: string | null
+          id?: string
+          lot_code: string
+          product_id: string
+          quantity?: number
+        }
+        Update: {
+          company_id?: string
+          created_at?: string
+          expires_on?: string | null
+          id?: string
+          lot_code?: string
+          product_id?: string
+          quantity?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "salon_inventory_lots_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "salon_inventory_lots_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "salon_products"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      salon_pos_transactions: {
+        Row: {
+          company_id: string
+          created_at: string
+          created_by_email: string | null
+          id: string
+          line_items: Json
+          notes: string | null
+          payment_method: Database["public"]["Enums"]["salon_payment_method"]
+          receipt_number: string
+          total_lkr: number
+        }
+        Insert: {
+          company_id: string
+          created_at?: string
+          created_by_email?: string | null
+          id?: string
+          line_items?: Json
+          notes?: string | null
+          payment_method?: Database["public"]["Enums"]["salon_payment_method"]
+          receipt_number: string
+          total_lkr?: number
+        }
+        Update: {
+          company_id?: string
+          created_at?: string
+          created_by_email?: string | null
+          id?: string
+          line_items?: Json
+          notes?: string | null
+          payment_method?: Database["public"]["Enums"]["salon_payment_method"]
+          receipt_number?: string
+          total_lkr?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "salon_pos_transactions_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      salon_products: {
+        Row: {
+          company_id: string
+          created_at: string
+          id: string
+          is_active: boolean
+          name: string
+          sku: string | null
+          stock_on_hand: number
+          unit_price_lkr: number
+          updated_at: string
+        }
+        Insert: {
+          company_id: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name: string
+          sku?: string | null
+          stock_on_hand?: number
+          unit_price_lkr?: number
+          updated_at?: string
+        }
+        Update: {
+          company_id?: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name?: string
+          sku?: string | null
+          stock_on_hand?: number
+          unit_price_lkr?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "salon_products_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      salon_services: {
+        Row: {
+          company_id: string
+          created_at: string
+          duration_minutes: number
+          id: string
+          is_active: boolean
+          name: string
+          price_lkr: number
+          sort_order: number
+          updated_at: string
+        }
+        Insert: {
+          company_id: string
+          created_at?: string
+          duration_minutes?: number
+          id?: string
+          is_active?: boolean
+          name: string
+          price_lkr?: number
+          sort_order?: number
+          updated_at?: string
+        }
+        Update: {
+          company_id?: string
+          created_at?: string
+          duration_minutes?: number
+          id?: string
+          is_active?: boolean
+          name?: string
+          price_lkr?: number
+          sort_order?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "salon_services_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      sector_om_assignments: {
+        Row: {
+          assigned_at: string
+          assigned_by_employee_id: string | null
+          company_id: string
+          id: string
+          om_employee_id: string
+          sm_epf: string
+        }
+        Insert: {
+          assigned_at?: string
+          assigned_by_employee_id?: string | null
+          company_id: string
+          id?: string
+          om_employee_id: string
+          sm_epf: string
+        }
+        Update: {
+          assigned_at?: string
+          assigned_by_employee_id?: string | null
+          company_id?: string
+          id?: string
+          om_employee_id?: string
+          sm_epf?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sector_om_assignments_assigned_by_employee_id_fkey"
+            columns: ["assigned_by_employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sector_om_assignments_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sector_om_assignments_om_employee_id_fkey"
+            columns: ["om_employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      sector_role_assignments: {
+        Row: {
+          assigned_at: string
+          assigned_by_employee_id: string | null
+          company_id: string
+          employee_id: string
+          id: string
+          role_code: string
+          sm_epf: string
+        }
+        Insert: {
+          assigned_at?: string
+          assigned_by_employee_id?: string | null
+          company_id: string
+          employee_id: string
+          id?: string
+          role_code: string
+          sm_epf: string
+        }
+        Update: {
+          assigned_at?: string
+          assigned_by_employee_id?: string | null
+          company_id?: string
+          employee_id?: string
+          id?: string
+          role_code?: string
+          sm_epf?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sector_role_assignments_assigned_by_employee_id_fkey"
+            columns: ["assigned_by_employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sector_role_assignments_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sector_role_assignments_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      security_website_leads: {
+        Row: {
+          client_company: string | null
+          company_id: string
+          contact_email: string | null
+          contact_name: string
+          contact_phone: string
+          created_at: string
+          estimated_monthly_lkr: number | null
+          guards_needed: number | null
+          id: string
+          notes: string | null
+          preferred_start: string | null
+          service_type: string | null
+          shift_pattern: string | null
+          site_district: string | null
+          source: string
+          status: string
+        }
+        Insert: {
+          client_company?: string | null
+          company_id: string
+          contact_email?: string | null
+          contact_name: string
+          contact_phone: string
+          created_at?: string
+          estimated_monthly_lkr?: number | null
+          guards_needed?: number | null
+          id?: string
+          notes?: string | null
+          preferred_start?: string | null
+          service_type?: string | null
+          shift_pattern?: string | null
+          site_district?: string | null
+          source?: string
+          status?: string
+        }
+        Update: {
+          client_company?: string | null
+          company_id?: string
+          contact_email?: string | null
+          contact_name?: string
+          contact_phone?: string
+          created_at?: string
+          estimated_monthly_lkr?: number | null
+          guards_needed?: number | null
+          id?: string
+          notes?: string | null
+          preferred_start?: string | null
+          service_type?: string | null
+          shift_pattern?: string | null
+          site_district?: string | null
+          source?: string
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "security_website_leads_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       shadow_roster_slots: {
         Row: {
           active_from: string
@@ -3094,6 +5349,325 @@ export type Database = {
             columns: ["merged_to_employee_id"]
             isOneToOne: false
             referencedRelation: "employees"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      shalom_bookings: {
+        Row: {
+          booking_status: string
+          caretaker_collect_lkr: number | null
+          channel: string
+          check_in: string
+          check_out: string
+          company_id: string
+          created_at: string
+          damage_items: Json
+          enriched: boolean
+          enriched_contact: string
+          guest_email: string
+          guest_id_document_url: string
+          guest_name: string
+          guest_phone: string
+          id: string
+          invoice_email: string
+          invoice_reference: string
+          invoice_sent_at: string | null
+          nights: number
+          notes: string
+          ota_ical_uid: string
+          ota_imported: boolean
+          paid: boolean
+          payhere_payment_id: string
+          pending_payment_expires_at: string | null
+          property_id: string
+          rate_per_night: number
+          total_revenue: number
+          updated_at: string
+        }
+        Insert: {
+          booking_status?: string
+          caretaker_collect_lkr?: number | null
+          channel?: string
+          check_in: string
+          check_out: string
+          company_id: string
+          created_at?: string
+          damage_items?: Json
+          enriched?: boolean
+          enriched_contact?: string
+          guest_email?: string
+          guest_id_document_url?: string
+          guest_name?: string
+          guest_phone?: string
+          id?: string
+          invoice_email?: string
+          invoice_reference?: string
+          invoice_sent_at?: string | null
+          nights?: number
+          notes?: string
+          ota_ical_uid?: string
+          ota_imported?: boolean
+          paid?: boolean
+          payhere_payment_id?: string
+          pending_payment_expires_at?: string | null
+          property_id: string
+          rate_per_night?: number
+          total_revenue?: number
+          updated_at?: string
+        }
+        Update: {
+          booking_status?: string
+          caretaker_collect_lkr?: number | null
+          channel?: string
+          check_in?: string
+          check_out?: string
+          company_id?: string
+          created_at?: string
+          damage_items?: Json
+          enriched?: boolean
+          enriched_contact?: string
+          guest_email?: string
+          guest_id_document_url?: string
+          guest_name?: string
+          guest_phone?: string
+          id?: string
+          invoice_email?: string
+          invoice_reference?: string
+          invoice_sent_at?: string | null
+          nights?: number
+          notes?: string
+          ota_ical_uid?: string
+          ota_imported?: boolean
+          paid?: boolean
+          payhere_payment_id?: string
+          pending_payment_expires_at?: string | null
+          property_id?: string
+          rate_per_night?: number
+          total_revenue?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shalom_bookings_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "shalom_bookings_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "shalom_properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      shalom_caretaker_property_assignments: {
+        Row: {
+          company_id: string
+          created_at: string
+          epf_number: string
+          id: string
+          property_id: string
+          updated_at: string
+        }
+        Insert: {
+          company_id: string
+          created_at?: string
+          epf_number: string
+          id?: string
+          property_id: string
+          updated_at?: string
+        }
+        Update: {
+          company_id?: string
+          created_at?: string
+          epf_number?: string
+          id?: string
+          property_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shalom_caretaker_property_assignments_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "shalom_caretaker_property_assignments_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "shalom_properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      shalom_portal_auth: {
+        Row: {
+          created_at: string
+          current_otp_hash: string | null
+          epf_number: string
+          is_active: boolean
+          last_login_at: string | null
+          last_login_selfie_url: string | null
+          needs_pin_setup: boolean
+          otp_expires_at: string | null
+          pin_hash: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          current_otp_hash?: string | null
+          epf_number: string
+          is_active?: boolean
+          last_login_at?: string | null
+          last_login_selfie_url?: string | null
+          needs_pin_setup?: boolean
+          otp_expires_at?: string | null
+          pin_hash?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          current_otp_hash?: string | null
+          epf_number?: string
+          is_active?: boolean
+          last_login_at?: string | null
+          last_login_selfie_url?: string | null
+          needs_pin_setup?: boolean
+          otp_expires_at?: string | null
+          pin_hash?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      shalom_portal_daily_logins: {
+        Row: {
+          company_id: string
+          created_at: string
+          epf_number: string
+          id: string
+          login_count: number
+          login_date: string
+          updated_at: string
+        }
+        Insert: {
+          company_id: string
+          created_at?: string
+          epf_number: string
+          id?: string
+          login_count?: number
+          login_date: string
+          updated_at?: string
+        }
+        Update: {
+          company_id?: string
+          created_at?: string
+          epf_number?: string
+          id?: string
+          login_count?: number
+          login_date?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shalom_portal_daily_logins_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      shalom_properties: {
+        Row: {
+          airbnb_ical_url: string
+          bedrooms: number
+          booking_ical_url: string
+          caretaker_epf: string | null
+          company_id: string
+          created_at: string
+          id: string
+          location: string
+          name: string
+          occupancy_target_pct: number
+          ota_channels: string[]
+          overhead_lkr: number
+          public_amenities: Json
+          public_description: string
+          public_gallery_urls: Json
+          public_headline: string
+          public_hero_image_url: string
+          public_max_guests: number
+          public_nightly_rate_lkr: number
+          public_published: boolean
+          public_slug: string
+          public_sort_order: number
+          settings: Json
+          updated_at: string
+        }
+        Insert: {
+          airbnb_ical_url?: string
+          bedrooms?: number
+          booking_ical_url?: string
+          caretaker_epf?: string | null
+          company_id: string
+          created_at?: string
+          id?: string
+          location?: string
+          name: string
+          occupancy_target_pct?: number
+          ota_channels?: string[]
+          overhead_lkr?: number
+          public_amenities?: Json
+          public_description?: string
+          public_gallery_urls?: Json
+          public_headline?: string
+          public_hero_image_url?: string
+          public_max_guests?: number
+          public_nightly_rate_lkr?: number
+          public_published?: boolean
+          public_slug?: string
+          public_sort_order?: number
+          settings?: Json
+          updated_at?: string
+        }
+        Update: {
+          airbnb_ical_url?: string
+          bedrooms?: number
+          booking_ical_url?: string
+          caretaker_epf?: string | null
+          company_id?: string
+          created_at?: string
+          id?: string
+          location?: string
+          name?: string
+          occupancy_target_pct?: number
+          ota_channels?: string[]
+          overhead_lkr?: number
+          public_amenities?: Json
+          public_description?: string
+          public_gallery_urls?: Json
+          public_headline?: string
+          public_hero_image_url?: string
+          public_max_guests?: number
+          public_nightly_rate_lkr?: number
+          public_published?: boolean
+          public_slug?: string
+          public_sort_order?: number
+          settings?: Json
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shalom_properties_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
             referencedColumns: ["id"]
           },
         ]
@@ -3261,6 +5835,10 @@ export type Database = {
           location_captured_at: string | null
           location_captured_by: string | null
           longitude: number | null
+          meal_breakfast: boolean
+          meal_dinner: boolean
+          meal_lunch: boolean
+          meal_tea: boolean
           min_dwell_time_minutes: number
           needs_om_gps_capture: boolean
           nfc_tag_id: string | null
@@ -3294,6 +5872,10 @@ export type Database = {
           location_captured_at?: string | null
           location_captured_by?: string | null
           longitude?: number | null
+          meal_breakfast?: boolean
+          meal_dinner?: boolean
+          meal_lunch?: boolean
+          meal_tea?: boolean
           min_dwell_time_minutes?: number
           needs_om_gps_capture?: boolean
           nfc_tag_id?: string | null
@@ -3327,6 +5909,10 @@ export type Database = {
           location_captured_at?: string | null
           location_captured_by?: string | null
           longitude?: number | null
+          meal_breakfast?: boolean
+          meal_dinner?: boolean
+          meal_lunch?: boolean
+          meal_tea?: boolean
           min_dwell_time_minutes?: number
           needs_om_gps_capture?: boolean
           nfc_tag_id?: string | null
@@ -3485,39 +6071,45 @@ export type Database = {
       }
       sm_guard_penalties: {
         Row: {
+          consent_selfie_url: string | null
           created_at: string
           deduction_amount: number | null
           guard_epf: string
           guard_name: string | null
           id: string
+          penalty_catalog_id: string | null
           penalty_type: string
-          reason: string
+          reason: string | null
           shift_date: string | null
           site_name: string | null
           sm_epf: string
           status: string
         }
         Insert: {
+          consent_selfie_url?: string | null
           created_at?: string
           deduction_amount?: number | null
           guard_epf: string
           guard_name?: string | null
           id?: string
+          penalty_catalog_id?: string | null
           penalty_type: string
-          reason: string
+          reason?: string | null
           shift_date?: string | null
           site_name?: string | null
           sm_epf: string
           status?: string
         }
         Update: {
+          consent_selfie_url?: string | null
           created_at?: string
           deduction_amount?: number | null
           guard_epf?: string
           guard_name?: string | null
           id?: string
+          penalty_catalog_id?: string | null
           penalty_type?: string
-          reason?: string
+          reason?: string | null
           shift_date?: string | null
           site_name?: string | null
           sm_epf?: string
@@ -3531,6 +6123,7 @@ export type Database = {
           ack_om: boolean
           ack_sm: boolean
           action_taken: string | null
+          company_id: string
           created_at: string
           description: string
           guards_involved: string[] | null
@@ -3546,6 +6139,7 @@ export type Database = {
           ack_om?: boolean
           ack_sm?: boolean
           action_taken?: string | null
+          company_id: string
           created_at?: string
           description: string
           guards_involved?: string[] | null
@@ -3561,6 +6155,7 @@ export type Database = {
           ack_om?: boolean
           ack_sm?: boolean
           action_taken?: string | null
+          company_id?: string
           created_at?: string
           description?: string
           guards_involved?: string[] | null
@@ -3571,41 +6166,62 @@ export type Database = {
           sm_epf?: string
           status?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "sm_incident_reports_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       sm_portal_auth: {
         Row: {
           created_at: string
           current_otp: string | null
+          current_otp_hash: string | null
           epf_number: string
           is_active: boolean
           last_login_at: string | null
+          last_login_selfie_url: string | null
           needs_pin_setup: boolean
+          otp_expires_at: string | null
           updated_at: string
         }
         Insert: {
           created_at?: string
           current_otp?: string | null
+          current_otp_hash?: string | null
           epf_number: string
           is_active?: boolean
           last_login_at?: string | null
+          last_login_selfie_url?: string | null
           needs_pin_setup?: boolean
+          otp_expires_at?: string | null
           updated_at?: string
         }
         Update: {
           created_at?: string
           current_otp?: string | null
+          current_otp_hash?: string | null
           epf_number?: string
           is_active?: boolean
           last_login_at?: string | null
+          last_login_selfie_url?: string | null
           needs_pin_setup?: boolean
+          otp_expires_at?: string | null
           updated_at?: string
         }
         Relationships: []
       }
       sm_uniform_requests: {
         Row: {
+          consent_selfie_url: string | null
+          courier_dispatch_notes: string | null
           created_at: string
+          dispatched_at: string | null
+          dispatched_by: string | null
           guard_epf: string
           guard_name: string | null
           id: string
@@ -3615,9 +6231,14 @@ export type Database = {
           site_name: string | null
           sm_epf: string
           status: string
+          total_amount: number | null
         }
         Insert: {
+          consent_selfie_url?: string | null
+          courier_dispatch_notes?: string | null
           created_at?: string
+          dispatched_at?: string | null
+          dispatched_by?: string | null
           guard_epf: string
           guard_name?: string | null
           id?: string
@@ -3627,9 +6248,14 @@ export type Database = {
           site_name?: string | null
           sm_epf: string
           status?: string
+          total_amount?: number | null
         }
         Update: {
+          consent_selfie_url?: string | null
+          courier_dispatch_notes?: string | null
           created_at?: string
+          dispatched_at?: string | null
+          dispatched_by?: string | null
           guard_epf?: string
           guard_name?: string | null
           id?: string
@@ -3639,11 +6265,13 @@ export type Database = {
           site_name?: string | null
           sm_epf?: string
           status?: string
+          total_amount?: number | null
         }
         Relationships: []
       }
       sm_visit_logs: {
         Row: {
+          company_id: string
           created_at: string
           fuel_amount: number | null
           id: string
@@ -3652,6 +6280,7 @@ export type Database = {
           longitude: number | null
           notes: string | null
           photo_url: string | null
+          route_km: number | null
           site_name: string | null
           sm_epf: string
           verification_status: string
@@ -3659,6 +6288,7 @@ export type Database = {
           visit_type: string
         }
         Insert: {
+          company_id: string
           created_at?: string
           fuel_amount?: number | null
           id?: string
@@ -3667,6 +6297,7 @@ export type Database = {
           longitude?: number | null
           notes?: string | null
           photo_url?: string | null
+          route_km?: number | null
           site_name?: string | null
           sm_epf: string
           verification_status?: string
@@ -3674,6 +6305,7 @@ export type Database = {
           visit_type: string
         }
         Update: {
+          company_id?: string
           created_at?: string
           fuel_amount?: number | null
           id?: string
@@ -3682,13 +6314,305 @@ export type Database = {
           longitude?: number | null
           notes?: string | null
           photo_url?: string | null
+          route_km?: number | null
           site_name?: string | null
           sm_epf?: string
           verification_status?: string
           visit_date?: string | null
           visit_type?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "sm_visit_logs_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      superapp_export_jobs: {
+        Row: {
+          company_id: string
+          completed_at: string | null
+          created_at: string
+          error_message: string | null
+          id: string
+          job_type: string
+          requested_by: string | null
+          snapshot_id: string | null
+          started_at: string | null
+          status: Database["public"]["Enums"]["superapp_export_job_status"]
+        }
+        Insert: {
+          company_id: string
+          completed_at?: string | null
+          created_at?: string
+          error_message?: string | null
+          id?: string
+          job_type?: string
+          requested_by?: string | null
+          snapshot_id?: string | null
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["superapp_export_job_status"]
+        }
+        Update: {
+          company_id?: string
+          completed_at?: string | null
+          created_at?: string
+          error_message?: string | null
+          id?: string
+          job_type?: string
+          requested_by?: string | null
+          snapshot_id?: string | null
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["superapp_export_job_status"]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "superapp_export_jobs_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "superapp_export_jobs_snapshot_id_fkey"
+            columns: ["snapshot_id"]
+            isOneToOne: false
+            referencedRelation: "superapp_store_snapshots"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      superapp_listing_consent: {
+        Row: {
+          company_id: string
+          consented_at: string | null
+          consented_by_email: string | null
+          list_booking: boolean
+          list_products: boolean
+          updated_at: string
+        }
+        Insert: {
+          company_id: string
+          consented_at?: string | null
+          consented_by_email?: string | null
+          list_booking?: boolean
+          list_products?: boolean
+          updated_at?: string
+        }
+        Update: {
+          company_id?: string
+          consented_at?: string | null
+          consented_by_email?: string | null
+          list_booking?: boolean
+          list_products?: boolean
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "superapp_listing_consent_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: true
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      superapp_store_snapshots: {
+        Row: {
+          company_id: string
+          created_at: string
+          id: string
+          payload: Json
+          payload_version: number
+        }
+        Insert: {
+          company_id: string
+          created_at?: string
+          id?: string
+          payload: Json
+          payload_version?: number
+        }
+        Update: {
+          company_id?: string
+          created_at?: string
+          id?: string
+          payload?: Json
+          payload_version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "superapp_store_snapshots_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      tenant_custom_domains: {
+        Row: {
+          company_id: string
+          created_at: string
+          domain_type: Database["public"]["Enums"]["tenant_custom_domain_type"]
+          hostname: string
+          id: string
+          ssl_status: Database["public"]["Enums"]["tenant_domain_ssl_status"]
+          updated_at: string
+          verified_at: string | null
+        }
+        Insert: {
+          company_id: string
+          created_at?: string
+          domain_type?: Database["public"]["Enums"]["tenant_custom_domain_type"]
+          hostname: string
+          id?: string
+          ssl_status?: Database["public"]["Enums"]["tenant_domain_ssl_status"]
+          updated_at?: string
+          verified_at?: string | null
+        }
+        Update: {
+          company_id?: string
+          created_at?: string
+          domain_type?: Database["public"]["Enums"]["tenant_custom_domain_type"]
+          hostname?: string
+          id?: string
+          ssl_status?: Database["public"]["Enums"]["tenant_domain_ssl_status"]
+          updated_at?: string
+          verified_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tenant_custom_domains_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      tenant_payhere_credentials: {
+        Row: {
+          company_id: string
+          configured_at: string
+          merchant_id: string
+          merchant_secret_encrypted: string
+          sandbox: boolean
+          updated_at: string
+          updated_by_partner_id: string | null
+        }
+        Insert: {
+          company_id: string
+          configured_at?: string
+          merchant_id: string
+          merchant_secret_encrypted: string
+          sandbox?: boolean
+          updated_at?: string
+          updated_by_partner_id?: string | null
+        }
+        Update: {
+          company_id?: string
+          configured_at?: string
+          merchant_id?: string
+          merchant_secret_encrypted?: string
+          sandbox?: boolean
+          updated_at?: string
+          updated_by_partner_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tenant_payhere_credentials_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: true
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "tenant_payhere_credentials_updated_by_partner_id_fkey"
+            columns: ["updated_by_partner_id"]
+            isOneToOne: false
+            referencedRelation: "forge_service_partners"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      tenant_public_sites: {
+        Row: {
+          company_id: string
+          content_json: Json
+          created_at: string
+          hostname: string | null
+          id: string
+          published_at: string | null
+          site_type: Database["public"]["Enums"]["tenant_public_site_type"]
+          updated_at: string
+        }
+        Insert: {
+          company_id: string
+          content_json?: Json
+          created_at?: string
+          hostname?: string | null
+          id?: string
+          published_at?: string | null
+          site_type: Database["public"]["Enums"]["tenant_public_site_type"]
+          updated_at?: string
+        }
+        Update: {
+          company_id?: string
+          content_json?: Json
+          created_at?: string
+          hostname?: string | null
+          id?: string
+          published_at?: string | null
+          site_type?: Database["public"]["Enums"]["tenant_public_site_type"]
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tenant_public_sites_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      tenant_vertical_subscriptions: {
+        Row: {
+          company_id: string
+          id: string
+          started_at: string | null
+          status: Database["public"]["Enums"]["tenant_vertical_status"]
+          updated_at: string
+          vertical: Database["public"]["Enums"]["tenant_vertical_key"]
+        }
+        Insert: {
+          company_id: string
+          id?: string
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["tenant_vertical_status"]
+          updated_at?: string
+          vertical: Database["public"]["Enums"]["tenant_vertical_key"]
+        }
+        Update: {
+          company_id?: string
+          id?: string
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["tenant_vertical_status"]
+          updated_at?: string
+          vertical?: Database["public"]["Enums"]["tenant_vertical_key"]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tenant_vertical_subscriptions_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       time_rosters: {
         Row: {
@@ -3828,6 +6752,72 @@ export type Database = {
             columns: ["roster_id"]
             isOneToOne: false
             referencedRelation: "time_rosters"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      uniform_collection_cases: {
+        Row: {
+          admin_notes: string | null
+          company_id: string
+          confirmed_at: string | null
+          confirmed_by: string | null
+          created_at: string
+          employee_id: string
+          guard_epf: string
+          id: string
+          issued_items: Json
+          requested_at: string
+          requested_by: string | null
+          returned_items: Json
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          admin_notes?: string | null
+          company_id: string
+          confirmed_at?: string | null
+          confirmed_by?: string | null
+          created_at?: string
+          employee_id: string
+          guard_epf: string
+          id?: string
+          issued_items?: Json
+          requested_at?: string
+          requested_by?: string | null
+          returned_items?: Json
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          admin_notes?: string | null
+          company_id?: string
+          confirmed_at?: string | null
+          confirmed_by?: string | null
+          created_at?: string
+          employee_id?: string
+          guard_epf?: string
+          id?: string
+          issued_items?: Json
+          requested_at?: string
+          requested_by?: string | null
+          returned_items?: Json
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "uniform_collection_cases_company_id_fkey"
+            columns: ["company_id"]
+            isOneToOne: false
+            referencedRelation: "companies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "uniform_collection_cases_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees"
             referencedColumns: ["id"]
           },
         ]
@@ -4025,6 +7015,14 @@ export type Database = {
         Args: { p_gateway_payment_id?: string; p_order_id: string }
         Returns: boolean
       }
+      count_other_auth_sessions: {
+        Args: { p_current_session_id: string; p_user_id: string }
+        Returns: number
+      }
+      first_other_auth_session_id: {
+        Args: { p_current_session_id: string; p_user_id: string }
+        Returns: string
+      }
       get_cafe_public_branding: {
         Args: { p_company_id: string }
         Returns: {
@@ -4041,6 +7039,7 @@ export type Database = {
       get_cafe_public_menu: {
         Args: { p_company_id: string }
         Returns: {
+          available_qty: number
           category_name: string
           category_sort: number
           image_url: string
@@ -4051,6 +7050,32 @@ export type Database = {
       }
       get_current_user_company_id: { Args: never; Returns: string }
       get_current_user_role: { Args: never; Returns: string }
+      get_pearzen_public_website: { Args: never; Returns: Json }
+      get_security_public_website: {
+        Args: { p_company_id: string }
+        Returns: Json
+      }
+      get_tenant_public_website: {
+        Args: { p_company_id: string; p_site_type: string }
+        Returns: Json
+      }
+      guard_employee_company_id_for_auth: { Args: never; Returns: string }
+      guard_portal_auth_local: { Args: never; Returns: string }
+      guard_portal_writable_emp_numbers: { Args: never; Returns: string[] }
+      list_active_head_office_vault_sessions: {
+        Args: { p_company_id: string }
+        Returns: {
+          employee_id: string
+          full_name: string
+          ip: string
+          last_active_at: string
+          rank: string
+          session_id: string
+          user_agent: string
+          user_id: string
+          work_email: string
+        }[]
+      }
       lookup_cafe_customer_by_phone: {
         Args: { p_company_id: string; p_phone: string }
         Returns: {
@@ -4096,13 +7121,86 @@ export type Database = {
             }
             Returns: string
           }
+      replace_sm_guard_attendance_shift: {
+        Args: {
+          p_entries?: Json
+          p_shift_date: string
+          p_shift_type: string
+          p_sm_epf: string
+          p_status: string
+        }
+        Returns: undefined
+      }
+      retail_tenant_company_ids: { Args: never; Returns: string[] }
+      revoke_auth_session_by_id: {
+        Args: { p_session_id: string }
+        Returns: boolean
+      }
+      revoke_head_office_vault_session: {
+        Args: { p_company_id: string; p_session_id: string }
+        Returns: boolean
+      }
+      revoke_other_head_office_vault_sessions: {
+        Args: { p_company_id: string; p_current_session_id: string }
+        Returns: number
+      }
+      salon_tenant_company_ids: { Args: never; Returns: string[] }
+      sm_employee_company_id_for_auth: { Args: never; Returns: string }
+      sm_portal_auth_epf: { Args: never; Returns: string }
+      sm_portal_writable_epfs: { Args: never; Returns: string[] }
+      submit_security_website_lead: {
+        Args: {
+          p_client_company?: string
+          p_company_id: string
+          p_contact_email?: string
+          p_contact_name: string
+          p_contact_phone: string
+          p_estimated_monthly_lkr?: number
+          p_guards_needed?: number
+          p_notes?: string
+          p_preferred_start?: string
+          p_service_type?: string
+          p_shift_pattern?: string
+          p_site_district?: string
+          p_source?: string
+        }
+        Returns: string
+      }
+      tenant_company_ids_for_auth_user: { Args: never; Returns: string[] }
       upsert_cafe_customer_on_order_accepted: {
         Args: { p_order_id: string }
         Returns: undefined
       }
     }
     Enums: {
-      [_ in never]: never
+      company_product_bundle: "full_erp" | "wfm_only"
+      company_subscription_status: "trial" | "active" | "past_due" | "suspended"
+      forge_partner_deal_type:
+        | "saas_erp"
+        | "wfm_tool"
+        | "custom_software"
+        | "website_build"
+      forge_partner_portfolio_status: "active" | "churned"
+      forge_payout_source_type: "saas_platform" | "forge_product"
+      retail_cart_status: "open" | "checked_out" | "abandoned"
+      retail_order_status: "pending" | "paid" | "fulfilled" | "cancelled"
+      retail_payment_method: "cash" | "card" | "transfer"
+      salon_appointment_status:
+        | "scheduled"
+        | "completed"
+        | "cancelled"
+        | "no_show"
+      salon_payment_method: "cash" | "card" | "transfer"
+      superapp_export_job_status: "pending" | "running" | "completed" | "failed"
+      tenant_custom_domain_type:
+        | "erp_staff"
+        | "public_website"
+        | "customer_menu"
+        | "security_website"
+      tenant_domain_ssl_status: "pending" | "active" | "error"
+      tenant_public_site_type: "security_marketing" | "landing" | "menu"
+      tenant_vertical_key: "restaurant" | "salon" | "retail"
+      tenant_vertical_status: "inactive" | "active" | "suspended"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -4229,6 +7327,38 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      company_product_bundle: ["full_erp", "wfm_only"],
+      company_subscription_status: ["trial", "active", "past_due", "suspended"],
+      forge_partner_deal_type: [
+        "saas_erp",
+        "wfm_tool",
+        "custom_software",
+        "website_build",
+      ],
+      forge_partner_portfolio_status: ["active", "churned"],
+      forge_payout_source_type: ["saas_platform", "forge_product"],
+      retail_cart_status: ["open", "checked_out", "abandoned"],
+      retail_order_status: ["pending", "paid", "fulfilled", "cancelled"],
+      retail_payment_method: ["cash", "card", "transfer"],
+      salon_appointment_status: [
+        "scheduled",
+        "completed",
+        "cancelled",
+        "no_show",
+      ],
+      salon_payment_method: ["cash", "card", "transfer"],
+      superapp_export_job_status: ["pending", "running", "completed", "failed"],
+      tenant_custom_domain_type: [
+        "erp_staff",
+        "public_website",
+        "customer_menu",
+        "security_website",
+      ],
+      tenant_domain_ssl_status: ["pending", "active", "error"],
+      tenant_public_site_type: ["security_marketing", "landing", "menu"],
+      tenant_vertical_key: ["restaurant", "salon", "retail"],
+      tenant_vertical_status: ["inactive", "active", "suspended"],
+    },
   },
 } as const

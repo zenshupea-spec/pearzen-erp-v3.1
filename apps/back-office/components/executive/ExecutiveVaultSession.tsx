@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type MutableRefObject,
   type ReactNode,
 } from "react";
 import { Lock, LogOut, ShieldCheck } from "lucide-react";
@@ -17,9 +18,13 @@ import { useRouter } from "next/navigation";
 import {
   getVaultPinStatus,
   getVaultSessionPolicy,
+  getVaultUnlockSessionStatus,
+  refreshVaultUnlockSessionAction,
   verifyVaultUnlockPin,
+  clearExecutiveVaultUnlockAction,
 } from "../../app/actions/vault-session-actions";
-import { createSupabaseBrowserClient } from "../../../../packages/supabase/client";
+import { signOutHeadOfficePortalAction } from "../../app/actions/portal-session-actions";
+import { bindPortalIdleActivity } from "../../lib/portal-idle-activity";
 
 function formatCountdown(ms: number): string {
   const totalSec = Math.max(0, Math.ceil(ms / 1000));
@@ -56,43 +61,114 @@ export function useExecutiveVaultSessionOptional() {
 }
 
 const VAULT_LOCKED_STORAGE_KEY = "executive-vault-locked";
+const VAULT_MANUAL_LOCK_STORAGE_KEY = "executive-vault-manual-lock";
+const VAULT_COOKIE_REFRESH_MS = 60_000;
+
+function readVaultManualLockFromSessionStorage(): boolean {
+  try {
+    return sessionStorage.getItem(VAULT_MANUAL_LOCK_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function readVaultLockedFromSessionStorage(): boolean {
+  try {
+    return sessionStorage.getItem(VAULT_LOCKED_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function applyVaultSessionFromServer({
+  unlockStatus,
+  idleMs,
+  persistLocked,
+  setLocked,
+  setManualLock,
+  setRemainingMs,
+  deadlineRef,
+}: {
+  unlockStatus: {
+    applies: boolean;
+    pinConfigured: boolean;
+    unlocked: boolean;
+  };
+  idleMs: number;
+  persistLocked: (nextLocked: boolean, manual?: boolean) => void;
+  setLocked: (locked: boolean) => void;
+  setManualLock: (manual: boolean) => void;
+  setRemainingMs: (ms: number) => void;
+  deadlineRef: MutableRefObject<number>;
+}) {
+  const startUnlocked = () => {
+    setLocked(false);
+    persistLocked(false);
+    deadlineRef.current = Date.now() + idleMs;
+    setRemainingMs(idleMs);
+  };
+
+  if (!unlockStatus.applies || !unlockStatus.pinConfigured) {
+    startUnlocked();
+    return;
+  }
+
+  if (unlockStatus.unlocked) {
+    startUnlocked();
+    return;
+  }
+
+  if (readVaultLockedFromSessionStorage() || readVaultManualLockFromSessionStorage()) {
+    setLocked(true);
+    setManualLock(readVaultManualLockFromSessionStorage());
+    setRemainingMs(0);
+    persistLocked(true, readVaultManualLockFromSessionStorage());
+    return;
+  }
+
+  // Missing unlock cookie after portal auth — start idle timer, do not show overlay.
+  startUnlocked();
+}
 
 function ExecutiveVaultLockOverlay({
   idleTimeoutMinutes,
   autoLockEnabled,
+  manualLock,
   vaultPinConfigured,
   onUnlock,
   onSignOut,
+  onNavigateToSetPin,
 }: {
   idleTimeoutMinutes: number;
   autoLockEnabled: boolean;
+  manualLock: boolean;
   vaultPinConfigured: boolean;
   onUnlock: (pin: string) => Promise<{ ok: boolean; error?: string }>;
   onSignOut: () => Promise<void>;
+  onNavigateToSetPin: () => void;
 }) {
+  const router = useRouter();
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [showUnlockForm, setShowUnlockForm] = useState(false);
   const pinInputRef = useRef<HTMLInputElement>(null);
 
-  const openUnlockForm = useCallback(() => {
-    setShowUnlockForm(true);
+  const focusPinInput = useCallback(() => {
     window.setTimeout(() => pinInputRef.current?.focus(), 50);
   }, []);
 
   useEffect(() => {
-    const onRequestUnlock = () => openUnlockForm();
+    const onRequestUnlock = () => focusPinInput();
     window.addEventListener("executive-vault-request-unlock", onRequestUnlock);
     return () =>
       window.removeEventListener("executive-vault-request-unlock", onRequestUnlock);
-  }, [openUnlockForm]);
+  }, [focusPinInput]);
 
   useEffect(() => {
-    if (showUnlockForm && vaultPinConfigured) {
-      pinInputRef.current?.focus();
+    if (vaultPinConfigured) {
+      focusPinInput();
     }
-  }, [showUnlockForm, vaultPinConfigured]);
+  }, [focusPinInput, vaultPinConfigured]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -115,117 +191,83 @@ function ExecutiveVaultLockOverlay({
   };
 
   return (
-    <>
-      {/* Block interaction with the page while locked, but keep the UI fully visible. */}
-      <div className="fixed inset-0 z-[299]" aria-hidden />
+    <div className="fixed inset-0 z-[320] flex items-center justify-center bg-slate-950/85 px-4 backdrop-blur-md">
+      <div className="w-full max-w-sm rounded-2xl border border-slate-700/80 bg-slate-900/95 p-5 shadow-2xl shadow-slate-950/50">
+        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-indigo-500/40 bg-indigo-500/10">
+          <Lock className="h-5 w-5 text-indigo-300" />
+        </div>
+        <p className="text-center text-xs font-black uppercase tracking-[0.25em] text-indigo-300">
+          Vault locked
+        </p>
+        <p className="mt-2 text-center text-sm text-slate-400">
+          {manualLock
+            ? "You locked this session manually."
+            : autoLockEnabled
+              ? `Paused after ${idleTimeoutMinutes} min with no clicks, scroll, or typing.`
+              : "You locked this session manually."}
+        </p>
 
-      <div className="pointer-events-none fixed inset-x-0 top-3 z-[300] flex justify-center px-4">
-        <button
-          type="button"
-          onClick={() => {
-            if (vaultPinConfigured) {
-              openUnlockForm();
-            } else {
-              setShowUnlockForm(true);
-            }
-          }}
-          title={
-            vaultPinConfigured
-              ? "Vault locked — tap to enter PIN"
-              : "Vault locked — tap to sign in or set a PIN"
-          }
-          aria-label="Vault locked — tap to unlock"
-          className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-xl border border-indigo-400/60 bg-white/90 text-indigo-700 shadow-md shadow-slate-900/10 transition-transform hover:scale-105 active:scale-95"
-        >
-          <Lock className="h-4 w-4" />
-        </button>
-      </div>
+        {vaultPinConfigured ? (
+          <form onSubmit={handleSubmit} className="mt-5 space-y-4">
+            {error ? (
+              <p className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-center text-sm font-semibold text-rose-200">
+                {error}
+              </p>
+            ) : null}
 
-      {showUnlockForm ? (
-        <div
-          className="fixed inset-0 z-[301] flex items-start justify-center bg-slate-950/40 px-4 pt-16"
-          onClick={() => setShowUnlockForm(false)}
-        >
-          <div
-            className="w-full max-w-sm rounded-2xl border border-slate-700/80 bg-slate-900/95 p-5 shadow-2xl shadow-slate-950/50"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <p className="text-center text-xs font-black uppercase tracking-[0.25em] text-indigo-300">
-              Vault locked
-            </p>
-            <p className="mt-2 text-center text-sm text-slate-400">
-              {autoLockEnabled
-                ? `Paused after ${idleTimeoutMinutes} min idle or manual lock.`
-                : "You locked this session manually."}
-            </p>
-
-            {vaultPinConfigured ? (
-              <form onSubmit={handleSubmit} className="mt-5 space-y-4">
-                {error ? (
-                  <p className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-center text-sm font-semibold text-rose-200">
-                    {error}
-                  </p>
-                ) : null}
-
-                <input
-                  ref={pinInputRef}
-                  type="password"
-                  inputMode="numeric"
-                  autoComplete="off"
-                  maxLength={4}
-                  value={pin}
-                  onChange={(event) => {
-                    setError("");
-                    setPin(event.target.value.replace(/\D/g, "").slice(0, 4));
-                  }}
-                  placeholder="••••"
-                  className="w-full rounded-xl border border-slate-600 bg-slate-950 px-4 py-3 text-center text-lg font-black tracking-[0.45em] text-white focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
-                />
-
-                <button
-                  type="submit"
-                  disabled={submitting || pin.length !== 4}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-500 disabled:opacity-50"
-                >
-                  <ShieldCheck className="h-4 w-4" />
-                  {submitting ? "Verifying…" : "Unlock and continue"}
-                </button>
-              </form>
-            ) : (
-              <div className="mt-5 space-y-3 text-center">
-                <p className="text-sm text-slate-300">
-                  No vault PIN is set yet. Set one in Executive Access for quick unlock, or sign in
-                  again to continue.
-                </p>
-                <a
-                  href="/executive/access#vault-pin"
-                  className="inline-flex w-full items-center justify-center rounded-xl border border-indigo-500/40 bg-indigo-500/10 px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-indigo-200 hover:bg-indigo-500/20"
-                >
-                  Set vault PIN
-                </a>
-              </div>
-            )}
+            <input
+              ref={pinInputRef}
+              type="password"
+              inputMode="numeric"
+              autoComplete="off"
+              maxLength={4}
+              value={pin}
+              onChange={(event) => {
+                setError("");
+                setPin(event.target.value.replace(/\D/g, "").slice(0, 4));
+              }}
+              placeholder="••••"
+              className="w-full rounded-xl border border-slate-600 bg-slate-950 px-4 py-3 text-center text-lg font-black tracking-[0.45em] text-white focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+            />
 
             <button
-              type="button"
-              onClick={() => void onSignOut()}
-              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-600 px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-slate-300 hover:bg-slate-800"
+              type="submit"
+              disabled={submitting || pin.length !== 4}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-500 disabled:opacity-50"
             >
-              <LogOut className="h-3.5 w-3.5" />
-              Sign in again
+              <ShieldCheck className="h-4 w-4" />
+              {submitting ? "Verifying…" : "Unlock and continue"}
             </button>
-
+          </form>
+        ) : (
+          <div className="mt-5 space-y-3 text-center">
+            <p className="text-sm text-slate-300">
+              No vault PIN is set yet. Set one in Executive Access for quick unlock, or sign in
+              again to continue.
+            </p>
             <button
               type="button"
-              onClick={() => setShowUnlockForm(false)}
-              className="mt-3 w-full text-center text-[10px] font-semibold uppercase tracking-wider text-slate-500 hover:text-slate-300"
+              onClick={() => {
+                onNavigateToSetPin();
+                router.push("/executive/access#vault-pin");
+              }}
+              className="inline-flex w-full items-center justify-center rounded-xl border border-indigo-500/40 bg-indigo-500/10 px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-indigo-200 hover:bg-indigo-500/20"
             >
-              Cancel
+              Set vault PIN
             </button>
           </div>
-        </div>
-      ) : null}
-    </>
+        )}
+
+        <button
+          type="button"
+          onClick={() => void onSignOut()}
+          className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-600 px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-slate-300 hover:bg-slate-800"
+        >
+          <LogOut className="h-3.5 w-3.5" />
+          Sign in again
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -237,9 +279,9 @@ export function ExecutiveVaultSessionProvider({
   children: ReactNode;
 }) {
   const router = useRouter();
-  const supabase = useMemo(() => createSupabaseBrowserClient(), []);
 
   const [locked, setLocked] = useState(false);
+  const [manualLock, setManualLock] = useState(false);
   const [policy, setPolicy] = useState({
     autoLockEnabled: true,
     idleTimeoutMinutes: 30,
@@ -250,18 +292,23 @@ export function ExecutiveVaultSessionProvider({
 
   const deadlineRef = useRef(Date.now() + 30 * 60 * 1000);
   const signingOutRef = useRef(false);
+  const lastCookieRefreshRef = useRef(0);
 
-  useEffect(() => {
-    if (!enabled) return;
+  const persistLocked = useCallback((nextLocked: boolean, manual = false) => {
     try {
-      if (sessionStorage.getItem(VAULT_LOCKED_STORAGE_KEY) === "1") {
-        setLocked(true);
-        setRemainingMs(0);
+      if (nextLocked) {
+        sessionStorage.setItem(VAULT_LOCKED_STORAGE_KEY, "1");
+        if (manual) {
+          sessionStorage.setItem(VAULT_MANUAL_LOCK_STORAGE_KEY, "1");
+        }
+      } else {
+        sessionStorage.removeItem(VAULT_LOCKED_STORAGE_KEY);
+        sessionStorage.removeItem(VAULT_MANUAL_LOCK_STORAGE_KEY);
       }
     } catch {
       /* ignore */
     }
-  }, [enabled]);
+  }, []);
 
   useEffect(() => {
     if (!enabled) {
@@ -272,16 +319,25 @@ export function ExecutiveVaultSessionProvider({
     let cancelled = false;
     const loadVaultSession = async () => {
       try {
-        const [vaultPolicy, pinStatus] = await Promise.all([
+        const [vaultPolicy, pinStatus, unlockStatus] = await Promise.all([
           getVaultSessionPolicy(),
           getVaultPinStatus(),
+          getVaultUnlockSessionStatus(),
         ]);
         if (cancelled) return;
         setPolicy(vaultPolicy);
         setVaultPinConfigured(pinStatus.configured);
+
         const ms = vaultPolicy.idleTimeoutMinutes * 60 * 1000;
-        deadlineRef.current = Date.now() + ms;
-        setRemainingMs(ms);
+        applyVaultSessionFromServer({
+          unlockStatus,
+          idleMs: ms,
+          persistLocked,
+          setLocked,
+          setManualLock,
+          setRemainingMs,
+          deadlineRef,
+        });
       } catch {
         /* defaults */
       } finally {
@@ -300,7 +356,7 @@ export function ExecutiveVaultSessionProvider({
       cancelled = true;
       window.removeEventListener("executive-vault-policy-updated", onPolicyUpdated);
     };
-  }, [enabled]);
+  }, [enabled, persistLocked]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -314,13 +370,8 @@ export function ExecutiveVaultSessionProvider({
     };
 
     window.addEventListener("executive-vault-pin-updated", refreshPinStatus);
-    window.addEventListener("focus", refreshPinStatus);
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") refreshPinStatus();
-    });
     return () => {
       window.removeEventListener("executive-vault-pin-updated", refreshPinStatus);
-      window.removeEventListener("focus", refreshPinStatus);
     };
   }, [enabled]);
 
@@ -334,24 +385,29 @@ export function ExecutiveVaultSessionProvider({
   const resetIdleDeadline = useCallback(() => {
     if (!enabled || !policy.autoLockEnabled || locked) return;
     bumpIdleDeadline();
+    const now = Date.now();
+    if (now - lastCookieRefreshRef.current >= VAULT_COOKIE_REFRESH_MS) {
+      lastCookieRefreshRef.current = now;
+      void refreshVaultUnlockSessionAction();
+    }
   }, [bumpIdleDeadline, enabled, locked, policy.autoLockEnabled]);
 
   useEffect(() => {
-    if (!enabled || !policy.autoLockEnabled || locked) return;
+    if (!enabled || !policy.autoLockEnabled || locked || !vaultPinConfigured) return;
 
     const onActivity = () => resetIdleDeadline();
-    const events = ["mousedown", "keydown", "touchstart", "scroll"] as const;
-    events.forEach((event) =>
-      window.addEventListener(event, onActivity, { passive: true }),
-    );
+    const unbind = bindPortalIdleActivity(onActivity);
 
     const tick = window.setInterval(() => {
       const left = deadlineRef.current - Date.now();
       if (left <= 0) {
+        void clearExecutiveVaultUnlockAction();
+        setManualLock(false);
         setLocked(true);
         setRemainingMs(0);
         try {
           sessionStorage.setItem(VAULT_LOCKED_STORAGE_KEY, "1");
+          sessionStorage.removeItem(VAULT_MANUAL_LOCK_STORAGE_KEY);
         } catch {
           /* ignore */
         }
@@ -361,33 +417,39 @@ export function ExecutiveVaultSessionProvider({
     }, 1000);
 
     return () => {
-      events.forEach((event) => window.removeEventListener(event, onActivity));
+      unbind();
       window.clearInterval(tick);
     };
-  }, [enabled, locked, policy.autoLockEnabled, resetIdleDeadline]);
+  }, [enabled, locked, policy.autoLockEnabled, resetIdleDeadline, vaultPinConfigured]);
 
-  const persistLocked = useCallback((nextLocked: boolean) => {
-    try {
-      if (nextLocked) {
-        sessionStorage.setItem(VAULT_LOCKED_STORAGE_KEY, "1");
-      } else {
-        sessionStorage.removeItem(VAULT_LOCKED_STORAGE_KEY);
-      }
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  const clearVaultLock = useCallback(() => {
+    setLocked(false);
+    setManualLock(false);
+    persistLocked(false);
+  }, [persistLocked]);
+
+  useEffect(() => {
+    if (!enabled || !pinCheckDone || vaultPinConfigured || !locked) return;
+    clearVaultLock();
+  }, [clearVaultLock, enabled, locked, pinCheckDone, vaultPinConfigured]);
 
   const lockNow = useCallback(() => {
-    if (!enabled) return;
+    if (!enabled || !vaultPinConfigured) return;
+    void clearExecutiveVaultUnlockAction();
+    setManualLock(true);
     setLocked(true);
     setRemainingMs(0);
-    persistLocked(true);
-  }, [enabled, persistLocked]);
+    persistLocked(true, true);
+  }, [enabled, persistLocked, vaultPinConfigured]);
 
   const requestUnlock = useCallback(() => {
+    if (vaultPinConfigured) {
+      setLocked(true);
+      setRemainingMs(0);
+      persistLocked(true);
+    }
     window.dispatchEvent(new Event("executive-vault-request-unlock"));
-  }, []);
+  }, [persistLocked, vaultPinConfigured]);
 
   const unlockWithPin = useCallback(
     async (pin: string) => {
@@ -396,7 +458,9 @@ export function ExecutiveVaultSessionProvider({
         // Reset deadline before clearing locked — resetIdleDeadline skips while locked.
         bumpIdleDeadline();
         setLocked(false);
+        setManualLock(false);
         persistLocked(false);
+        window.dispatchEvent(new Event("executive-vault-unlocked"));
       }
       return result;
     },
@@ -407,10 +471,10 @@ export function ExecutiveVaultSessionProvider({
     if (signingOutRef.current) return;
     signingOutRef.current = true;
     persistLocked(false);
-    await supabase.auth.signOut();
+    await signOutHeadOfficePortalAction();
     router.replace("/login/md");
     router.refresh();
-  }, [persistLocked, router, supabase]);
+  }, [persistLocked, router]);
 
   const value = useMemo<ExecutiveVaultSessionContextValue>(
     () => ({
@@ -440,13 +504,15 @@ export function ExecutiveVaultSessionProvider({
   return (
     <ExecutiveVaultSessionContext.Provider value={value}>
       {children}
-      {enabled && locked ? (
+      {enabled && locked && pinCheckDone && vaultPinConfigured ? (
         <ExecutiveVaultLockOverlay
           idleTimeoutMinutes={policy.idleTimeoutMinutes}
           autoLockEnabled={policy.autoLockEnabled}
+          manualLock={manualLock}
           vaultPinConfigured={vaultPinConfigured}
           onUnlock={unlockWithPin}
           onSignOut={handleSignOut}
+          onNavigateToSetPin={clearVaultLock}
         />
       ) : null}
     </ExecutiveVaultSessionContext.Provider>
@@ -465,14 +531,20 @@ export function ExecutiveVaultLockButton({
 
   const title = waiting
     ? "Checking vault PIN…"
-    : vault.locked
-      ? "Vault locked — tap to unlock"
-      : vault.autoLockEnabled
-        ? `Lock vault now · auto-lock in ${formatCountdown(vault.remainingMs)}`
-        : "Lock vault now";
+    : !vault.vaultPinConfigured
+      ? "Set a vault PIN in Security & Access before using vault lock"
+      : vault.locked
+        ? "Vault locked — tap to unlock"
+        : vault.autoLockEnabled
+          ? `Lock vault now · auto-lock in ${formatCountdown(vault.remainingMs)}`
+          : "Lock vault now";
 
   const handleClick = () => {
     if (waiting) return;
+    if (!vault.vaultPinConfigured) {
+      window.location.assign("/executive/access#vault-pin");
+      return;
+    }
     if (vault.locked) {
       vault.requestUnlock();
       return;

@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 export const metadata = {
   title: 'Classic Venture Security (Pvt) Ltd.',
   description:
-    'GPS-verified security monitoring, supervisor audits, client portal, and trained manpower — island-wide since 2008.',
+    'GPS-verified security monitoring, supervisor audits, client portal, and trained manpower — island-wide since 2006.',
 };
 
 export default async function SecurityWebsiteLayout({

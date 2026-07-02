@@ -1,17 +1,15 @@
 import {
   calcApit,
   calcApitBySlab,
+  computeEmployeePayrollStatutory,
   DEFAULT_APIT_SLABS,
-  DEFAULT_STAMP_DUTY_LKR,
   formatApitSlabLabel,
   getMarginalApitSlab,
   type ApitSlab,
+  type PayrollStatutoryRates,
 } from '../../../../../packages/payroll-deductions';
-import {
-  FM_PREV_MONTH_STOP_LIST,
-  FM_SALARY_MONTH_HALF_HOLD_LIST,
-  type RetentionGuardRow,
-} from './retention-lists';
+import type { RetentionGuardRow } from './retention-lists';
+import type { FmClientBillingCollection } from './fm-client-billing-collections';
 import { FM_LIVE_PAYROLL_PERIOD, formatPayrollPeriodLabel } from './payroll-period';
 
 export type FmPortfolioReportKind =
@@ -73,13 +71,23 @@ export function sumDeductionByType(
 
 export function calculateEmployeeStatutory(
   gross: number,
-  slabs: ApitSlab[] = DEFAULT_APIT_SLABS,
+  rates: PayrollStatutoryRates = {
+    epfEmployeeRate: 8,
+    epfEmployerRate: 12,
+    etfRate: 3,
+    apitSlabs: DEFAULT_APIT_SLABS,
+    stampDutyLkr: 25,
+    stampDutyThresholdLkr: 30_000,
+  },
 ) {
-  const epf = gross * 0.08;
-  const etf = gross * 0.03;
-  const apit = calcApit(gross, slabs);
-  const stamp = gross >= 30_000 ? DEFAULT_STAMP_DUTY_LKR : 0;
-  return { epf, etf, apit, stamp, total: epf + etf + apit + stamp };
+  const statutory = computeEmployeePayrollStatutory(gross, rates);
+  return {
+    epf: statutory.epfEmployee,
+    etf: statutory.etfEmployer,
+    apit: statutory.apit,
+    stamp: statutory.stampDuty,
+    total: statutory.epfEmployee + statutory.etfEmployer + statutory.apit + statutory.stampDuty,
+  };
 }
 
 export type StatutoryApitBracketSummary = {
@@ -153,21 +161,12 @@ export function buildStatutoryApitReport(
 
 export { formatApitSlabLabel };
 
-/** Mock AR collection lines aligned to portfolio sites. */
-const CLIENT_BILLING_COLLECTION: Record<
-  string,
-  { paidDate: string; paidAmount: number; clientDeductions: number }
-> = {
-  'site-001': { paidDate: '28 May 2026', paidAmount: 1_100_000, clientDeductions: 42_500 },
-  'site-002': { paidDate: '26 May 2026', paidAmount: 1_380_000, clientDeductions: 68_000 },
-  'site-003': { paidDate: '30 May 2026', paidAmount: 1_420_000, clientDeductions: 95_000 },
-  'site-004': { paidDate: '22 May 2026', paidAmount: 580_000, clientDeductions: 18_000 },
-  'site-005': { paidDate: '27 May 2026', paidAmount: 900_000, clientDeductions: 35_000 },
-};
-
-export function buildClientBillingRows(sites: FmReportSite[]) {
+export function buildClientBillingRows(
+  sites: FmReportSite[],
+  collectionsBySiteId: Record<string, FmClientBillingCollection> = {},
+) {
   return sites.map((site) => {
-    const collection = CLIENT_BILLING_COLLECTION[site.id] ?? {
+    const collection = collectionsBySiteId[site.id] ?? {
       paidDate: '—',
       paidAmount: 0,
       clientDeductions: 0,
@@ -205,11 +204,11 @@ export function reportMeta(kind: FmPortfolioReportKind): { title: string; subtit
     },
     'stop-list': {
       title: 'Active Stop List — Previous Month Threshold',
-      subtitle: 'Payment halted — Apr 2026 shifts below threshold',
+      subtitle: 'Payment halted when previous-month shifts are below MD threshold',
     },
     'half-hold': {
       title: 'Half Salary Hold — Salary Month Threshold',
-      subtitle: 'Half salary only — May shifts below threshold',
+      subtitle: 'Half salary when salary-month shifts are below MD threshold',
     },
   };
   return map[kind];
@@ -222,6 +221,8 @@ export function requiresMdApprovalForExport(kind: FmPortfolioReportKind) {
 export function buildTableHtml(
   kind: FmPortfolioReportKind,
   sites: FmReportSite[],
+  retentionRows: RetentionGuardRow[] = [],
+  collectionsBySiteId: Record<string, FmClientBillingCollection> = {},
 ): { head: string; body: string; contentHtml?: string } {
   const employees = flattenPortfolioEmployees(sites);
 
@@ -252,7 +253,7 @@ export function buildTableHtml(
   }
 
   if (kind === 'client-billing') {
-    const rows = buildClientBillingRows(sites);
+    const rows = buildClientBillingRows(sites, collectionsBySiteId);
     const totalNet = rows.reduce((s, r) => s + r.netProfit, 0);
     return {
       head: `<tr>
@@ -312,15 +313,14 @@ export function buildTableHtml(
     };
   }
 
-  const retentionRows: RetentionGuardRow[] =
-    kind === 'stop-list' ? [...FM_PREV_MONTH_STOP_LIST] : [...FM_SALARY_MONTH_HALF_HOLD_LIST];
+  const retentionListRows = retentionRows;
 
   return {
     head: `<tr>
       <th>Employee</th><th>Emp No.</th><th class="num">Shifts Here</th>
       <th class="num">Total Gross</th><th class="num">Total Deductions</th><th class="num">Net Take-Home</th>
     </tr>`,
-    body: retentionRows
+    body: retentionListRows
       .map(
         (g) => `<tr>
         <td>${g.name}</td><td>${g.empNo}</td>

@@ -311,7 +311,6 @@ export async function displaceOtherAuthSessionsAfterLogin(input: {
   operatorEmail?: string | null;
 }): Promise<void> {
   const service = createSupabaseServiceClient();
-  let displaced = false;
 
   for (let attempt = 0; attempt < 32; attempt += 1) {
     const { data: incumbentId, error } = await service.rpc(
@@ -322,7 +321,6 @@ export async function displaceOtherAuthSessionsAfterLogin(input: {
       },
     );
     if (error || !incumbentId) break;
-    displaced = true;
     await revokeSupabaseSession(String(incumbentId));
   }
 
@@ -341,13 +339,5 @@ export async function displaceOtherAuthSessionsAfterLogin(input: {
       .update({ status: 'expired', responded_at: now })
       .eq('operator_email', normalized)
       .eq('status', 'pending');
-  }
-
-  if (displaced) {
-    await notifySignedInElsewhereSessionDisplacement({
-      employeeId: input.employeeId,
-      operatorEmail: input.operatorEmail,
-      reason: 'new_login',
-    });
   }
 }

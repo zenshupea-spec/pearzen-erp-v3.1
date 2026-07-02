@@ -34,7 +34,7 @@ export async function fetchUniformVoStockOnHand(
     throw new Error(error.message);
   }
 
-  return (data ?? []).map((row) => ({
+  return (data ?? []).map((row: { item_name: string; quantity_on_hand: unknown }) => ({
     itemName: row.item_name,
     quantityOnHand: Number(row.quantity_on_hand ?? 0),
   }));

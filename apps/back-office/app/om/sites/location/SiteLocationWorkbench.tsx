@@ -421,8 +421,10 @@ export default function SiteLocationWorkbench({
       </div>
 
       <p className="text-sm text-slate-600">
-        When MD registers a site without coordinates (or checks &quot;Request OM Field GPS
-        Capture&quot;), it appears here. Set GPS manually, or use{' '}
+        When MD registers a site without coordinates (or checks &quot;Request TM Field GPS
+        Capture&quot;), the assigned Sector Manager submits GPS from the SM portal. TM approves
+        here or in the{' '}
+        <strong className="text-slate-800">GPS queue</strong>. You can also use{' '}
         <strong className="text-slate-800">Mark GPS from this device</strong> on site to capture
         and save in one step (allow location when prompted).
       </p>

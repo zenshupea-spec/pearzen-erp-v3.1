@@ -6,7 +6,6 @@ import {
   mergeSettingEnvelope,
 } from '../../../packages/supabase/md-settings-envelope';
 import { getCompanyLogoUrl } from '../../../packages/supabase/company-branding';
-import { CVS_COMPANY_ID } from './company-ids';
 import {
   resolveSecurityWebsiteClientLogo,
   resolveSecurityWebsiteSlotImage,
@@ -16,6 +15,7 @@ import {
   type SecurityWebsiteContent,
 } from './security-website-types';
 import { resolveTenantCompanyFromRequest } from './tenant-context-server';
+import { fetchPublishedTenantPublicSiteJson } from './tenant-public-site-data';
 import { createSupabaseServiceClient } from '../../../packages/supabase/service';
 import { needsImageCacheBuster, withImageCacheBuster } from './security-website-images';
 
@@ -58,7 +58,10 @@ async function ensureVersionedStorageImageUrls(
 
 export async function resolveSecurityWebsiteCompanyId(): Promise<string> {
   const tenant = await resolveTenantCompanyFromRequest();
-  return tenant?.id ?? CVS_COMPANY_ID;
+  if (!tenant?.id) {
+    throw new Error('Tenant context required for security website content.');
+  }
+  return tenant.id;
 }
 
 const QUOTE_RECIPIENT_RANKS = ['MD', 'OD', 'FM'] as const;
@@ -130,15 +133,22 @@ export async function fetchSecurityWebsiteContent(
   const resolvedId = companyId ?? (await resolveSecurityWebsiteCompanyId());
   const supabase = createSupabaseServiceClient();
 
-  const { data, error } = await supabase.rpc('get_security_public_website', {
-    p_company_id: resolvedId,
-  });
+  let raw: unknown = null;
 
-  let raw: unknown = data;
-  if (error) {
-    console.error('fetchSecurityWebsiteContent rpc:', error.message);
-    const envelope = await loadSettingEnvelope(supabase, resolvedId);
-    raw = envelope[MD_SETTINGS_ENVELOPE_KEYS.securityWebsite] ?? null;
+  const published = await fetchPublishedTenantPublicSiteJson(resolvedId, 'security_marketing');
+  if (published) {
+    raw = published;
+  } else {
+    const { data, error } = await supabase.rpc('get_security_public_website', {
+      p_company_id: resolvedId,
+    });
+
+    raw = data;
+    if (error) {
+      console.error('fetchSecurityWebsiteContent rpc:', error.message);
+      const envelope = await loadSettingEnvelope(supabase, resolvedId);
+      raw = envelope[MD_SETTINGS_ENVELOPE_KEYS.securityWebsite] ?? null;
+    }
   }
 
   const content = mergeSecurityWebsiteContent(raw);

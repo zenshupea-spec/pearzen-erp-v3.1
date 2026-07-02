@@ -1,10 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { createSupabaseRouteClient } from "../../../../../packages/supabase/route";
-import { maybeCreateSessionChallengeAfterLogin } from "../../actions/portal-session-actions";
-import {
-  clearPortal2faSessionCookies,
-} from "../../../lib/head-office-portal-auth";
 import { isForgeOperatorEmail } from "../../../lib/forge-access";
 import { assertForgeOperatorCanSignIn } from "../../../lib/forge-portal-auth";
 import {
@@ -13,9 +9,19 @@ import {
   partnerLoginErrorCode,
   resolvePartnerPortalEntryPath,
 } from "../../../lib/partner-portal-auth";
-import { isOdRank } from "../../../lib/head-office-portal-lockout";
+import {
+  assertPearsWebsiteClientCanSignIn,
+  pearsLoginErrorCode,
+  resolvePearsProfileEntryPath,
+} from "../../../lib/pears-website-client-auth";
+import { isExecutivePortalRank } from "../../../lib/executive-portal-auth-policy";
 import { fetchBackOfficeUserProfile } from "../../../lib/hr-portal-access-server";
-import { recordPortalLoginEvent } from "../../../lib/portal-login-events";
+import {
+  isStaffPortalId,
+  oauthErrorPathForCallback,
+  resolveStaffPortalOAuthNext,
+  shouldUseForgeOAuthFlow,
+} from "../../../lib/portal-oauth";
 
 function decodeAccessTokenSessionId(accessToken: string): string | null {
   try {
@@ -32,15 +38,13 @@ export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url);
 
   const code = requestUrl.searchParams.get("code");
-  const nextParam = requestUrl.searchParams.get("next") ?? "/";
-
-  // Ensure `next` is a safe, local path.
-  const nextPath = nextParam.startsWith("/") ? nextParam : "/";
-  const oauthErrorPath = nextPath.startsWith("/partners")
-    ? "/login/partners"
-    : nextPath.startsWith("/forge")
-    ? "/login/forge"
-    : "/login/head-office";
+  const portalParam = requestUrl.searchParams.get("portal");
+  const staffPortal = isStaffPortalId(portalParam) ? portalParam : null;
+  const nextPath = resolveStaffPortalOAuthNext(
+    requestUrl.searchParams.get("next"),
+    staffPortal,
+  );
+  const oauthErrorPath = oauthErrorPathForCallback(nextPath, staffPortal);
 
   if (code) {
     // Create the redirect response up front so cookie writes from Supabase
@@ -78,7 +82,29 @@ export async function GET(request: NextRequest) {
         return response;
       }
 
-      if (nextPath.startsWith("/forge")) {
+      if (nextPath.startsWith("/pears")) {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+
+        const pearsGate = await assertPearsWebsiteClientCanSignIn(user?.email);
+        if (!pearsGate.ok || !user?.email) {
+          await supabase.auth.signOut();
+          const reason = !user?.email ? 'missing_email' : pearsGate.reason;
+          return NextResponse.redirect(
+            `${requestUrl.origin}/login/pears?error=${pearsLoginErrorCode(reason)}`,
+          );
+        }
+
+        const landing = await resolvePearsProfileEntryPath(user.email);
+        if (landing !== nextPath) {
+          return NextResponse.redirect(`${requestUrl.origin}${landing}`);
+        }
+
+        return response;
+      }
+
+      if (nextPath.startsWith("/forge") && shouldUseForgeOAuthFlow(nextPath, staffPortal)) {
         const {
           data: { user },
         } = await supabase.auth.getUser();
@@ -121,9 +147,8 @@ export async function GET(request: NextRequest) {
             ? decodeAccessTokenSessionId(session.access_token)
             : null;
 
-          let pendingChallengeId: string | null = null;
           if (sessionId && user.id) {
-            pendingChallengeId = await maybeCreateForgeSessionChallengeAfterLogin(
+            await maybeCreateForgeSessionChallengeAfterLogin(
               user.email,
               user.id,
               sessionId,
@@ -144,17 +169,6 @@ export async function GET(request: NextRequest) {
             }
           };
 
-          if (pendingChallengeId) {
-            const challengeUrl = new URL(
-              "/login/forge/await-session",
-              requestUrl.origin,
-            );
-            challengeUrl.searchParams.set("pending", pendingChallengeId);
-            const challengeResponse = NextResponse.redirect(challengeUrl);
-            await attachForgeLoginCookies(challengeResponse);
-            return challengeResponse;
-          }
-
           const loginResponse = NextResponse.redirect(
             `${requestUrl.origin}/login/forge`,
           );
@@ -162,53 +176,32 @@ export async function GET(request: NextRequest) {
           return loginResponse;
         }
       } else {
+        if (staffPortal === "md") {
+          await supabase.auth.signOut();
+          return NextResponse.redirect(
+            `${requestUrl.origin}/login/md?error=google_disabled`,
+          );
+        }
+
         const {
           data: { user },
         } = await supabase.auth.getUser();
 
         const profile = user
           ? await fetchBackOfficeUserProfile(supabase, user)
-          : { role: null, full_name: null, id_photo_url: null };
+          : { role: null, full_name: null, id_photo_url: null, employeeId: null };
 
-        if (!isOdRank(profile.role)) {
+        if (isExecutivePortalRank(profile.role)) {
           await supabase.auth.signOut();
           return NextResponse.redirect(
-            `${requestUrl.origin}${oauthErrorPath}?error=google_od_only`,
+            `${requestUrl.origin}/login/md?error=google_disabled`,
           );
         }
 
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-        const sessionId = session?.access_token
-          ? decodeAccessTokenSessionId(session.access_token)
-          : null;
-        const employeeId = profile.employeeId ?? null;
-
-        await recordPortalLoginEvent({
-          employeeId,
-          portalAuthEmail: user?.email ?? null,
-          eventType: "google_login_success",
-          success: true,
-        });
-
-        let pendingChallengeId: string | null = null;
-        if (sessionId && user?.id && employeeId) {
-          pendingChallengeId = await maybeCreateSessionChallengeAfterLogin(
-            employeeId,
-            user.id,
-            sessionId,
-          );
-        }
-
-        if (pendingChallengeId) {
-          const challengeUrl = new URL("/login/await-session", requestUrl.origin);
-          challengeUrl.searchParams.set("pending", pendingChallengeId);
-          challengeUrl.searchParams.set("next", nextPath);
-          return NextResponse.redirect(challengeUrl);
-        }
-
-        clearPortal2faSessionCookies(response);
+        await supabase.auth.signOut();
+        return NextResponse.redirect(
+          `${requestUrl.origin}${oauthErrorPath}?error=google_disabled`,
+        );
       }
 
       return response;

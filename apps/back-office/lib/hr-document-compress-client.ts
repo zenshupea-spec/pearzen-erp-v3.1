@@ -6,6 +6,7 @@ import {
   HR_DOC_MAX_EDGE_PX,
   HR_DOC_TARGET_MAX_BYTES,
   formatHrDocumentBytes,
+  type HrDocumentCompressProfile,
 } from './hr-document-compress';
 
 export { formatHrDocumentBytes };
@@ -49,9 +50,12 @@ function canvasToJpegBlob(canvas: HTMLCanvasElement, quality: number): Promise<B
   });
 }
 
-async function compressImageFile(file: File): Promise<ClientCompressionResult> {
+async function compressImageFile(
+  file: File,
+  profile: HrDocumentCompressProfile,
+): Promise<ClientCompressionResult> {
   const img = await loadImageFromFile(file);
-  const scale = Math.min(1, HR_DOC_MAX_EDGE_PX / Math.max(img.width, img.height));
+  const scale = Math.min(1, profile.maxEdgePx / Math.max(img.width, img.height));
   const width = Math.max(1, Math.round(img.width * scale));
   const height = Math.max(1, Math.round(img.height * scale));
   const canvas = document.createElement('canvas');
@@ -60,19 +64,21 @@ async function compressImageFile(file: File): Promise<ClientCompressionResult> {
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not compress image.');
   ctx.drawImage(img, 0, 0, width, height);
-  const grayscale = ctx.getImageData(0, 0, width, height);
-  const data = grayscale.data;
-  for (let i = 0; i < data.length; i += 4) {
-    const gray = Math.round(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
-    data[i] = gray;
-    data[i + 1] = gray;
-    data[i + 2] = gray;
+  if (profile.grayscale) {
+    const grayscale = ctx.getImageData(0, 0, width, height);
+    const data = grayscale.data;
+    for (let i = 0; i < data.length; i += 4) {
+      const gray = Math.round(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
+      data[i] = gray;
+      data[i + 1] = gray;
+      data[i + 2] = gray;
+    }
+    ctx.putImageData(grayscale, 0, 0);
   }
-  ctx.putImageData(grayscale, 0, 0);
 
   let quality = HR_DOC_JPEG_QUALITY_START;
   let blob = await canvasToJpegBlob(canvas, quality);
-  while (blob.size > HR_DOC_TARGET_MAX_BYTES && quality > HR_DOC_JPEG_QUALITY_MIN) {
+  while (blob.size > profile.targetMaxBytes && quality > HR_DOC_JPEG_QUALITY_MIN) {
     quality -= 4;
     blob = await canvasToJpegBlob(canvas, quality);
   }
@@ -90,11 +96,27 @@ async function compressImageFile(file: File): Promise<ClientCompressionResult> {
   };
 }
 
+const DEFAULT_COMPRESS_PROFILE: HrDocumentCompressProfile = {
+  targetMaxBytes: HR_DOC_TARGET_MAX_BYTES,
+  maxEdgePx: HR_DOC_MAX_EDGE_PX,
+  grayscale: true,
+};
+
 /** Browser-side compression for immediate preview. PDFs are compressed on the server at upload. */
 export async function compressHrDocumentFileClient(
   file: File,
-  options: { officeCopyWatermark?: boolean } = {},
+  options: {
+    officeCopyWatermark?: boolean;
+    targetMaxBytes?: number;
+    maxEdgePx?: number;
+    grayscale?: boolean;
+  } = {},
 ): Promise<ClientCompressionResult> {
+  const profile: HrDocumentCompressProfile = {
+    targetMaxBytes: options.targetMaxBytes ?? DEFAULT_COMPRESS_PROFILE.targetMaxBytes,
+    maxEdgePx: options.maxEdgePx ?? DEFAULT_COMPRESS_PROFILE.maxEdgePx,
+    grayscale: options.grayscale ?? DEFAULT_COMPRESS_PROFILE.grayscale,
+  };
   const mime = (file.type || '').toLowerCase();
   if (mime === 'application/pdf') {
     return {
@@ -107,7 +129,7 @@ export async function compressHrDocumentFileClient(
   if (mime === 'image/jpeg' || mime === 'image/png' || mime === 'image/webp') {
     const { applyOfficeCopyWatermarkToFile } = await import('./identity-document-watermark-client');
     const source = options.officeCopyWatermark ? await applyOfficeCopyWatermarkToFile(file) : file;
-    return compressImageFile(source);
+    return compressImageFile(source, profile);
   }
   throw new Error('Use PDF, JPEG, PNG, or WebP.');
 }
@@ -116,4 +138,6 @@ export function replaceFileInputFiles(input: HTMLInputElement, file: File) {
   const dt = new DataTransfer();
   dt.items.add(file);
   input.files = dt.files;
+  // Safari / React server actions may omit programmatic file-input values on submit —
+  // induction forms use hr-document-pending-registry instead.
 }

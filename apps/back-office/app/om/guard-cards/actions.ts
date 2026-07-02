@@ -10,6 +10,14 @@ import {
   rosterCompanyId,
 } from '../../../lib/company-context-server';
 import { auditStaffAction } from '../../../lib/staff-audit';
+import { fetchActiveSectorManagerRecordsForCompany } from '../../../lib/sector-manager-roster';
+import {
+  filterGuardsForOmScope,
+  isOmSectorScopeEmpty,
+  omScopeIncludesGuard,
+  resolveOmSectorScopeForSession,
+  type OmSectorScope,
+} from '../../../lib/om-sector-scope';
 import { getShiftSettings } from '../../executive/settings/actions';
 import {
   computeShiftTiming,
@@ -63,17 +71,14 @@ async function fetchGuardSectorContext(companyId: string | null): Promise<{
     .neq('site_status', 'ARCHIVED');
   if (companyId) siteQuery = siteQuery.eq('company_id', companyId);
 
-  let smQuery = supabase
-    .from('employees')
-    .select('emp_number, epf_no, epf_num, site')
-    .eq('group', 'SECTOR_MANAGER')
-    .eq('status', 'ACTIVE');
-  if (companyId) smQuery = smQuery.eq('company_id', companyId);
-
-  const [linksRes, siteRes, smRes] = await Promise.all([
+  const [linksRes, siteRes, smManagers] = await Promise.all([
     supabase.from('sm_guard_assignments').select('sm_epf, guard_epf'),
     siteQuery,
-    smQuery,
+    fetchActiveSectorManagerRecordsForCompany(
+      supabase,
+      companyId,
+      'emp_number, epf_no, epf_num, site',
+    ),
   ]);
 
   const guardSmLinks = new Map<string, string>();
@@ -92,7 +97,7 @@ async function fetchGuardSectorContext(companyId: string | null): Promise<{
   }
 
   const smSectorByEpf = new Map<string, string>();
-  for (const row of smRes.data ?? []) {
+  for (const row of smManagers) {
     const sector = String(row.site ?? '').trim();
     if (!sector) continue;
     for (const key of [row.emp_number, row.epf_no, row.epf_num != null ? String(row.epf_num) : '']) {
@@ -206,6 +211,20 @@ async function fetchUserRole(
   return profile.role;
 }
 
+function assertOmGuardCardMutationAllowed(
+  omScope: OmSectorScope | null,
+  guard: GuardEmployeeRow,
+): string | null {
+  if (omScope === null) return null;
+  if (isOmSectorScopeEmpty(omScope)) {
+    return 'No assigned sectors — cannot modify guard cards.';
+  }
+  if (!omScopeIncludesGuard(omScope, guard)) {
+    return 'This guard is outside your assigned sectors.';
+  }
+  return null;
+}
+
 export async function getGuardCardLeaderboard(): Promise<{
   cards: GuardCardDisplay[];
   companyId: string | null;
@@ -221,7 +240,11 @@ export async function getGuardCardLeaderboard(): Promise<{
   const cutoff = rollingCutoffIso();
   const cutoffDate = cutoff.slice(0, 10);
 
-  const guards = await fetchWithRosterCompanyFallback(fetchActiveGuardRows, sessionCompanyId);
+  const [guardsRaw, omScope] = await Promise.all([
+    fetchWithRosterCompanyFallback(fetchActiveGuardRows, sessionCompanyId),
+    resolveOmSectorScopeForSession(),
+  ]);
+  const guards = filterGuardsForOmScope(guardsRaw, omScope);
 
   if (!guards.length) {
     return { cards: [], companyId: sessionCompanyId, isDemo: false };
@@ -443,17 +466,21 @@ export async function getGuardRatingMapByEmployeeId(
   const companyId = await resolveCompanyIdForSession(supabase);
   if (!companyId) return {};
 
+  const omScope = await resolveOmSectorScopeForSession();
   const targetSet = new Set(targetEmployeeIds);
 
   const { data: guards, error: guardError } = await supabase
     .from('employees')
-    .select('id, emp_number, epf_no, epf_num, full_name, rank, status, group')
+    .select('id, emp_number, epf_no, epf_num, full_name, rank, status, group, site')
     .eq('company_id', companyId)
     .in('group', [...GUARD_GROUPS]);
 
   if (guardError || !guards?.length) return {};
 
-  const cohort = guards.filter((g) => resolveGuardRosterKey(g));
+  const cohort = guards
+    .filter((g) => resolveGuardRosterKey(g))
+    .filter((g) => targetSet.has(g.id as string))
+    .filter((g) => omScopeIncludesGuard(omScope, g as GuardEmployeeRow));
   const rosterKeys = cohort.map((g) => resolveGuardRosterKey(g));
   const employeeIds = cohort.map((g) => g.id as string);
 
@@ -636,6 +663,7 @@ export async function getBlacklistedGuards(): Promise<{
   const companyId = await resolveCompanyIdForSession(supabase);
   const role = await fetchUserRole(supabase);
   const canApproveRemoval = role === 'MD' || role === 'OD';
+  const omScope = await resolveOmSectorScopeForSession();
 
   if (!companyId) return { entries: [], canApproveRemoval, error: 'No company context' };
 
@@ -668,7 +696,13 @@ export async function getBlacklistedGuards(): Promise<{
     };
   }
 
-  const entries: BlacklistedGuardEntry[] = (data ?? []).map((r) => ({
+  const entries: BlacklistedGuardEntry[] = (data ?? [])
+    .filter((r) => {
+      if (omScope === null) return true;
+      if (isOmSectorScopeEmpty(omScope)) return false;
+      return omScope.guardEmployeeIds.has(String(r.employee_id ?? ''));
+    })
+    .map((r) => ({
     id: r.id as string,
     employeeId: r.employee_id as string,
     empNumber: r.emp_number as string,
@@ -698,7 +732,7 @@ export async function blacklistGuard(employeeId: string, reason: string) {
 
   const { data: employee, error: empError } = await supabase
     .from('employees')
-    .select('id, emp_number, full_name, rank, group, status')
+    .select('id, emp_number, epf_no, epf_num, full_name, rank, group, status, site')
     .eq('id', employeeId)
     .eq('company_id', companyId)
     .maybeSingle();
@@ -707,6 +741,13 @@ export async function blacklistGuard(employeeId: string, reason: string) {
   if (!GUARD_GROUPS.includes(employee.group as (typeof GUARD_GROUPS)[number])) {
     return { error: 'Only field guards can be blacklisted.' };
   }
+
+  const omScope = await resolveOmSectorScopeForSession();
+  const scopeError = assertOmGuardCardMutationAllowed(
+    omScope,
+    employee as GuardEmployeeRow,
+  );
+  if (scopeError) return { error: scopeError };
 
   const { userId, name } = await resolveActorName(supabase);
 

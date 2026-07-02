@@ -11,10 +11,6 @@ import {
   readCohortExport,
   readEmployeeCashPaid,
 } from './roster-cash-paid-store';
-import {
-  FM_PREV_MONTH_STOP_LIST,
-  FM_SALARY_MONTH_HALF_HOLD_LIST,
-} from './retention-lists';
 import type { PayrollPeriod } from './payroll-period';
 
 export type RosterSalaryPaymentState =
@@ -32,10 +28,9 @@ export type RosterSalaryStatusContext = {
   period: PayrollPeriod;
   payrollStatus?: PayrollWorkflowStatus;
   payrollPaidAt?: string;
+  stopListEmpNos?: ReadonlySet<string>;
+  holdListEmpNos?: ReadonlySet<string>;
 };
-
-const STOP_LIST_EMP_NOS = new Set<string>(FM_PREV_MONTH_STOP_LIST.map((row) => row.empNo));
-const HOLD_LIST_EMP_NOS = new Set<string>(FM_SALARY_MONTH_HALF_HOLD_LIST.map((row) => row.empNo));
 
 function bankSalaryPaidFromWorkflow(
   paidAt: string | undefined,
@@ -48,20 +43,12 @@ function bankSalaryPaidFromWorkflow(
   return Boolean(paidAt);
 }
 
-export function retentionStopListEmpNos(): ReadonlySet<string> {
-  return STOP_LIST_EMP_NOS;
-}
-
-export function retentionHoldListEmpNos(): ReadonlySet<string> {
-  return HOLD_LIST_EMP_NOS;
-}
-
 export function resolveRosterSalaryPaymentState(
   row: FmPayrollRosterRow,
   context: RosterSalaryStatusContext,
 ): RosterSalaryPaymentState {
-  if (STOP_LIST_EMP_NOS.has(row.empNumber)) return 'stopped';
-  if (HOLD_LIST_EMP_NOS.has(row.empNumber)) return 'half_hold';
+  if (context.stopListEmpNos?.has(row.empNumber)) return 'stopped';
+  if (context.holdListEmpNos?.has(row.empNumber)) return 'half_hold';
 
   const scaledRow = scaleRosterRowForPeriod(row, context.period);
   const dueLkr = scaledRow.netPayLkr;

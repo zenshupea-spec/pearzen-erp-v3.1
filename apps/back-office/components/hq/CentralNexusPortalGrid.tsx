@@ -47,28 +47,34 @@ const CARD_ACCENT: Record<string, { ring: string; icon: string; hover: string }>
   },
 };
 
+function portalPath(href: string): string {
+  return href.split('?')[0] ?? href;
+}
+
 function canSeePortal(
   href: string,
   role: string,
 ): boolean {
+  const path = portalPath(href);
   const isGodMode = role === 'MD' || role === 'OD';
   if (isGodMode) return true;
 
-  if (href === '/executive' || href.startsWith('/executive/')) return false;
-  if (href === '/tm') return role === 'TM';
-  if (href === '/om') return role === 'OM' || role === 'HR' || role === 'FM';
-  if (href === '/hr/mnr') return role === 'HR' || role === 'FM' || role === 'OM';
-  if (href === '/fm') return role === 'FM' || role === 'HR';
-  if (href === '/hq/audit') return canAccessPortalActivityLedger(role);
-  if (href.startsWith('/hq/')) return role === 'HR' || role === 'FM';
-  if (href === '/invoice-desk') return isGodMode;
+  if (path === '/executive' || path.startsWith('/executive/')) return false;
+  if (path === '/tm') return role === 'TM';
+  if (path === '/om') return role === 'OM' || role === 'HR' || role === 'FM';
+  if (path === '/hr/mnr') return role === 'HR' || role === 'FM' || role === 'OM';
+  if (path === '/fm') return role === 'FM' || role === 'HR';
+  if (path === '/hq/audit') return canAccessPortalActivityLedger(role);
+  if (path.startsWith('/hq/')) return role === 'HR' || role === 'FM';
+  if (path === '/invoice-desk') return isGodMode;
   return false;
 }
 
 function readOnlyLabel(href: string, role: string): string | null {
+  const path = portalPath(href);
   if (role === 'MD' || role === 'OD') return null;
-  if (href === '/hr/mnr' && (role === 'FM' || role === 'OM')) return 'Read only';
-  if (href === '/om' && (role === 'FM' || role === 'HR')) return 'Read only';
+  if (path === '/hr/mnr' && (role === 'FM' || role === 'OM')) return 'Read only';
+  if (path === '/om' && (role === 'FM' || role === 'HR')) return 'Read only';
   return null;
 }
 

@@ -29,6 +29,14 @@ import {
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
 import {
+  ExecutivePageBody,
+  ExecutivePageHeader,
+  ExecutivePageLiveSubtitle,
+  ExecutivePageLoading,
+  ExecutivePageShell,
+} from '../../../components/executive/ExecutivePageChrome';
+import { CVS_BRAND_CLASSES } from '../../../lib/cvs-brand-tokens';
+import {
   getFleetDashboard,
   registerFleetAsset,
   removeFleetAsset,
@@ -145,8 +153,8 @@ function RegisterTagModal({
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-100 px-6 py-5">
           <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl border border-emerald-200/70 bg-emerald-100/60">
-              <Tag className="h-4 w-4 text-emerald-700" />
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl border border-[color:var(--cvs-accent-muted)]/70 bg-[var(--cvs-accent-soft)]/60">
+              <Tag className="h-4 w-4 text-[color:var(--cvs-accent)]" />
             </div>
             <div>
               <p className="text-sm font-black text-slate-900">Register New Asset Tag</p>
@@ -177,7 +185,7 @@ function RegisterTagModal({
                 value={form[key as keyof RegisterForm]}
                 onChange={(e) => set(key as keyof RegisterForm, e.target.value)}
                 placeholder={placeholder}
-                className="w-full rounded-xl border border-slate-200/80 bg-slate-50/60 px-3.5 py-2.5 text-sm font-medium text-slate-800 placeholder-slate-300 outline-none focus:border-emerald-300/80 focus:bg-white transition-all"
+                className={`w-full rounded-xl border border-slate-200/80 bg-slate-50/60 px-3.5 py-2.5 text-sm font-medium text-slate-800 placeholder-slate-300 outline-none focus:bg-white focus:outline-none focus:ring-2 ${CVS_BRAND_CLASSES.focusRing} transition-all`}
               />
             </div>
           ))}
@@ -191,7 +199,7 @@ function RegisterTagModal({
               <select
                 value={form.trackerType}
                 onChange={(e) => set('trackerType', e.target.value)}
-                className="w-full rounded-xl border border-slate-200/80 bg-slate-50/60 px-3.5 py-2.5 text-sm font-medium text-slate-800 outline-none focus:border-emerald-300/80 focus:bg-white transition-all appearance-none"
+                className={`w-full rounded-xl border border-slate-200/80 bg-slate-50/60 px-3.5 py-2.5 text-sm font-medium text-slate-800 outline-none focus:outline-none focus:ring-2 ${CVS_BRAND_CLASSES.focusRing} transition-all appearance-none`}
               >
                 {[
                   'Apple AirTag',
@@ -211,7 +219,7 @@ function RegisterTagModal({
                 value={form.tagId}
                 onChange={(e) => set('tagId', e.target.value)}
                 placeholder="e.g. GT-00821"
-                className="w-full rounded-xl border border-slate-200/80 bg-slate-50/60 px-3.5 py-2.5 text-sm font-medium text-slate-800 placeholder-slate-300 outline-none focus:border-emerald-300/80 focus:bg-white transition-all"
+                className={`w-full rounded-xl border border-slate-200/80 bg-slate-50/60 px-3.5 py-2.5 text-sm font-medium text-slate-800 placeholder-slate-300 outline-none focus:bg-white focus:outline-none focus:ring-2 ${CVS_BRAND_CLASSES.focusRing} transition-all`}
               />
             </div>
           </div>
@@ -267,7 +275,7 @@ function RegisterTagModal({
             type="button"
             onClick={() => void handleSubmit()}
             disabled={saving}
-            className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-emerald-600 py-2.5 text-sm font-black text-white shadow-md shadow-emerald-600/25 hover:bg-emerald-700 transition-colors disabled:opacity-50"
+            className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-[color:var(--cvs-accent)] py-2.5 text-sm font-black text-white shadow-md shadow-[color:var(--cvs-glow)] hover:bg-[color:var(--cvs-accent-hover)] transition-colors disabled:opacity-50"
           >
             <Tag className="h-3.5 w-3.5" />
             {saving ? 'Registering…' : 'Register Asset'}
@@ -951,13 +959,13 @@ function FuelTable({
                             if (e.key === 'Enter') commitEdit(row.vehicleId);
                             if (e.key === 'Escape') setEditingId(null);
                           }}
-                          className="w-16 rounded-lg border border-emerald-300/80 bg-emerald-50/60 px-2 py-1 text-xs font-black text-slate-900 outline-none"
+                          className={`w-16 rounded-lg border border-[color:var(--cvs-accent-muted)]/80 bg-[var(--cvs-accent-soft)]/60 px-2 py-1 text-xs font-black text-slate-900 outline-none focus:ring-2 ${CVS_BRAND_CLASSES.focusRing}`}
                         />
                         <span className="text-xs text-slate-500">km/L</span>
                         <button
                           type="button"
                           onClick={() => commitEdit(row.vehicleId)}
-                          className="flex h-6 w-6 items-center justify-center rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
+                          className="flex h-6 w-6 items-center justify-center rounded-lg bg-[color:var(--cvs-accent)] text-white hover:bg-[color:var(--cvs-accent-hover)]"
                         >
                           <Save className="h-3 w-3" />
                         </button>
@@ -977,7 +985,7 @@ function FuelTable({
                         <button
                           type="button"
                           onClick={() => startEdit(row)}
-                          className="flex h-5 w-5 items-center justify-center rounded-md border border-slate-200/70 text-slate-400 hover:border-emerald-300/70 hover:text-emerald-700 transition-colors"
+                          className="flex h-5 w-5 items-center justify-center rounded-md border border-slate-200/70 text-slate-400 hover:border-[color:var(--cvs-accent-muted)]/70 hover:text-[color:var(--cvs-accent)] transition-colors"
                           title="Edit efficiency"
                         >
                           <Pencil className="h-3 w-3" />
@@ -1047,7 +1055,7 @@ function FuelTable({
           <span className="font-bold text-amber-700">Amber</span> = &gt;5% overuse (possible unlogged private trips).{' '}
           <span className="font-bold text-red-700">Red</span> = &gt;25% overuse — potential fuel theft. MD can correct
           efficiency ratings by clicking the pencil icon; changes re-calculate all variances instantly.
-          {' '}Settings → Automated Fuel Surplus Correction toggle subtracts confirmed overpayments from next month&apos;s advance.
+          {' '}Use transport allowance on the SM payroll record when mileage recovery is needed.
         </p>
       </div>
     </div>
@@ -1148,55 +1156,60 @@ export default function FleetPage() {
     .filter((r) => varianceInfo(r).severity !== 'OK').length;
 
   return (
-    <div className="min-h-screen p-6 md:p-8 lg:p-10">
+    <>
+      {showRegister && (
+        <RegisterTagModal
+          onClose={() => setShowRegister(false)}
+          onRegister={handleRegisterAsset}
+        />
+      )}
+      {mapVehicle && (
+        <VehicleMapModal
+          vehicle={mapVehicle}
+          routes={routeHistory[mapVehicle.id] ?? []}
+          onClose={() => setMapVehicleId(null)}
+        />
+      )}
 
-      {loadError ? (
-        <div className="mb-6 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">
-          {loadError}
-        </div>
-      ) : null}
+      <ExecutivePageShell>
+        <ExecutivePageHeader
+          title="Fleet & Assets"
+          subtitle={
+            <ExecutivePageLiveSubtitle>
+              Telematics Radar · Reckless Driving AI · Fuel Reconciliation
+            </ExecutivePageLiveSubtitle>
+          }
+          actions={
+            <button
+              type="button"
+              onClick={() => setShowRegister(true)}
+              className="flex items-center gap-2 rounded-2xl bg-[color:var(--cvs-accent)] px-4 py-2.5 text-sm font-black text-white shadow-md shadow-[color:var(--cvs-glow)] hover:bg-[color:var(--cvs-accent-hover)] transition-colors"
+            >
+              <Plus className="h-4 w-4" />
+              Register New Asset Tag
+            </button>
+          }
+        />
 
-      {loading ? (
-        <div className="rounded-2xl border border-dashed border-slate-200/80 bg-white/30 py-16 text-center">
-          <RefreshCw className="mx-auto mb-3 h-8 w-8 animate-spin text-slate-400" />
-          <p className="text-sm font-bold text-slate-500">Loading fleet data…</p>
-        </div>
-      ) : (
-        <>
-
-      {/* ── Page header ── */}
-      <div className="mb-8">
-        <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
-          <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-emerald-200/80 bg-emerald-500/10 shadow-[0_0_20px_rgba(16,185,129,0.22)]">
-              <Navigation className="h-5 w-5 text-emerald-800" />
+        <ExecutivePageBody spacing="relaxed">
+          {loadError ? (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">
+              {loadError}
             </div>
-            <div>
-              <h1 className="text-2xl font-black tracking-tight text-slate-900">Fleet & Assets</h1>
-              <p className="text-sm font-medium text-slate-500">
-                Telematics Radar · Reckless Driving AI · Fuel Reconciliation
-              </p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowRegister(true)}
-            className="flex items-center gap-2 rounded-2xl border border-emerald-200/70 bg-emerald-600 px-4 py-2.5 text-sm font-black text-white shadow-md shadow-emerald-600/25 hover:bg-emerald-700 transition-colors"
-          >
-            <Plus className="h-4 w-4" />
-            Register New Asset Tag
-          </button>
-        </div>
+          ) : null}
 
-        {/* Stats */}
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          {loading ? (
+            <ExecutivePageLoading message="Loading fleet data…" />
+          ) : (
+            <>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           {[
             {
               label: 'Active Tracking Tags',
               value: `${onlineCount} / ${vehicles.length}`,
               sub: 'Online right now',
-              dot: 'bg-emerald-500 animate-pulse',
-              color: 'text-emerald-700',
+              dot: 'bg-[color:var(--cvs-accent)] animate-pulse shadow-[0_0_8px_var(--cvs-glow)]',
+              color: 'text-[color:var(--cvs-accent)]',
             },
             {
               label: 'Flagged Trips (MTD)',
@@ -1230,12 +1243,11 @@ export default function FleetPage() {
             </ExecutiveGlassCard>
           ))}
         </div>
-      </div>
 
       {/* ── Asset cards grid ── */}
       <div className="mb-8">
         <div className="mb-4 flex items-center gap-2">
-          <Radio className="h-4 w-4 text-emerald-600" />
+          <Radio className="h-4 w-4 text-[color:var(--cvs-accent)]" />
           <p className="text-sm font-black text-slate-700">
             Registered Assets · Live Telematics
           </p>
@@ -1336,7 +1348,7 @@ export default function FleetPage() {
                   <button
                     type="button"
                     onClick={() => setMapVehicleId(v.id)}
-                    className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-emerald-200/70 bg-emerald-50/70 py-2.5 text-sm font-bold text-emerald-800 hover:bg-emerald-100/70 active:scale-[0.97] transition-all"
+                    className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-[color:var(--cvs-accent-muted)]/70 bg-[var(--cvs-accent-soft)]/70 py-2.5 text-sm font-bold text-[color:var(--cvs-accent)] hover:bg-[var(--cvs-accent-soft)] active:scale-[0.97] transition-all"
                   >
                     <Navigation className="h-3.5 w-3.5" />
                     View Live Map
@@ -1430,23 +1442,10 @@ export default function FleetPage() {
         </div>
         <FuelTable rows={fuelRows} onUpdateEfficiency={(id, value) => void handleUpdateEfficiency(id, value)} />
       </div>
-
-      {/* ── Modals ── */}
-      {showRegister && (
-        <RegisterTagModal
-          onClose={() => setShowRegister(false)}
-          onRegister={handleRegisterAsset}
-        />
-      )}
-      {mapVehicle && (
-        <VehicleMapModal
-          vehicle={mapVehicle}
-          routes={routeHistory[mapVehicle.id] ?? []}
-          onClose={() => setMapVehicleId(null)}
-        />
-      )}
-        </>
-      )}
-    </div>
+            </>
+          )}
+        </ExecutivePageBody>
+      </ExecutivePageShell>
+    </>
   );
 }

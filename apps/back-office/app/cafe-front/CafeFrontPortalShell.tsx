@@ -14,6 +14,7 @@ import {
 
 import { CafeShiftGateSection } from '../../components/cafe-front/CafeShiftGateSection';
 import type { CafeShiftGate } from '../../lib/cafe-front-shift';
+import { CVS_BRAND_CLASSES } from '../../lib/cvs-brand-tokens';
 import {
   CAFE_FRONT_COMPLIANCE_PATH,
   CAFE_FRONT_EXPIRY_PATH,
@@ -65,12 +66,17 @@ export function CafeFrontPortalShell({
       <header className="sticky top-0 z-40 shrink-0 border-b border-white/60 bg-white/80 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] shadow-[0_8px_32px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl backdrop-saturate-150">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
-            <h1 className="truncate text-lg font-black uppercase tracking-tight text-slate-900">
+            <p
+              className={`flex items-center gap-1.5 text-[10px] font-black uppercase tracking-[0.2em] ${CVS_BRAND_CLASSES.portalEyebrow}`}
+            >
+              <span
+                className={`h-1.5 w-1.5 shrink-0 rounded-full ${CVS_BRAND_CLASSES.portalDot} shadow-[0_0_8px_var(--cvs-glow)]`}
+              />
               Café Front
-            </h1>
-            <p className="mt-0.5 truncate text-[10px] font-bold uppercase tracking-widest text-slate-500">
-              {staffName}
             </p>
+            <h1 className="mt-0.5 truncate text-lg font-black uppercase tracking-tight text-slate-900">
+              {staffName}
+            </h1>
           </div>
 
           <div className="flex shrink-0 flex-col items-end gap-1">
@@ -96,7 +102,7 @@ export function CafeFrontPortalShell({
               <button
                 type="button"
                 onClick={() => setShowCheckoutFlow(true)}
-                className="inline-flex items-center gap-1 rounded-full border border-slate-200/80 bg-white/90 px-2.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-slate-700 hover:bg-slate-50"
+                className="inline-flex items-center gap-1 rounded-full border border-slate-200/80 bg-white/90 px-2.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-slate-700 transition-colors hover:border-[color:var(--cvs-accent-muted)] hover:bg-[var(--cvs-accent-soft)]/60 hover:text-[color:var(--cvs-accent)]"
               >
                 <LogOut className="h-3 w-3" />
                 Check out
@@ -150,8 +156,8 @@ export function CafeFrontPortalShell({
                   href={href}
                   className={`flex flex-col items-center gap-0.5 rounded-xl px-1 py-2 text-[9px] font-bold leading-none transition-all active:scale-95 ${
                     active
-                      ? 'bg-slate-900 text-white shadow-sm'
-                      : 'text-slate-500 hover:bg-slate-100'
+                      ? `${CVS_BRAND_CLASSES.mobileTabActive} border-transparent`
+                      : 'text-slate-500 hover:bg-[var(--cvs-accent-soft)]/80 hover:text-[color:var(--cvs-accent)]'
                   }`}
                 >
                   <Icon className="h-4 w-4 shrink-0" strokeWidth={active ? 2.25 : 2} />

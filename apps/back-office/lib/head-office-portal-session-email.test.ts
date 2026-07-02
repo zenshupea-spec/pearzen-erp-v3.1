@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { portalAuthEmailFromUsername } from './head-office-portal-username';
+import { headOfficePortalDisplayEmail, portalAuthEmailFromUsername } from './head-office-portal-username';
 
 /** Mirrors portalSessionEmailMatches in head-office-portal-auth.ts */
 function portalSessionEmailMatches(
@@ -44,6 +44,14 @@ function portalSessionCookieEmailsMatch(
     portalSessionEmailMatches(authRecord, sessionEmail)
   );
 }
+
+describe('headOfficePortalDisplayEmail', () => {
+  it('returns work email for portal UI, not the internal Supabase auth alias', () => {
+    expect(headOfficePortalDisplayEmail('  Zenshupea@gmail.com ')).toBe(
+      'zenshupea@gmail.com',
+    );
+  });
+});
 
 describe('portalSessionEmailMatches', () => {
   const record = {

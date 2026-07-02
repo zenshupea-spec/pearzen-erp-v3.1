@@ -2,6 +2,11 @@
 
 import { sweepMissedGuardCheckouts } from '../../../../packages/supabase/guard-auto-checkout';
 import { createSupabaseServerClient, createSupabaseServiceClient } from '../../../../packages/supabase/server';
+import {
+  ATTENDANCE_SELFIES_BUCKET,
+  signVerificationPhotoRef,
+  SM_VISIT_SELFIES_BUCKET,
+} from '../../../../packages/supabase/verification-photo-storage';
 import { revalidatePath } from 'next/cache';
 import { resolveCompanyIdForSession } from '../../lib/company-context-server';
 import {
@@ -9,6 +14,14 @@ import {
   colomboTodayIso,
   shiftDateFromDeviceTime,
 } from '../../lib/guard-verification-query';
+import {
+  isOmSectorScopeEmpty,
+  omScopeIncludesGuardEmployeeId,
+  omScopeIncludesSmEpf,
+  omSectorOwnsGuardEpf,
+  resolveOmSectorScopeForSession,
+  type OmSectorScope,
+} from '../../lib/om-sector-scope';
 import { auditStaffAction } from '../../lib/staff-audit';
 import { getShiftSettings } from '../executive/settings/actions';
 import {
@@ -18,6 +31,7 @@ import {
   isPhotoVerificationQueue,
   isReviewableVerificationShift,
   mergeAttendanceLogIntoShift,
+  attachOrphanAutoCheckouts,
   photoRetentionCutoffDate,
   reconcileShiftCheckInOut,
   type ShiftAggregateStatus,
@@ -83,6 +97,77 @@ function toLogRecord(row: Record<string, unknown>): VerificationLogRecord {
   };
 }
 
+function filterShiftsForOmScope(
+  shifts: ShiftVerificationRecord[],
+  omScope: OmSectorScope | null,
+): ShiftVerificationRecord[] {
+  if (omScope === null) return shifts;
+  if (isOmSectorScopeEmpty(omScope)) return [];
+  return shifts.filter((shift) => omSectorOwnsGuardEpf(omScope, shift.empNumber));
+}
+
+function filterSmVisitsForOmScope(
+  visits: SmVisitVerificationRecord[],
+  omScope: OmSectorScope | null,
+): SmVisitVerificationRecord[] {
+  if (omScope === null) return visits;
+  if (isOmSectorScopeEmpty(omScope)) return [];
+  return visits.filter((visit) => omScopeIncludesSmEpf(omScope, visit.smEpf));
+}
+
+async function assertOmAttendanceLogIdsAllowed(
+  logIds: string[],
+): Promise<string | null> {
+  const omScope = await resolveOmSectorScopeForSession();
+  if (omScope === null) return null;
+  if (isOmSectorScopeEmpty(omScope)) {
+    return 'No assigned sectors — cannot modify verification records.';
+  }
+
+  const supabase = await createSupabaseServerClient();
+  const { data: rows, error } = await supabase
+    .from('attendance_logs')
+    .select('id, emp_number, guard_id')
+    .in('id', logIds);
+
+  if (error) return 'Could not verify attendance log scope.';
+  if ((rows ?? []).length !== logIds.length) {
+    return 'One or more attendance logs were not found.';
+  }
+
+  for (const row of rows ?? []) {
+    const guardId = row.guard_id as string | null;
+    const empNumber = String(row.emp_number ?? '');
+    if (guardId && omScopeIncludesGuardEmployeeId(omScope, guardId)) continue;
+    if (empNumber && omSectorOwnsGuardEpf(omScope, empNumber)) continue;
+    return 'One or more attendance logs are outside your assigned sectors.';
+  }
+
+  return null;
+}
+
+async function assertOmSmVisitAllowed(visitId: string): Promise<string | null> {
+  const omScope = await resolveOmSectorScopeForSession();
+  if (omScope === null) return null;
+  if (isOmSectorScopeEmpty(omScope)) {
+    return 'No assigned sectors — cannot modify SM visit records.';
+  }
+
+  const supabase = await createSupabaseServerClient();
+  const { data: visit, error } = await supabase
+    .from('sm_visit_logs')
+    .select('id, sm_epf')
+    .eq('id', visitId)
+    .maybeSingle();
+
+  if (error || !visit) return 'Visit not found.';
+  if (!omScopeIncludesSmEpf(omScope, String(visit.sm_epf ?? ''))) {
+    return 'This SM visit is outside your assigned sectors.';
+  }
+
+  return null;
+}
+
 /** Guard shifts for OM verification (pending, flagged, approved, rejected) for a date. */
 export async function getPendingVerificationQueue(
   date?: string,
@@ -99,11 +184,23 @@ export async function getPendingVerificationQueue(
   }
 
   const service = createSupabaseServiceClient();
-  const logs = await fetchAttendanceLogsForVerification(service, companyId, date);
+  const [logs, omScope] = await Promise.all([
+    fetchAttendanceLogsForVerification(service, companyId, date),
+    resolveOmSectorScopeForSession(),
+  ]);
 
   if (!logs.length) return [];
 
-  const empNumbers = [...new Set(logs.map((l) => l.emp_number))];
+  const scopedLogs =
+    omScope === null
+      ? logs
+      : isOmSectorScopeEmpty(omScope)
+        ? []
+        : logs.filter((log) => omSectorOwnsGuardEpf(omScope, log.emp_number));
+
+  if (!scopedLogs.length) return [];
+
+  const empNumbers = [...new Set(scopedLogs.map((l) => l.emp_number))];
   const { data: employees } = await supabase
     .from('employees')
     .select('emp_number, full_name, id_photo_url, id_photo_captured_at')
@@ -122,7 +219,7 @@ export async function getPendingVerificationQueue(
 
   const grouped = new Map<string, ShiftVerificationRecord>();
 
-  for (const raw of logs) {
+  for (const raw of scopedLogs) {
     const log = toLogRecord(raw as Record<string, unknown>);
     const shiftDate = shiftDateFromDeviceTime(log.device_time);
     const shiftKey = `${log.emp_number}:${shiftDate}`;
@@ -157,6 +254,8 @@ export async function getPendingVerificationQueue(
     }
   }
 
+  attachOrphanAutoCheckouts(grouped);
+
   for (const record of grouped.values()) {
     reconcileShiftCheckInOut(record);
     record.aggregateStatus = deriveAggregateStatus(
@@ -170,9 +269,27 @@ export async function getPendingVerificationQueue(
     record.isEarlyCheckout = timing.isEarlyCheckout;
     record.lateMinutes = timing.lateMinutes;
     record.earlyMinutes = timing.earlyMinutes;
+
+    if (record.checkIn?.photo_url) {
+      record.checkIn.photo_url = await signVerificationPhotoRef(
+        service,
+        ATTENDANCE_SELFIES_BUCKET,
+        record.checkIn.photo_url,
+      );
+    }
+    if (record.checkOut?.photo_url) {
+      record.checkOut.photo_url = await signVerificationPhotoRef(
+        service,
+        ATTENDANCE_SELFIES_BUCKET,
+        record.checkOut.photo_url,
+      );
+    }
   }
 
-  return [...grouped.values()].sort((a, b) => b.shiftDate.localeCompare(a.shiftDate));
+  return filterShiftsForOmScope(
+    [...grouped.values()].sort((a, b) => b.shiftDate.localeCompare(a.shiftDate)),
+    omScope,
+  );
 }
 
 /** SM visit selfies for OM review on a given date (all verification statuses). */
@@ -180,6 +297,7 @@ export async function getSmVisitVerificationQueue(
   date: string,
 ): Promise<SmVisitVerificationRecord[]> {
   const supabase = await createSupabaseServerClient();
+  const omScope = await resolveOmSectorScopeForSession();
 
   const { data: visits, error } = await supabase
     .from('sm_visit_logs')
@@ -199,7 +317,16 @@ export async function getSmVisitVerificationQueue(
 
   if (!visits?.length) return [];
 
-  const smEpfs = [...new Set(visits.map((v) => v.sm_epf as string))];
+  const scopedVisits =
+    omScope === null
+      ? visits
+      : isOmSectorScopeEmpty(omScope)
+        ? []
+        : visits.filter((visit) => omScopeIncludesSmEpf(omScope, String(visit.sm_epf ?? '')));
+
+  if (!scopedVisits.length) return [];
+
+  const smEpfs = [...new Set(scopedVisits.map((v) => v.sm_epf as string))];
   const { data: employees } = await supabase
     .from('employees')
     .select('emp_number, full_name, id_photo_url, id_photo_captured_at')
@@ -216,9 +343,16 @@ export async function getSmVisitVerificationQueue(
     ]),
   );
 
-  return visits.map((raw) => {
+  return filterSmVisitsForOmScope(
+    await Promise.all(
+      scopedVisits.map(async (raw) => {
     const createdAt = String(raw.created_at);
     const employee = employeeByEpf.get(String(raw.sm_epf));
+    const storedPhoto = (raw.photo_url as string | null) ?? null;
+    const service = createSupabaseServiceClient();
+    const photoUrl = storedPhoto
+      ? await signVerificationPhotoRef(service, SM_VISIT_SELFIES_BUCKET, storedPhoto)
+      : null;
     return {
       id: String(raw.id),
       smEpf: String(raw.sm_epf),
@@ -226,14 +360,17 @@ export async function getSmVisitVerificationQueue(
       siteName: (raw.site_name as string | null) ?? null,
       visitDate: createdAt.slice(0, 10),
       visitTime: createdAt,
-      photoUrl: (raw.photo_url as string | null) ?? null,
+      photoUrl,
       idPhotoUrl: employee?.idPhotoUrl ?? null,
       idPhotoCapturedAt: employee?.idPhotoCapturedAt ?? null,
       latitude: raw.latitude == null ? null : Number(raw.latitude),
       longitude: raw.longitude == null ? null : Number(raw.longitude),
       verificationStatus: (raw.verification_status as 'PENDING' | 'APPROVED' | 'FLAGGED') ?? 'PENDING',
     };
-  });
+    }),
+    ),
+    omScope,
+  );
 }
 
 export async function processVerification(logId: string, newStatus: 'APPROVED' | 'FLAGGED') {
@@ -249,6 +386,9 @@ export async function clearShiftTimingHold(logIds: string[]) {
   }
 
   try {
+    const scopeError = await assertOmAttendanceLogIdsAllowed(logIds);
+    if (scopeError) return { success: false, error: scopeError };
+
     const supabase = await createSupabaseServerClient();
     const { data: rows, error: fetchError } = await supabase
       .from('attendance_logs')
@@ -282,6 +422,7 @@ export async function clearShiftTimingHold(logIds: string[]) {
     });
 
     revalidatePath('/om');
+    revalidatePath('/tm');
     return { success: true };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Could not clear timing hold.';
@@ -301,13 +442,16 @@ export async function getShiftVerificationMarkedDates(
 ): Promise<string[]> {
   const supabase = await createSupabaseServerClient();
   const companyId = await resolveCompanyIdForSession(supabase);
+  const omScope = await resolveOmSectorScopeForSession();
+  if (omScope !== null && isOmSectorScopeEmpty(omScope)) return [];
+
   const from = new Date();
   from.setUTCDate(from.getUTCDate() - lookbackDays);
   const fromStr = from.toISOString().slice(0, 10);
 
   let markedQuery = supabase
     .from('attendance_logs')
-    .select('device_time, status')
+    .select('device_time, status, emp_number')
     .in('status', statuses)
     .gte('device_time', `${fromStr}T00:00:00`)
     .order('device_time', { ascending: false })
@@ -327,6 +471,9 @@ export async function getShiftVerificationMarkedDates(
   const dates = new Set<string>();
   for (const row of data ?? []) {
     if (!statuses.includes(row.status as ShiftAggregateStatus)) continue;
+    if (omScope !== null && !omSectorOwnsGuardEpf(omScope, String(row.emp_number ?? ''))) {
+      continue;
+    }
     dates.add(String(row.device_time).slice(0, 10));
   }
   return [...dates].sort((a, b) => b.localeCompare(a));
@@ -338,13 +485,16 @@ export async function getSmVisitMarkedDates(
   lookbackDays = 60,
 ): Promise<string[]> {
   const supabase = await createSupabaseServerClient();
+  const omScope = await resolveOmSectorScopeForSession();
+  if (omScope !== null && isOmSectorScopeEmpty(omScope)) return [];
+
   const from = new Date();
   from.setUTCDate(from.getUTCDate() - lookbackDays);
   const fromStr = from.toISOString().slice(0, 10);
 
   const { data, error } = await supabase
     .from('sm_visit_logs')
-    .select('created_at, verification_status')
+    .select('created_at, verification_status, sm_epf')
     .eq('visit_type', 'VISIT')
     .in('verification_status', statuses)
     .gte('created_at', `${fromStr}T00:00:00`)
@@ -359,6 +509,9 @@ export async function getSmVisitMarkedDates(
   const dates = new Set<string>();
   for (const row of data ?? []) {
     if (!statuses.includes(row.verification_status as 'APPROVED' | 'FLAGGED')) continue;
+    if (omScope !== null && !omScopeIncludesSmEpf(omScope, String(row.sm_epf ?? ''))) {
+      continue;
+    }
     dates.add(String(row.created_at).slice(0, 10));
   }
   return [...dates].sort((a, b) => b.localeCompare(a));
@@ -388,6 +541,9 @@ export async function getGuardVerificationUnclearedDates(
 /** Visit dates that still have SM verification work in the lookback window. */
 export async function getSmVisitUnclearedDates(lookbackDays = 60): Promise<string[]> {
   const supabase = await createSupabaseServerClient();
+  const omScope = await resolveOmSectorScopeForSession();
+  if (omScope !== null && isOmSectorScopeEmpty(omScope)) return [];
+
   const from = new Date();
   from.setUTCDate(from.getUTCDate() - lookbackDays);
   const fromStr = from.toISOString().slice(0, 10);
@@ -395,7 +551,7 @@ export async function getSmVisitUnclearedDates(lookbackDays = 60): Promise<strin
 
   const { data, error } = await supabase
     .from('sm_visit_logs')
-    .select('created_at, verification_status, photo_url')
+    .select('created_at, verification_status, photo_url, sm_epf')
     .eq('visit_type', 'VISIT')
     .in('verification_status', ['PENDING', 'FLAGGED'])
     .gte('created_at', `${fromStr}T00:00:00`)
@@ -409,6 +565,9 @@ export async function getSmVisitUnclearedDates(lookbackDays = 60): Promise<strin
 
   const dates = new Set<string>();
   for (const row of data ?? []) {
+    if (omScope !== null && !omScopeIncludesSmEpf(omScope, String(row.sm_epf ?? ''))) {
+      continue;
+    }
     const visitDate = String(row.created_at).slice(0, 10);
     if (visitDate > todayStr) continue;
     dates.add(visitDate);
@@ -427,6 +586,9 @@ export async function processShiftVerification(
   }
 
   try {
+    const scopeError = await assertOmAttendanceLogIdsAllowed(logIds);
+    if (scopeError) return { success: false, error: scopeError };
+
     const supabase = await createSupabaseServerClient();
 
     const { error } = await supabase
@@ -465,6 +627,9 @@ export async function processSmVisitVerification(
   }
 
   try {
+    const scopeError = await assertOmSmVisitAllowed(visitId);
+    if (scopeError) return { success: false, error: scopeError };
+
     const supabase = await createSupabaseServerClient();
 
     const { error } = await supabase

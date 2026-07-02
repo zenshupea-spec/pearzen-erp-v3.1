@@ -16,6 +16,8 @@ export type SiteEmployeeDeductionRow = {
   mealsAmountLkr: number;
   /** True when uniform amount came from portal/stock issues, not yet saved on the monthly entry. */
   uniformFromIssue?: boolean;
+  /** True when uniform amount came from Finance engine default instalment. */
+  uniformFromDefault?: boolean;
   /** True when meals amount came from computed shift totals, not yet saved on the monthly entry. */
   mealsFromShifts?: boolean;
   status: DeductionEntryStatus | null;
@@ -117,6 +119,27 @@ export type UniformCourierQueueOverview = {
   pending: UniformCourierQueueRow[];
   dispatched: UniformCourierQueueRow[];
   isDemo: boolean;
+};
+
+export type UniformCollectionQueueRow = {
+  caseId: string;
+  employeeId: string;
+  guardEpf: string;
+  fullName: string;
+  rank: string | null;
+  issuedItems: UniformCourierItem[];
+  returnedItems: UniformCourierItem[];
+  adminNotes: string | null;
+  requestedAt: string;
+  confirmedAt: string | null;
+};
+
+export type UniformCollectionQueueOverview = {
+  pending: UniformCollectionQueueRow[];
+  confirmed: UniformCollectionQueueRow[];
+  isDemo: boolean;
+  payrollMonth: string;
+  payrollMonthLabel: string;
 };
 
 export type UniformVoHolderRole = 'SM' | 'TM' | 'OM';

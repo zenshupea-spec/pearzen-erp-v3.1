@@ -125,13 +125,17 @@ export async function requestForge2faRecoveryAction(email: string) {
   if (!mail.ok) {
     return { error: mail.error };
   }
+  if (!mail.emailed) {
+    return {
+      error: 'Email delivery is not configured. Set RESEND_API_KEY and FORGE_EMAIL_FROM.',
+    };
+  }
 
   const headerStore = await headers();
   void headerStore;
 
   return {
     success: true as const,
-    emailed: mail.emailed,
-    recoveryCode: mail.emailed ? undefined : recoveryCode,
+    emailed: true,
   };
 }

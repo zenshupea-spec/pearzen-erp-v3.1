@@ -1,7 +1,24 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import FmSubnav from '../components/FmSubnav';
+import FmCommandShellLayout from '../components/FmCommandShellLayout';
+import {
+  ExecutivePageBody,
+  ExecutivePageHeader,
+  ExecutivePageLiveSubtitle,
+  ExecutivePageShell,
+} from '../../../components/executive/ExecutivePageChrome';
+import {
+  FM_HOLIDAY_CALENDAR_DEFAULTS,
+  isHolidayCalendarIncomplete,
+  type FmHolidayCalendarEntry,
+} from '../../../lib/fm-holiday-calendar';
+import {
+  getFmHolidayCalendarStatus,
+  saveFmHolidayCalendar,
+} from '../holiday-calendar-actions';
+import { notifyFmHolidayCalendarUpdated } from '../use-fm-holiday-calendar-incomplete';
 import {
   AlertTriangle,
   CalendarCheck,
@@ -17,30 +34,27 @@ import {
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
 
-type HolidayEntry = {
-  id: string;
-  date: string;
-  label: string;
-  type: 'POYA' | 'STATUTORY' | 'PUBLIC_HOLIDAY';
-};
-
-const INITIAL_HOLIDAY_ENTRIES: HolidayEntry[] = [
-  { id: 'h1', date: '2026-06-11', label: 'Poson Poya', type: 'POYA' },
-  { id: 'h2', date: '2026-07-10', label: 'Esala Poya', type: 'POYA' },
-  { id: 'h3', date: '2026-08-08', label: 'Nikini Poya', type: 'POYA' },
-  { id: 'h4', date: '2026-09-07', label: 'Binara Poya', type: 'POYA' },
-  { id: 'h5', date: '2026-02-04', label: 'Independence Day', type: 'PUBLIC_HOLIDAY' },
-  { id: 'h6', date: '2026-04-13', label: 'Sinhala & Tamil New Year', type: 'STATUTORY' },
-  { id: 'h7', date: '2026-05-01', label: 'Labour Day', type: 'STATUTORY' },
-];
+type HolidayEntry = FmHolidayCalendarEntry;
 
 export default function FMSettingsPage() {
-  const [holidayEntries, setHolidayEntries] = useState<HolidayEntry[]>(INITIAL_HOLIDAY_ENTRIES);
+  const [holidayEntries, setHolidayEntries] = useState<HolidayEntry[]>(
+    FM_HOLIDAY_CALENDAR_DEFAULTS,
+  );
   const [showHolidayModal, setShowHolidayModal] = useState(false);
   const [newHolidayDate, setNewHolidayDate] = useState('');
   const [newHolidayLabel, setNewHolidayLabel] = useState('');
   const [newHolidayType, setNewHolidayType] = useState<HolidayEntry['type']>('POYA');
   const [holidayCalSaved, setHolidayCalSaved] = useState(false);
+  const [holidayCalSaving, setHolidayCalSaving] = useState(false);
+  const [holidayCalError, setHolidayCalError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void getFmHolidayCalendarStatus().then((status) => {
+      if (status.ok && status.entries.length > 0) {
+        setHolidayEntries(status.entries);
+      }
+    });
+  }, []);
 
   const addHolidayEntry = () => {
     if (!newHolidayDate || !newHolidayLabel.trim()) return;
@@ -57,55 +71,53 @@ export default function FMSettingsPage() {
   const removeHolidayEntry = (id: string) =>
     setHolidayEntries((prev) => prev.filter((e) => e.id !== id));
 
-  const saveHolidayCalendar = () => {
+  const saveHolidayCalendar = async () => {
+    setHolidayCalSaving(true);
+    setHolidayCalError(null);
+    const result = await saveFmHolidayCalendar(holidayEntries);
+    setHolidayCalSaving(false);
+    if (!result.success) {
+      setHolidayCalError(result.error);
+      return;
+    }
+    notifyFmHolidayCalendarUpdated(result.incomplete);
     setHolidayCalSaved(true);
     setTimeout(() => setHolidayCalSaved(false), 2500);
   };
 
+  const holidayCalendarIncomplete = isHolidayCalendarIncomplete(holidayEntries);
   const oneYearFromNow = new Date();
   oneYearFromNow.setFullYear(oneYearFromNow.getFullYear() + 1);
   const latestPoya = holidayEntries
-    .filter((e) => e.type === 'POYA')
+    .filter((entry) => entry.type === 'POYA')
     .sort((a, b) => b.date.localeCompare(a.date))[0];
   const latestStatutory = holidayEntries
-    .filter((e) => e.type === 'STATUTORY' || e.type === 'PUBLIC_HOLIDAY')
+    .filter((entry) => entry.type === 'STATUTORY' || entry.type === 'PUBLIC_HOLIDAY')
     .sort((a, b) => b.date.localeCompare(a.date))[0];
-  const poyaFilled = latestPoya && new Date(latestPoya.date) >= oneYearFromNow;
-  const statutoryFilled = latestStatutory && new Date(latestStatutory.date) >= oneYearFromNow;
-  const holidayCalendarIncomplete = !poyaFilled || !statutoryFilled;
+  const poyaFilled =
+    latestPoya != null && new Date(`${latestPoya.date}T12:00:00`) >= oneYearFromNow;
+  const statutoryFilled =
+    latestStatutory != null &&
+    new Date(`${latestStatutory.date}T12:00:00`) >= oneYearFromNow;
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <div
-        aria-hidden
-        className="pointer-events-none fixed inset-0 z-0 opacity-25"
-        style={{
-          backgroundImage: 'radial-gradient(rgb(148 163 184 / 0.5) 1px, transparent 1px)',
-          backgroundSize: '20px 20px',
-        }}
-      />
+    <FmCommandShellLayout className="py-0 sm:py-0 lg:py-0">
+      <div className="pt-8">
+        <FmSubnav holidayCalendarIncomplete={holidayCalendarIncomplete} />
+      </div>
 
-      <div className="relative z-10">
-        <div className="mx-auto max-w-7xl px-4 pt-8 pb-0 sm:px-6 lg:px-8">
-          <FmSubnav holidayCalendarIncomplete={holidayCalendarIncomplete} />
-        </div>
+      <ExecutivePageShell>
+        <ExecutivePageHeader
+          title="Holiday Calendar"
+          subtitle={
+            <ExecutivePageLiveSubtitle>
+              Poya, statutory, and public holiday dates for payroll
+            </ExecutivePageLiveSubtitle>
+          }
+        />
 
-        <div className="min-h-0 pb-24 font-sans">
-          <header className="sticky top-0 z-40 border-b border-white/60 bg-white/45 px-6 py-4 shadow-[0_8px_32px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl backdrop-saturate-150">
-            <div className="flex w-full items-center justify-between gap-4">
-              <div>
-                <h1 className="text-2xl font-black uppercase tracking-tight text-slate-900">
-                  Holiday Calendar
-                </h1>
-                <p className="text-sm font-semibold uppercase tracking-wider text-slate-500">
-                  Poya, statutory, and public holiday dates for payroll
-                </p>
-              </div>
-            </div>
-          </header>
-
-          <div className="w-full space-y-6 px-6 py-8 lg:px-12 2xl:px-24">
-            <div id="holiday-calendar">
+        <ExecutivePageBody spacing="relaxed">
+          <div id="holiday-calendar">
             <ExecutiveGlassCard className="overflow-hidden">
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
                 <div className="flex items-center gap-3">
@@ -322,20 +334,23 @@ export default function FMSettingsPage() {
                   These dates are shared globally — all payroll calculations for Poya, statutory, and public
                   holiday premiums reference this calendar.
                 </p>
+                {holidayCalError && (
+                  <p className="text-xs font-semibold text-red-600">{holidayCalError}</p>
+                )}
                 <button
                   type="button"
-                  onClick={saveHolidayCalendar}
-                  className="flex items-center gap-2 rounded-2xl bg-rose-600 px-6 py-2.5 text-sm font-black uppercase tracking-widest text-white shadow-lg shadow-rose-600/25 transition-all hover:bg-rose-500"
+                  onClick={() => void saveHolidayCalendar()}
+                  disabled={holidayCalSaving}
+                  className="flex items-center gap-2 rounded-2xl bg-rose-600 px-6 py-2.5 text-sm font-black uppercase tracking-widest text-white shadow-lg shadow-rose-600/25 transition-all hover:bg-rose-500 disabled:cursor-wait disabled:opacity-70"
                 >
                   <Save className="h-4 w-4" />
-                  Save Calendar
+                  {holidayCalSaving ? 'Saving…' : 'Save Calendar'}
                 </button>
               </div>
             </ExecutiveGlassCard>
-            </div>
           </div>
-        </div>
-      </div>
-    </div>
+        </ExecutivePageBody>
+      </ExecutivePageShell>
+    </FmCommandShellLayout>
   );
 }

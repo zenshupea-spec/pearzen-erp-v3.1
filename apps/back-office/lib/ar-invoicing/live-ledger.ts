@@ -3,7 +3,7 @@ import {
   fetchMonthlySiteShiftRollup,
   type GuardEmpRow,
 } from '../../app/hq/deductions/lib/monthly-site-shifts';
-import { payrollMonthDateRange } from '../../app/hq/deductions/lib/payroll-month';
+import { payrollMonthDateRange, payrollMonthFirstDay } from '../../app/hq/deductions/lib/payroll-month';
 import type { InvoiceBillingClient } from '../invoice-desk/types';
 import {
   buildRollingMonthKeys,
@@ -11,9 +11,27 @@ import {
   invoiceDueDate,
   monthKeyToLabel,
 } from './month-window';
+import {
+  AR_BILLING_CYCLE_DEFAULTS,
+  type ArBillingCycle,
+} from './billing-cycle';
+import {
+  applyRolloverDebts as applyCollectionRolloverDebts,
+  recomputeCellTotalAmount,
+} from './collection-math';
+import {
+  fetchClientPenaltyDeductionsByClientMonth,
+  mergeClientDeductions,
+} from './client-penalty-deductions';
+import {
+  invoiceRateForRank,
+  normalizeGuardRank,
+  parseSiteRateMatrix,
+  type GuardRankKey,
+  type SiteRateMatrixEntry,
+} from '../guard-site-pay';
 
-const RANK_KEYS = ['CSO', 'OIC', 'SSO', 'JSO', 'LSO'] as const;
-export type ArRankKey = (typeof RANK_KEYS)[number];
+export type ArRankKey = GuardRankKey;
 
 export type ArRankShiftLine = {
   rank: ArRankKey;
@@ -62,13 +80,21 @@ export type ArLedgerClientRecord = {
   invoices: Record<string, ArInvoiceCell>;
 };
 
-export type ArGuardRosterEntry = {
-  empNo: string;
-  name: string;
-  rank: ArRankKey;
-};
+import {
+  buildGuardRosterFromEmployeeShifts,
+  type ArEmployeeShiftRow,
+  type ArGuardRosterEntry,
+  type ArGuardRostersByClientMonth,
+} from './guard-roster';
+export {
+  buildGuardRosterFromEmployeeShifts,
+  guardRosterForCell,
+  type ArEmployeeShiftRow,
+  type ArGuardRosterEntry,
+  type ArGuardRostersByClientMonth,
+} from './guard-roster';
 
-type RankRateEntry = { qty: number; invoiceRate: number; payRate: number };
+type RankRateEntry = SiteRateMatrixEntry;
 
 type SiteRow = {
   id: string;
@@ -94,38 +120,15 @@ type EmployeeRow = {
 const DEMO_CLIENT_IDS = new Set(['C001', 'C002', 'C003', 'C004']);
 
 function parseRateMatrix(value: unknown): Partial<Record<ArRankKey, RankRateEntry>> {
-  if (!value || typeof value !== 'object') return {};
-  const out: Partial<Record<ArRankKey, RankRateEntry>> = {};
-  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-    if (!RANK_KEYS.includes(key as ArRankKey) || !raw || typeof raw !== 'object') continue;
-    const row = raw as Record<string, unknown>;
-    out[key as ArRankKey] = {
-      qty: Number(row.qty) || 0,
-      invoiceRate: Number(row.invoiceRate) || 0,
-      payRate: Number(row.payRate) || 0,
-    };
-  }
-  return out;
+  return parseSiteRateMatrix(value);
 }
 
 function normalizeRank(rank: string | null | undefined): ArRankKey {
-  const u = String(rank ?? 'JSO').toUpperCase();
-  return RANK_KEYS.includes(u as ArRankKey) ? (u as ArRankKey) : 'JSO';
+  return normalizeGuardRank(rank);
 }
 
 function siteKey(name: string): string {
   return name.trim().toLowerCase();
-}
-
-function invoiceRateForRank(matrix: Partial<Record<ArRankKey, RankRateEntry>>, rank: ArRankKey): number {
-  const entry = matrix[rank];
-  if (entry?.invoiceRate) return entry.invoiceRate;
-  const jso = matrix.JSO?.invoiceRate;
-  if (jso) return jso;
-  for (const r of RANK_KEYS) {
-    if (matrix[r]?.invoiceRate) return matrix[r]!.invoiceRate;
-  }
-  return 0;
 }
 
 function makeInvoiceNo(monthKey: string, seq: number): string {
@@ -176,11 +179,11 @@ function mergeInvoiceCell(
     status: persisted.status !== 'NONE' ? persisted.status : live!.status,
     invoiceNo: persisted.invoiceNo || live!.invoiceNo,
     paidDate: persisted.paidDate,
-    dueDate: persisted.dueDate ?? live!.dueDate,
+    dueDate: live!.dueDate ?? persisted.dueDate,
     paymentProof: persisted.paymentProof,
     pendingVerificationProof: persisted.pendingVerificationProof,
     amountReceived: persisted.amountReceived,
-    clientDeductions: persisted.clientDeductions,
+    clientDeductions: mergeClientDeductions(live!.clientDeductions, persisted.clientDeductions),
     disputeRef: persisted.disputeRef,
     disputeNote: persisted.disputeNote,
     creditNotes: persisted.creditNotes,
@@ -196,7 +199,13 @@ function mergeInvoiceCell(
   if (!useLiveLines && isCollectionState(persisted.status)) {
     merged.rankLines = persisted.rankLines ?? [];
     merged.patrols = persisted.patrols ?? [];
-    merged.totalAmount = persisted.totalAmount;
+    if (cellHasBillableContent(merged)) {
+      merged.totalAmount = recomputeCellTotalAmount(merged);
+    } else {
+      merged.totalAmount = persisted.totalAmount;
+    }
+  } else if (useLiveLines) {
+    merged.totalAmount = recomputeCellTotalAmount(merged);
   }
 
   if (!cellHasBillableContent(merged) && !isCollectionState(merged.status)) {
@@ -207,16 +216,38 @@ function mergeInvoiceCell(
 }
 
 function buildRankLines(
-  employeeShifts: { employeeId: string; rank: ArRankKey; rate: number; shifts: number }[],
+  employeeShifts: {
+    employeeId: string;
+    rank: ArRankKey;
+    rate: number;
+    shifts: number;
+    isEventBill?: boolean;
+    eventLabel?: string;
+  }[],
 ): ArRankShiftLine[] {
-  const groups = new Map<string, { rank: ArRankKey; rate: number; employees: Map<string, number> }>();
+  const groups = new Map<
+    string,
+    {
+      rank: ArRankKey;
+      rate: number;
+      isEventBill?: boolean;
+      eventLabel?: string;
+      employees: Map<string, number>;
+    }
+  >();
 
   for (const row of employeeShifts) {
     if (row.shifts <= 0 || row.rate <= 0) continue;
-    const key = `${row.rank}|${row.rate}`;
+    const key = `${row.rank}|${row.rate}|${row.isEventBill ? '1' : '0'}|${row.eventLabel ?? ''}`;
     let group = groups.get(key);
     if (!group) {
-      group = { rank: row.rank, rate: row.rate, employees: new Map() };
+      group = {
+        rank: row.rank,
+        rate: row.rate,
+        isEventBill: row.isEventBill,
+        eventLabel: row.eventLabel,
+        employees: new Map(),
+      };
       groups.set(key, group);
     }
     group.employees.set(row.employeeId, (group.employees.get(row.employeeId) ?? 0) + row.shifts);
@@ -232,23 +263,17 @@ function buildRankLines(
       headcount,
       shiftsPerHead: Math.round(totalShifts / headcount),
       ratePerShift: group.rate,
+      isEventBill: group.isEventBill,
+      eventLabel: group.eventLabel,
     });
   }
 
   return lines.sort((a, b) => a.rank.localeCompare(b.rank));
 }
 
-function computeTotal(rankLines: ArRankShiftLine[], patrols: ArPatrolVisit[]): number {
-  const rankTotal = rankLines.reduce(
-    (s, l) => s + l.headcount * l.shiftsPerHead * l.ratePerShift,
-    0,
-  );
-  const patrolTotal = patrols.reduce((s, p) => s + p.charge, 0);
-  return rankTotal + patrolTotal;
-}
-
 async function fetchSmPatrols(
   supabase: SupabaseClient,
+  companyId: string,
   monthKey: string,
   siteNames: Set<string>,
   siteChargeByName: Map<string, number>,
@@ -258,6 +283,7 @@ async function fetchSmPatrols(
   const { data, error } = await supabase
     .from('sm_visit_logs')
     .select('id, sm_epf, site_name, visit_date, created_at, verification_status')
+    .eq('company_id', companyId)
     .eq('visit_type', 'VISIT')
     .gte('visit_date', start)
     .lte('visit_date', end);
@@ -286,58 +312,50 @@ async function fetchSmPatrols(
   return patrols;
 }
 
+function resolveAdjustmentSiteKey(
+  raw: string,
+  siteIdToNameKey: Map<string, string>,
+): string {
+  return siteIdToNameKey.get(raw) ?? siteKey(raw);
+}
+
 async function fetchShiftAdjustments(
   supabase: SupabaseClient,
   companyId: string,
   monthKey: string,
+  siteIdToNameKey: Map<string, string>,
 ): Promise<Map<string, number>> {
+  const payrollMonth = payrollMonthFirstDay(monthKey);
   const { data } = await supabase
     .from('fm_shift_adjustments')
     .select('employee_id, site_key, delta_shifts')
     .eq('company_id', companyId)
-    .eq('payroll_month', monthKey);
+    .eq('payroll_month', payrollMonth);
 
   const deltas = new Map<string, number>();
   for (const row of data ?? []) {
-    const key = `${row.employee_id}:${siteKey(String(row.site_key ?? ''))}`;
+    const sk = resolveAdjustmentSiteKey(String(row.site_key ?? ''), siteIdToNameKey);
+    const key = `${row.employee_id}:${sk}`;
     deltas.set(key, (deltas.get(key) ?? 0) + Number(row.delta_shifts ?? 0));
   }
   return deltas;
 }
 
+/** Invoice / AR client key — parent cluster wins over per-site client_name. */
+export function billingClientKeyForSite(site: {
+  site_name: string;
+  client_name?: string | null;
+  parent_client?: string | null;
+}): string {
+  return (site.parent_client?.trim() || site.client_name?.trim() || site.site_name).trim();
+}
+
 function clientNameForSite(site: SiteRow): string {
-  return (site.client_name?.trim() || site.parent_client?.trim() || site.site_name).trim();
+  return billingClientKeyForSite(site);
 }
 
 export function filterOutDemoClients(clients: ArLedgerClientRecord[]): ArLedgerClientRecord[] {
   return clients.filter((c) => !DEMO_CLIENT_IDS.has(c.clientId));
-}
-
-export function buildGuardRostersByClient(
-  clients: ArLedgerClientRecord[],
-  employees: EmployeeRow[],
-  sitesByClient: Map<string, SiteRow[]>,
-): Record<string, ArGuardRosterEntry[]> {
-  const rosters: Record<string, ArGuardRosterEntry[]> = {};
-
-  for (const client of clients) {
-    const clientSites = sitesByClient.get(client.clientName) ?? [];
-    const siteNameKeys = new Set(clientSites.map((s) => siteKey(s.site_name)));
-
-    const guards = employees.filter((emp) => {
-      const empSite = (emp.site as string | null)?.trim();
-      if (!empSite) return false;
-      return siteNameKeys.has(siteKey(empSite));
-    });
-
-    rosters[client.clientId] = guards.map((g) => ({
-      empNo: g.emp_number ?? g.id.slice(0, 8),
-      name: g.full_name?.trim() || 'Guard',
-      rank: normalizeRank(g.rank),
-    }));
-  }
-
-  return rosters;
 }
 
 export async function buildLiveLedgerClients(
@@ -348,7 +366,11 @@ export async function buildLiveLedgerClients(
   employees: EmployeeRow[],
   persistedClients: ArLedgerClientRecord[],
   monthKeys: string[] = buildRollingMonthKeys(getCurrentMonthKey(), 12),
-): Promise<ArLedgerClientRecord[]> {
+  billingCycle: ArBillingCycle = AR_BILLING_CYCLE_DEFAULTS,
+): Promise<{
+  clients: ArLedgerClientRecord[];
+  guardRostersByClientMonth: ArGuardRostersByClientMonth;
+}> {
   const guardEmployees = employees.filter(
     (e) => !['HEAD_OFFICE', 'SECTOR_MANAGER', 'CAFE'].includes(String(e.group ?? '')),
   );
@@ -409,7 +431,18 @@ export async function buildLiveLedgerClients(
     );
   }
 
+  const penaltyDeductionsByClientMonth = await fetchClientPenaltyDeductionsByClientMonth(
+    supabase,
+    companyId,
+    monthKeys,
+    sites,
+  );
+
+  const siteIdToNameKey = new Map(sites.map((s) => [s.id, siteKey(s.site_name)]));
+  const adjustmentCache = new Map<string, Map<string, number>>();
+
   let invoiceSeq = 0;
+  const guardRostersByClientMonth: ArGuardRostersByClientMonth = {};
 
   for (const client of clientRows) {
     const clientSites = sitesByClient.get(client.clientName) ?? [];
@@ -421,14 +454,18 @@ export async function buildLiveLedgerClients(
 
     for (const monthKey of monthKeys) {
       const rollup = shiftRollups.get(monthKey)!;
-      const adjustments = await fetchShiftAdjustments(supabase, companyId, monthKey);
+      let adjustments = adjustmentCache.get(monthKey);
+      if (!adjustments) {
+        adjustments = await fetchShiftAdjustments(
+          supabase,
+          companyId,
+          monthKey,
+          siteIdToNameKey,
+        );
+        adjustmentCache.set(monthKey, adjustments);
+      }
 
-      const employeeShifts: {
-        employeeId: string;
-        rank: ArRankKey;
-        rate: number;
-        shifts: number;
-      }[] = [];
+      const employeeShifts: ArEmployeeShiftRow[] = [];
 
       for (const site of clientSites) {
         const sk = siteKey(site.site_name);
@@ -440,23 +477,45 @@ export async function buildLiveLedgerClients(
           const emp = empById.get(employeeId);
           if (!emp) continue;
           const rank = normalizeRank(emp.rank);
+          const entry = matrix[rank];
           const rate = invoiceRateForRank(matrix, rank);
           const adjKey = `${employeeId}:${sk}`;
           const adjusted = Math.max(0, shiftCount + (adjustments.get(adjKey) ?? 0));
           if (adjusted <= 0) continue;
-          employeeShifts.push({ employeeId, rank, rate, shifts: adjusted });
+          employeeShifts.push({
+            employeeId,
+            rank,
+            rate,
+            shifts: adjusted,
+            isEventBill: entry?.isEventBill,
+            eventLabel: entry?.eventLabel,
+          });
         }
       }
 
       const rankLines = buildRankLines(employeeShifts);
+      const roster = buildGuardRosterFromEmployeeShifts(employeeShifts, empById);
+      if (!guardRostersByClientMonth[client.clientId]) {
+        guardRostersByClientMonth[client.clientId] = {};
+      }
+      guardRostersByClientMonth[client.clientId]![monthKey] = roster;
+
       const patrols = await fetchSmPatrols(
         supabase,
+        companyId,
         monthKey,
         siteNameKeys,
         siteChargeByName,
         smNames,
       );
-      const totalAmount = computeTotal(rankLines, patrols);
+      const penaltyRows =
+        penaltyDeductionsByClientMonth.get(client.clientName)?.get(monthKey) ?? [];
+      const draftCell = {
+        rankLines,
+        patrols,
+        ...(penaltyRows.length ? { clientDeductions: penaltyRows } : {}),
+      };
+      const totalAmount = recomputeCellTotalAmount(draftCell);
 
       let live: ArInvoiceCell | null = null;
       if (totalAmount > 0 || rankLines.length > 0 || patrols.length > 0) {
@@ -467,7 +526,11 @@ export async function buildLiveLedgerClients(
           totalAmount,
           rankLines,
           patrols,
-          dueDate: invoiceDueDate(monthKey),
+          dueDate: invoiceDueDate(monthKey, {
+            invoiceDispatchDay: billingCycle.invoiceDispatchDay,
+            collectionWarningDay: billingCycle.collectionWarningDay,
+          }),
+          ...(penaltyRows.length ? { clientDeductions: penaltyRows } : {}),
         };
       }
 
@@ -478,37 +541,12 @@ export async function buildLiveLedgerClients(
     }
   }
 
-  return clientRows;
+  return { clients: clientRows, guardRostersByClientMonth };
 }
 
 export function applyRolloverDebts(
   clients: ArLedgerClientRecord[],
   chronoKeys: string[],
 ): ArLedgerClientRecord[] {
-  return clients.map((client) => {
-    let invoices = { ...client.invoices };
-    for (const monthKey of chronoKeys) {
-      const cell = invoices[monthKey];
-      if (cell?.status !== 'PARTIAL' || cell.amountReceived == null) continue;
-      const nextKey = chronoKeys[chronoKeys.indexOf(monthKey) + 1];
-      if (!nextKey) continue;
-      const shortfall = Math.max(
-        0,
-        cell.totalAmount - cell.amountReceived - ((cell.creditNotes as { amount: number }[] | undefined)?.reduce((s, cn) => s + cn.amount, 0) ?? 0),
-      );
-      const next = invoices[nextKey];
-      if (!next || next.status === 'NONE') continue;
-      if (shortfall > 0) {
-        invoices = {
-          ...invoices,
-          [nextKey]: {
-            ...next,
-            rolloverDebt: shortfall,
-            rolloverFromMonth: monthKeyToLabel(monthKey),
-          },
-        };
-      }
-    }
-    return { ...client, invoices };
-  });
+  return applyCollectionRolloverDebts(clients, chronoKeys);
 }

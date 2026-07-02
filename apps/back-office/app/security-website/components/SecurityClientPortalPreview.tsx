@@ -1,8 +1,10 @@
 'use client';
 
+import Image from 'next/image';
 import { MapPin, Phone, ShieldCheck } from 'lucide-react';
 
 import SecurityPortalDemoShell from './SecurityPortalDemoShell';
+import { useSecurityWebsite } from './SecurityWebsiteContext';
 
 const ACTIVITY = [
   {
@@ -33,7 +35,7 @@ type Props = {
   size?: 'compact' | 'fill';
 };
 
-function ClientPortalContent() {
+function ClientPortalContent({ logoUrl }: { logoUrl: string | null }) {
   return (
     <>
       <div className="border-b border-slate-800 bg-slate-950 px-3.5 py-2.5">
@@ -44,9 +46,24 @@ function ClientPortalContent() {
             </p>
             <p className="mt-0.5 text-base font-bold text-white">Site Command</p>
           </div>
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-red-700 text-xs font-bold text-white">
-            CV
-          </div>
+          <span
+            className={`flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full ${
+              logoUrl ? 'border border-slate-600 bg-white' : 'bg-red-700 text-xs font-bold text-white'
+            }`}
+          >
+            {logoUrl ? (
+              <Image
+                src={logoUrl}
+                alt=""
+                width={32}
+                height={32}
+                className="h-full w-full object-contain p-0.5"
+                unoptimized={logoUrl.startsWith('data:') || logoUrl.includes('supabase')}
+              />
+            ) : (
+              'CV'
+            )}
+          </span>
         </div>
         <p className="mt-1.5 flex items-center gap-1.5 text-[10px] text-emerald-400">
           <span className="relative flex h-2 w-2">
@@ -133,9 +150,11 @@ export default function SecurityClientPortalPreview({
   showDemoLabel = true,
   size = 'compact',
 }: Props) {
+  const { content } = useSecurityWebsite();
+
   return (
     <SecurityPortalDemoShell showLabel={showDemoLabel} size={size}>
-      <ClientPortalContent />
+      <ClientPortalContent logoUrl={content.logoUrl} />
     </SecurityPortalDemoShell>
   );
 }

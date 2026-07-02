@@ -3,13 +3,26 @@
 import { revalidatePath } from 'next/cache';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import {
-  CLASSIC_VENTURE_COMPANY_ID,
   resolveCompanyIdForSession,
   rosterCompanyId,
 } from '../../../lib/company-context-server';
 import { employeeStoredEpfNo, resolveGuardRosterKey } from '../../../lib/employee-epf';
-import { getOmServiceDb, normalizeSmEpf } from '../../../lib/om-service-db';
+import { getOmServiceDb } from '../../../lib/om-service-db';
+import {
+  fetchActiveSectorManagerRecordsForCompany,
+  findActiveSectorManagerByEpf,
+} from '../../../lib/sector-manager-roster';
+import { normalizeSmEpf } from '../../../../../packages/supabase/sm-epf';
 import { auditStaffAction } from '../../../lib/staff-audit';
+import {
+  filterGuardsForOmScope,
+  filterSectorManagersForOmScope,
+  isOmSectorScopeEmpty,
+  omScopeIncludesGuard,
+  omScopeIncludesSmEpf,
+  resolveOmSectorScopeForSession,
+  type OmSectorScope,
+} from '../../../lib/om-sector-scope';
 import type { SectorManagerOption } from './sites';
 import { getSectorManagersForAssignment } from './sites';
 
@@ -141,7 +154,9 @@ async function fetchSiteSmMap(
   return map;
 }
 
-async function fetchSmGuardLinks(): Promise<Map<string, string>> {
+async function fetchSmGuardLinks(
+  companyGuardAliases: Set<string>,
+): Promise<Map<string, string>> {
   const supabase = getOmServiceDb();
   const { data, error } = await supabase
     .from('sm_guard_assignments')
@@ -157,6 +172,7 @@ async function fetchSmGuardLinks(): Promise<Map<string, string>> {
     const guardEpf = String(row.guard_epf).trim().toUpperCase();
     const smEpf = normalizeSmEpf(row.sm_epf);
     if (!guardEpf || !smEpf) continue;
+    if (companyGuardAliases.size > 0 && !companyGuardAliases.has(guardEpf)) continue;
     map.set(guardEpf, smEpf);
   }
   return map;
@@ -164,24 +180,14 @@ async function fetchSmGuardLinks(): Promise<Map<string, string>> {
 
 async function fetchSmNameMap(companyId: string | null): Promise<Map<string, string>> {
   const supabase = getOmServiceDb();
-  let query = supabase
-    .from('employees')
-    .select('emp_number, epf_no, epf_num, full_name')
-    .eq('group', 'SECTOR_MANAGER')
-    .eq('status', 'ACTIVE');
-
-  if (companyId) {
-    query = query.eq('company_id', companyId);
-  }
-
-  const { data, error } = await query;
-  if (error) {
-    console.error('[OM sm-guard] sector managers:', error.message);
-    return new Map();
-  }
+  const managers = await fetchActiveSectorManagerRecordsForCompany(
+    supabase,
+    companyId,
+    'emp_number, epf_no, epf_num, full_name',
+  );
 
   const map = new Map<string, string>();
-  for (const row of data ?? []) {
+  for (const row of managers) {
     const name = String(row.full_name ?? row.emp_number);
     for (const key of [
       row.emp_number,
@@ -197,13 +203,22 @@ async function fetchSmNameMap(companyId: string | null): Promise<Map<string, str
 
 async function buildSmGuardAssignmentPayload(
   companyId: string | null,
+  omScope: OmSectorScope | null = null,
 ): Promise<Omit<OmSmGuardAssignmentPayload, 'managers'>> {
-  const [guards, siteSmByKey, guardSmLinks, smNames] = await Promise.all([
+  const [guardsRaw, siteSmByKey, smNames] = await Promise.all([
     fetchGuardRows(companyId),
     fetchSiteSmMap(companyId),
-    fetchSmGuardLinks(),
     fetchSmNameMap(companyId),
   ]);
+  const guards = filterGuardsForOmScope(guardsRaw, omScope);
+
+  const companyGuardAliases = new Set<string>();
+  for (const guard of guards) {
+    for (const alias of guardEpfAliases(guard)) {
+      companyGuardAliases.add(alias);
+    }
+  }
+  const guardSmLinks = await fetchSmGuardLinks(companyGuardAliases);
 
   const rows: OmSmGuardLinkRow[] = guards.map((guard) => {
     const guardEpf = resolveGuardRosterKey(guard);
@@ -240,28 +255,30 @@ async function buildSmGuardAssignmentPayload(
 
 async function buildSmGuardPayloadWithCompanyFallback(
   sessionCompanyId: string | null,
+  omScope: OmSectorScope | null = null,
 ): Promise<Omit<OmSmGuardAssignmentPayload, 'managers'>> {
   const preferred = rosterCompanyId(sessionCompanyId);
-  let payload = await buildSmGuardAssignmentPayload(preferred);
-  if (!payload.rows.length && preferred !== CLASSIC_VENTURE_COMPANY_ID) {
-    payload = await buildSmGuardAssignmentPayload(CLASSIC_VENTURE_COMPANY_ID);
+  if (preferred) {
+    const payload = await buildSmGuardAssignmentPayload(preferred, omScope);
+    if (payload.rows.length) return payload;
   }
-  if (!payload.rows.length) {
-    payload = await buildSmGuardAssignmentPayload(null);
-  }
-  return payload;
+  return buildSmGuardAssignmentPayload(null, omScope);
 }
 
 export async function getOmSmGuardAssignmentData(): Promise<OmSmGuardAssignmentPayload> {
   const supabase = await createSupabaseServerClient();
   const sessionCompanyId = await resolveCompanyIdForSession(supabase);
+  const omScope = await resolveOmSectorScopeForSession();
 
   const [payload, managers] = await Promise.all([
-    buildSmGuardPayloadWithCompanyFallback(sessionCompanyId),
+    buildSmGuardPayloadWithCompanyFallback(sessionCompanyId, omScope),
     getSectorManagersForAssignment(),
   ]);
 
-  return { ...payload, managers };
+  return {
+    ...payload,
+    managers: filterSectorManagersForOmScope(managers, omScope),
+  };
 }
 
 async function fetchActiveGuardRow(
@@ -323,32 +340,46 @@ async function findActiveSectorManager(
   smEpf: string,
 ): Promise<boolean> {
   const supabase = getOmServiceDb();
-  const key = smEpf.trim();
-  const columns = ['emp_number', 'epf_no', 'epf_num'] as const;
-
-  for (const column of columns) {
-    let query = supabase
-      .from('employees')
-      .select('id')
-      .eq(column, key)
-      .eq('group', 'SECTOR_MANAGER')
-      .eq('status', 'ACTIVE');
-
-    if (companyId) {
-      query = query.eq('company_id', companyId);
-    }
-
-    const { data, error } = await query.maybeSingle();
-    if (error) throw error;
-    if (data?.id) return true;
-  }
-
-  return false;
+  const manager = await findActiveSectorManagerByEpf(
+    supabase,
+    smEpf,
+    companyId,
+    'id',
+  );
+  return Boolean(manager?.id);
 }
 
 function revalidateSmGuardPaths() {
   revalidatePath('/om/guards/sm-assignments');
   revalidatePath('/om');
+}
+
+async function assertOmSmGuardMutationAllowed(input: {
+  guard?: GuardRow | null;
+  guardInput?: { guardEpf?: string; guardId?: string };
+  smEpf?: string | null;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const omScope = await resolveOmSectorScopeForSession();
+  if (omScope === null) return { ok: true };
+  if (isOmSectorScopeEmpty(omScope)) {
+    return { ok: false, error: 'No assigned sectors — cannot modify SM guard links.' };
+  }
+  if (input.smEpf && !omScopeIncludesSmEpf(omScope, input.smEpf)) {
+    return { ok: false, error: 'This Sector Manager is outside your assigned sectors.' };
+  }
+
+  let guard = input.guard ?? null;
+  if (!guard && input.guardInput) {
+    const session = await createSupabaseServerClient();
+    const companyId = await resolveCompanyIdForSession(session);
+    guard = await fetchActiveGuardRow(companyId, input.guardInput);
+  }
+
+  if (guard && !omScopeIncludesGuard(omScope, guard)) {
+    return { ok: false, error: 'This guard is outside your assigned sectors.' };
+  }
+
+  return { ok: true };
 }
 
 export async function assignGuardToSectorManager(input: {
@@ -378,6 +409,15 @@ export async function assignGuardToSectorManager(input: {
     }
 
     const guard = await fetchActiveGuardRow(companyId, input);
+    const scopeGate = await assertOmSmGuardMutationAllowed({
+      guard,
+      guardInput: input,
+      smEpf,
+    });
+    if (!scopeGate.ok) {
+      return { success: false, error: scopeGate.error };
+    }
+
     const aliases = guard ? guardEpfAliases(guard) : [guardEpf];
     for (const alias of aliases) {
       for (const key of [alias, alias.toLowerCase()]) {
@@ -428,6 +468,14 @@ export async function clearGuardSectorManagerLink(input: {
 
     const supabase = getOmServiceDb();
     const guard = await fetchActiveGuardRow(companyId, input);
+    const scopeGate = await assertOmSmGuardMutationAllowed({
+      guard,
+      guardInput: input,
+    });
+    if (!scopeGate.ok) {
+      return { success: false, error: scopeGate.error };
+    }
+
     const aliases = guard ? guardEpfAliases(guard) : [key];
 
     for (const alias of aliases) {

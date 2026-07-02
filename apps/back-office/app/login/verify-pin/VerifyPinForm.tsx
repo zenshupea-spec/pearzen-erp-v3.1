@@ -123,8 +123,9 @@ export default function VerifyPinForm({
                 {portalTitle}
               </h1>
               <p className="mt-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
-                Step 2 ·{' '}
-                {needsSetup ? 'Enter your one-time password' : 'Enter your portal password'}
+                {needsSetup
+                  ? 'Complete sign-in on your portal page first'
+                  : 'Confirm your portal password for this session'}
               </p>
             </div>
           </div>

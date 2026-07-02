@@ -62,6 +62,13 @@ describe('parseConventionalTenantPortalHost (new tenants)', () => {
     vi.stubEnv('NEXT_PUBLIC_TENANT_BASE_DOMAIN', 'pearzen.tech');
     expect(parseConventionalTenantPortalHost('demo.pearzen.tech')).toBeNull();
   });
+
+  it('does not treat shalom.pearzen.tech as tenant shal OM portal', () => {
+    vi.stubEnv('NEXT_PUBLIC_TENANT_BASE_DOMAIN', 'pearzen.tech');
+    expect(parseConventionalTenantPortalHost('shalom.pearzen.tech')).toBeNull();
+    expect(parseTenantPortalHost('shalom.pearzen.tech')).toBeNull();
+    expect(resolveTenantSlugFromHostAndCookie('shalom.pearzen.tech')).toBeNull();
+  });
 });
 
 describe('parseDedicatedPortalHost', () => {

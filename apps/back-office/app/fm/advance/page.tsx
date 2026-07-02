@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Banknote, Loader2 } from 'lucide-react';
+import StaffPortalLoading from '../../../components/portal/StaffPortalLoading';
 import FmSubnav from '../components/FmSubnav';
 import FmAdvanceGroupRow from '../components/FmAdvanceGroupRow';
 import FmPayrollMonthSelector from '../components/FmPayrollMonthSelector';
@@ -213,10 +214,7 @@ export default function FmAdvancePage() {
         </ExecutiveGlassCard>
 
         {loading ? (
-          <div className="flex items-center justify-center gap-2 py-16 text-sm font-semibold text-slate-500">
-            <Loader2 className="h-5 w-5 animate-spin" />
-            Loading payroll groups…
-          </div>
+          <StaffPortalLoading portal="fm" message="Loading payroll groups…" className="min-h-[16rem]" />
         ) : portfolioError ? (
           <ExecutiveGlassCard className="border-rose-200/80 bg-rose-50/60 p-6">
             <p className="text-sm font-bold text-rose-900">Could not load payroll groups</p>

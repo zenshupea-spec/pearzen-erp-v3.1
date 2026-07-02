@@ -259,8 +259,8 @@ export default function TempRosterClient({ initialData }: { initialData: TempRos
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 pb-12">
-      <header className="sticky top-0 z-50 flex items-center justify-between border-b border-white/60 bg-white/45 px-8 py-4 backdrop-blur-xl shadow-[0_8px_32px_-12px_rgba(15,23,42,0.08)]">
+    <div className="pb-12 text-slate-900">
+      <header className="sticky top-0 z-50 -mx-4 flex items-center justify-between border-b border-slate-200/80 bg-[#eef2f6]/95 px-4 py-4 backdrop-blur-md shadow-sm sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-sm">
             <ArrowRightLeft className="h-5 w-5" />

@@ -16,7 +16,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const DOMAIN = process.env.CLASSIC_VENTURE_SECURITY_DOMAIN?.trim() || 'classicventuresecurity.com';
+const DOMAIN = process.env.CLASSIC_VENTURE_SECURITY_DOMAIN?.trim() || 'classicventure.com';
 const VERCEL_CNAME = 'cname.vercel-dns.com';
 const VERCEL_APEX_A = '76.76.21.21';
 const BACK_OFFICE_PROJECT =

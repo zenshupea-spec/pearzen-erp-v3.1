@@ -80,8 +80,65 @@ export function monthKeyAfter(monthKey: string, chronoKeys: string[]): string | 
   return idx >= 0 && idx < chronoKeys.length - 1 ? chronoKeys[idx + 1] : undefined;
 }
 
-export function invoiceDueDate(monthKey: string): string {
+/** Calendar month immediately after a service month key (`YYYY-MM`). */
+export function billingMonthAfterService(monthKey: string): { year: number; month: number } {
   const [y, m] = monthKey.split('-').map(Number);
-  const next = m === 12 ? { year: y + 1, month: 1 } : { year: y, month: m + 1 };
-  return `${next.year}-${String(next.month).padStart(2, '0')}-07`;
+  if (!y || !m) {
+    const now = new Date();
+    return { year: now.getFullYear(), month: now.getMonth() + 1 };
+  }
+  return m === 12 ? { year: y + 1, month: 1 } : { year: y, month: m + 1 };
+}
+
+function clampBillingDay(day: number): number {
+  return Math.min(28, Math.max(1, Math.round(day)));
+}
+
+function billingDateIso(year: number, month: number, day: number): string {
+  return `${year}-${String(month).padStart(2, '0')}-${String(clampBillingDay(day)).padStart(2, '0')}`;
+}
+
+export type InvoiceBillingDateOptions = {
+  invoiceDispatchDay?: number;
+  collectionWarningDay?: number;
+};
+
+/**
+ * Invoice dispatch lands on `invoiceDispatchDay` of the month after the service month.
+ * Payment due is the day after the collection-warning threshold in that same billing month.
+ */
+export function invoiceDispatchDate(
+  monthKey: string,
+  invoiceDispatchDay = 1,
+): string {
+  const { year, month } = billingMonthAfterService(monthKey);
+  return billingDateIso(year, month, invoiceDispatchDay);
+}
+
+export function invoiceDueDate(
+  monthKey: string,
+  options: InvoiceBillingDateOptions = {},
+): string {
+  const { year, month } = billingMonthAfterService(monthKey);
+  const warningDay = clampBillingDay(options.collectionWarningDay ?? 6);
+  const dueDay = clampBillingDay(warningDay + 1);
+  return billingDateIso(year, month, dueDay);
+}
+
+/** ISO timestamp for audit trail — dispatch morning on the configured billing day. */
+export function invoiceGeneratedAtIso(
+  monthKey: string,
+  invoiceDispatchDay = 1,
+): string {
+  const dispatch = invoiceDispatchDate(monthKey, invoiceDispatchDay);
+  const [y, m, d] = dispatch.split('-').map(Number);
+  if (!y || !m || !d) return new Date().toISOString();
+  return new Date(y, m - 1, d, 9, 0, 0).toISOString();
+}
+
+/** Render `YYYY-MM-DD` due dates on tax invoice printouts. */
+export function formatInvoiceDueDateLabel(dueDate: string): string {
+  const [y, m, d] = dueDate.split('-').map(Number);
+  if (!y || !m || !d) return dueDate;
+  return `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}/${y}`;
 }

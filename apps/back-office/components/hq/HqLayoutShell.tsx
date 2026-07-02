@@ -4,18 +4,11 @@ import type { ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
 
 import HqHubShell from './HqHubShell';
+import StaffPortalChrome from '../portal/StaffPortalChrome';
 
 const STANDALONE_HQ_PATHS = ['/hq/audit'];
 
-export default function HqLayoutShell({
-  children,
-  profileName,
-  profileRank,
-}: {
-  children: ReactNode;
-  profileName: string;
-  profileRank: string;
-}) {
+export default function HqLayoutShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const standalone = STANDALONE_HQ_PATHS.some(
     (path) => pathname === path || pathname.startsWith(`${path}/`),
@@ -23,15 +16,15 @@ export default function HqLayoutShell({
 
   if (standalone) {
     return (
-      <div className="min-h-screen bg-slate-50 text-slate-900 antialiased">
-        {children}
-      </div>
+      <StaffPortalChrome>
+        <div className="min-h-screen bg-slate-50 text-slate-900 antialiased">{children}</div>
+      </StaffPortalChrome>
     );
   }
 
   return (
-    <HqHubShell profileName={profileName} profileRank={profileRank}>
-      {children}
-    </HqHubShell>
+    <StaffPortalChrome>
+      <HqHubShell>{children}</HqHubShell>
+    </StaffPortalChrome>
   );
 }

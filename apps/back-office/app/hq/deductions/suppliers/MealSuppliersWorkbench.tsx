@@ -10,6 +10,7 @@ import {
   Plus,
   RefreshCw,
 } from 'lucide-react';
+import StaffPortalLoading from '../../../../components/portal/StaffPortalLoading';
 import {
   archiveMealSupplier,
   getMealSupplierMonthlyOwed,
@@ -303,7 +304,7 @@ function SupplierCard({
       {expanded && (
         <div className="mt-4 border-t border-slate-100 pt-3">
           {historyLoading ? (
-            <p className="text-xs text-slate-500 animate-pulse">Loading history…</p>
+            <StaffPortalLoading portal="hq" message="Loading history…" className="min-h-[6rem] py-4" />
           ) : !history?.length ? (
             <p className="text-xs text-slate-500">No approved meal deductions linked to this supplier yet.</p>
           ) : (
@@ -366,8 +367,9 @@ export default function MealSuppliersWorkbench({
     <div className="space-y-4">
       {isDemo && (
         <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
-          Showing supplier names from the FM meals ledger. Add bank details and archive suppliers
-          once the database migration is live.
+          Meal supplier tables are not migrated. Run{' '}
+          <code className="text-xs">npm run db:apply-deductions-admin</code>, then add suppliers
+          here.
         </p>
       )}
 

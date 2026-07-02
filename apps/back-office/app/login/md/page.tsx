@@ -12,6 +12,10 @@ const MD_ERRORS = {
     'Sign-in was rejected on your other device. Your password was reset — use Request access code on the MD Portal sign-in page.',
   signed_in_elsewhere:
     'Your MD Portal session ended because your account was opened on another device.',
+  setup_session:
+    'Setup session expired. Enter your work email and the 6-digit code from your email on this page, then continue to set your password.',
+  recovery_email_required:
+    'Your MD Portal account needs a recovery email before you can sign in. Ask OD to re-provision your access from Executive → Security & Access (include a personal recovery inbox).',
 };
 
 export default async function MdPortalLoginPage({

@@ -1,9 +1,23 @@
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
 import { Building2, Gem, Map, Radio } from 'lucide-react';
 
+import { createSupabaseServerClient } from '../../../../packages/supabase/server';
 import BrandWatermarkBackground from '../../components/portal/BrandWatermarkBackground';
 import { getCompanyLogoUrl } from '../../../../packages/supabase/company-branding';
-import { PORTAL_GATEWAY_CARDS } from '../../lib/portal-isolation';
+import {
+  requiresHeadOfficePortalPin,
+  resolveHeadOfficePortalEntryPath,
+} from '../../lib/head-office-portal-auth';
+import {
+  authenticatedLandingPath,
+  fetchBackOfficeUserProfile,
+} from '../../lib/hr-portal-access-server';
+import {
+  loginPathForRole,
+  PORTAL_GATEWAY_CARDS,
+  staffPortalIdForRole,
+} from '../../lib/portal-isolation';
 import { resolveTenantCompanyFromRequest } from '../../lib/tenant-context-server';
 
 const CARD_ICONS = {
@@ -14,6 +28,29 @@ const CARD_ICONS = {
 } as const;
 
 export default async function PortalGatewayPage() {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (user?.email) {
+    const profile = await fetchBackOfficeUserProfile(supabase, user);
+    if (staffPortalIdForRole(profile.role, profile)) {
+      const target = requiresHeadOfficePortalPin(profile, user.email)
+        ? await resolveHeadOfficePortalEntryPath(
+            profile,
+            user.email,
+            user.last_sign_in_at,
+          )
+        : (() => {
+            const landing = authenticatedLandingPath(profile.role, profile);
+            const loginPath = loginPathForRole(profile.role, profile);
+            return landing.startsWith('/login') ? loginPath : landing;
+          })();
+      redirect(target);
+    }
+  }
+
   const tenant = await resolveTenantCompanyFromRequest();
   const logoUrl = await getCompanyLogoUrl(tenant?.id);
   const companyName = tenant?.name?.trim() || 'Classic Venture Security';

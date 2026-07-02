@@ -1,11 +1,5 @@
-import PortalLoadingScreen from '../../../../packages/pwa-shell/PortalLoadingScreen';
+import PwaPortalLoading from '../../../../packages/pwa-shell/PwaPortalLoading';
 
 export default function CafeFrontLoading() {
-  return (
-    <PortalLoadingScreen
-      accent="amber"
-      fullscreen={false}
-      className="min-h-[100dvh]"
-    />
-  );
+  return <PwaPortalLoading portal="cafe-front" fullscreen />;
 }

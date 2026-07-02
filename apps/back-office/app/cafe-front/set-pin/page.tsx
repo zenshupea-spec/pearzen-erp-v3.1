@@ -3,7 +3,8 @@
 import { useState, useTransition } from 'react';
 import { KeyRound, CheckCircle } from 'lucide-react';
 
-import { CAFE_FRONT_PIN_LENGTH } from '../../../lib/cafe-front-auth';
+import { CVS_BRAND_CLASSES } from '../../../lib/cvs-brand-tokens';
+import { CAFE_FRONT_PIN_LENGTH } from '../../../lib/cafe-front-auth-shared';
 import { setCafeFrontPinAction } from './actions';
 
 function normalizePinInput(value: string): string {
@@ -57,8 +58,8 @@ export default function CafeFrontSetPinPage() {
       <div className="mx-auto w-full max-w-sm space-y-8">
         <div className="space-y-3 text-center">
           <div className="mb-4 flex justify-center">
-            <div className="flex h-20 w-20 items-center justify-center rounded-2xl border border-orange-200 bg-orange-50 shadow-lg shadow-orange-200/40">
-              <KeyRound className="h-10 w-10 text-orange-600" />
+            <div className="flex h-20 w-20 items-center justify-center rounded-2xl border border-[color:var(--cvs-accent-muted)] bg-[var(--cvs-accent-soft)] shadow-lg shadow-[color:var(--cvs-glow)]">
+              <KeyRound className="h-10 w-10 text-[color:var(--cvs-accent)]" />
             </div>
           </div>
           <h1 className="text-2xl font-black uppercase tracking-tight text-slate-900">
@@ -84,7 +85,7 @@ export default function CafeFrontSetPinPage() {
               value={activeValue}
               onChange={(e) => setActiveValue(normalizePinInput(e.target.value))}
               placeholder={`${CAFE_FRONT_PIN_LENGTH}-digit PIN`}
-              className="w-full rounded-xl border-2 border-slate-200 bg-white px-4 py-4 text-center font-mono text-3xl font-black tracking-[0.5em] text-orange-600 shadow-inner transition-all placeholder:text-base placeholder:tracking-normal placeholder:text-slate-400 focus:border-orange-500 focus:outline-none focus:ring-4 focus:ring-orange-500/20"
+              className={`w-full rounded-xl border-2 border-slate-200 bg-white px-4 py-4 text-center font-mono text-3xl font-black tracking-[0.5em] text-[color:var(--cvs-accent)] shadow-inner transition-all placeholder:text-base placeholder:tracking-normal placeholder:text-slate-400 focus:outline-none focus:ring-4 ${CVS_BRAND_CLASSES.focusRing}`}
             />
             <p className="text-center text-[10px] font-semibold uppercase tracking-wider text-slate-400">
               Type or paste all {CAFE_FRONT_PIN_LENGTH} digits at once
@@ -102,7 +103,7 @@ export default function CafeFrontSetPinPage() {
               type="button"
               onClick={handleProceedToConfirm}
               disabled={pin.length !== CAFE_FRONT_PIN_LENGTH}
-              className="w-full rounded-xl bg-orange-600 py-4 text-base font-black uppercase tracking-widest text-white transition-all hover:bg-orange-500 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+              className="w-full rounded-xl bg-[color:var(--cvs-accent)] py-4 text-base font-black uppercase tracking-widest text-white shadow-md shadow-[color:var(--cvs-glow)] transition-all hover:bg-[color:var(--cvs-accent-hover)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Continue
             </button>
@@ -123,7 +124,7 @@ export default function CafeFrontSetPinPage() {
                 type="button"
                 onClick={handleSetPin}
                 disabled={isPending || confirmPin.length !== CAFE_FRONT_PIN_LENGTH}
-                className="flex flex-[2] items-center justify-center gap-2 rounded-xl bg-orange-600 py-4 text-sm font-black uppercase tracking-widest text-white transition-all hover:bg-orange-500 active:scale-95 disabled:opacity-50"
+                className="flex flex-[2] items-center justify-center gap-2 rounded-xl bg-[color:var(--cvs-accent)] py-4 text-sm font-black uppercase tracking-widest text-white shadow-md shadow-[color:var(--cvs-glow)] transition-all hover:bg-[color:var(--cvs-accent-hover)] active:scale-95 disabled:opacity-50"
               >
                 <CheckCircle className="h-4 w-4" />
                 {isPending ? 'Saving…' : 'Set PIN'}

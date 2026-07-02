@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { getPayrollBatchStatus } from '../payroll-run-actions';
+import { getFmRetentionEmpNumberSets } from './fm-retention-actions';
 import type { FmPayrollRosterRow } from './fm-payroll-roster-data';
 import {
   payrollRunContextForRow,
@@ -17,11 +18,16 @@ export function useRosterSalaryStatus(period: PayrollPeriod) {
   const [payrollRuns, setPayrollRuns] = useState<Map<string, RosterSalaryStatusContext>>(
     () => new Map(),
   );
+  const [stopListEmpNos, setStopListEmpNos] = useState<ReadonlySet<string>>(() => new Set());
+  const [holdListEmpNos, setHoldListEmpNos] = useState<ReadonlySet<string>>(() => new Set());
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    void getPayrollBatchStatus(period.year, period.month).then((payload) => {
+    void Promise.all([
+      getPayrollBatchStatus(period.year, period.month),
+      getFmRetentionEmpNumberSets(period),
+    ]).then(([payload, retentionSets]) => {
       if (cancelled) return;
       const next = new Map<string, RosterSalaryStatusContext>();
       for (const run of payload.runs) {
@@ -29,9 +35,13 @@ export function useRosterSalaryStatus(period: PayrollPeriod) {
           period,
           payrollStatus: run.status,
           payrollPaidAt: run.paidAt,
+          stopListEmpNos: retentionSets.stop,
+          holdListEmpNos: retentionSets.hold,
         });
       }
       setPayrollRuns(next);
+      setStopListEmpNos(retentionSets.stop);
+      setHoldListEmpNos(retentionSets.hold);
       setLoading(false);
     });
     return () => {
@@ -48,10 +58,14 @@ export function useRosterSalaryStatus(period: PayrollPeriod) {
   const resolveStatus = useCallback(
     (row: FmPayrollRosterRow): RosterSalaryPaymentState => {
       void cashTick;
-      const context = payrollRunContextForRow(row, period, payrollRuns);
+      const context = {
+        ...payrollRunContextForRow(row, period, payrollRuns),
+        stopListEmpNos,
+        holdListEmpNos,
+      };
       return resolveRosterSalaryPaymentState(row, context);
     },
-    [cashTick, payrollRuns, period],
+    [cashTick, holdListEmpNos, payrollRuns, period, stopListEmpNos],
   );
 
   return {

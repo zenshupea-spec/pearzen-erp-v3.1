@@ -1,8 +1,10 @@
 'use client';
 
-import { useEffect, useState, useTransition } from 'react';
+import { useCallback, useEffect, useState, useTransition } from 'react';
 import { KeyRound, RefreshCw, Copy, CheckCircle } from 'lucide-react';
 
+import PortalOtpCountdown from '../../executive/settings/PortalOtpCountdown';
+import { CAFE_PORTAL_OTP_LIFETIME_MS } from '../../../lib/cafe-front-auth-shared';
 import { clearProvisionFlashCookie, provisionCafePortalAccess } from './actions';
 
 export interface CafeStaffRow {
@@ -15,6 +17,17 @@ interface GeneratedOTP {
   otp: string;
   epf: string;
   staffName: string;
+  expiresAt: number;
+}
+
+function buildInitialOtp(initialOtp: GeneratedOTP | null | undefined): GeneratedOTP | null {
+  if (!initialOtp?.otp) return null;
+  const expiresAt =
+    initialOtp.expiresAt > Date.now()
+      ? initialOtp.expiresAt
+      : Date.now() + CAFE_PORTAL_OTP_LIFETIME_MS;
+  if (expiresAt <= Date.now()) return null;
+  return { ...initialOtp, expiresAt };
 }
 
 export default function CafePortalClient({
@@ -22,13 +35,30 @@ export default function CafePortalClient({
   initialOtp = null,
 }: {
   staff: CafeStaffRow[];
-  initialOtp?: GeneratedOTP | null;
+  initialOtp?: Omit<GeneratedOTP, 'expiresAt'> & { otpExpiresAt?: string } | null;
 }) {
   const [isPending, startTransition] = useTransition();
   const [generatingEpf, setGeneratingEpf] = useState<string | null>(null);
-  const [generatedOTP, setGeneratedOTP] = useState<GeneratedOTP | null>(initialOtp);
+  const [generatedOTP, setGeneratedOTP] = useState<GeneratedOTP | null>(() =>
+    buildInitialOtp(
+      initialOtp
+        ? {
+            otp: initialOtp.otp,
+            epf: initialOtp.epf,
+            staffName: initialOtp.staffName,
+            expiresAt: initialOtp.otpExpiresAt
+              ? Date.parse(initialOtp.otpExpiresAt)
+              : Date.now() + CAFE_PORTAL_OTP_LIFETIME_MS,
+          }
+        : null,
+    ),
+  );
   const [errorMsg, setErrorMsg] = useState('');
   const [copied, setCopied] = useState(false);
+
+  const clearGeneratedOtp = useCallback(() => {
+    setGeneratedOTP(null);
+  }, []);
 
   useEffect(() => {
     if (initialOtp) {
@@ -38,7 +68,6 @@ export default function CafePortalClient({
 
   const handleGenerateOTP = (epf: string) => {
     setErrorMsg('');
-    setGeneratedOTP(null);
     setGeneratingEpf(epf);
     startTransition(async () => {
       const result = await provisionCafePortalAccess(epf);
@@ -46,10 +75,14 @@ export default function CafePortalClient({
       if (result.error) {
         setErrorMsg(result.error);
       } else if (result.success && result.otp) {
+        const expiresAt = result.otpExpiresAt
+          ? Date.parse(result.otpExpiresAt)
+          : Date.now() + CAFE_PORTAL_OTP_LIFETIME_MS;
         setGeneratedOTP({
           otp: result.otp,
           epf: result.epf!,
           staffName: result.staffName!,
+          expiresAt,
         });
       }
     });
@@ -67,6 +100,7 @@ export default function CafePortalClient({
       <p className="text-sm font-semibold leading-relaxed text-slate-600">
         Generate a one-time password for café front office staff and share it with them. They use it
         on first login to set their 6-digit PIN, or again if they forgot their PIN and need a reset.
+        Each code expires after five minutes and can only be used once.
       </p>
 
       {errorMsg ? (
@@ -83,18 +117,25 @@ export default function CafePortalClient({
               OTP for {generatedOTP.staffName} ({generatedOTP.epf})
             </span>
           </div>
-          <div className="flex items-center gap-3 rounded-xl border border-orange-200 bg-white px-4 py-3">
-            <span className="flex-1 font-mono text-3xl font-black tracking-[0.25em] text-orange-700">
-              {generatedOTP.otp}
-            </span>
-            <button
-              type="button"
-              onClick={copyOTP}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-orange-300 bg-orange-100 px-3 py-2 text-xs font-bold text-orange-900 transition-all active:scale-95"
-            >
-              {copied ? <CheckCircle className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-              {copied ? 'Copied' : 'Copy'}
-            </button>
+          <div className="rounded-xl border border-orange-200 bg-white px-4 py-3">
+            <div className="flex items-center gap-3">
+              <span className="flex-1 font-mono text-3xl font-black tracking-[0.25em] text-orange-700">
+                {generatedOTP.otp}
+              </span>
+              <button
+                type="button"
+                onClick={copyOTP}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-orange-300 bg-orange-100 px-3 py-2 text-xs font-bold text-orange-900 transition-all active:scale-95"
+              >
+                {copied ? <CheckCircle className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            <PortalOtpCountdown
+              expiresAt={generatedOTP.expiresAt}
+              lifetimeMs={CAFE_PORTAL_OTP_LIFETIME_MS}
+              onExpired={clearGeneratedOtp}
+            />
           </div>
           <p className="text-xs font-semibold text-orange-800">
             Share this code with {generatedOTP.staffName} only. It is shown once and is not stored

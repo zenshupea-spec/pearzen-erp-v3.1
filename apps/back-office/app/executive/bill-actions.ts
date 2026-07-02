@@ -11,6 +11,10 @@ import {
   resolveCompanyIdForSession,
   rosterCompanyId,
 } from '../../lib/company-context-server';
+import {
+  createOpexReceiptSignedUrl,
+  uploadOpexReceiptBuffer,
+} from '../../../../packages/supabase/opex-receipt-storage';
 
 export type BillCostCenter = 'Security' | 'Café' | 'BnB';
 export type BillStatus = 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
@@ -128,6 +132,11 @@ export async function submitExpenseBill(input: {
     const companyId = await resolveCompanyId();
     if (!companyId) return { success: false, error: 'No company context' };
 
+    const receiptUrl = input.receiptUrl?.trim() ?? '';
+    if (!receiptUrl) {
+      return { success: false, error: 'Receipt upload is required.' };
+    }
+
     const db = createSupabaseServiceClient();
     const { error } = await db.from('expense_bills').insert({
       company_id: companyId,
@@ -136,7 +145,7 @@ export async function submitExpenseBill(input: {
       cost_center: input.costCenter,
       description: input.description.trim(),
       amount: input.amount,
-      receipt_url: input.receiptUrl ?? '',
+      receipt_url: receiptUrl,
       status: 'PENDING_APPROVAL',
       is_split: Boolean(input.isSplit),
       split_allocations: input.splitAllocations ?? {},
@@ -147,6 +156,110 @@ export async function submitExpenseBill(input: {
     return { success: true };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : 'Submit failed' };
+  }
+}
+
+function parseSplitAllocations(
+  raw: FormDataEntryValue | null,
+): Partial<Record<BillCostCenter, number>> | undefined {
+  if (typeof raw !== 'string' || !raw.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as Partial<Record<BillCostCenter, number>>;
+    return parsed && typeof parsed === 'object' ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function submitExpenseBillFromForm(
+  formData: FormData,
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const { profile } = await requireExecutiveRole();
+    const companyId = await resolveCompanyId();
+    if (!companyId) return { success: false, error: 'No company context' };
+
+    const receiptFile = formData.get('receipt');
+    if (!(receiptFile instanceof File) || receiptFile.size <= 0) {
+      return { success: false, error: 'Receipt photo is required.' };
+    }
+
+    const date = String(formData.get('date') ?? '').slice(0, 10);
+    const description = String(formData.get('description') ?? '').trim();
+    const amount = Number(formData.get('amount') ?? 0);
+    const costCenter = String(formData.get('costCenter') ?? '') as BillCostCenter;
+    const submittedBy = String(formData.get('submittedBy') ?? '').trim();
+    const isSplit = String(formData.get('isSplit') ?? '') === 'true';
+    const splitAllocations = parseSplitAllocations(formData.get('splitAllocations'));
+
+    if (!date || !description || !Number.isFinite(amount) || amount <= 0) {
+      return { success: false, error: 'Bill date, description, and amount are required.' };
+    }
+    if (!['Security', 'Café', 'BnB'].includes(costCenter)) {
+      return { success: false, error: 'Invalid cost centre.' };
+    }
+
+    const db = createSupabaseServiceClient();
+    const buffer = Buffer.from(await receiptFile.arrayBuffer());
+    const contentType = receiptFile.type || 'application/octet-stream';
+    const { storageRef } = await uploadOpexReceiptBuffer(
+      db,
+      companyId,
+      buffer,
+      contentType,
+    );
+
+    const { error } = await db.from('expense_bills').insert({
+      company_id: companyId,
+      bill_date: date,
+      submitted_by: submittedBy || profile.full_name || 'Executive Admin',
+      cost_center: costCenter,
+      description,
+      amount,
+      receipt_url: storageRef,
+      status: 'PENDING_APPROVAL',
+      is_split: isSplit,
+      split_allocations: splitAllocations ?? {},
+    });
+
+    if (error) return { success: false, error: error.message };
+    revalidatePath(BILL_PATH);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : 'Submit failed' };
+  }
+}
+
+export async function fetchExpenseBillReceiptSignedUrl(
+  billId: string,
+): Promise<{ url: string | null; contentType: 'image' | 'pdf' | null; error?: string }> {
+  try {
+    await requireExecutiveRole();
+    const companyId = await resolveCompanyId();
+    if (!companyId) return { url: null, contentType: null, error: 'No company context' };
+
+    const db = createSupabaseServiceClient();
+    const { data, error } = await db
+      .from('expense_bills')
+      .select('receipt_url')
+      .eq('id', billId)
+      .eq('company_id', companyId)
+      .maybeSingle();
+
+    if (error || !data?.receipt_url) {
+      return { url: null, contentType: null, error: error?.message ?? 'Receipt not found.' };
+    }
+
+    const receiptUrl = String(data.receipt_url);
+    const url = await createOpexReceiptSignedUrl(db, receiptUrl);
+    const contentType = receiptUrl.toLowerCase().endsWith('.pdf') ? 'pdf' : 'image';
+    return { url, contentType };
+  } catch (err) {
+    return {
+      url: null,
+      contentType: null,
+      error: err instanceof Error ? err.message : 'Failed to load receipt',
+    };
   }
 }
 

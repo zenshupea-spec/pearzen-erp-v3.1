@@ -3,17 +3,20 @@
 import { useEffect, useState } from 'react';
 import { ChefHat } from 'lucide-react';
 
+import PwaPortalLoading from '../../../../packages/pwa-shell/PwaPortalLoading';
 import { ExecutiveGlassCard } from '../executive/ExecutiveVaultShell';
 import { getCafeFrontDashboard } from '../../app/cafe-front/actions';
+import { weekdayShortLabel } from '../../app/executive/cafe/cafe-menu-velocity';
 
 export function PrepWastagePanel() {
   const [prepItems, setPrepItems] = useState<
     Array<{ id: string; name: string; currentStock: number; rollingAvg14d: number }>
   >([]);
   const [displayItems, setDisplayItems] = useState<
-    Array<{ id: string; name: string; currentWhole: number; currentSlices: number }>
+    Array<{ id: string; name: string; currentWhole: number; currentSlices: number; rollingAvg14d: number }>
   >([]);
   const [loading, setLoading] = useState(true);
+  const weekdayLabel = weekdayShortLabel(new Date());
 
   useEffect(() => {
     void getCafeFrontDashboard().then((payload) => {
@@ -31,6 +34,7 @@ export function PrepWastagePanel() {
           name: item.name,
           currentWhole: item.currentWhole,
           currentSlices: item.currentSlices,
+          rollingAvg14d: item.rollingAvg14d,
         })),
       );
       setLoading(false);
@@ -45,13 +49,21 @@ export function PrepWastagePanel() {
           <h2 className="text-lg font-bold uppercase text-slate-800">Predictive Prep &amp; Wastage</h2>
         </div>
         <p className="mt-1 text-xs text-slate-500">
-          Read-only view — only menu items set to Prep or Display in the backoffice are tracked here.
+          Display items show how many to make today from the same-weekday sales average. Stock counts are
+          view-only — managers update prep and wastage on Café Backoffice.
         </p>
+      </div>
+
+      <div className="border-b border-amber-200/70 bg-amber-50/80 px-5 py-3 text-xs leading-relaxed text-amber-950">
+        <span className="font-bold uppercase tracking-wide">View only</span> — log spoilage with your
+        manager; they record wastage and receive stock on{' '}
+        <span className="font-semibold">Café Backoffice → Menu / Ingredients</span>. This panel is for
+        today&apos;s prep targets, not stock adjustments.
       </div>
 
       <div className="p-5">
         {loading ? (
-          <p className="text-sm text-slate-500">Loading prep tracker…</p>
+          <PwaPortalLoading portal="cafe-front" message="Loading prep tracker…" className="min-h-[10rem] py-8" />
         ) : prepItems.length === 0 && displayItems.length === 0 ? (
           <p className="rounded-xl border border-dashed border-slate-200/80 px-4 py-6 text-center text-xs text-slate-500">
             No prep or display items linked yet.
@@ -75,8 +87,11 @@ export function PrepWastagePanel() {
                 className="rounded-xl border border-amber-200/70 bg-amber-50/40 px-4 py-3"
               >
                 <p className="text-sm font-bold text-slate-900">{item.name}</p>
-                <p className="mt-1 text-xs text-slate-600">
-                  {item.currentWhole} whole · {item.currentSlices} slices
+                <p className="mt-1 text-xs font-bold text-amber-900">
+                  Make {weekdayLabel} today: {item.rollingAvg14d.toLocaleString()}
+                </p>
+                <p className="mt-1 text-[11px] text-slate-600">
+                  On display: {item.currentWhole} whole · {item.currentSlices} loose
                 </p>
               </div>
             ))}

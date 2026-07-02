@@ -4,8 +4,8 @@ import { useEffect, useState } from 'react';
 
 const STORAGE_KEY = 'pearzen.fm.discrepancy-unresolved-count';
 
-/** Matches UNRESOLVED rows in discrepancy-queue INITIAL_DEFICITS. */
-export const FM_INITIAL_UNRESOLVED_DEFICIT_COUNT = 2;
+/** Default unresolved deficit count when none stored locally. */
+export const FM_INITIAL_UNRESOLVED_DEFICIT_COUNT = 0;
 
 const COUNT_EVENT = 'fm-discrepancy-count';
 

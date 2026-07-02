@@ -40,6 +40,9 @@ export type SecurityWebsiteUiStrings = {
   location: string;
   guardsPerShift: string;
   guardRanksPerShift: string;
+  guardRanksMobileHint: string;
+  guardRanksMobileTapToEdit: string;
+  guardRanksMobileEmpty: string;
   totalGuardsPerShift: string;
   shiftCoverage: string;
   shiftDayOnly: string;
@@ -150,6 +153,9 @@ const EN: SecurityWebsiteUiStrings = {
   location: 'Location',
   guardsPerShift: 'Guards per shift',
   guardRanksPerShift: 'Guard ranks per shift',
+  guardRanksMobileHint: 'Select one or more ranks and set how many you need per shift.',
+  guardRanksMobileTapToEdit: 'Tap to add or change ranks',
+  guardRanksMobileEmpty: 'No ranks selected — tap to choose',
   totalGuardsPerShift: 'Total per shift',
   shiftCoverage: 'Shift coverage',
   shiftDayOnly: 'Day shift only',
@@ -263,6 +269,10 @@ const SI: SecurityWebsiteUiStrings = {
   location: 'ස්ථානය',
   guardsPerShift: 'වැඩ මුරකරුවන් (වැඩ මුරය)',
   guardRanksPerShift: 'වැඩ මුර ශ්‍රේණි (වැඩ මුරය)',
+  guardRanksMobileHint:
+    'එක් හෝ වැඩි ශ්‍රේණි තෝරා, වැඩ මුරයකට අවශ්‍ය සංඛ්‍යාව සකසන්න.',
+  guardRanksMobileTapToEdit: 'ශ්‍රේණි එකතු/වෙනස් කිරීමට තට්ටු කරන්න',
+  guardRanksMobileEmpty: 'ශ්‍රේණි තෝරා නැත — තෝරා ගැනීමට තට්ටු කරන්න',
   totalGuardsPerShift: 'මුළු සංඛ්‍යාව',
   shiftCoverage: 'වැඩ මුර ආවරණය',
   shiftDayOnly: 'දිවා වැඩ මුරය පමණි',
@@ -376,6 +386,10 @@ const TA: SecurityWebsiteUiStrings = {
   location: 'இடம்',
   guardsPerShift: 'ஒரு ஷிப்டுக்கு காவலர்கள்',
   guardRanksPerShift: 'ஷிப்டுக்கு காவலர் தரங்கள்',
+  guardRanksMobileHint:
+    'ஒன்று அல்லது அதற்கு மேற்பட்ட தரங்களைத் தேர்ந்தெடுத்து, ஒரு ஷிப்டுக்கு எத்தனை தேவை என்பதை அமைக்கவும்.',
+  guardRanksMobileTapToEdit: 'தரங்களைச் சேர்க்க/மாற்ற தட்டவும்',
+  guardRanksMobileEmpty: 'தரங்கள் தேர்ந்தெடுக்கப்படவில்லை — தேர்வு செய்ய தட்டவும்',
   totalGuardsPerShift: 'மொத்த எண்ணிக்கை',
   shiftCoverage: 'ஷிப்ட் கவரேஜ்',
   shiftDayOnly: 'பகல் ஷிப்ட் மட்டும்',

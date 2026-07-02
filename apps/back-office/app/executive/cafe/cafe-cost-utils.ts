@@ -1,4 +1,5 @@
 import type { CafeDailyStockItem, CafeIngredient } from './actions';
+import { calcCafePayrollCostLkr } from '../../../lib/cafe-payroll-cost';
 
 /** Convert stock-list units to ingredient ledger units (gm / ml). */
 export function stockQtyToIngredientUnits(
@@ -37,11 +38,5 @@ export function calcLoggedWastageCostLkr(
 export function calcPayrollCostLkr(
   staff: Array<{ dailyRate: number; daysWorked: number; otTotalLkr?: number }>,
 ): number {
-  return Math.round(
-    staff.reduce(
-      (sum, member) =>
-        sum + member.dailyRate * member.daysWorked + (member.otTotalLkr ?? 0),
-      0,
-    ),
-  );
+  return calcCafePayrollCostLkr(staff);
 }

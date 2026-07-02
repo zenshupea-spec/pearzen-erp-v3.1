@@ -11,6 +11,8 @@ import {
   Users,
 } from 'lucide-react';
 
+import { OM_HUB_ENTRY_PATH } from './hq-hub';
+
 export type HqPortalNavEntry = {
   href: string;
   label: string;
@@ -31,7 +33,7 @@ export const HQ_PORTAL_NAV: readonly HqPortalNavEntry[] = [
     accent: 'violet',
   },
   {
-    href: '/om',
+    href: OM_HUB_ENTRY_PATH,
     label: 'CV Operations',
     sub: 'Live field radar',
     Icon: ShieldAlert,

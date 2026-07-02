@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { ExecutiveGlassCard } from '../../../../components/executive/ExecutiveVaultShell';
+import { ExecutivePageLoading } from '../../../../components/executive/ExecutivePageChrome';
 import {
   fetchExecutiveSessionProfile,
   type ExecutiveSessionProfile,
@@ -61,9 +62,7 @@ export default function CafeCustomersPage() {
       locationName={locationName}
     >
       {loading ? (
-        <ExecutiveGlassCard className="p-8 text-center text-sm text-slate-500">
-          Loading customer registry…
-        </ExecutiveGlassCard>
+        <ExecutivePageLoading message="Loading customer registry…" />
       ) : (
         <CafeCustomersPanel initialCustomers={customers} loadError={loadError} />
       )}

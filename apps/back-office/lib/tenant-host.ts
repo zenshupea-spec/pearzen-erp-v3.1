@@ -1,6 +1,14 @@
 /** Hostname / URL helpers for multi-tenant Pearzen subdomains. Safe in client + server. */
 
 import { CVS_TENANT_SLUG } from "./company-ids";
+import { supabaseAuthCookieSecure } from "../../../packages/supabase/cookie-options";
+import { dedicatedForgeHosts, isDedicatedForgeHost } from "./forge-host";
+import { isShalomPublicHost } from "./shalom-public-host";
+import {
+  cvsPortalProductionHosts,
+  parseDedicatedPortalHost,
+  parseTenantPortalHost,
+} from "./tenant-portal-host";
 
 export const TENANT_SLUG_COOKIE = "pearzen_tenant_slug";
 export const TENANT_SLUG_HEADER = "x-pearzen-tenant-slug";
@@ -32,6 +40,75 @@ export function normalizeTenantSlug(
   return slug;
 }
 
+/** Shared tenant slug resolution — mirrors middleware `resolveTenantSlug` priority. */
+export function resolveTenantSlugFromHostAndCookie(
+  hostname: string,
+  cookieValue?: string | null,
+  options?: { allowDevFallback?: boolean },
+): string | null {
+  const host = hostname.split(":")[0].toLowerCase();
+
+  const portalBinding = parseTenantPortalHost(host);
+  if (portalBinding) return portalBinding.tenantSlug;
+
+  const fromHost = parseTenantSlugFromHostname(host);
+  if (fromHost) return fromHost;
+
+  // SaaS Forge hosts never inherit tenant ERP scope from cookies.
+  if (isDedicatedForgeHost(host)) return null;
+
+  const fromCookie = normalizeTenantSlug(cookieValue);
+  if (fromCookie) return fromCookie;
+
+  const allowDevFallback = options?.allowDevFallback ?? true;
+  if (allowDevFallback && isLocalDevHost(host)) {
+    return normalizeTenantSlug(process.env.NEXT_PUBLIC_DEV_TENANT_SLUG);
+  }
+
+  return null;
+}
+
+export function applyTenantSlugCookie(
+  response: {
+    cookies: {
+      set: (
+        name: string,
+        value: string,
+        options?: { path?: string; sameSite?: "lax" | "strict" | "none"; maxAge?: number },
+      ) => void;
+    };
+  },
+  slug: string | null | undefined,
+): void {
+  const normalized = normalizeTenantSlug(slug ?? null);
+  if (!normalized) return;
+  response.cookies.set(TENANT_SLUG_COOKIE, normalized, {
+    path: "/",
+    sameSite: "lax",
+    maxAge: 60 * 60 * 24 * 365,
+    httpOnly: true,
+    secure: supabaseAuthCookieSecure(),
+  });
+}
+
+/** Drop tenant ERP scope cookie — used when entering SaaS Forge on a dedicated host. */
+export function clearTenantSlugCookie(response: {
+  cookies: {
+    set: (
+      name: string,
+      value: string,
+      options?: { path?: string; sameSite?: "lax" | "strict" | "none"; maxAge?: number },
+    ) => void;
+  };
+}): void {
+  response.cookies.set(TENANT_SLUG_COOKIE, "", {
+    path: "/",
+    maxAge: 0,
+    httpOnly: true,
+    secure: supabaseAuthCookieSecure(),
+  });
+}
+
 export function isLocalDevHost(hostname: string): boolean {
   const host = hostname.split(":")[0].toLowerCase();
   return host === "127.0.0.1" || host === "localhost";
@@ -42,14 +119,12 @@ export function isPlatformHost(hostname: string): boolean {
   if (isLocalDevHost(host)) return true;
 
   const base = tenantBaseDomain();
-  const forgeHost = process.env.NEXT_PUBLIC_FORGE_HOST?.toLowerCase();
   const platform = new Set(
     [
       base,
       `www.${base}`,
       `erp.${base}`,
-      `forge.${base}`,
-      forgeHost,
+      ...dedicatedForgeHosts(),
       ...(process.env.NEXT_PUBLIC_PLATFORM_HOSTS ?? "")
         .split(",")
         .map((h) => h.trim().toLowerCase())
@@ -64,15 +139,43 @@ export function isPlatformHost(hostname: string): boolean {
   return false;
 }
 
-/** Production default when a platform host must route to the live tenant subdomain. */
+/** Vercel preview deploy host — must not inherit CVS tenant without an explicit cookie. */
+export function isVercelDeployHost(hostname: string): boolean {
+  const host = hostname.split(":")[0].toLowerCase();
+  return host.endsWith(".vercel.app");
+}
+
+/**
+ * Slug for `erp.{base}` redirect to `{slug}.{base}`.
+ * Preview `*.vercel.app` hosts never default to CVS — cookie required (R-INFRA-02).
+ * Production `erp.{base}` uses FORGE_DEFAULT_REDIRECT_SLUG when set; otherwise null (tenant picker).
+ */
+export function platformDefaultRedirectSlug(): string | null {
+  return normalizeTenantSlug(
+    process.env.FORGE_DEFAULT_REDIRECT_SLUG ??
+      process.env.NEXT_PUBLIC_FORGE_DEFAULT_REDIRECT_SLUG,
+  );
+}
+
 export function defaultTenantSlugForPlatformHost(
   cookieSlug?: string | null,
-): string {
-  return (
-    normalizeTenantSlug(cookieSlug) ??
-    normalizeTenantSlug(process.env.NEXT_PUBLIC_DEV_TENANT_SLUG) ??
-    CVS_TENANT_SLUG
-  );
+  hostname?: string | null,
+): string | null {
+  const fromCookie = normalizeTenantSlug(cookieSlug);
+  if (fromCookie) return fromCookie;
+
+  const host = hostname?.split(":")[0].toLowerCase() ?? "";
+  if (host && isVercelDeployHost(host)) return null;
+
+  if (host && isLocalDevHost(host)) {
+    return normalizeTenantSlug(process.env.NEXT_PUBLIC_DEV_TENANT_SLUG);
+  }
+
+  if (host && isTenantRedirectPlatformHost(host)) {
+    return platformDefaultRedirectSlug();
+  }
+
+  return null;
 }
 
 export function tenantSubdomainUrl(
@@ -80,7 +183,10 @@ export function tenantSubdomainUrl(
   pathname: string,
   search = "",
 ): string {
-  const normalized = normalizeTenantSlug(slug) ?? CVS_TENANT_SLUG;
+  const normalized = normalizeTenantSlug(slug);
+  if (!normalized) {
+    throw new Error(`Invalid tenant slug for subdomain URL: ${slug}`);
+  }
   const base = tenantBaseDomain();
   const path = pathname.startsWith("/") ? pathname : `/${pathname}`;
   return `https://${normalized}.${base}${path}${search}`;
@@ -92,8 +198,20 @@ export function isForgeOnlyPath(pathname: string): boolean {
     pathname === "/forge" ||
     pathname.startsWith("/forge/") ||
     pathname === "/login/forge" ||
-    pathname.startsWith("/login/forge/")
+    pathname.startsWith("/login/forge/") ||
+    pathname === "/login/partners" ||
+    pathname === "/partners" ||
+    pathname.startsWith("/partners/") ||
+    pathname === "/pearzen-website" ||
+    pathname.startsWith("/pearzen-website/")
   );
+}
+
+/** Redirect tenant ERP paths away from dedicated Forge hosts (middleware contract). */
+export function dedicatedForgeHostErpRedirectPath(pathname: string): string | null {
+  if (isForgeOnlyPath(pathname)) return null;
+  if (pathname.startsWith("/auth/") || pathname.startsWith("/api/")) return null;
+  return pathname.startsWith("/login") ? "/login/forge" : "/forge";
 }
 
 /**
@@ -105,22 +223,19 @@ export function isTenantRedirectPlatformHost(hostname: string): boolean {
   if (isLocalDevHost(host) || host.endsWith(".vercel.app")) return false;
 
   const base = tenantBaseDomain();
-  const forgeHost = process.env.NEXT_PUBLIC_FORGE_HOST?.toLowerCase();
-  const redirectHosts = new Set(
-    [
-      `forge.${base}`,
-      forgeHost,
-      `erp.${base}`,
-      base,
-      `www.${base}`,
-    ].filter(Boolean),
-  );
+  const redirectHosts = new Set([`erp.${base}`]);
   return redirectHosts.has(host);
 }
 
-/** `{slug}.pearzen.com` → slug; platform hosts → null. */
+/** `{slug}.pearzen.com` → slug; CVS dedicated hosts → `cvs`; platform hosts → null. */
 export function parseTenantSlugFromHostname(hostname: string): string | null {
   const host = hostname.split(":")[0].toLowerCase();
+
+  if (isShalomPublicHost(host)) return null;
+
+  const dedicated = parseDedicatedPortalHost(host);
+  if (dedicated) return dedicated.tenantSlug;
+
   if (isPlatformHost(host)) return null;
 
   const base = tenantBaseDomain();
@@ -294,6 +409,23 @@ export function cafeFrontPortalLoginUrl(
   );
 }
 
+export function shalomFrontPortalLoginUrl(
+  origin?: string,
+  slug?: string | null,
+): string {
+  const normalized = normalizeTenantSlug(slug);
+  if (normalized && (origin || tenantSubdomainsLive())) {
+    const tenantUrl = tenantAppPathUrl(normalized, "/login/shalom-front", origin);
+    if (tenantUrl) return tenantUrl;
+  }
+  return externalPortalLoginUrl(
+    defaultBackOfficeOrigin(),
+    "/login/shalom-front",
+    slug,
+    origin,
+  );
+}
+
 /** All tenant portal sign-in links shown in SaaS Forge tenant rows. */
 export function tenantSubPortalLinks(
   slug: string | null | undefined,
@@ -305,43 +437,69 @@ export function tenantSubPortalLinks(
   const pathUrl = (pathname: string) =>
     buildTenantAppPathUrl(normalized, pathname, origin);
 
+  const dedicatedBackOfficeLogin = (
+    portal: "hq" | "md" | "om" | "tm",
+    pathname: string,
+  ) => {
+    if (normalized !== CVS_TENANT_SLUG || !tenantSubdomainsLive()) {
+      return pathUrl(pathname);
+    }
+    const hosts = cvsPortalProductionHosts();
+    return `https://${hosts[portal]}${pathname}`;
+  };
+
+  const dedicatedExternalLogin = (portal: "sm" | "checkin") => {
+    if (normalized !== CVS_TENANT_SLUG || !tenantSubdomainsLive()) {
+      return portal === "sm"
+        ? smPortalLoginUrl(origin, normalized)
+        : guardPortalLoginUrl(origin, normalized);
+    }
+    const hosts = cvsPortalProductionHosts();
+    return `https://${hosts[portal]}/login`;
+  };
+
   return [
     {
       id: "md",
       label: "MD Portal",
-      href: pathUrl("/login/md"),
+      href: dedicatedBackOfficeLogin("md", "/login/md"),
     },
     {
       id: "hq",
       label: "HQ Staff Portal",
-      href: pathUrl("/login/hq"),
+      href: dedicatedBackOfficeLogin("hq", "/login/hq"),
     },
     {
       id: "om",
       label: "OM Portal",
-      href: pathUrl("/login/om"),
+      href: dedicatedBackOfficeLogin("om", "/login/om"),
     },
     {
       id: "tm",
       label: "TM Portal",
-      href: pathUrl("/login/tm"),
+      href: dedicatedBackOfficeLogin("tm", "/login/tm"),
     },
     {
       id: "sm",
       label: "SM Portal",
-      href: smPortalLoginUrl(origin, normalized),
+      href: dedicatedExternalLogin("sm"),
       external: true,
     },
     {
       id: "checkin",
       label: "Check-in Portal",
-      href: guardPortalLoginUrl(origin, normalized),
+      href: dedicatedExternalLogin("checkin"),
       external: true,
     },
     {
       id: "cafe-front",
       label: "Café Front Office",
-      href: pathUrl("/login/cafe-front"),
+      href: dedicatedBackOfficeLogin("hq", "/login/cafe-front"),
+    },
+    {
+      id: "shalom-front",
+      label: "Shalom Front Office",
+      href: dedicatedBackOfficeLogin("hq", "/login/shalom-front"),
     },
   ];
 }
@@ -359,6 +517,9 @@ export function tenantProductionDomain(
 ): string | null {
   const normalized = normalizeTenantSlug(slug);
   if (!normalized) return null;
+  if (normalized === CVS_TENANT_SLUG && tenantSubdomainsLive()) {
+    return cvsPortalProductionHosts().hq;
+  }
   return `${normalized}.${tenantBaseDomain()}`;
 }
 

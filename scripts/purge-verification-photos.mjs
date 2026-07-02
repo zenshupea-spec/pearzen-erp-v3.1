@@ -2,13 +2,16 @@
  * Purges verification selfies older than 60 days (rolling retention).
  * Clears photo_url on attendance_logs + sm_visit_logs and removes storage objects.
  *
- * Run daily via cron: node scripts/purge-verification-photos.mjs
+ * Run daily via cron: GET /api/cron/purge-verification-photos (Vercel)
+ * Or manually: npm run purge:verification-photos
  */
 
 import { readFileSync } from 'fs';
 import { createClient } from '@supabase/supabase-js';
 
 const RETENTION_DAYS = 60;
+const ATTENDANCE_BUCKET = 'attendance_selfies';
+const SM_VISIT_BUCKET = 'sm-visit-selfies';
 
 function loadEnv() {
   for (const file of ['.env.seed.tmp', 'apps/back-office/.env.local', '.env']) {
@@ -25,12 +28,28 @@ function loadEnv() {
   }
 }
 
-function storagePathFromPublicUrl(url) {
-  if (!url || typeof url !== 'string') return null;
-  const marker = '/attendance_selfies/';
-  const idx = url.indexOf(marker);
-  if (idx === -1) return null;
-  return url.slice(idx + marker.length).split('?')[0];
+function parseObjectPath(stored, bucket) {
+  if (!stored || typeof stored !== 'string') return null;
+  const value = stored.trim();
+  const storageUri = value.match(/^storage:\/\/([^/]+)\/(.+)$/i);
+  if (storageUri) {
+    if (storageUri[1] !== bucket) return null;
+    return storageUri[2].split('?')[0] || null;
+  }
+  const markers = [
+    `/object/public/${bucket}/`,
+    `/object/sign/${bucket}/`,
+    `/object/authenticated/${bucket}/`,
+    `/${bucket}/`,
+  ];
+  for (const marker of markers) {
+    const idx = value.indexOf(marker);
+    if (idx !== -1) return value.slice(idx + marker.length).split('?')[0];
+  }
+  if (!value.startsWith('http://') && !value.startsWith('https://')) {
+    return value.replace(/^\/+/, '');
+  }
+  return null;
 }
 
 loadEnv();
@@ -49,7 +68,10 @@ const cutoffIso = cutoff.toISOString();
 
 console.log(`Purging verification photos before ${cutoffIso} (${RETENTION_DAYS}-day retention)…`);
 
-const pathsToRemove = new Set();
+const attendancePaths = new Set();
+const visitPaths = new Set();
+let attendanceCleared = 0;
+let visitCleared = 0;
 
 async function purgeAttendanceLogs() {
   const { data: rows, error } = await supabase
@@ -61,22 +83,18 @@ async function purgeAttendanceLogs() {
 
   if (error) {
     console.error('attendance_logs fetch:', error.message);
-    return 0;
+    return;
   }
 
-  let count = 0;
   for (const row of rows ?? []) {
-    const path = storagePathFromPublicUrl(row.photo_url);
-    if (path) pathsToRemove.add(path);
-
+    const path = parseObjectPath(row.photo_url, ATTENDANCE_BUCKET);
+    if (path) attendancePaths.add(path);
     const { error: updErr } = await supabase
       .from('attendance_logs')
       .update({ photo_url: null })
       .eq('id', row.id);
-
-    if (!updErr) count += 1;
+    if (!updErr) attendanceCleared += 1;
   }
-  return count;
 }
 
 async function purgeSmVisitLogs() {
@@ -89,38 +107,33 @@ async function purgeSmVisitLogs() {
 
   if (error) {
     console.error('sm_visit_logs fetch:', error.message);
-    return 0;
+    return;
   }
 
-  let count = 0;
   for (const row of rows ?? []) {
-    const path = storagePathFromPublicUrl(row.photo_url);
-    if (path) pathsToRemove.add(path);
-
+    const path = parseObjectPath(row.photo_url, SM_VISIT_BUCKET);
+    if (path) visitPaths.add(path);
     const { error: updErr } = await supabase
       .from('sm_visit_logs')
       .update({ photo_url: null })
       .eq('id', row.id);
-
-    if (!updErr) count += 1;
+    if (!updErr) visitCleared += 1;
   }
-  return count;
 }
 
-const attendanceCleared = await purgeAttendanceLogs();
-const visitCleared = await purgeSmVisitLogs();
+await purgeAttendanceLogs();
+await purgeSmVisitLogs();
 
-if (pathsToRemove.size > 0) {
-  const paths = [...pathsToRemove];
-  const { error: storageErr } = await supabase.storage
-    .from('attendance_selfies')
-    .remove(paths);
+if (attendancePaths.size > 0) {
+  const { error } = await supabase.storage.from(ATTENDANCE_BUCKET).remove([...attendancePaths]);
+  if (error) console.warn('attendance_selfies remove:', error.message);
+  else console.log(`Removed ${attendancePaths.size} object(s) from ${ATTENDANCE_BUCKET}.`);
+}
 
-  if (storageErr) {
-    console.warn('Storage remove warning:', storageErr.message);
-  } else {
-    console.log(`Removed ${paths.length} object(s) from attendance_selfies bucket.`);
-  }
+if (visitPaths.size > 0) {
+  const { error } = await supabase.storage.from(SM_VISIT_BUCKET).remove([...visitPaths]);
+  if (error) console.warn('sm-visit-selfies remove:', error.message);
+  else console.log(`Removed ${visitPaths.size} object(s) from ${SM_VISIT_BUCKET}.`);
 }
 
 console.log(

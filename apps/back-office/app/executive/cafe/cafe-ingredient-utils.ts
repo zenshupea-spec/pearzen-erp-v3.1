@@ -223,8 +223,9 @@ export function normalizeIngredient(
   const packagePrice = raw.packagePrice ?? Math.round(legacyUnitPrice * purchaseAmount);
   const unitPrice = purchaseAmount > 0 ? packagePrice / purchaseAmount : legacyUnitPrice;
   const stockLots = backfillLotUsePriorities(raw.stockLots ?? []);
-  const lotStock = stockFromLots(stockLots);
-  const currentStock = stockLots.length > 0 ? lotStock : (raw.currentStock ?? 0);
+  const activeLotStock = stockFromLots(stockLots.filter((lot) => lot.quantity > 0));
+  const currentStock =
+    activeLotStock > 0 ? activeLotStock : Math.max(0, raw.currentStock ?? 0);
   return {
     brand: raw.brand,
     prevUnitPrice: raw.prevUnitPrice,

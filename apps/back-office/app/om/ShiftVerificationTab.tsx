@@ -26,7 +26,7 @@ import GuardHoldPanel from './GuardHoldPanel';
 import GuardArchivePanel from './GuardArchivePanel';
 import SmHoldPanel from './SmHoldPanel';
 import SmArchivePanel from './SmArchivePanel';
-import { colomboTodayIso } from '../../lib/guard-verification-query';
+import { colomboTodayIso } from '../../lib/guard-verification-dates';
 import {
   isOnHoldPanelShift,
   isReviewableVerificationShift,

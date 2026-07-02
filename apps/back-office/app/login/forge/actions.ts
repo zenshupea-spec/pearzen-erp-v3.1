@@ -4,11 +4,13 @@ import {
   assertForgeOperatorCanSignIn,
   ensureForgePortalAuthRecord,
   hasValidForgeGoogleSessionForUser,
+  setForgeGoogleSessionCookies,
   setForgePasswordSessionCookies,
   syncForgeSupabaseAuthPassword,
 } from '../../../lib/forge-portal-auth';
 import { continueForgeLoginAfterAuth } from '../../../lib/forge-login-continue';
 import { isForgeOperatorEmail } from '../../../lib/forge-access';
+import { isForgeLocalDevRequest } from '../../../lib/forge-local-dev';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 
 export async function authenticateForgeOperator(input: {
@@ -22,35 +24,39 @@ export async function authenticateForgeOperator(input: {
     return { error: 'Email and password are required.' };
   }
 
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user?.email) {
-    return { error: 'Complete Google sign-in first.' };
-  }
-
-  if (user.email.trim().toLowerCase() !== email) {
-    return { error: 'Operator email must match your Google account.' };
-  }
-
   if (!(await isForgeOperatorEmail(email))) {
     return { error: 'This account is not authorised for SaaS Forge.' };
-  }
-
-  if (
-    !(await hasValidForgeGoogleSessionForUser(
-      email,
-      user.last_sign_in_at ?? null,
-    ))
-  ) {
-    return { error: 'Complete Google sign-in first.' };
   }
 
   const gate = await assertForgeOperatorCanSignIn(email);
   if (!gate.ok) {
     return { error: gate.error };
+  }
+
+  const supabase = await createSupabaseServerClient();
+  const localDevBypass = await isForgeLocalDevRequest();
+
+  if (!localDevBypass) {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user?.email) {
+      return { error: 'Complete Google sign-in first.' };
+    }
+
+    if (user.email.trim().toLowerCase() !== email) {
+      return { error: 'Operator email must match your Google account.' };
+    }
+
+    if (
+      !(await hasValidForgeGoogleSessionForUser(
+        email,
+        user.last_sign_in_at ?? null,
+      ))
+    ) {
+      return { error: 'Complete Google sign-in first.' };
+    }
   }
 
   let { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -67,6 +73,14 @@ export async function authenticateForgeOperator(input: {
     return { error: 'Invalid email or password.' };
   }
 
-  await setForgePasswordSessionCookies(email, user.last_sign_in_at ?? null);
+  const {
+    data: { user: signedInUser },
+  } = await supabase.auth.getUser();
+  const authSignInAt = signedInUser?.last_sign_in_at ?? null;
+
+  if (localDevBypass) {
+    await setForgeGoogleSessionCookies(email, authSignInAt);
+  }
+  await setForgePasswordSessionCookies(email, authSignInAt);
   await continueForgeLoginAfterAuth(email);
 }

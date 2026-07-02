@@ -1,14 +1,7 @@
 import {
-  ADVANCE_DEDUCTIONS_LEDGER,
-  MEALS_DEDUCTIONS_LEDGER,
-  UNIFORM_DEDUCTIONS_LEDGER,
   getDeductionLedger,
   type BatchDeductionKind,
 } from '../app/fm/lib/batch-deductions-ledger';
-import {
-  FM_PREV_MONTH_STOP_LIST,
-  FM_SALARY_MONTH_HALF_HOLD_LIST,
-} from '../app/fm/lib/retention-lists';
 
 export type UnsettledBalanceLine = {
   type: 'uniform' | 'meals' | 'advance' | 'penalty' | 'other';
@@ -78,38 +71,15 @@ export function lookupFmUnsettledBalances(
 }
 
 export function lookupFmRetentionSnapshot(
-  empNo: string | null,
-  fullName: string | null,
+  _empNo: string | null,
+  _fullName: string | null,
 ): FmRetentionSnapshot {
-  const key = normKey(empNo);
-  const stop = FM_PREV_MONTH_STOP_LIST.find(
-    (r) => normKey(r.empNo) === key || nameKey(r.name) === nameKey(fullName),
-  );
-  if (stop) {
-    return {
-      totalGrossLkr: stop.totalGross,
-      totalDeductionsLkr: stop.totalDeductions,
-      netTakeHomeLkr: stop.netTakeHome,
-      prevMonthShifts: stop.prevShifts,
-      currMonthShifts: stop.shiftsHere,
-    };
-  }
-
-  const half = FM_SALARY_MONTH_HALF_HOLD_LIST.find(
-    (r) => normKey(r.empNo) === key || nameKey(r.name) === nameKey(fullName),
-  );
-  if (half) {
-    return {
-      totalGrossLkr: half.totalGross,
-      totalDeductionsLkr: half.totalDeductions,
-      netTakeHomeLkr: half.netTakeHome,
-      currMonthShifts: half.mayShifts,
-      prevMonthShifts: undefined,
-    };
-  }
-
   return null;
 }
 
 /** Re-export for tests / callers that need raw ledgers */
-export { MEALS_DEDUCTIONS_LEDGER, UNIFORM_DEDUCTIONS_LEDGER, ADVANCE_DEDUCTIONS_LEDGER };
+export {
+  ADVANCE_DEDUCTIONS_LEDGER,
+  MEALS_DEDUCTIONS_LEDGER,
+  UNIFORM_DEDUCTIONS_LEDGER,
+} from '../app/fm/lib/batch-deductions-ledger';

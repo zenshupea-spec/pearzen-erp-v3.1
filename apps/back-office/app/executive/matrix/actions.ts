@@ -1,7 +1,18 @@
 'use server';
 
+import { unstable_noStore as noStore } from 'next/cache';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
+import { createSupabaseServiceClient } from '../../../../../packages/supabase/service';
 import { revalidatePath } from 'next/cache';
+
+import {
+  resolveCompanyIdForSession,
+  rosterCompanyId,
+} from '../../../lib/company-context-server';
+import {
+  mapSalaryOverrideRow,
+  payrollExceptionOrFilter,
+} from '../../../lib/hr-payroll-exception-query';
 
 // Fetch all defined ranks and their default pay constants
 export async function fetchRankMatrix() {
@@ -35,17 +46,26 @@ export async function updateRankPay(rankId: string, payload: { default_basic: nu
   return { success: true };
 }
 
-// Fetch employees with "Pending Salary Approval" (Yellow Flag)
+// Fetch employees with pending salary approval or MD approval flag (Yellow Flag)
 export async function fetchPendingSalaryOverrides() {
+  noStore();
   const supabase = await createSupabaseServerClient();
-  const { data, error } = await supabase
+  const sessionCompanyId = await resolveCompanyIdForSession(supabase);
+  const companyId = rosterCompanyId(sessionCompanyId);
+  if (!companyId) return [];
+
+  const db = createSupabaseServiceClient();
+  const { data, error } = await db
     .from('employees')
-    .select('id, first_name, last_name, custom_salary, status')
-    .in('salary_approval_status', ['PENDING_FM', 'PENDING_MD']);
+    .select(
+      'id, full_name, rank, group, custom_salary, base_salary, basic_salary, salary_approval_status, requires_md_approval, updated_at',
+    )
+    .eq('company_id', companyId)
+    .or(payrollExceptionOrFilter());
 
   if (error) {
-    console.error("❌ SUPABASE ERROR (Fetch Overrides):", error.message);
+    console.error('❌ SUPABASE ERROR (Fetch Overrides):', error.message);
     return [];
   }
-  return data || [];
+  return (data ?? []).map(mapSalaryOverrideRow);
 }

@@ -1,16 +1,20 @@
 import { pbkdf2Sync, randomBytes, timingSafeEqual } from 'crypto';
 
 import {
+  HO_PORTAL_BACKUP_CODE_COUNT,
   normalizeHeadOfficeBackupCode,
 } from './head-office-totp-backup-client';
 
 export {
   formatHeadOfficeBackupCode,
+  HEAD_OFFICE_FORGE_2FA_ESCALATION_HINT,
+  HO_PORTAL_BACKUP_CODE_COUNT,
+  HEAD_OFFICE_NO_BACKUP_CODES_ERROR,
+  HEAD_OFFICE_RECOVER_2FA_REQUIRES_BACKUP_USE_ERROR,
   isHeadOfficeBackupCodeInput,
   normalizeHeadOfficeBackupCode,
 } from './head-office-totp-backup-client';
 
-export const HO_PORTAL_BACKUP_CODE_COUNT = 5;
 const BACKUP_CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const BACKUP_CODE_LENGTH = 8;
 const BACKUP_ITERATIONS = 100_000;

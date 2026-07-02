@@ -2,12 +2,18 @@ import "server-only";
 
 import type { HeadOfficeRbacStaffRow } from "../../../packages/portal-rbac";
 import { createSupabaseServiceClient } from "../../../packages/supabase/service";
+import {
+  isOmRankEmployee,
+  resolveEmployeeEpfNo,
+} from "./om-sector-assignment-spec";
 
 const TERMINATED_STATUSES = new Set(["RESIGNED", "TERMINATED"]);
 
 export function normalizeCorporateGroup(value: unknown): string {
   const normalized = String(value ?? "").trim().toUpperCase();
-  return normalized === "GUARD_FIELD" ? "GUARD" : normalized;
+  if (normalized === "GUARD_FIELD") return "GUARD";
+  if (normalized === "SECTOR_MANAGER") return "HEAD_OFFICE";
+  return normalized;
 }
 
 export function isHeadOfficeCorporateGroup(value: unknown): boolean {
@@ -64,4 +70,47 @@ export async function fetchHeadOfficeCorporateStaffForCompany(
     .filter((row) => isHeadOfficeCorporateGroup(row.group))
     .filter((row) => isHeadOfficeWorkforceStatus(row.status))
     .map(mapHeadOfficeCorporateStaffRow);
+}
+
+export type OmRankStaffRow = HeadOfficeRbacStaffRow & {
+  epfNo: string | null;
+};
+
+function mapOmRankStaffRow(row: {
+  id: unknown;
+  full_name?: unknown;
+  rank?: unknown;
+  email?: unknown;
+  status?: unknown;
+  epf_no?: unknown;
+  epf_num?: unknown;
+  emp_number?: unknown;
+}): OmRankStaffRow {
+  return {
+    ...mapHeadOfficeCorporateStaffRow(row),
+    epfNo: resolveEmployeeEpfNo(row),
+  };
+}
+
+/** Active company employees with rank OM — not restricted to Head Office group. */
+export async function fetchActiveOmRankEmployeesForCompany(
+  companyId: string,
+): Promise<OmRankStaffRow[]> {
+  const supabase = createSupabaseServiceClient();
+  const { data, error } = await supabase
+    .from("employees")
+    .select("id, full_name, rank, email, status, group, epf_no, epf_num, emp_number")
+    .eq("company_id", companyId)
+    .ilike("rank", "OM")
+    .order("full_name", { ascending: true });
+
+  if (error) {
+    console.error("fetchActiveOmRankEmployeesForCompany:", error.message);
+    return [];
+  }
+
+  return (data ?? [])
+    .filter((row) => isOmRankEmployee(row.rank as string | null | undefined))
+    .filter((row) => isHeadOfficeWorkforceStatus(row.status))
+    .map(mapOmRankStaffRow);
 }

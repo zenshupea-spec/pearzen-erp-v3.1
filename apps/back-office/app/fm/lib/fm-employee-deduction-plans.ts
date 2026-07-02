@@ -1,4 +1,11 @@
 import type { PayrollPeriod } from './payroll-period';
+import type { SmPenaltyDeduction } from './fm-sm-penalties';
+import type { PayrollComplianceSettings } from '../../executive/settings/actions';
+import {
+  applyFmPayrollCompliance,
+  resolveFmPortfolioBasicSalary,
+  scaleVoluntaryDeductionRows,
+} from './fm-payroll-compliance';
 
 export const FM_GRANULAR_DEDUCTION_KINDS = [
   { key: 'DEATH_DONATION', label: 'Death Donation' },
@@ -25,6 +32,7 @@ export type FmPortfolioDeduction = {
   planId?: string;
   editable?: boolean;
   source?: 'hq' | 'fm' | 'system';
+  notes?: string;
 };
 
 export type FmEmployeeDeductionPlanRow = {
@@ -166,6 +174,24 @@ export function buildAdvanceDeductionRow(amount: number): FmPortfolioDeduction |
   };
 }
 
+export function buildPenaltyDeductionRow(
+  amount: number,
+  catalogLabel?: string,
+): FmPortfolioDeduction | null {
+  const value = Math.max(0, Math.round(amount));
+  if (value <= 0) return null;
+  return {
+    type: 'Penalty',
+    source: 'system',
+    editable: false,
+    totalLiability: value,
+    installmentCurrent: 1,
+    installmentTotal: 1,
+    thisMonthAmount: value,
+    notes: catalogLabel?.trim() || undefined,
+  };
+}
+
 export function mapPlanRow(row: Record<string, unknown>): FmEmployeeDeductionPlanRow {
   return {
     id: String(row.id),
@@ -179,15 +205,75 @@ export function mapPlanRow(row: Record<string, unknown>): FmEmployeeDeductionPla
   };
 }
 
-export function recalcEmployeeDeductionTotals<T extends { totalGross: number; deductions: FmPortfolioDeduction[] }>(
-  emp: T,
-): T {
-  const totalDeductions = emp.deductions.reduce((sum, row) => sum + row.thisMonthAmount, 0);
+function cashVoluntaryDeductions(deductions: FmPortfolioDeduction[]): FmPortfolioDeduction[] {
+  return deductions.filter((row) => row.type !== 'Penalty');
+}
+
+function penaltyDeductions(deductions: FmPortfolioDeduction[]): FmPortfolioDeduction[] {
+  return deductions.filter((row) => row.type === 'Penalty');
+}
+
+function sumDeductionAmounts(deductions: FmPortfolioDeduction[]): number {
+  return deductions.reduce((sum, row) => sum + row.thisMonthAmount, 0);
+}
+
+export function recalcEmployeeDeductionTotals<
+  T extends {
+    totalGross: number;
+    deductions: FmPortfolioDeduction[];
+    earnings?: {
+      hoFixedData?: { mnrBaseSalaryLkr: number };
+      cafeData?: { monthlyBasicLkr: number };
+      smPayData?: {
+        fixedBasicLkr?: number;
+        epfEmployeeLkr?: number;
+        payeeTaxLkr?: number;
+        stampDutyLkr?: number;
+      };
+      guardData?: { monthlyBasicLkr: number };
+      basePayLkr?: number;
+    };
+  },
+>(emp: T, compliance?: PayrollComplianceSettings): T {
+  const smStatutory = emp.earnings?.smPayData
+    ? (emp.earnings.smPayData.epfEmployeeLkr ?? 0) +
+      (emp.earnings.smPayData.payeeTaxLkr ?? 0) +
+      (emp.earnings.smPayData.stampDutyLkr ?? 0)
+    : 0;
+
+  if (compliance) {
+    const basicSalary = resolveFmPortfolioBasicSalary(emp);
+    const cashDeductions = cashVoluntaryDeductions(emp.deductions);
+    const voluntaryTotal = sumDeductionAmounts(cashDeductions);
+    const complianceResult = applyFmPayrollCompliance({
+      grossPay: emp.totalGross,
+      basicSalary,
+      statutoryDeductions: smStatutory,
+      voluntaryDeductions: voluntaryTotal,
+      compliance,
+    });
+    const scaledCash = scaleVoluntaryDeductionRows(
+      cashDeductions,
+      complianceResult.allowedVoluntaryDeductions,
+    );
+    const deductions = [...scaledCash, ...penaltyDeductions(emp.deductions)];
+    const totalDeductions = sumDeductionAmounts(scaledCash);
+    return {
+      ...emp,
+      deductions,
+      totalDeductions,
+      netTakeHome: complianceResult.netPay,
+    } as T;
+  }
+
+  const cashDeductions = cashVoluntaryDeductions(emp.deductions);
+  const totalDeductions = sumDeductionAmounts(cashDeductions);
   return {
     ...emp,
+    deductions: [...cashDeductions, ...penaltyDeductions(emp.deductions)],
     totalDeductions,
-    netTakeHome: Math.max(0, emp.totalGross - totalDeductions),
-  };
+    netTakeHome: Math.max(0, emp.totalGross - totalDeductions - smStatutory),
+  } as T;
 }
 
 export function mergePortfolioDeductionsForEmployee(
@@ -196,6 +282,7 @@ export function mergePortfolioDeductionsForEmployee(
   hqByEmployee: Map<string, { meals: number; uniform: number }>,
   advancesByProfile: Map<string, number>,
   plansByEmployee: Map<string, FmEmployeeDeductionPlanRow[]>,
+  smPenaltiesByEmployee?: Map<string, SmPenaltyDeduction[]>,
 ): FmPortfolioDeduction[] {
   const hq = hqByEmployee.get(employeeId);
   const deductions: FmPortfolioDeduction[] = [
@@ -211,7 +298,17 @@ export function mergePortfolioDeductionsForEmployee(
     if (row) deductions.push(row);
   }
 
+  deductions.push(...portfolioPenaltyDeductionsFromSmPenalties(smPenaltiesByEmployee?.get(employeeId) ?? []));
+
   return deductions.filter((row) => row.thisMonthAmount > 0);
+}
+
+function portfolioPenaltyDeductionsFromSmPenalties(penalties: SmPenaltyDeduction[]): FmPortfolioDeduction[] {
+  const total = penalties.reduce((sum, row) => sum + row.amountLkr, 0);
+  if (total <= 0) return [];
+  const labels = [...new Set(penalties.map((row) => row.catalogLabel).filter(Boolean))];
+  const row = buildPenaltyDeductionRow(total, labels.join('; ') || 'Disciplinary penalty');
+  return row ? [row] : [];
 }
 
 export function buildFmAuditRows(

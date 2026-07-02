@@ -10,7 +10,17 @@ export default function PayrollGeneratorForm() {
     startTransition(async () => {
       const result = await generateMonthEndPayroll(formData);
       if (result.success) {
-        alert(`✅ Engine Complete: Successfully generated ${result.count} draft payslips.`);
+        const skippedSuffix =
+          (result.skipped ?? 0) > 0
+            ? ` Skipped ${result.skipped} employee${result.skipped === 1 ? '' : 's'} pending MD salary approval${
+                result.skippedLabels?.length
+                  ? ` (${result.skippedLabels.join(', ')})`
+                  : ''
+              }; draft payslips for this period were removed.`
+            : '';
+        alert(
+          `✅ Engine Complete: Successfully generated ${result.count} draft payslip${result.count === 1 ? '' : 's'}.${skippedSuffix}`,
+        );
       } else {
         alert(result.error ?? '❌ Payroll generation failed. Check terminal.');
       }

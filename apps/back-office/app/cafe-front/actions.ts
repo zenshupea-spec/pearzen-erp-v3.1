@@ -3,10 +3,21 @@
 import { unstable_noStore as noStore } from 'next/cache';
 import { revalidatePath } from 'next/cache';
 
+import {
+  CAFE_TASK_PROOFS_BUCKET,
+  cafeTaskProofPurgeAfterIso,
+  formatCafeTaskProofStorageRef,
+  isCafeTaskProofPurged,
+  signCafeTaskProofRef,
+} from '../../../../packages/supabase/cafe-task-proof-storage';
 import { getCafeLogoUrl } from '../../../../packages/supabase/cafe-branding';
 import { getCompanyLogoUrl } from '../../../../packages/supabase/company-branding';
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
 import { createSupabaseServiceClient } from '../../../../packages/supabase/service';
+import {
+  ATTENDANCE_SELFIES_BUCKET,
+  formatVerificationPhotoStorageRef,
+} from '../../../../packages/supabase/verification-photo-storage';
 import {
   cafeEmployeeEpfKey,
   cafeFrontAuthEmail,
@@ -18,6 +29,8 @@ import {
   employeeRosterKey,
   normalizeEpfNo,
   resolveCafeEmployeeForUser,
+  revokeCafePortalOtpCredentials,
+  burnCafePortalOtpAfterLogin,
   type CafeEmployeeRow,
 } from '../../lib/cafe-front-auth';
 import {
@@ -34,7 +47,17 @@ import {
   computeCafeShiftWindows,
   type CafeShiftWindows,
 } from '../../lib/cafe-shift-hours';
+import {
+  uploadCafeLoginSelfieDecoded,
+  validateCafeLoginSelfieCapture,
+} from '../../lib/cafe-login-selfie';
 import { resolveCompanyIdForSession } from '../../lib/company-context-server';
+import {
+  cafeEmployeeFromExecutiveProfile,
+  canAccessFrontOfficeAsExecutive,
+  executiveCafeShiftGate,
+} from '../../lib/front-office-executive-access';
+import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access-server';
 import { DEFAULT_GEOFENCE_RADIUS_M } from '../../lib/site-geofence';
 import {
   getCafeDashboard,
@@ -42,6 +65,7 @@ import {
   type CafeTask,
 } from '../executive/cafe/actions';
 import { normalizePeriodMonth } from '../executive/cafe/period-month';
+import { syncCafeOtDayLogFromCheckin } from '../executive/cafe/cafe-ot-sync';
 import { buildRollingWindow } from '../hr/cafe-roster/utils';
 import { auditStaffAction } from '../../lib/staff-audit';
 
@@ -120,6 +144,35 @@ function decodeBase64Image(base64: string): { buffer: Buffer; contentType: strin
   return { buffer: Buffer.from(match[2], 'base64'), contentType, extension };
 }
 
+function emptyCafeFrontDashboard(error: string): CafeDashboardPayload {
+  return {
+    staff: [],
+    tasks: [],
+    listA: [],
+    listB: [],
+    voids: [],
+    menuItems: [],
+    menuCategories: [],
+    ingredients: [],
+    prepItems: [],
+    displayItems: [],
+    globalOverhead: 20,
+    cafeLogoUrl: null,
+    cafeCoverUrl: null,
+    cafeCoverTextColor: '#ffffff',
+    cafeCoverTintStrength: 100,
+    customerMenuUrl: null,
+    error,
+  };
+}
+
+/** Executive café loader — only after café session gate (R-CAFE-AUTH-02). */
+async function loadExecutiveCafeDashboardForSession(
+  _session: CafeFrontSession,
+): Promise<CafeDashboardPayload> {
+  return getCafeDashboard();
+}
+
 async function requireCafeSession(): Promise<CafeFrontSession | null> {
   const supabase = await createSupabaseServerClient();
   const {
@@ -128,10 +181,19 @@ async function requireCafeSession(): Promise<CafeFrontSession | null> {
   if (!user) return null;
 
   const employee = await resolveCafeEmployeeForUser(user);
-  if (!employee) return null;
+  if (employee) {
+    const shiftGate = await getCafeShiftGate(employee);
+    return { employee, shiftGate };
+  }
 
-  const shiftGate = await getCafeShiftGate(employee);
-  return { employee, shiftGate };
+  const profile = await fetchBackOfficeUserProfile(supabase, user);
+  if (!canAccessFrontOfficeAsExecutive(profile)) return null;
+
+  const companyId = await resolveCompanyIdForSession(supabase);
+  return {
+    employee: cafeEmployeeFromExecutiveProfile(profile, companyId),
+    shiftGate: executiveCafeShiftGate(),
+  };
 }
 
 async function requireCafeCheckedIn(): Promise<
@@ -229,12 +291,19 @@ export async function getCafeShiftCheckinContext(): Promise<CafeShiftCheckinCont
 export async function authenticateCafeFrontStaff(formData: FormData) {
   const epfInput = normalizeEpfNo((formData.get('epfNo') as string) ?? '');
   const password = ((formData.get('password') as string) ?? '').trim();
+  const faceSnapshot = ((formData.get('faceSnapshot') as string) ?? '').trim();
 
   if (!epfInput) return { success: false, error: 'EPF number is required.' };
   if (!password) return { success: false, error: 'PIN or OTP is required.' };
 
+  const selfieValidation = validateCafeLoginSelfieCapture(faceSnapshot);
+  if (!selfieValidation.ok) {
+    return { success: false, error: selfieValidation.error };
+  }
+
+  const companyId = await resolveCafeCompanyId();
   const service = createSupabaseServiceClient();
-  const employee = await findCafeEmployeeByEpf(service, epfInput);
+  const employee = await findCafeEmployeeByEpf(service, epfInput, companyId);
 
   if (!employee) {
     return { success: false, error: 'EPF number not found on the master nominal roll.' };
@@ -253,11 +322,23 @@ export async function authenticateCafeFrontStaff(formData: FormData) {
   }
 
   if (authRecord.needs_pin_setup) {
-    if (!authRecord.current_otp || password !== authRecord.current_otp) {
-      return { success: false, error: 'Invalid OTP.' };
+    if (!authRecord.current_otp) {
+      return {
+        success: false,
+        error: 'This OTP was already used. Ask HR for a new one.',
+      };
     }
-    if (!isCafeOtpValid(authRecord)) {
+
+    const otpExpired = !isCafeOtpValid(authRecord);
+    const otpMatches = authRecord.current_otp === password;
+
+    if (otpExpired && authRecord.current_otp) {
+      await revokeCafePortalOtpCredentials(service, epf);
       return { success: false, error: 'OTP expired. Ask HR for a new one.' };
+    }
+
+    if (!otpMatches || otpExpired) {
+      return { success: false, error: 'Invalid or expired OTP. Ask HR for a new one.' };
     }
   }
 
@@ -271,9 +352,26 @@ export async function authenticateCafeFrontStaff(formData: FormData) {
     return { success: false, error: 'Invalid credentials.' };
   }
 
+  const selfieUpload = await uploadCafeLoginSelfieDecoded(
+    service,
+    epf,
+    selfieValidation.decoded,
+  );
+  if (!selfieUpload.ok) {
+    await supabase.auth.signOut();
+    return { success: false, error: selfieUpload.error };
+  }
+
+  if (authRecord.needs_pin_setup) {
+    await burnCafePortalOtpAfterLogin(service, epf);
+  }
+
   await service
     .from('cafe_portal_auth')
-    .update({ last_login_at: new Date().toISOString() })
+    .update({
+      last_login_at: new Date().toISOString(),
+      last_login_selfie_url: selfieUpload.photoRef,
+    })
     .eq('epf_number', epf);
 
   return {
@@ -353,7 +451,11 @@ export async function getCafeFrontRollingSchedule(): Promise<CafeFrontRollingSch
 
 export async function getCafeFrontDashboard(): Promise<CafeDashboardPayload> {
   noStore();
-  return getCafeDashboard();
+  const session = await requireCafeSession();
+  if (!session) {
+    return emptyCafeFrontDashboard('Not signed in.');
+  }
+  return loadExecutiveCafeDashboardForSession(session);
 }
 
 export type CafeFrontTask = CafeTask & { proofUrl?: string };
@@ -362,13 +464,11 @@ export async function getCafeFrontTasks(date?: string): Promise<CafeFrontTask[]>
   noStore();
   const checked = await requireCafeCheckedIn();
   if (!checked.session) return [];
-  const session = checked.session;
 
-  const payload = await getCafeDashboard();
   const targetDate = date ?? todayIso();
   const supabase = createSupabaseServiceClient();
   const companyId = await resolveCafeCompanyId();
-  if (!companyId) return payload.tasks;
+  if (!companyId) return [];
 
   const { data: templates } = await supabase
     .from('cafe_task_templates')
@@ -389,21 +489,31 @@ export async function getCafeFrontTasks(date?: string): Promise<CafeFrontTask[]>
     (completions ?? []).map((c) => [c.template_id, c]),
   );
 
-  return templates.map((t) => {
-    const completion = completionByTemplate.get(t.id);
-    const dueTimeRaw = t.due_time as string | null | undefined;
-    return {
-      id: t.id,
-      name: t.name,
-      freq: t.freq as CafeTask['freq'],
-      assignedTo: t.assigned_name ?? '',
-      dueTime: dueTimeRaw ? dueTimeRaw.slice(0, 5) : undefined,
-      status: (completion?.status as CafeTask['status']) ?? 'PENDING',
-      proofUploadedAt: completion?.proof_uploaded_at ?? undefined,
-      purgeDate: completion?.purge_after ?? undefined,
-      proofUrl: (completion?.proof_url as string | undefined) ?? undefined,
-    };
-  });
+  return Promise.all(
+    templates.map(async (t) => {
+      const completion = completionByTemplate.get(t.id);
+      const dueTimeRaw = t.due_time as string | null | undefined;
+      const storedProof = completion?.proof_url as string | undefined;
+      const purgeAfter = completion?.purge_after as string | undefined;
+      const proofExpired = isCafeTaskProofPurged(purgeAfter);
+      const proofUrl =
+        storedProof && !proofExpired
+          ? ((await signCafeTaskProofRef(supabase, storedProof)) ?? undefined)
+          : undefined;
+
+      return {
+        id: t.id,
+        name: t.name,
+        freq: t.freq as CafeTask['freq'],
+        assignedTo: t.assigned_name ?? '',
+        dueTime: dueTimeRaw ? dueTimeRaw.slice(0, 5) : undefined,
+        status: (completion?.status as CafeTask['status']) ?? 'PENDING',
+        proofUploadedAt: completion?.proof_uploaded_at ?? undefined,
+        purgeDate: purgeAfter,
+        proofUrl,
+      };
+    }),
+  );
 }
 
 export async function uploadCafeTaskProof(input: {
@@ -425,16 +535,14 @@ export async function uploadCafeTaskProof(input: {
   const session = checked.session;
   const objectPath = `cafe-task-proof/${session.employee.id}/${input.taskId}-${Date.now()}.${decoded.extension}`;
   const { error: uploadError } = await service.storage
-    .from('attendance_selfies')
+    .from(CAFE_TASK_PROOFS_BUCKET)
     .upload(objectPath, decoded.buffer, { contentType: decoded.contentType });
 
   if (uploadError) return { ok: false, error: uploadError.message };
 
-  const { data: urlData } = service.storage.from('attendance_selfies').getPublicUrl(objectPath);
-  const proofUrl = urlData.publicUrl;
+  const proofRef = formatCafeTaskProofStorageRef(CAFE_TASK_PROOFS_BUCKET, objectPath);
   const completionDate = input.completionDate ?? todayIso();
-  const purgeAfter = new Date();
-  purgeAfter.setDate(purgeAfter.getDate() + 14);
+  const purgeAfter = cafeTaskProofPurgeAfterIso(new Date(`${completionDate}T12:00:00.000Z`));
 
   const { error } = await service.from('cafe_task_completions').upsert(
     {
@@ -442,8 +550,8 @@ export async function uploadCafeTaskProof(input: {
       completion_date: completionDate,
       status: 'COMPLETE',
       proof_uploaded_at: completionDate,
-      proof_url: proofUrl,
-      purge_after: purgeAfter.toISOString().slice(0, 10),
+      proof_url: proofRef,
+      purge_after: purgeAfter,
     },
     { onConflict: 'template_id,completion_date' },
   );
@@ -456,6 +564,7 @@ export async function uploadCafeTaskProof(input: {
   });
 
   revalidatePath('/cafe-front');
+  const proofUrl = (await signCafeTaskProofRef(service, proofRef)) ?? undefined;
   return { ok: true, proofUrl };
 }
 
@@ -492,12 +601,12 @@ export async function submitCafeShiftCheckin(input: {
 
   const objectPath = `cafe-checkin/${session.employee.id}/${Date.now()}.${decoded.extension}`;
   const { error: uploadError } = await supabase.storage
-    .from('attendance_selfies')
+    .from(ATTENDANCE_SELFIES_BUCKET)
     .upload(objectPath, decoded.buffer, { contentType: decoded.contentType });
 
   if (uploadError) return { ok: false, error: uploadError.message };
 
-  const { data: urlData } = supabase.storage.from('attendance_selfies').getPublicUrl(objectPath);
+  const photoRef = formatVerificationPhotoStorageRef(ATTENDANCE_SELFIES_BUCKET, objectPath);
   const shiftType = input.shiftType ?? session.shiftGate.shiftType ?? 'MORNING';
 
   const checkedInAt = new Date().toISOString();
@@ -510,7 +619,7 @@ export async function submitCafeShiftCheckin(input: {
     shift_type: shiftType,
     latitude: input.latitude,
     longitude: input.longitude,
-    selfie_url: urlData.publicUrl,
+    selfie_url: photoRef,
     checked_in_at: checkedInAt,
     verification_status: 'PENDING',
     rostered_on_shift: rosteredOnShift,
@@ -533,7 +642,7 @@ export async function submitCafeShiftCheckin(input: {
       latitude: input.latitude,
       longitude: input.longitude,
       sync_type: 'CAFE_FRONT',
-      photo_url: urlData.publicUrl,
+      photo_url: photoRef,
       status: 'PENDING',
     });
   }
@@ -579,12 +688,12 @@ export async function submitCafeShiftCheckout(input: {
 
   const objectPath = `cafe-checkout/${session.employee.id}/${Date.now()}.${decoded.extension}`;
   const { error: uploadError } = await supabase.storage
-    .from('attendance_selfies')
+    .from(ATTENDANCE_SELFIES_BUCKET)
     .upload(objectPath, decoded.buffer, { contentType: decoded.contentType });
 
   if (uploadError) return { ok: false, error: uploadError.message };
 
-  const { data: urlData } = supabase.storage.from('attendance_selfies').getPublicUrl(objectPath);
+  const photoRef = formatVerificationPhotoStorageRef(ATTENDANCE_SELFIES_BUCKET, objectPath);
   const checkedOutAt = new Date().toISOString();
 
   const { error } = await supabase
@@ -593,13 +702,21 @@ export async function submitCafeShiftCheckout(input: {
       checked_out_at: checkedOutAt,
       checkout_latitude: input.latitude,
       checkout_longitude: input.longitude,
-      checkout_selfie_url: urlData.publicUrl,
+      checkout_selfie_url: photoRef,
     })
     .eq('company_id', companyId)
     .eq('employee_id', session.employee.id)
     .eq('checkin_date', todayIso());
 
   if (error) return { ok: false, error: error.message };
+
+  try {
+    await syncCafeOtDayLogFromCheckin(companyId, session.employee.id, todayIso(), {
+      markWorked: false,
+    });
+  } catch (syncError) {
+    console.error('[Cafe Front] OT accrual after checkout failed:', syncError);
+  }
 
   const empKey = employeeRosterKey(session.employee);
   if (empKey) {
@@ -611,7 +728,7 @@ export async function submitCafeShiftCheckout(input: {
       latitude: input.latitude,
       longitude: input.longitude,
       sync_type: 'CAFE_FRONT',
-      photo_url: urlData.publicUrl,
+      photo_url: photoRef,
       status: 'PENDING',
     });
   }
@@ -842,6 +959,15 @@ export async function updateCafeOrderStatus(
     }
     patch.status = 'COMPLETED';
     patch.completed_at = now;
+
+    const items = (existing.items as CafeFrontOrder['items']) ?? [];
+    if (items.length) {
+      const { loadMenuDailySalesMap, recordMenuDailySalesFromOrder } = await import(
+        '../executive/cafe/cafe-menu-daily-sales'
+      );
+      const salesMap = await loadMenuDailySalesMap(companyId);
+      await recordMenuDailySalesFromOrder(companyId, items, now, salesMap);
+    }
   }
 
   const { error } = await supabase
@@ -869,6 +995,9 @@ export async function updateCafeOrderStatus(
 
 export async function getCafePrepAvgStats(): Promise<CafePrepAvgStat[]> {
   noStore();
+  const session = await requireCafeSession();
+  if (!session) return [];
+
   const companyId = await resolveCafeCompanyId();
   if (!companyId) return [];
 

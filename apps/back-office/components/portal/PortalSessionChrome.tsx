@@ -1,11 +1,16 @@
-"use client";
+'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
-import { Lock, LogOut, ShieldCheck } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
+import { Lock, LogOut, ShieldCheck } from 'lucide-react';
 
-import { getVaultSessionPolicy } from "../../app/actions/vault-session-actions";
-import { createSupabaseBrowserClient } from "../../../../packages/supabase/client";
+import { signOutHeadOfficePortalAction } from '../../app/actions/portal-session-actions';
+import {
+  clearExecutiveVaultUnlockAction,
+  getVaultSessionPolicy,
+  verifyVaultUnlockPin,
+} from '../../app/actions/vault-session-actions';
+import { createSupabaseBrowserClient } from '../../../../packages/supabase/client';
 
 function formatCountdown(ms: number): string {
   const totalSec = Math.max(0, Math.ceil(ms / 1000));
@@ -26,6 +31,9 @@ export default function PortalSessionChrome() {
     idleTimeoutMinutes: 30,
   });
   const [remainingMs, setRemainingMs] = useState(30 * 60 * 1000);
+  const [pin, setPin] = useState('');
+  const [unlockError, setUnlockError] = useState('');
+  const [unlocking, setUnlocking] = useState(false);
 
   const deadlineRef = useRef(Date.now() + 30 * 60 * 1000);
   const signingOutRef = useRef(false);
@@ -79,6 +87,7 @@ export default function PortalSessionChrome() {
     const tick = window.setInterval(() => {
       const left = deadlineRef.current - Date.now();
       if (left <= 0) {
+        void clearExecutiveVaultUnlockAction();
         setLocked(true);
         setRemainingMs(0);
         return;
@@ -95,19 +104,39 @@ export default function PortalSessionChrome() {
   const handleSignOut = async () => {
     if (signingOutRef.current) return;
     signingOutRef.current = true;
-    await supabase.auth.signOut();
+    await signOutHeadOfficePortalAction();
     router.replace("/");
     router.refresh();
   };
 
   const handleLockNow = () => {
+    void clearExecutiveVaultUnlockAction();
     setLocked(true);
     setRemainingMs(0);
   };
 
-  const handleUnlock = () => {
-    bumpIdleDeadline();
-    setLocked(false);
+  const handleUnlock = async (event: FormEvent) => {
+    event.preventDefault();
+    setUnlockError('');
+    if (pin.length !== 4) {
+      setUnlockError('Enter your 4-digit vault PIN.');
+      return;
+    }
+
+    setUnlocking(true);
+    try {
+      const result = await verifyVaultUnlockPin(pin);
+      if (!result.ok) {
+        setUnlockError(result.error ?? 'Incorrect vault PIN.');
+        setPin('');
+        return;
+      }
+      bumpIdleDeadline();
+      setLocked(false);
+      setPin('');
+    } finally {
+      setUnlocking(false);
+    }
   };
 
   if (!signedIn) return null;
@@ -151,14 +180,34 @@ export default function PortalSessionChrome() {
                 ? `Idle timeout reached (${policy.idleTimeoutMinutes} min MD policy).`
                 : "You locked this session manually."}
             </p>
-            <button
-              type="button"
-              onClick={handleUnlock}
-              className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-500"
-            >
-              <ShieldCheck className="h-4 w-4" />
-              Resume session
-            </button>
+            <form onSubmit={handleUnlock} className="mt-6 space-y-3">
+              {unlockError ? (
+                <p className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm font-semibold text-rose-200">
+                  {unlockError}
+                </p>
+              ) : null}
+              <input
+                type="password"
+                inputMode="numeric"
+                autoComplete="off"
+                maxLength={4}
+                value={pin}
+                onChange={(event) => {
+                  setUnlockError('');
+                  setPin(event.target.value.replace(/\D/g, '').slice(0, 4));
+                }}
+                placeholder="••••"
+                className="w-full rounded-xl border border-slate-600 bg-slate-950 px-4 py-3 text-center text-lg font-black tracking-[0.45em] text-white focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+              />
+              <button
+                type="submit"
+                disabled={unlocking || pin.length !== 4}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-500 disabled:opacity-50"
+              >
+                <ShieldCheck className="h-4 w-4" />
+                {unlocking ? 'Verifying…' : 'Unlock and continue'}
+              </button>
+            </form>
             <button
               type="button"
               onClick={handleSignOut}

@@ -1,5 +1,7 @@
 import { createBrowserClient } from "@supabase/ssr";
 
+import { supabaseBrowserAuthCookieOptions } from "./cookie-options";
+
 /**
  * Supabase browser client for client-side OAuth initiation.
  * Session persistence is handled by @supabase/ssr (via cookies).
@@ -7,7 +9,9 @@ import { createBrowserClient } from "@supabase/ssr";
 export function createSupabaseBrowserClient() {
   return createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookieOptions: supabaseBrowserAuthCookieOptions(),
+    },
   );
 }
-

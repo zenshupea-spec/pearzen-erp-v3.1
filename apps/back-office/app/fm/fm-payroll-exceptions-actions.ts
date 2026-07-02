@@ -16,18 +16,13 @@ import {
 import { normalizePortalRole } from '../../lib/portal-role-utils';
 import { canAccessPathViaPortalRbac } from '../../../../packages/portal-rbac';
 
-export type SalaryOverrideRecord = {
-  id: string;
-  name: string;
-  rank: string;
-  company: string;
-  defaultPay: number;
-  overridePay: number;
-  requestedBy: string;
-  reason: string;
-  date: string;
-  status: 'PENDING' | 'APPROVED' | 'REJECTED';
-};
+import {
+  mapSalaryOverrideRow,
+  payrollExceptionOrFilter,
+  type MappedSalaryOverride,
+} from '../../lib/hr-payroll-exception-query';
+
+export type SalaryOverrideRecord = MappedSalaryOverride;
 
 export type ResignationDebtRecord = {
   id: string;
@@ -42,8 +37,6 @@ export type ResignationDebtRecord = {
   fmConfirmed: boolean;
   status: 'LOCKED' | 'PENDING_WRITEOFF' | 'WRITTEN_OFF';
 };
-
-const PENDING_SALARY_STATUSES = ['PENDING_FM', 'PENDING_MD'] as const;
 
 function canPerformFmExceptionWrite(profile: BackOfficeUserProfile): boolean {
   const role = normalizePortalRole(profile.role);
@@ -97,35 +90,17 @@ export async function fetchFmHrPayrollExceptions(): Promise<{
   const { data: overrideRows } = await db
     .from('employees')
     .select(
-      'id, full_name, rank, group, custom_salary, base_salary, basic_salary, salary_approval_status, updated_at',
+      'id, full_name, rank, group, custom_salary, base_salary, basic_salary, salary_approval_status, requires_md_approval, updated_at',
     )
     .eq('company_id', companyId)
-    .in('salary_approval_status', [...PENDING_SALARY_STATUSES]);
+    .or(payrollExceptionOrFilter());
 
-  const overrides: SalaryOverrideRecord[] = (overrideRows ?? []).map((row) => {
-    const defaultPay = Number(row.base_salary ?? row.basic_salary ?? 0);
-    const overridePay = Number(row.custom_salary ?? defaultPay);
-    const group = String(row.group ?? '').toUpperCase();
-    const company =
-      group.includes('CAFE') ? 'Café' : group.includes('BNB') ? 'BnB' : 'Security';
-    return {
-      id: String(row.id),
-      name: String(row.full_name ?? 'Unknown'),
-      rank: String(row.rank ?? ''),
-      company,
-      defaultPay,
-      overridePay,
-      requestedBy: 'HR Admin',
-      reason: 'Custom salary pending FM approval',
-      date: String(row.updated_at ?? new Date().toISOString()).slice(0, 10),
-      status: 'PENDING',
-    };
-  });
+  const overrides: SalaryOverrideRecord[] = (overrideRows ?? []).map(mapSalaryOverrideRow);
 
   const { data: debtRows } = await db
     .from('employees')
     .select(
-      'id, full_name, emp_number, rank, group, status, uniform_balance, accom_balance, hr_offboarding_sent_to_fm_at, fm_offboarding_payment_confirmed_at, updated_at',
+      'id, full_name, emp_number, rank, group, status, uniform_balance, accom_balance, date_resigned, hr_offboarding_sent_to_fm_at, fm_offboarding_payment_confirmed_at, updated_at',
     )
     .eq('company_id', companyId)
     .not('hr_offboarding_sent_to_fm_at', 'is', null);
@@ -147,7 +122,9 @@ export async function fetchFmHrPayrollExceptions(): Promise<{
         name: String(row.full_name ?? ''),
         rank: String(row.rank ?? ''),
         company: 'Security',
-        inactiveDate: String(row.updated_at ?? new Date().toISOString()).slice(0, 10),
+        inactiveDate: String(
+          row.date_resigned ?? row.updated_at ?? new Date().toISOString(),
+        ).slice(0, 10),
         category,
         uniformDebt: Number(row.uniform_balance ?? 0),
         advanceDebt: Number(row.accom_balance ?? 0),
@@ -193,6 +170,49 @@ export async function rejectFmSalaryOverride(
       salary_approval_status: 'REJECTED',
       custom_salary: null,
       requires_md_approval: false,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', employeeId);
+
+  if (error) return { success: false, error: error.message };
+  revalidateExceptionPaths();
+  return { success: true };
+}
+
+export async function confirmFmOffboardingRecovery(
+  employeeId: string,
+): Promise<{ success: boolean; error?: string }> {
+  const actor = await requireFmExceptionActor();
+  if ('error' in actor) return { success: false, error: actor.error };
+
+  const db = createSupabaseServiceClient();
+  const { data: row, error: fetchError } = await db
+    .from('employees')
+    .select(
+      'hr_offboarding_sent_to_fm_at, fm_offboarding_payment_confirmed_at, uniform_balance, accom_balance',
+    )
+    .eq('id', employeeId)
+    .maybeSingle();
+
+  if (fetchError) return { success: false, error: fetchError.message };
+  if (!row?.hr_offboarding_sent_to_fm_at) {
+    return { success: false, error: 'HR has not queued this offboarding case to FM yet.' };
+  }
+  if (row.fm_offboarding_payment_confirmed_at) {
+    return { success: false, error: 'Recovery was already confirmed for this employee.' };
+  }
+
+  const uniform = Number(row.uniform_balance ?? 0);
+  const accom = Number(row.accom_balance ?? 0);
+  if (uniform + accom <= 0) {
+    return { success: false, error: 'No outstanding offboarding balances remain on file.' };
+  }
+
+  const { error } = await db
+    .from('employees')
+    .update({
+      fm_offboarding_payment_confirmed_at: new Date().toISOString(),
+      fm_offboarding_payment_confirmed_by: actor.user.id,
       updated_at: new Date().toISOString(),
     })
     .eq('id', employeeId);

@@ -4,13 +4,19 @@ import { revalidatePath } from "next/cache";
 
 import { verifyHeadOfficeMfaCode } from "../../lib/head-office-portal-auth";
 import {
+  clearVaultUnlockSessionCookiesStore,
+  hasValidVaultUnlockSession,
+  setVaultUnlockSessionCookies,
+  unlockExecutiveVaultWithPin,
+} from "../../lib/executive-vault-session";
+import {
   hashPortalPin,
-  verifyPortalPin,
 } from "../../lib/head-office-portal-pin";
 import { fetchBackOfficeUserProfile } from "../../lib/hr-portal-access-server";
 import { isExecutiveRank } from "../../lib/portal-role-utils";
 import { auditStaffAction } from "../../lib/staff-audit";
 import { resolveExecutiveCompanyId } from "../executive/settings/lib/executive-md-settings-db";
+import { writeSettingsAuditLogForAction } from "../executive/settings/settings-audit";
 import {
   createSupabaseServerClient,
   createSupabaseServiceClient,
@@ -23,6 +29,13 @@ export type VaultSessionPolicy = {
 
 export type VaultPinStatus = {
   configured: boolean;
+};
+
+export type VaultUnlockSessionStatus = {
+  /** Vault PIN gate applies to this signed-in user (MD/OD). */
+  applies: boolean;
+  pinConfigured: boolean;
+  unlocked: boolean;
 };
 
 export type ActiveVaultSession = {
@@ -309,46 +322,65 @@ export async function getVaultPinStatus(): Promise<VaultPinStatus> {
   return { configured: Boolean(hash) };
 }
 
-export async function verifyVaultUnlockPin(
-  pin: string,
-): Promise<{ ok: boolean; error?: string }> {
-  const normalized = normalizeVaultPin(pin);
-  if (!normalized) {
-    return { ok: false, error: "Enter your 4-digit vault PIN." };
-  }
-
+export async function getVaultUnlockSessionStatus(): Promise<VaultUnlockSessionStatus> {
   const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) return { ok: false, error: "You must be signed in." };
+  if (!user?.email) {
+    return { applies: false, pinConfigured: false, unlocked: false };
+  }
 
   const profile = await fetchBackOfficeUserProfile(supabase, user);
-  if (profile.role !== "MD" && profile.role !== "OD") {
-    return { ok: false, error: "Vault lock applies to MD and OD sessions only." };
+  if (!profile.employeeId || !isExecutiveRank(profile.role)) {
+    return { applies: false, pinConfigured: false, unlocked: true };
   }
 
-  const db = createSupabaseServiceClient();
-  const companyId = await resolveExecutiveCompanyId(supabase);
-  const { data } = await db
-    .from("md_settings")
-    .select("vault_pin_hash")
-    .eq("company_id", companyId)
-    .maybeSingle();
-
-  const stored =
-    typeof data?.vault_pin_hash === "string" ? data.vault_pin_hash.trim() : "";
-  if (!stored) {
-    return {
-      ok: false,
-      error: "Vault PIN is not configured yet. Ask MD to set it in Executive Settings.",
-    };
+  const pinStatus = await getVaultPinStatus();
+  if (!pinStatus.configured) {
+    return { applies: true, pinConfigured: false, unlocked: false };
   }
 
-  if (!verifyPortalPin(normalized, stored)) {
-    return { ok: false, error: "Incorrect vault PIN." };
-  }
+  const unlocked = await hasValidVaultUnlockSession(
+    profile.employeeId,
+    user.email,
+  );
+  return { applies: true, pinConfigured: true, unlocked };
+}
 
+export async function verifyVaultUnlockPin(
+  pin: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return unlockExecutiveVaultWithPin(pin);
+}
+
+export async function clearExecutiveVaultUnlockAction(): Promise<{ ok: true }> {
+  await clearVaultUnlockSessionCookiesStore();
+  return { ok: true };
+}
+
+/** Slide the MD vault unlock cookie forward while the user is still active. */
+export async function refreshVaultUnlockSessionAction(): Promise<{ ok: boolean }> {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user?.email) return { ok: false };
+
+  const profile = await fetchBackOfficeUserProfile(supabase, user);
+  if (!profile.employeeId || !isExecutiveRank(profile.role)) return { ok: false };
+
+  const pinStatus = await getVaultPinStatus();
+  if (!pinStatus.configured) return { ok: false };
+
+  const policy = await getVaultSessionPolicy();
+  if (!policy.autoLockEnabled) return { ok: false };
+
+  await setVaultUnlockSessionCookies(
+    profile.employeeId,
+    user.email,
+    policy.idleTimeoutMinutes,
+  );
   return { ok: true };
 }
 
@@ -402,7 +434,13 @@ export async function saveVaultMasterPin(
 
   if (error) return { ok: false, error: error.message };
 
+  const audit = await writeSettingsAuditLogForAction("UPDATE_VAULT_MASTER_PIN", {
+    configured: true,
+  });
+  if (!audit.ok) return { ok: false, error: audit.error };
+
   revalidatePath("/executive/settings");
+  revalidatePath("/executive/audit");
   return { ok: true };
 }
 
@@ -436,6 +474,13 @@ export async function saveVaultSessionPolicy(
 
   if (error) throw new Error(error.message);
 
+  const audit = await writeSettingsAuditLogForAction("UPDATE_VAULT_SESSION_POLICY", {
+    autoLockEnabled,
+    idleTimeoutMinutes: minutes,
+  });
+  if (!audit.ok) throw new Error(audit.error);
+
   revalidatePath("/executive/settings");
+  revalidatePath("/executive/audit");
   return { ok: true };
 }

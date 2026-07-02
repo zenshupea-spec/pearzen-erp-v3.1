@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { X, Building2, Users, Plus, Save } from 'lucide-react';
+import { CVS_BRAND_CLASSES } from '../../lib/cvs-brand-tokens';
 import {
   type InvoiceBillingClient,
   type SupplierInvoiceProfile,
@@ -83,16 +84,16 @@ export function InvoiceDeskBillingModal({
 
   return (
     <div
-      className="fixed inset-0 z-[110] flex items-center justify-center bg-sky-950/30 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/45 p-4 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
-        className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-sky-200 bg-white shadow-2xl"
+        className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-slate-200/90 bg-white shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-start justify-between border-b border-sky-100 bg-gradient-to-r from-sky-50 to-indigo-50 px-6 py-4">
+        <div className="flex items-start justify-between border-b border-slate-200/80 bg-white/80 px-6 py-4">
           <div>
-            <p className="text-[10px] font-black uppercase tracking-widest text-sky-700">
+            <p className={`text-[10px] font-black uppercase tracking-widest ${CVS_BRAND_CLASSES.portalEyebrow}`}>
               Invoice Desk · Executive Admin
             </p>
             <h2 className="text-lg font-black text-slate-900">Clients &amp; Tax Invoice Letterhead</h2>
@@ -113,10 +114,10 @@ export function InvoiceDeskBillingModal({
           <button
             type="button"
             onClick={() => setTab('clients')}
-            className={`flex items-center gap-2 rounded-t-xl px-4 py-2 text-xs font-black uppercase tracking-wider ${
+            className={`flex items-center gap-2 rounded-t-xl px-4 py-2 text-xs font-black uppercase tracking-wider transition-all ${
               tab === 'clients'
-                ? 'border border-b-white border-slate-200 bg-white text-sky-800'
-                : 'text-slate-500 hover:text-slate-800'
+                ? `${CVS_BRAND_CLASSES.mobileTabActive} border border-b-white border-slate-200`
+                : 'text-slate-500 hover:text-[color:var(--cvs-accent)]'
             }`}
           >
             <Users className="h-3.5 w-3.5" />
@@ -125,10 +126,10 @@ export function InvoiceDeskBillingModal({
           <button
             type="button"
             onClick={() => setTab('supplier')}
-            className={`flex items-center gap-2 rounded-t-xl px-4 py-2 text-xs font-black uppercase tracking-wider ${
+            className={`flex items-center gap-2 rounded-t-xl px-4 py-2 text-xs font-black uppercase tracking-wider transition-all ${
               tab === 'supplier'
-                ? 'border border-b-white border-slate-200 bg-white text-indigo-800'
-                : 'text-slate-500 hover:text-slate-800'
+                ? `${CVS_BRAND_CLASSES.mobileTabActive} border border-b-white border-slate-200`
+                : 'text-slate-500 hover:text-[color:var(--cvs-accent)]'
             }`}
           >
             <Building2 className="h-3.5 w-3.5" />
@@ -182,8 +183,8 @@ export function InvoiceDeskBillingModal({
               )}
             </div>
           ) : (
-            <div className="space-y-3 rounded-2xl border border-indigo-100 bg-indigo-50/30 p-4">
-              <p className="text-[10px] font-black uppercase tracking-widest text-indigo-800">
+            <div className="space-y-3 rounded-2xl border border-[color:var(--cvs-accent-muted)]/60 bg-[var(--cvs-accent-soft)]/30 p-4">
+              <p className={`text-[10px] font-black uppercase tracking-widest ${CVS_BRAND_CLASSES.portalEyebrow}`}>
                 Supplier block (top of tax invoice)
               </p>
               <Field label="Trading Name" value={localSupplier.tradingName} onChange={(v) => setLocalSupplier((s) => ({ ...s, tradingName: v }))} />
@@ -215,7 +216,7 @@ export function InvoiceDeskBillingModal({
           <button
             type="button"
             onClick={handleSaveAll}
-            className="ml-auto flex items-center gap-2 rounded-xl bg-gradient-to-r from-sky-600 to-indigo-600 px-5 py-2.5 text-xs font-black uppercase tracking-wider text-white shadow-md hover:from-sky-500 hover:to-indigo-500"
+            className="ml-auto flex items-center gap-2 rounded-xl bg-[color:var(--cvs-accent)] px-5 py-2.5 text-xs font-black uppercase tracking-wider text-white shadow-md shadow-[color:var(--cvs-glow)] transition-all hover:bg-[color:var(--cvs-accent-hover)]"
           >
             <Save className="h-4 w-4" />
             Save &amp; Apply to Invoices
@@ -245,14 +246,14 @@ function Field({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           rows={2}
-          className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-400/25"
+          className={`mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 ${CVS_BRAND_CLASSES.focusRing}`}
         />
       ) : (
         <input
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-400/25"
+          className={`mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 ${CVS_BRAND_CLASSES.focusRing}`}
         />
       )}
     </div>

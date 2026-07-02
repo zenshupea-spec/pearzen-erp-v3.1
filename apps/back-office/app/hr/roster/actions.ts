@@ -1,7 +1,46 @@
 "use server";
 
-import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import { revalidatePath } from 'next/cache';
+
+import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
+import {
+  resolveCompanyIdForSession,
+  rosterCompanyId,
+} from '../../../lib/company-context-server';
+import {
+  assertHrPortalEditor,
+  fetchBackOfficeUserProfile,
+} from '../../../lib/hr-portal-access-server';
+
+async function requireHrEditor() {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { session },
+    error: authError,
+  } = await supabase.auth.getSession();
+
+  if (authError || !session?.user) {
+    return { success: false as const, error: 'UNAUTHORIZED: PLEASE RE-LOGIN' };
+  }
+
+  const profile = await fetchBackOfficeUserProfile(supabase, session.user);
+  try {
+    assertHrPortalEditor(profile.role);
+  } catch (err) {
+    return {
+      success: false as const,
+      error: err instanceof Error ? err.message : 'Forbidden.',
+    };
+  }
+
+  const sessionCompanyId = await resolveCompanyIdForSession(supabase);
+  const companyId = rosterCompanyId(sessionCompanyId);
+  if (!companyId) {
+    return { success: false as const, error: 'UNAUTHORIZED: INVALID COMPANY ACCESS' };
+  }
+
+  return { success: true as const, supabase, companyId };
+}
 
 export async function commitShift(formData: {
   employee_id: string;
@@ -11,49 +50,32 @@ export async function commitShift(formData: {
   end_time: string;
 }) {
   try {
-    const supabase = await createSupabaseServerClient();
-
-    // 1. Get the Admin's session to retrieve company_id (Mandatory per SOP)
-    const { data: { session }, error: authError } = await supabase.auth.getSession();
-    
-    // If no session, this is why you see "UNAUTHORIZED"
-    if (authError || !session) {
-        console.error("❌ AUTH ERROR: No active session found.");
-        return { success: false, error: "UNAUTHORIZED: PLEASE RE-LOGIN" };
+    const gate = await requireHrEditor();
+    if (!gate.success) {
+      return { success: false, error: gate.error };
     }
 
-    // 2. Fetch the company_id for the current admin from their profile
-    const { data: adminProfile, error: profileError } = await supabase
-      .from('profiles')
-      .select('company_id')
-      .eq('id', session.user.id)
-      .single();
+    const { supabase, companyId } = gate;
 
-    if (profileError || !adminProfile?.company_id) {
-        console.error("❌ PROFILE ERROR: Admin has no company_id assigned.");
-        return { success: false, error: "UNAUTHORIZED: INVALID COMPANY ACCESS" };
-    }
-
-    // 3. Insert into time_rosters (ALL CAPS enforced per SOP)
-    const { error } = await supabase
-      .from('time_rosters')
-      .insert([{
+    const { error } = await supabase.from('time_rosters').insert([
+      {
         employee_id: formData.employee_id,
         site_id: formData.site_id,
         shift_date: formData.shift_date,
         planned_start_time: formData.start_time,
         planned_end_time: formData.end_time,
-        company_id: adminProfile.company_id,
-        status: 'ACTIVE'
-      }]);
+        company_id: companyId,
+        status: 'ACTIVE',
+      },
+    ]);
 
     if (error) throw error;
 
     revalidatePath('/hr/roster');
     return { success: true };
-
-  } catch (error: any) {
-    console.error("❌ ROSTER ENGINE CRASH:", error.message);
-    return { success: false, error: error.message };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('❌ ROSTER ENGINE CRASH:', message);
+    return { success: false, error: message };
   }
 }

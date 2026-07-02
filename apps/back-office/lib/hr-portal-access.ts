@@ -97,6 +97,7 @@ export function canAccessPathForProfile(
 export function canAccessHrPortal(role: string | null | undefined): boolean {
   const normalized = normalizePortalRole(role);
   if (!normalized) return false;
+  if (isExecutiveRank(normalized)) return true;
   return normalized === "HR" || normalized === "FM" || normalized === "EA";
 }
 

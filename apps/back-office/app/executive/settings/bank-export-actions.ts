@@ -10,14 +10,16 @@ import {
   isMissingColumnError,
   loadSettingEnvelope,
   MD_SETTINGS_ENVELOPE_KEYS,
-  mergeSettingEnvelope,
 } from '../../../../../packages/supabase/md-settings-envelope';
 import {
   getExecutiveMdSettingsContext,
   getMdSettingsDb,
   resolveExecutiveCompanyId,
+  assertExecutiveMdSettingsWrite,
+  upsertMdSettings,
 } from './lib/executive-md-settings-db';
-import { writeSettingsAuditLog } from './settings-audit';
+import { revalidateMdSettingsConsumers } from './lib/revalidate-md-settings-consumers';
+import { writeSettingsAuditLog, persistMdSettingEnvelopeWithAudit } from './settings-audit';
 
 export async function getBankExportSettings(): Promise<BankExportSettings> {
   const companyId = await resolveExecutiveCompanyId();
@@ -48,25 +50,41 @@ export async function getBankExportSettings(): Promise<BankExportSettings> {
 }
 
 export async function saveBankExportSettings(settings: BankExportSettings) {
+  const vaultGate = await assertExecutiveMdSettingsWrite();
+  if (!vaultGate.ok) return { success: false, error: vaultGate.error };
+
   const { session, db, companyId } = await getExecutiveMdSettingsContext();
   const sanitized = parseBankExportSettings(settings);
 
-  let { error } = await db.from('md_settings').upsert(
-    { company_id: companyId, bank_export_settings: sanitized },
-    { onConflict: 'company_id' },
-  );
+  let { error } = await upsertMdSettings(db, companyId, { bank_export_settings: sanitized });
 
   if (error && isMissingColumnError(error.message)) {
-    return mergeSettingEnvelope(db, companyId, {
-      [MD_SETTINGS_ENVELOPE_KEYS.bankExport]: sanitized,
-    });
+    const res = await persistMdSettingEnvelopeWithAudit(
+      db,
+      companyId,
+      { [MD_SETTINGS_ENVELOPE_KEYS.bankExport]: sanitized },
+      'UPDATE_BANK_EXPORT_SETTINGS',
+      sanitized,
+    );
+    if (!res.success) return res;
+    revalidateMdSettingsConsumers();
+    revalidatePath('/fm/settings');
+    revalidatePath('/executive/payroll');
+    revalidatePath('/executive/advance');
+    return { success: true as const };
   }
 
   if (error) return { success: false as const, error: error.message };
 
-  await writeSettingsAuditLog(session, companyId, 'UPDATE_BANK_EXPORT_SETTINGS', sanitized);
+  const audit = await writeSettingsAuditLog(
+    session,
+    companyId,
+    'UPDATE_BANK_EXPORT_SETTINGS',
+    sanitized,
+  );
+  if (!audit.ok) return { success: false as const, error: audit.error };
 
-  revalidatePath('/executive/settings');
+  revalidateMdSettingsConsumers();
   revalidatePath('/fm/settings');
   revalidatePath('/executive/payroll');
   revalidatePath('/executive/advance');

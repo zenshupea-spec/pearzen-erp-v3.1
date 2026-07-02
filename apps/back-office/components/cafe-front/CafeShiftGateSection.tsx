@@ -12,6 +12,7 @@ import { CafeCheckoutButton } from './CafeCheckoutButton';
 import { CafeFrontSchedulePreview } from './CafeFrontSchedulePreview';
 import { CafeGeolocationProvider } from './CafeGeolocationContext';
 import BrandWatermarkBackground from '../portal/BrandWatermarkBackground';
+import { CVS_BRAND_CLASSES } from '../../lib/cvs-brand-tokens';
 import type { CafeShiftGate } from '../../lib/cafe-front-shift';
 
 function formatTime(value: string) {
@@ -53,7 +54,9 @@ function CafeFrontGateHero({
         </div>
       </div>
       <div>
-        <p className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500">{eyebrow}</p>
+        <p className={`text-[10px] font-black uppercase tracking-[0.3em] ${CVS_BRAND_CLASSES.portalEyebrow}`}>
+          {eyebrow}
+        </p>
         <h2 className="mt-2 text-xl font-black uppercase leading-tight tracking-tight text-slate-900">
           {title}
         </h2>
@@ -90,6 +93,14 @@ function CafeShiftGateBody({
           />
         )}
       </div>
+
+      {isCheckIn ? (
+        <p className="text-center text-[10px] leading-relaxed text-slate-500">
+          Bookmark <span className="font-mono font-semibold text-slate-600">/cafe-front/check-in</span>{' '}
+          for a stable link. Any café tab shows this gate until you check in — the bottom bar
+          appears only after unlock.
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -147,7 +158,7 @@ export function CafeShiftGateSection({
           }
           description={
             isCheckIn
-              ? `GPS + selfie at the café site. Portal stays open 1 hour after close (${formatTime(shiftGate.portalGraceEnd)}).`
+              ? `GPS + selfie at the café site. Portal stays open 1 hour after close (${formatTime(shiftGate.portalGraceEnd)}). Check-in is not a bottom tab — it unlocks every café screen once verified.`
               : 'GPS + selfie at the café site to complete your shift.'
           }
         />

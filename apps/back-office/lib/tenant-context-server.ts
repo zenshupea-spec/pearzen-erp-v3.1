@@ -6,6 +6,7 @@ import {
   TENANT_SLUG_COOKIE,
   TENANT_SLUG_HEADER,
   normalizeTenantSlug,
+  resolveTenantSlugFromHostAndCookie,
 } from "./tenant-host";
 import {
   resolveTenantCompany,
@@ -20,7 +21,10 @@ export async function getTenantSlugFromRequest(): Promise<string | null> {
   if (fromHeader) return fromHeader;
 
   const cookieStore = await cookies();
-  return normalizeTenantSlug(cookieStore.get(TENANT_SLUG_COOKIE)?.value);
+  return resolveTenantSlugFromHostAndCookie(
+    hdrs.get("host") ?? "",
+    cookieStore.get(TENANT_SLUG_COOKIE)?.value,
+  );
 }
 
 export async function resolveTenantCompanyFromRequest(): Promise<TenantCompany | null> {

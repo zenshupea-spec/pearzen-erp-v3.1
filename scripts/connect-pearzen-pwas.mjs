@@ -2,6 +2,11 @@
 /**
  * Wire sm.pearzen.tech + field.pearzen.tech to their PWA Vercel projects.
  *
+ * Env posture (R-INFRA-02):
+ *   - All upserts use target **production** only (matches live PWA dashboard).
+ *   - Supabase keys are copied from back-office **production** env rows.
+ *   - Back-office preview isolation: npm run isolate:vercel-preview-env
+ *
  * Run: npm run connect:pearzen-pwas
  */
 
@@ -20,8 +25,8 @@ const FIELD_PWA_PROJECT =
 const SM_PWA_PROJECT =
   process.env.VERCEL_SM_PWA_PROJECT?.trim() || 'pearzen-erp-sm-pwa';
 
-const FIELD_DOMAIN = `field.${DOMAIN}`;
-const SM_DOMAIN = `sm.${DOMAIN}`;
+const FIELD_DOMAIN = process.env.FIELD_PWA_DOMAIN?.trim() || `cv.${DOMAIN}`;
+const SM_DOMAIN = process.env.SM_PWA_DOMAIN?.trim() || `cvssm.${DOMAIN}`;
 
 const PWA_ENV_KEYS = [
   'NEXT_PUBLIC_SUPABASE_URL',

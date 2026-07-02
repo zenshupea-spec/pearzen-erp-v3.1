@@ -3,10 +3,19 @@ import "./globals.css";
 import type { Metadata, Viewport } from "next";
 import type React from "react";
 
-export const metadata: Metadata = {
-  title: "PEARZEN ERP - Back Office",
-  description: "Head Office / OM / HR / FM / MD-OD"
-};
+import {
+  buildFaviconMetadata,
+  resolveTenantCompanyLogoUrl,
+} from "../lib/tenant-company-logo-server";
+
+export async function generateMetadata(): Promise<Metadata> {
+  const logoUrl = await resolveTenantCompanyLogoUrl();
+  return {
+    title: "PEARZEN ERP - Back Office",
+    description: "Head Office / OM / HR / FM / MD-OD",
+    icons: buildFaviconMetadata(logoUrl),
+  };
+}
 
 export const viewport: Viewport = {
   width: "device-width",

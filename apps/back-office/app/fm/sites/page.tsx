@@ -7,6 +7,7 @@ import {
   DEFAULT_GEOFENCE_RADIUS_M,
   MAX_GEOFENCE_RADIUS_M,
   MIN_GEOFENCE_RADIUS_M,
+  siteHasGpsCoordinates,
 } from '../../../lib/site-geofence';
 import {
   activateMasterSite,
@@ -55,6 +56,7 @@ import {
   Clock,
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
+import StaffPortalLoading from '../../../components/portal/StaffPortalLoading';
 import { SiteWelfareFields } from '../../../components/site/SiteWelfareFields';
 import {
   EMPTY_SITE_MEALS,
@@ -63,6 +65,15 @@ import {
   type SiteMealsProvided,
 } from '../../../lib/site-welfare';
 import FmSubnav from '../components/FmSubnav';
+import FmPayrollMonthSelector from '../components/FmPayrollMonthSelector';
+import {
+  FM_LIVE_PAYROLL_PERIOD,
+  formatPayrollPeriodLabel,
+  type PayrollPeriod,
+} from '../lib/payroll-period';
+import { payrollMonthFromFmPeriod } from '../../../lib/deduction-month-lock-storage';
+import { resolveSiteSectorFromSm } from '../../../lib/site-sector-display';
+import { useFmHolidayCalendarIncomplete } from '../use-fm-holiday-calendar-incomplete';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -294,7 +305,7 @@ function RegisterSiteModal({
   if (!form.contractStart) missingFields.push('Contract start date');
   if (form.rankRows.length === 0) missingFields.push('At least one guard rank');
   if (!gpsFilled && !form.requestOMGPS) {
-    missingFields.push('GPS coordinates (or OM field capture)');
+    missingFields.push('GPS coordinates (or TM field capture)');
   }
 
   return (
@@ -542,10 +553,10 @@ function RegisterSiteModal({
                           </span>
                           <span className="flex flex-col gap-0.5">
                             <span className={`text-xs font-bold ${form.requestOMGPS ? 'text-amber-800' : 'text-slate-700'}`}>
-                              Request OM Field GPS Capture
+                              Request TM Field GPS Capture
                             </span>
                             <span className={`text-[10px] leading-relaxed ${form.requestOMGPS ? 'text-amber-700' : 'text-slate-500'}`}>
-                              Dispatches a pending GPS verification task to the assigned Sector Manager. GPS coordinates will be captured on-site via the field app.
+                              Queues GPS capture for the assigned Sector Manager in the SM portal. TM approves before the site directory is updated.
                             </span>
                           </span>
                         </label>
@@ -929,6 +940,14 @@ function SiteRow({
   const [configSaved, setConfigSaved] = useState(false);
   const [addRankOpen, setAddRankOpen] = useState(false);
   const [rankToAdd,   setRankToAdd]   = useState<RankKey>('CSO');
+  const gpsLatInputRef = useRef<HTMLInputElement>(null);
+
+  const openGpsEditor = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setExpanded(true);
+    setConfigMode(true);
+    window.setTimeout(() => gpsLatInputRef.current?.focus(), 50);
+  };
 
   // Sync drafts when site changes (e.g. after save propagates back)
   useEffect(() => {
@@ -1099,7 +1118,18 @@ function SiteRow({
   };
 
   const smDisplayName = resolveSectorManagerLabel(site, sectorManagers);
+  const collapsedSectorDisplay = resolveSiteSectorFromSm(
+    site.sector,
+    site.sectorManagerEpf,
+    sectorManagers,
+  );
+  const panelSmEpf =
+    site.status === 'PENDING'
+      ? selectedSM || null
+      : draftConfig.sectorManagerEpf || site.sectorManagerEpf || null;
+  const panelSectorDisplay = resolveSiteSectorFromSm(site.sector, panelSmEpf, sectorManagers);
   const isClientSiteRow = site.siteKind === 'client';
+  const siteNeedsGps = !siteHasGpsCoordinates(site.lat, site.lng);
   const reservedSiteCodes = useMemo(
     () =>
       allSites
@@ -1134,7 +1164,7 @@ function SiteRow({
             </div>
             <div>
               <p className={`font-bold leading-tight ${isGrouped ? 'text-indigo-700 font-bold' : 'text-slate-900'}`}>{site.siteName}</p>
-              <p className={`text-xs ${isGrouped ? 'text-indigo-500/80' : 'text-slate-500'}`}>{site.clientName}</p>
+              <p className={`text-xs uppercase ${isGrouped ? 'text-indigo-500/80' : 'text-slate-500'}`}>{site.clientName}</p>
               {site.rateAudit && (
                 <div className="text-[9px] font-medium text-slate-400 flex items-center gap-1 mt-1">
                   <Clock className="w-3 h-3" />
@@ -1151,7 +1181,12 @@ function SiteRow({
         </td>
         <td className="px-5 py-4">
           {isClientSiteRow ? (
-            <span className="text-xs font-bold text-slate-700">{site.sector}</span>
+            <span
+              className="text-xs font-bold text-slate-700"
+              title={site.sectorManagerEpf ? 'From SM sector in MNR' : undefined}
+            >
+              {collapsedSectorDisplay}
+            </span>
           ) : (
             <span className="text-xs font-medium text-slate-400">—</span>
           )}
@@ -1166,11 +1201,32 @@ function SiteRow({
             <span className="text-xs font-medium text-slate-400">—</span>
           )}
         </td>
-        <td className="px-5 py-4">
-          <div className="flex items-center gap-1 font-mono text-xs text-slate-500">
-            <MapPin className="h-3.5 w-3.5 text-emerald-600" />
-            {site.lat.toFixed(4)}, {site.lng.toFixed(4)}
-          </div>
+        <td className="px-5 py-4" onClick={(e) => e.stopPropagation()}>
+          {siteNeedsGps ? (
+            <button
+              type="button"
+              onClick={openGpsEditor}
+              className="inline-flex items-center gap-1 rounded-full border border-amber-300/80 bg-amber-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-amber-900 transition-colors hover:bg-amber-100"
+            >
+              <MapPin className="h-3 w-3" />
+              Set GPS
+            </button>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1 font-mono text-xs text-slate-500">
+                <MapPin className="h-3.5 w-3.5 text-emerald-600" />
+                {site.lat.toFixed(4)}, {site.lng.toFixed(4)}
+              </div>
+              <button
+                type="button"
+                onClick={openGpsEditor}
+                aria-label="Edit GPS coordinates"
+                className="rounded-md p-0.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+              >
+                <Pencil className="h-3 w-3" />
+              </button>
+            </div>
+          )}
         </td>
         <td className="px-5 py-4">
           {isClientSiteRow ? (
@@ -1359,7 +1415,12 @@ function SiteRow({
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-slate-400">GPS Lat</label>
-                        <input type="number" step="0.0001" placeholder="6.9271" value={draftConfig.lat}
+                        <input
+                          ref={gpsLatInputRef}
+                          type="number"
+                          step="0.0001"
+                          placeholder="6.9271"
+                          value={draftConfig.lat}
                           onChange={(e) => setDraftConfig((p) => ({ ...p, lat: e.target.value }))}
                           onClick={(e) => e.stopPropagation()}
                           className={`${ic} border-slate-200/80 font-mono focus:ring-emerald-500/40`} />
@@ -1520,6 +1581,15 @@ function SiteRow({
                             <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                           </div>
                         </div>
+                        <div className="rounded-lg border border-slate-200/80 bg-slate-50/80 px-2.5 py-2">
+                          <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">
+                            Sector (from MNR)
+                          </p>
+                          <p className="mt-0.5 text-sm font-semibold text-slate-800">{panelSectorDisplay}</p>
+                          <p className="mt-1 text-[10px] text-slate-500">
+                            Edit sector on the SM profile in HR → MNR.
+                          </p>
+                        </div>
                         <button type="button" disabled={activating || !selectedSM} onClick={(e) => { e.stopPropagation(); handleActivate(); }}
                           className={`flex w-full items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-black uppercase tracking-wider text-white shadow-lg transition-all ${activating ? 'cursor-wait bg-emerald-400' : 'bg-emerald-600 shadow-emerald-600/30 hover:bg-emerald-500'}`}>
                           {activating
@@ -1558,6 +1628,15 @@ function SiteRow({
                             </select>
                             <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                           </div>
+                        </div>
+                        <div className="rounded-lg border border-slate-200/80 bg-slate-50/80 px-2.5 py-2">
+                          <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">
+                            Sector (from MNR)
+                          </p>
+                          <p className="mt-0.5 text-sm font-semibold text-slate-800">{panelSectorDisplay}</p>
+                          <p className="mt-1 text-[10px] text-slate-500">
+                            Edit sector on the SM profile in HR → MNR.
+                          </p>
                         </div>
                         <div className="flex items-center gap-1.5 text-xs text-slate-700">
                           <Phone className="h-3.5 w-3.5 text-slate-400" />
@@ -1707,7 +1786,7 @@ function ArchivedSitesFolder({
                   </div>
                   <div className="min-w-0">
                     <p className="truncate text-sm font-bold text-slate-800">{site.siteName}</p>
-                    <p className="truncate text-xs text-slate-500">{site.clientName}</p>
+                    <p className="truncate text-xs uppercase text-slate-500">{site.clientName}</p>
                   </div>
                 </div>
                 <button
@@ -1942,12 +2021,15 @@ export default function FMSiteDirectoryPage() {
   const [savingSite, setSavingSite]       = useState(false);
   const [saveSiteError, setSaveSiteError] = useState<string | null>(null);
   const [actionError, setActionError]     = useState<string | null>(null);
+  const [payrollPeriod, setPayrollPeriod] = useState<PayrollPeriod>(FM_LIVE_PAYROLL_PERIOD);
+  const periodLabel = formatPayrollPeriodLabel(payrollPeriod);
 
   const loadDirectory = React.useCallback(async () => {
     setLoading(true);
     setLoadError(null);
     try {
-      const data = await fetchMasterSiteDirectory();
+      const payrollMonth = payrollMonthFromFmPeriod(payrollPeriod).slice(0, 7);
+      const data = await fetchMasterSiteDirectory({ payrollMonth });
       setSites(data.sites);
       setSectorManagers(data.sectorManagers);
     } catch (error: unknown) {
@@ -1956,7 +2038,7 @@ export default function FMSiteDirectoryPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [payrollPeriod]);
 
   useEffect(() => {
     void loadDirectory();
@@ -1976,10 +2058,11 @@ export default function FMSiteDirectoryPage() {
       Array.from(
         new Set(
           activeSites
+            .filter((s) => s.siteKind === 'client')
             .map((s) => s.parentClient || s.clientName)
             .filter(Boolean) as string[],
         ),
-      ),
+      ).sort((a, b) => a.localeCompare(b)),
     [activeSites],
   );
   const existingSiteCodes = useMemo(
@@ -2010,7 +2093,7 @@ export default function FMSiteDirectoryPage() {
       .sort((a, b) => b.margin - a.margin);
   }, [activeSites]);
 
-  const holidayCalendarIncomplete = true;
+  const holidayCalendarIncomplete = useFmHolidayCalendarIncomplete();
 
   const sorted = [...activeSites].sort((a, b) => {
     if (!sortField) return 0;
@@ -2246,7 +2329,7 @@ export default function FMSiteDirectoryPage() {
           <FmSubnav holidayCalendarIncomplete={holidayCalendarIncomplete} />
 
           {/* ── Page title bar ── */}
-          <div className="mb-8 flex w-full items-center justify-between gap-4">
+          <div className="mb-8 flex w-full flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="mb-2 flex items-center gap-2">
                 <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-blue-200 bg-blue-50">
@@ -2261,16 +2344,22 @@ export default function FMSiteDirectoryPage() {
               </h1>
               <p className="mt-1 text-sm text-slate-500">
                 Client guard sites — margin desk, billing rates, and sector assignments.
+                <span className="ml-1 font-semibold text-slate-700">
+                  Margin totals for {periodLabel}.
+                </span>
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => setModalOpen(true)}
-              className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-emerald-600/25 hover:bg-emerald-500 transition-all"
-            >
-              <Plus className="h-4 w-4" />
-              Add New Site
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              <FmPayrollMonthSelector period={payrollPeriod} onChange={setPayrollPeriod} />
+              <button
+                type="button"
+                onClick={() => setModalOpen(true)}
+                className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-emerald-600/25 hover:bg-emerald-500 transition-all"
+              >
+                <Plus className="h-4 w-4" />
+                Add New Site
+              </button>
+            </div>
           </div>
 
         <div className="flex flex-col gap-6">
@@ -2295,11 +2384,13 @@ export default function FMSiteDirectoryPage() {
           ) : null}
 
           {loading ? (
-            <div className="rounded-2xl border border-slate-200 bg-white/70 px-5 py-8 text-center text-sm font-semibold text-slate-600">
-              Loading site directory from Supabase…
-            </div>
-          ) : null}
-
+            <StaffPortalLoading
+              portal="fm"
+              message="Loading site directory…"
+              className="min-h-[min(100dvh,24rem)]"
+            />
+          ) : (
+          <>
           {/* ── Summary Cards ── */}
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
             <ExecutiveGlassCard className="p-4">
@@ -2514,6 +2605,8 @@ export default function FMSiteDirectoryPage() {
           </div>
 
           <ArchivedSitesFolder sites={archivedSites} onRestore={handleRestoreSite} />
+          </>
+          )}
 
         </div>
         </div>

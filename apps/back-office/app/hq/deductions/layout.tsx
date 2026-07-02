@@ -4,8 +4,9 @@ import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { LucideIcon } from 'lucide-react';
-import { Building2, CalendarDays, Package, PackagePlus, Shirt, UtensilsCrossed } from 'lucide-react';
+import { Building2, CalendarDays, Package, PackagePlus, RotateCcw, Shirt, UtensilsCrossed } from 'lucide-react';
 import DeductionsMonthLockBar from './DeductionsMonthLockBar';
+import { DeductionsPayrollMonthProvider } from './DeductionsPayrollMonthContext';
 
 const SUB_LINKS: {
   href: string;
@@ -18,6 +19,7 @@ const SUB_LINKS: {
   { href: '/hq/deductions/suppliers', label: 'Meal suppliers', icon: UtensilsCrossed },
   { href: '/hq/deductions/uniform-suppliers', label: 'Uniform stock', icon: Shirt },
   { href: '/hq/deductions/uniform-courier', label: 'Courier queue', icon: Package },
+  { href: '/hq/deductions/uniform-collecting', label: 'Uniform collecting', icon: RotateCcw },
   { href: '/hq/deductions/uniform-issue', label: 'Uniform issue', icon: Shirt },
   { href: '/hq/deductions/issue-vo-stock', label: 'Issue VO stock', icon: PackagePlus },
 ];
@@ -36,7 +38,8 @@ export default function DeductionsLayout({ children }: { children: ReactNode }) 
     exact ? pathname === href : pathname === href || pathname.startsWith(`${href}/`);
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-6 py-8">
+    <DeductionsPayrollMonthProvider>
+      <div className="mx-auto w-full max-w-6xl px-6 py-8">
       <header className="mb-8">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
@@ -82,6 +85,7 @@ export default function DeductionsLayout({ children }: { children: ReactNode }) 
       </header>
 
       {children}
-    </div>
+      </div>
+    </DeductionsPayrollMonthProvider>
   );
 }

@@ -2,7 +2,18 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { DEFAULT_RANK_PAY_MATRIX } from '../rank-pay-matrix';
 
-const DEFAULT_GEOFENCE_RADIUS_M = 150;
+const DEFAULT_GEOFENCE_RADIUS_M = 25;
+
+/** Hub routes seeded when product_bundle = wfm_only. */
+export const WFM_DEFAULT_ENABLED_MODULES = [
+  '/hr',
+  '/hr/mnr',
+  '/fm',
+  '/hq/deductions',
+  '/hq/guard-proxy',
+] as const;
+
+export type TenantProductBundle = 'full_erp' | 'wfm_only';
 
 export type TenantExecutiveSeed = {
   mdEmail: string;
@@ -96,8 +107,17 @@ export async function seedExecutiveEmployees(
   }
 }
 
-export async function seedTenantMdSettings(db: SupabaseClient, companyId: string) {
-  const payload = buildDefaultMdSettingsRow(companyId);
+export async function seedTenantMdSettings(
+  db: SupabaseClient,
+  companyId: string,
+  productBundle: TenantProductBundle = 'full_erp',
+) {
+  const enabledModules =
+    productBundle === 'wfm_only' ? [...WFM_DEFAULT_ENABLED_MODULES] : null;
+  const payload = {
+    ...buildDefaultMdSettingsRow(companyId),
+    ...(enabledModules ? { enabled_modules: enabledModules } : {}),
+  };
 
   let { error } = await db.from('md_settings').upsert(payload, { onConflict: 'company_id' });
 
@@ -116,12 +136,12 @@ export async function seedTenantMdSettings(db: SupabaseClient, companyId: string
   }
 }
 
-/** Seed everything a new tenant needs beyond the companies row. */
 export async function provisionTenantDefaults(
   db: SupabaseClient,
   companyId: string,
   companyName: string,
   executives: TenantExecutiveSeed,
+  productBundle: TenantProductBundle = 'full_erp',
 ) {
   await seedExecutiveEmployees(
     db,
@@ -130,5 +150,5 @@ export async function provisionTenantDefaults(
     executives.mdEmail.trim().toLowerCase(),
     executives.odEmail.trim().toLowerCase(),
   );
-  await seedTenantMdSettings(db, companyId);
+  await seedTenantMdSettings(db, companyId, productBundle);
 }

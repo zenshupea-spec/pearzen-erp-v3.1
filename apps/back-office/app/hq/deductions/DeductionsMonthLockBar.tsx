@@ -7,16 +7,15 @@ import {
   lockDeductionMonthForFm,
   type DeductionMonthLockStatus,
 } from './actions';
-import { payrollMonthFirstDay, payrollMonthLabel } from './lib/payroll-month';
+import { useDeductionsPayrollMonth } from './DeductionsPayrollMonthContext';
 
 export default function DeductionsMonthLockBar() {
-  const [monthInput, setMonthInput] = useState(() => payrollMonthFirstDay().slice(0, 7));
+  const { monthInput, setMonthInput, payrollMonth, payrollMonthLabel: monthLabel } =
+    useDeductionsPayrollMonth();
   const [status, setStatus] = useState<DeductionMonthLockStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
-
-  const payrollMonth = payrollMonthFirstDay(monthInput);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -32,7 +31,7 @@ export default function DeductionsMonthLockBar() {
   const handleLock = () => {
     setMessage(null);
     const drafts = status?.draftEntryCount ?? 0;
-    const label = payrollMonthLabel(payrollMonth);
+    const label = monthLabel;
     if (
       drafts > 0 &&
       !window.confirm(
@@ -85,7 +84,7 @@ export default function DeductionsMonthLockBar() {
           <span className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-900">
             <CheckCircle2 className="h-4 w-4 shrink-0" />
             <span className="text-[10px] font-bold uppercase tracking-wider">
-              Sent to FM · {payrollMonthLabel(payrollMonth)}
+              Sent to FM · {monthLabel}
             </span>
           </span>
         ) : (
@@ -121,8 +120,9 @@ export default function DeductionsMonthLockBar() {
       ) : null}
       {status?.isDemo && !status.tableReady && !locked ? (
         <p className="max-w-xs text-right text-[10px] font-semibold text-amber-800">
-          Preview mode — lock is stored locally until migration{' '}
-          <code className="text-[9px]">20260604290000_payroll_deduction_month_lock.sql</code> runs.
+          Month-lock table not migrated — run{' '}
+          <code className="text-[9px]">npm run db:apply-deductions-admin</code> for server-side
+          locks.
         </p>
       ) : null}
     </div>

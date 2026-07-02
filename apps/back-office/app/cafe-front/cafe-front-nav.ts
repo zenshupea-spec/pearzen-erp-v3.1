@@ -3,6 +3,7 @@ export const CAFE_FRONT_ORDERS_PATH = '/cafe-front/orders';
 export const CAFE_FRONT_ROSTER_PATH = '/cafe-front/roster';
 export const CAFE_FRONT_EXPIRY_PATH = '/cafe-front/expiry';
 export const CAFE_FRONT_MENU_PATH = '/cafe-front/menu';
+/** Deep link only — check-in UI is the portal shell gate, not a bottom-nav tab. */
 export const CAFE_FRONT_CHECKIN_PATH = '/cafe-front/check-in';
 
 export const CAFE_FRONT_PORTAL_TABS = [

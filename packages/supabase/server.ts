@@ -1,6 +1,11 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
+import {
+  mergeSupabaseAuthCookieOptions,
+  supabaseServerAuthCookieOptions,
+} from "./cookie-options";
+
 export { createSupabaseServiceClient } from "./service";
 
 /**
@@ -14,6 +19,7 @@ export async function createSupabaseServerClient() {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
+      cookieOptions: supabaseServerAuthCookieOptions(),
       cookies: {
         getAll() {
           return cookieStore.getAll();
@@ -23,15 +29,18 @@ export async function createSupabaseServerClient() {
         setAll(cookiesToSet) {
           try {
             cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options)
+              cookieStore.set(
+                name,
+                value,
+                mergeSupabaseAuthCookieOptions(options),
+              ),
             );
           } catch {
             // Server Components cannot set cookies — ignore.
             // Server Actions and Route Handlers will succeed here.
           }
         },
-      }
-    }
+      },
+    },
   );
 }
-

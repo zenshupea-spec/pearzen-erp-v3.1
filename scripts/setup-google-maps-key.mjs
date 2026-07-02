@@ -2,9 +2,16 @@
 /**
  * Store Google Maps API key for back-office geofence preview.
  *
+ * Writes NEXT_PUBLIC_GOOGLE_MAPS_API_KEY only (browser Maps JS).
+ * Restrict the key in GCP: HTTP referrers for cv*.pearzen.tech + localhost;
+ * API allowlist: Maps JavaScript API (+ Geocoding if using site-locality).
+ *
+ * Server-only reverse geocode may use GOOGLE_MAPS_API_KEY in .env — never
+ * exposed via GET /api/maps-key (R-MAPS-01).
+ *
  * Usage:
  *   node scripts/setup-google-maps-key.mjs AIzaSy...
- *   GOOGLE_MAPS_API_KEY=AIzaSy... node scripts/setup-google-maps-key.mjs
+ *   npm run setup:google-maps
  *
  * Then: npm run wire:backend && npm run dev
  */
@@ -18,7 +25,6 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const key =
   process.argv[2]?.trim() ||
   process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim() ||
-  process.env.GOOGLE_MAPS_API_KEY?.trim() ||
   '';
 
 if (!key || !key.startsWith('AIza')) {

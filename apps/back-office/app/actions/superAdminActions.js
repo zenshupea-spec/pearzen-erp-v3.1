@@ -1,38 +1,12 @@
 "use server";
 
-import { createServerClient } from "@supabase/ssr";
-import { cookies } from "next/headers";
-
-// Helper to initialize Supabase server client with async cookies
-async function getSupabaseServerClient() {
-  const cookieStore = await cookies();
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-    {
-      cookies: {
-        getAll() {
-          return cookieStore.getAll();
-        },
-        setAll(cookiesToSet) {
-          try {
-            cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options)
-            );
-          } catch (error) {
-            // Ignored in Server Component context
-          }
-        },
-      },
-    }
-  );
-}
+import { createSupabaseServerClient } from "../../../../packages/supabase/server";
 
 // Fetch all client companies (Bypasses RLS using Service Role if needed,
 // but assuming Super Admin has global read access via policies)
 export async function getAllTenants() {
   try {
-    const supabase = await getSupabaseServerClient();
+    const supabase = await createSupabaseServerClient();
 
     const { data, error } = await supabase
       .from("companies")
@@ -54,7 +28,7 @@ export async function getAllTenants() {
 // The Kill-Switch: Flips a company's status between ACTIVE and UNPAID
 export async function toggleTenantBillingStatus(tenantId, currentStatus) {
   try {
-    const supabase = await getSupabaseServerClient();
+    const supabase = await createSupabaseServerClient();
     const newStatus = currentStatus === "ACTIVE" ? "UNPAID" : "ACTIVE";
 
     const { error } = await supabase

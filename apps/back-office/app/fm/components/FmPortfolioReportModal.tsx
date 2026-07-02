@@ -1,8 +1,8 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Download, FileText, Lock, Printer, X } from 'lucide-react';
+import { Download, FileText, Lock, Loader2, Printer, X } from 'lucide-react';
 import type { PayrollWorkflowStatus } from '../../../lib/payroll-batch-workflow';
 import {
   buildClientBillingRows,
@@ -19,16 +19,18 @@ import {
 } from '../lib/fm-portfolio-report-builders';
 import { downloadFmA4Pdf, openFmA4Report } from '../lib/fm-report-print';
 import FmRetentionListTable from './FmRetentionListTable';
-import {
-  FM_PREV_MONTH_STOP_LIST,
-  FM_SALARY_MONTH_HALF_HOLD_LIST,
-} from '../lib/retention-lists';
+import { getFmRetentionLists } from '../lib/fm-retention-actions';
+import { getFmClientBillingCollections } from '../lib/fm-client-billing-actions';
+import type { FmClientBillingCollection } from '../lib/fm-client-billing-collections';
+import type { RetentionGuardRow } from '../lib/retention-lists';
+import type { PayrollPeriod } from '../lib/payroll-period';
 
 type FmPortfolioReportModalProps = {
   kind: FmPortfolioReportKind;
   sites: FmReportSite[];
   workflowStatus: PayrollWorkflowStatus;
   periodLabel: string;
+  payrollPeriod: PayrollPeriod;
   isLivePeriod?: boolean;
   onClose: () => void;
 };
@@ -50,18 +52,73 @@ export default function FmPortfolioReportModal({
   sites,
   workflowStatus,
   periodLabel,
+  payrollPeriod,
   isLivePeriod = true,
   onClose,
 }: FmPortfolioReportModalProps) {
   const [exporting, setExporting] = useState(false);
+  const [retentionLoading, setRetentionLoading] = useState(
+    kind === 'stop-list' || kind === 'half-hold',
+  );
+  const [retentionRows, setRetentionRows] = useState<RetentionGuardRow[]>([]);
+  const [collectionsLoading, setCollectionsLoading] = useState(kind === 'client-billing');
+  const [collectionsBySiteId, setCollectionsBySiteId] = useState<
+    Record<string, FmClientBillingCollection>
+  >({});
+
+  useEffect(() => {
+    if (kind !== 'client-billing') return;
+    let cancelled = false;
+    setCollectionsLoading(true);
+    void getFmClientBillingCollections(
+      payrollPeriod,
+      sites.map((site) => ({
+        id: site.id,
+        name: site.name,
+        clientBilled: site.clientBilled,
+      })),
+    ).then((payload) => {
+      if (cancelled) return;
+      if (payload.error) {
+        setCollectionsBySiteId({});
+      } else {
+        setCollectionsBySiteId(payload.collections);
+      }
+      setCollectionsLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [kind, payrollPeriod, sites]);
+
+  useEffect(() => {
+    if (kind !== 'stop-list' && kind !== 'half-hold') return;
+    let cancelled = false;
+    setRetentionLoading(true);
+    void getFmRetentionLists(payrollPeriod).then((payload) => {
+      if (cancelled) return;
+      setRetentionRows(kind === 'stop-list' ? payload.stopList : payload.holdList);
+      setRetentionLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [kind, payrollPeriod]);
+
   const meta = reportMeta(kind);
   const needsApproval = requiresMdApprovalForExport(kind);
   const exportBlocked = needsApproval && workflowExportBlocked(workflowStatus);
   const gateMsg = needsApproval ? exportGateMessage(workflowStatus) : null;
 
   const employees = useMemo(() => flattenPortfolioEmployees(sites), [sites]);
-  const clientRows = useMemo(() => buildClientBillingRows(sites), [sites]);
-  const printTables = useMemo(() => buildTableHtml(kind, sites), [kind, sites]);
+  const clientRows = useMemo(
+    () => buildClientBillingRows(sites, collectionsBySiteId),
+    [collectionsBySiteId, sites],
+  );
+  const printTables = useMemo(
+    () => buildTableHtml(kind, sites, retentionRows, collectionsBySiteId),
+    [collectionsBySiteId, kind, retentionRows, sites],
+  );
 
   const handlePrint = () => {
     if (exportBlocked) return;
@@ -179,15 +236,35 @@ export default function FmPortfolioReportModal({
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
           {kind === 'payroll-cost' && <PayrollCostTable employees={employees} />}
-          {kind === 'client-billing' && <ClientBillingTable rows={clientRows} />}
+          {kind === 'client-billing' &&
+            (collectionsLoading ? (
+              <div className="flex items-center justify-center gap-2 py-12 text-sm font-semibold text-slate-500">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading live collections…
+              </div>
+            ) : (
+              <ClientBillingTable rows={clientRows} />
+            ))}
           {kind === 'statutory' && <StatutoryTable employees={employees} />}
           {kind === 'deductions' && <DeductionsTable employees={employees} />}
-          {kind === 'stop-list' && (
-            <FmRetentionListTable rows={[...FM_PREV_MONTH_STOP_LIST]} variant="stop" />
-          )}
-          {kind === 'half-hold' && (
-            <FmRetentionListTable rows={[...FM_SALARY_MONTH_HALF_HOLD_LIST]} variant="half" />
-          )}
+          {kind === 'stop-list' &&
+            (retentionLoading ? (
+              <div className="flex items-center justify-center gap-2 py-12 text-sm font-semibold text-slate-500">
+                <Loader2 className="h-5 w-5 animate-spin" />
+                Loading live stop list…
+              </div>
+            ) : (
+              <FmRetentionListTable rows={retentionRows} variant="stop" />
+            ))}
+          {kind === 'half-hold' &&
+            (retentionLoading ? (
+              <div className="flex items-center justify-center gap-2 py-12 text-sm font-semibold text-slate-500">
+                <Loader2 className="h-5 w-5 animate-spin" />
+                Loading live hold list…
+              </div>
+            ) : (
+              <FmRetentionListTable rows={retentionRows} variant="half" />
+            ))}
         </div>
 
         <div className="flex flex-shrink-0 border-t border-slate-100 px-6 py-3">

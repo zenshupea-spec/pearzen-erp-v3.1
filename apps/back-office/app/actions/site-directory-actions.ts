@@ -6,12 +6,12 @@ import {
   createSupabaseServiceClient,
 } from '../../../../packages/supabase/server';
 import {
-  CLASSIC_VENTURE_COMPANY_ID,
   fetchWithRosterCompanyFallback,
   resolveCompanyIdForSession,
   rosterCompanyId,
 } from '../../lib/company-context-server';
-import { normalizeSmEpf } from '../../lib/om-service-db';
+import { normalizeSmEpf } from '../../../../packages/supabase/sm-epf';
+import { isSectorManagerEmployee } from '../../lib/hr-sectors';
 import {
   anyMealProvided,
   EMPTY_SITE_MEALS,
@@ -22,6 +22,9 @@ import {
   clampGeofenceRadiusM,
   DEFAULT_GEOFENCE_RADIUS_M,
 } from '../../lib/site-geofence';
+import { resolveActiveSmPortalAuth } from '../../lib/sm-portal-access-server';
+import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access-server';
+import { normalizePortalRole } from '../../lib/portal-role-utils';
 
 export type SiteStatus = 'ACTIVE' | 'SUSPENDED' | 'PENDING' | 'ARCHIVED';
 
@@ -31,6 +34,8 @@ export type RankRateEntry = {
   qty: number;
   invoiceRate: number;
   payRate: number;
+  isEventBill?: boolean;
+  eventLabel?: string;
 };
 
 export type RateAudit = {
@@ -79,6 +84,7 @@ export type SectorManagerOption = {
   epf: string;
   label: string;
   phone: string;
+  sector: string;
 };
 
 export type InternalStaffOption = {
@@ -180,10 +186,14 @@ function parseRateMatrix(value: unknown): Partial<Record<RankKey, RankRateEntry>
   for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
     if (!RANKS.includes(key as RankKey) || !raw || typeof raw !== 'object') continue;
     const row = raw as Record<string, unknown>;
+    const eventLabel =
+      typeof row.eventLabel === 'string' ? row.eventLabel.trim() : undefined;
     out[key as RankKey] = {
       qty: Number(row.qty) || 0,
       invoiceRate: Number(row.invoiceRate) || 0,
       payRate: Number(row.payRate) || 0,
+      isEventBill: Boolean(row.isEventBill),
+      eventLabel: eventLabel || undefined,
     };
   }
   return out;
@@ -195,10 +205,21 @@ function smLabel(rank: string | null, fullName: string | null, epf: string): str
   return r ? `${r} ${name}` : name;
 }
 
-function isSectorManagerRow(row: { emp_number?: string | null; rank?: string | null }) {
-  const epf = String(row.emp_number ?? '').toUpperCase();
-  const rank = String(row.rank ?? '').toUpperCase();
-  return epf.startsWith('SM-') || ['SM', 'OIC', 'SSO', 'CSO'].includes(rank);
+function isSectorManagerRow(row: {
+  emp_number?: string | null;
+  rank?: string | null;
+  group?: string | null;
+}) {
+  return isSectorManagerEmployee(row);
+}
+
+function resolveClientSiteSector(
+  smEpf: string | null,
+  smByEpf: Map<string, SectorManagerOption>,
+): string {
+  if (!smEpf) return 'Unassigned';
+  const sector = smByEpf.get(smEpf)?.sector?.trim();
+  return sector || 'Unassigned';
 }
 
 function employeeEpfKey(row: {
@@ -264,8 +285,9 @@ async function fetchSectorManagersForCompany(
   const supabase = await createSupabaseServerClient();
   let query = supabase
     .from('employees')
-    .select('emp_number, full_name, rank, phone, status')
+    .select('emp_number, epf_no, epf_num, full_name, rank, phone, status, group, site')
     .eq('status', 'ACTIVE')
+    .or('group.eq.SECTOR_MANAGER,and(group.eq.HEAD_OFFICE,rank.eq.SM)')
     .order('full_name', { ascending: true });
 
   if (companyId) {
@@ -280,11 +302,21 @@ async function fetchSectorManagersForCompany(
 
   return (data ?? [])
     .filter((row) => isSectorManagerRow(row))
-    .map((row) => ({
-      epf: String(row.emp_number),
-      label: smLabel(row.rank == null ? null : String(row.rank), row.full_name == null ? null : String(row.full_name), String(row.emp_number)),
-      phone: row.phone ? String(row.phone) : '—',
-    }));
+    .map((row) => {
+      const epf = employeeEpfKey(row);
+      if (!epf) return null;
+      return {
+        epf,
+        label: smLabel(
+          row.rank == null ? null : String(row.rank),
+          row.full_name == null ? null : String(row.full_name),
+          epf,
+        ),
+        phone: row.phone ? String(row.phone) : '—',
+        sector: row.site == null ? '' : String(row.site).trim(),
+      };
+    })
+    .filter((row): row is SectorManagerOption => row != null);
 }
 
 async function fetchSitesForCompany(companyId: string | null): Promise<Record<string, unknown>[]> {
@@ -398,6 +430,7 @@ function mapDbRowToMasterSite(
   smByEpf: Map<string, SectorManagerOption>,
   staffByEpf: Map<string, InternalStaffOption>,
   siteStaffBySiteId: Map<string, string[]>,
+  marginActivity?: { shiftsCompleted: number; visitsLogged: number },
 ): MasterSite {
   const rateMatrix = parseRateMatrix(row.rate_matrix);
   const { inv, pay } = blendedRates(rateMatrix);
@@ -424,18 +457,18 @@ function mapDbRowToMasterSite(
         ? 'Head Office'
         : siteKind === 'cafe_branch'
           ? 'Café'
-          : 'Unassigned',
+          : resolveClientSiteSector(smEpf, smByEpf),
     sectorManager: resolveStaffContactLabel(smEpf, smByEpf, staffByEpf, siteStaffEpfs),
     sectorManagerEpf: smEpf,
     smPhone: smEpf ? (smByEpf.get(smEpf)?.phone ?? '—') : '—',
     rankRequirements: rankRequirementsFromMatrix(rateMatrix),
-    shiftsCompleted: 0,
+    shiftsCompleted: marginActivity?.shiftsCompleted ?? 0,
     clientInvoiceRate: inv,
     guardPayRate: pay,
     deductions: 0,
     perVisitCharge: Number(row.per_visit_charge_lkr ?? 0),
     minDwellTimeMinutes: Number(row.min_dwell_time_minutes ?? 0),
-    visitsLogged: 0,
+    visitsLogged: marginActivity?.visitsLogged ?? 0,
     status: parseSiteStatus(row.site_status, Boolean(smEpf)),
     contractStart: row.contract_start
       ? String(row.contract_start).slice(0, 10)
@@ -472,33 +505,174 @@ type StoredRateMatrix = Partial<Record<RankKey, RankRateEntry>> & {
   }>;
 };
 
-function preserveShiftRowsOnSave(
+function rankTotalsFromShiftRows(
+  shiftRows: NonNullable<StoredRateMatrix['_shiftRows']>,
+): Map<string, number> {
+  const totals = new Map<string, number>();
+  for (const row of shiftRows) {
+    const rank = String(row.rank ?? '').trim().toUpperCase();
+    if (!rank) continue;
+    totals.set(rank, (totals.get(rank) ?? 0) + Math.max(0, Number(row.qty) || 0));
+  }
+  return totals;
+}
+
+function rankTotalsFromMatrix(matrix: Partial<Record<RankKey, RankRateEntry>>): Map<string, number> {
+  const totals = new Map<string, number>();
+  for (const rank of RANKS) {
+    const qty = matrix[rank]?.qty ?? 0;
+    if (qty > 0) totals.set(rank, qty);
+  }
+  return totals;
+}
+
+function rankTotalsEqual(
+  left: Map<string, number>,
+  right: Map<string, number>,
+): boolean {
+  if (left.size !== right.size) return false;
+  for (const [rank, qty] of left) {
+    if (right.get(rank) !== qty) return false;
+  }
+  return true;
+}
+
+function refreshShiftRowRates(
+  shiftRows: NonNullable<StoredRateMatrix['_shiftRows']>,
+  matrix: Partial<Record<RankKey, RankRateEntry>>,
+): NonNullable<StoredRateMatrix['_shiftRows']> {
+  return shiftRows.map((row) => {
+    const rank = row.rank as RankKey;
+    const entry = matrix[rank];
+    return {
+      ...row,
+      invoiceRate: entry?.invoiceRate ?? row.invoiceRate,
+      payRate: entry?.payRate ?? row.payRate,
+    };
+  });
+}
+
+/** Rebuild `_shiftRows` as all-shift coverage when MD edits aggregated rank qty in Site Directory. */
+function buildShiftRowsFromAggregatedMatrix(
+  matrix: Partial<Record<RankKey, RankRateEntry>>,
+): StoredRateMatrix {
+  const shiftRows: NonNullable<StoredRateMatrix['_shiftRows']> = [];
+  for (const rank of RANKS) {
+    const entry = matrix[rank];
+    if (!entry || entry.qty <= 0) continue;
+    shiftRows.push({
+      rank,
+      shiftType: 'both',
+      qty: entry.qty,
+      invoiceRate: entry.invoiceRate,
+      payRate: entry.payRate,
+    });
+  }
+  if (!shiftRows.length) return matrix;
+  return { ...matrix, _shiftRows: shiftRows };
+}
+
+/**
+ * Keep day/night `_shiftRows` when MD only changes rates; rebuild when rank headcounts change.
+ * SM portal (`parseSiteShiftRows`) reads rank + shiftType + qty from `_shiftRows`.
+ */
+function attachShiftRowsForSave(
   existing: unknown,
   input: Partial<Record<RankKey, RankRateEntry>>,
 ): StoredRateMatrix {
-  const shiftRows =
+  const existingRows =
     existing &&
     typeof existing === 'object' &&
     Array.isArray((existing as StoredRateMatrix)._shiftRows)
-      ? (existing as StoredRateMatrix)._shiftRows
+      ? (existing as StoredRateMatrix)._shiftRows!
       : undefined;
 
-  if (!shiftRows?.length) return input;
-  return { ...input, _shiftRows: shiftRows };
+  const inputTotals = rankTotalsFromMatrix(input);
+
+  if (
+    existingRows?.length &&
+    rankTotalsEqual(rankTotalsFromShiftRows(existingRows), inputTotals)
+  ) {
+    return { ...input, _shiftRows: refreshShiftRowRates(existingRows, input) };
+  }
+
+  return buildShiftRowsFromAggregatedMatrix(input);
 }
 
 async function fetchExistingRateMatrix(
   db: ReturnType<typeof getSiteDirectoryDb>,
+  companyId: string,
   siteId: string,
 ): Promise<unknown> {
   const { data, error } = await db
     .from('site_profiles')
     .select('rate_matrix')
     .eq('id', siteId)
+    .eq('company_id', companyId)
     .maybeSingle();
 
   if (error) throw new Error(error.message);
   return data?.rate_matrix ?? null;
+}
+
+async function requireSiteDirectoryMutationActor(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+) {
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+  if (authError || !user) throw new Error('Unauthorized');
+
+  const profile = await fetchBackOfficeUserProfile(supabase, user);
+  const role = normalizePortalRole(profile.role);
+  if (role !== 'MD' && role !== 'OD' && role !== 'FM') {
+    throw new Error('Forbidden');
+  }
+  return user;
+}
+
+/** Signed-in MD/OD/FM write scope — no silent CVS fallback when session tenant is missing. */
+async function requireSiteDirectoryWriteScope() {
+  const supabase = await createSupabaseServerClient();
+  await requireSiteDirectoryMutationActor(supabase);
+
+  const sessionCompanyId = await resolveCompanyIdForSession(supabase);
+  if (!sessionCompanyId) throw new Error('Unauthorized');
+
+  const companyId = rosterCompanyId(sessionCompanyId);
+  if (!companyId) throw new Error('Forbidden');
+
+  return { supabase, companyId };
+}
+
+async function loadSiteProfileForWrite(
+  db: ReturnType<typeof getSiteDirectoryDb>,
+  companyId: string,
+  siteId: string,
+  select: string,
+) {
+  const { data, error } = await db
+    .from('site_profiles')
+    .select(select)
+    .eq('id', siteId)
+    .eq('company_id', companyId)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+function siteDirectoryAuthFailure(
+  error: unknown,
+): { success: false; error: string } | null {
+  if (error instanceof Error) {
+    if (error.message === 'Forbidden') return { success: false, error: 'Forbidden' };
+    if (error.message === 'Unauthorized') {
+      return { success: false, error: 'Unauthorized' };
+    }
+  }
+  return null;
 }
 
 function buildRateMatrixFromRows(
@@ -624,8 +798,7 @@ async function siteCodeInUse(
 async function resolveCompanyScope() {
   const supabase = await createSupabaseServerClient();
   const sessionCompanyId = await resolveCompanyIdForSession(supabase);
-  const companyId =
-    rosterCompanyId(sessionCompanyId) ?? CLASSIC_VENTURE_COMPANY_ID;
+  const companyId = rosterCompanyId(sessionCompanyId);
   return { supabase, companyId };
 }
 
@@ -711,7 +884,20 @@ async function insertSiteStaffAssignments(
   if (error) throw new Error(error.message);
 }
 
-export async function fetchMasterSiteDirectory(): Promise<{
+export type FetchMasterSiteDirectoryOptions = {
+  /** YYYY-MM — when set, populates shiftsCompleted / visitsLogged from monthly rollup. */
+  payrollMonth?: string;
+  /** HO/café-only desk — excludes client guard sites from the payload. */
+  internalLocationsOnly?: boolean;
+};
+
+function isInternalLocationSite(site: MasterSite): boolean {
+  return site.siteKind === 'head_office' || site.siteKind === 'cafe_branch';
+}
+
+export async function fetchMasterSiteDirectory(
+  options?: FetchMasterSiteDirectoryOptions,
+): Promise<{
   sites: MasterSite[];
   sectorManagers: SectorManagerOption[];
   headOfficeStaff: InternalStaffOption[];
@@ -723,15 +909,27 @@ export async function fetchMasterSiteDirectory(): Promise<{
     loadSiteMappingContext(companyId),
   ]);
 
+  let activityBySiteId: Map<string, { shiftsCompleted: number; visitsLogged: number }> | null =
+    null;
+  if (options?.payrollMonth) {
+    const { fetchSiteMarginActivityBySiteId } = await import('../../lib/site-margin-activity');
+    activityBySiteId = await fetchSiteMarginActivityBySiteId(companyId, options.payrollMonth);
+  }
+
   return {
-    sites: rows.map((row) =>
-      mapDbRowToMasterSite(
-        row,
-        mapping.smByEpf,
-        mapping.staffByEpf,
-        mapping.siteStaffBySiteId,
-      ),
-    ),
+    sites: rows
+      .map((row) => {
+        const siteId = String(row.id);
+        const marginActivity = activityBySiteId?.get(siteId);
+        return mapDbRowToMasterSite(
+          row,
+          mapping.smByEpf,
+          mapping.staffByEpf,
+          mapping.siteStaffBySiteId,
+          marginActivity,
+        );
+      })
+      .filter((site) => !options?.internalLocationsOnly || isInternalLocationSite(site)),
     sectorManagers: mapping.sectorManagers,
     headOfficeStaff: mapping.headOfficeStaff,
     cafeStaff: mapping.cafeStaff,
@@ -767,7 +965,7 @@ export async function createMasterSite(
   const requestOmGps = isClientSite && input.requestOMGPS;
 
   if (!hasGps && !requestOmGps) {
-    return { success: false, error: 'GPS coordinates are required (or request OM field capture for client sites).' };
+    return { success: false, error: 'GPS coordinates are required (or request TM field capture for client sites).' };
   }
 
   const smEpfRaw = input.sectorManagerEpf.trim();
@@ -775,8 +973,15 @@ export async function createMasterSite(
     smEpfRaw && smEpfRaw.toLowerCase() !== 'null' ? smEpfRaw.toUpperCase() : null;
 
   try {
-    const { companyId } = await resolveCompanyScope();
+    const { companyId } = await requireSiteDirectoryWriteScope();
     const db = getSiteDirectoryDb();
+
+    let assignedSmEpf: string | null = null;
+    if (smEpf) {
+      const gate = await resolveActiveSmPortalAuth(db, companyId, smEpf);
+      if (!gate.ok) return { success: false, error: gate.error };
+      assignedSmEpf = gate.storedEpf;
+    }
 
     if (await siteCodeInUse(db, companyId, input.siteCode)) {
       return {
@@ -805,12 +1010,12 @@ export async function createMasterSite(
         parseInt(input.geofenceRadiusM, 10) || DEFAULT_GEOFENCE_RADIUS_M,
       ),
       needs_om_gps_capture: requestOmGps || !hasGps,
-      assigned_sm_epf: smEpf,
+      assigned_sm_epf: assignedSmEpf,
       per_visit_charge_lkr: isClientSite ? parseFloat(input.perVisitCharge) || 0 : 0,
       min_dwell_time_minutes: 0,
       required_guards: isClientSite ? totalHeads || 1 : 0,
       rate_matrix: rateMatrix,
-      site_status: smEpf || hasGps ? 'ACTIVE' : 'PENDING',
+      site_status: assignedSmEpf || hasGps ? 'ACTIVE' : 'PENDING',
       verification_mode: 'B',
       provides_food: anyMealProvided(mealsProvided),
       meal_breakfast: mealsProvided.breakfast,
@@ -841,6 +1046,8 @@ export async function createMasterSite(
       ),
     };
   } catch (error: unknown) {
+    const authFailure = siteDirectoryAuthFailure(error);
+    if (authFailure) return authFailure;
     const message = supabaseErrorMessage(error, 'Failed to save site.');
     console.error('❌ SUPABASE ERROR (createMasterSite):', message);
     return { success: false, error: message };
@@ -855,12 +1062,20 @@ export async function activateMasterSite(input: {
   if (!smEpf) return { success: false, error: 'Select a Sector Manager.' };
 
   try {
-    const { companyId } = await resolveCompanyScope();
+    const { companyId } = await requireSiteDirectoryWriteScope();
     const db = getSiteDirectoryDb();
+
+    const existing = await loadSiteProfileForWrite(db, companyId, input.siteId, 'id');
+    if (!existing) return { success: false, error: 'Site not found.' };
+
+    const gate = await resolveActiveSmPortalAuth(db, companyId, smEpf);
+    if (!gate.ok) return { success: false, error: gate.error };
+
     const { error } = await db
       .from('site_profiles')
-      .update({ assigned_sm_epf: smEpf, site_status: 'ACTIVE' })
-      .eq('id', input.siteId);
+      .update({ assigned_sm_epf: gate.storedEpf, site_status: 'ACTIVE' })
+      .eq('id', input.siteId)
+      .eq('company_id', companyId);
 
     if (error) throw new Error(error.message);
 
@@ -886,6 +1101,8 @@ export async function activateMasterSite(input: {
       ),
     };
   } catch (error: unknown) {
+    const authFailure = siteDirectoryAuthFailure(error);
+    if (authFailure) return authFailure;
     const message = supabaseErrorMessage(error, 'Failed to activate site.');
     console.error('❌ SUPABASE ERROR (activateMasterSite):', message);
     return { success: false, error: message };
@@ -900,126 +1117,24 @@ export async function updateMasterSiteRates(input: {
   const totalHeads = totalHeadsFromRankMatrix(input.rateMatrix);
 
   try {
-    const { companyId } = await resolveCompanyScope();
-    const db = getSiteDirectoryDb();
-    const existingMatrix = await fetchExistingRateMatrix(db, input.siteId);
-    const rateMatrix = preserveShiftRowsOnSave(existingMatrix, input.rateMatrix);
-
-    const { error } = await db
-      .from('site_profiles')
-      .update({
-        rate_matrix: rateMatrix,
-        rate_audit: rateAudit,
-        required_guards: totalHeads || 1,
-      })
-      .eq('id', input.siteId);
-
-    if (error) throw new Error(error.message);
-
-    const [rows, mapping] = await Promise.all([
-      fetchWithRosterCompanyFallback(fetchSitesForCompany, companyId),
-      loadSiteMappingContext(companyId),
-    ]);
-    const site = rows.find((r) => String(r.id) === input.siteId);
-    if (!site) return { success: false, error: 'Site not found after update.' };
-
-    revalidatePath('/executive/sites');
-    revalidatePath('/fm/sites');
-    revalidatePath('/hr/vacancies');
-
-    return {
-      success: true,
-      site: mapDbRowToMasterSite(
-        site,
-        mapping.smByEpf,
-        mapping.staffByEpf,
-        mapping.siteStaffBySiteId,
-      ),
-    };
-  } catch (error: unknown) {
-    const message = supabaseErrorMessage(error, 'Failed to save rates.');
-    console.error('❌ SUPABASE ERROR (updateMasterSiteRates):', message);
-    return { success: false, error: message };
-  }
-}
-
-export async function updateMasterSiteConfig(input: {
-  siteId: string;
-  config: SiteConfigUpdate;
-  rateMatrix: Partial<Record<RankKey, RankRateEntry>>;
-}): Promise<{ success: true; site: MasterSite } | { success: false; error: string }> {
-  const smEpfRaw = input.config.sectorManagerEpf.trim();
-  const smEpf =
-    smEpfRaw && smEpfRaw.toLowerCase() !== 'null' ? smEpfRaw.toUpperCase() : null;
-  const totalHeads = totalHeadsFromRankMatrix(input.rateMatrix);
-  const rateAudit = { editedBy: 'MD', editedAt: new Date().toISOString() };
-
-  try {
-    const { companyId } = await resolveCompanyScope();
+    const { companyId } = await requireSiteDirectoryWriteScope();
     const db = getSiteDirectoryDb();
 
-    const { data: existing, error: fetchError } = await db
-      .from('site_profiles')
-      .select('site_status, rate_matrix')
-      .eq('id', input.siteId)
-      .maybeSingle();
-
-    if (fetchError) throw new Error(fetchError.message);
+    const existing = await loadSiteProfileForWrite(db, companyId, input.siteId, 'id');
     if (!existing) return { success: false, error: 'Site not found.' };
 
-    const rateMatrix = preserveShiftRowsOnSave(existing.rate_matrix, input.rateMatrix);
-
-    const currentStatus = String(existing.site_status ?? '').toUpperCase();
-    const siteStatus =
-      currentStatus === 'ARCHIVED' || currentStatus === 'SUSPENDED'
-        ? currentStatus
-        : smEpf
-          ? 'ACTIVE'
-          : 'PENDING';
-
-    const siteName = input.config.siteName.trim();
-    const clientName = input.config.clientName.trim();
-    const parentClient = input.config.parentClient.trim() || clientName;
-    const siteCode = input.config.siteCode.trim().toUpperCase();
-
-    if (siteCode && (await siteCodeInUse(db, companyId, siteCode, input.siteId))) {
-      return {
-        success: false,
-        error: `Site code "${siteCode}" is already assigned to another site.`,
-      };
-    }
+    const existingMatrix = await fetchExistingRateMatrix(db, companyId, input.siteId);
+    const rateMatrix = attachShiftRowsForSave(existingMatrix, input.rateMatrix);
 
     const { error } = await db
       .from('site_profiles')
       .update({
-        site_name: siteName,
-        site_code: siteCode || null,
-        address: input.config.address.trim().toUpperCase(),
-        client_name: clientName,
-        parent_client: parentClient,
-        client_billing_address: input.config.clientBillingAddress.trim() || null,
-        latitude: input.config.lat,
-        longitude: input.config.lng,
-        contract_start: input.config.contractStart || null,
-        contract_end: input.config.contractEnd || null,
-        assigned_sm_epf: smEpf,
-        site_status: siteStatus,
         rate_matrix: rateMatrix,
         rate_audit: rateAudit,
         required_guards: totalHeads || 1,
-        verification_mode: input.config.verificationMode,
-        needs_om_gps_capture: false,
-        per_visit_charge_lkr: input.config.perVisitCharge,
-        min_dwell_time_minutes: 0,
-        geofence_radius: clampGeofenceRadiusM(input.config.geofenceRadiusM),
-        provides_food: anyMealProvided(input.config.mealsProvided),
-        meal_breakfast: input.config.mealsProvided.breakfast,
-        meal_lunch: input.config.mealsProvided.lunch,
-        meal_dinner: input.config.mealsProvided.dinner,
-        meal_tea: input.config.mealsProvided.tea,
-        provides_accommodation: input.config.providesAccommodation,
       })
-      .eq('id', input.siteId);
+      .eq('id', input.siteId)
+      .eq('company_id', companyId);
 
     if (error) throw new Error(error.message);
 
@@ -1045,6 +1160,125 @@ export async function updateMasterSiteConfig(input: {
       ),
     };
   } catch (error: unknown) {
+    const authFailure = siteDirectoryAuthFailure(error);
+    if (authFailure) return authFailure;
+    const message = supabaseErrorMessage(error, 'Failed to save rates.');
+    console.error('❌ SUPABASE ERROR (updateMasterSiteRates):', message);
+    return { success: false, error: message };
+  }
+}
+
+export async function updateMasterSiteConfig(input: {
+  siteId: string;
+  config: SiteConfigUpdate;
+  rateMatrix: Partial<Record<RankKey, RankRateEntry>>;
+}): Promise<{ success: true; site: MasterSite } | { success: false; error: string }> {
+  const smEpfRaw = input.config.sectorManagerEpf.trim();
+  const smEpf =
+    smEpfRaw && smEpfRaw.toLowerCase() !== 'null' ? smEpfRaw.toUpperCase() : null;
+  const totalHeads = totalHeadsFromRankMatrix(input.rateMatrix);
+  const rateAudit = { editedBy: 'MD', editedAt: new Date().toISOString() };
+
+  try {
+    const { companyId } = await requireSiteDirectoryWriteScope();
+    const db = getSiteDirectoryDb();
+
+    const existing = await loadSiteProfileForWrite(
+      db,
+      companyId,
+      input.siteId,
+      'site_status, rate_matrix',
+    );
+    if (!existing) return { success: false, error: 'Site not found.' };
+
+    const rateMatrix = attachShiftRowsForSave(existing.rate_matrix, input.rateMatrix);
+
+    const currentStatus = String(existing.site_status ?? '').toUpperCase();
+    const siteStatus =
+      currentStatus === 'ARCHIVED' || currentStatus === 'SUSPENDED'
+        ? currentStatus
+        : smEpf
+          ? 'ACTIVE'
+          : 'PENDING';
+
+    const siteName = input.config.siteName.trim();
+    const clientName = input.config.clientName.trim();
+    const parentClient = input.config.parentClient.trim() || clientName;
+    const siteCode = input.config.siteCode.trim().toUpperCase();
+
+    if (siteCode && (await siteCodeInUse(db, companyId, siteCode, input.siteId))) {
+      return {
+        success: false,
+        error: `Site code "${siteCode}" is already assigned to another site.`,
+      };
+    }
+
+    let assignedSmEpf: string | null = null;
+    if (smEpf) {
+      const gate = await resolveActiveSmPortalAuth(db, companyId, smEpf);
+      if (!gate.ok) return { success: false, error: gate.error };
+      assignedSmEpf = gate.storedEpf;
+    }
+
+    const { error } = await db
+      .from('site_profiles')
+      .update({
+        site_name: siteName,
+        site_code: siteCode || null,
+        address: input.config.address.trim().toUpperCase(),
+        client_name: clientName,
+        parent_client: parentClient,
+        client_billing_address: input.config.clientBillingAddress.trim() || null,
+        latitude: input.config.lat,
+        longitude: input.config.lng,
+        contract_start: input.config.contractStart || null,
+        contract_end: input.config.contractEnd || null,
+        assigned_sm_epf: assignedSmEpf,
+        site_status: siteStatus,
+        rate_matrix: rateMatrix,
+        rate_audit: rateAudit,
+        required_guards: totalHeads || 1,
+        verification_mode: input.config.verificationMode,
+        needs_om_gps_capture: false,
+        per_visit_charge_lkr: input.config.perVisitCharge,
+        min_dwell_time_minutes: 0,
+        geofence_radius: clampGeofenceRadiusM(input.config.geofenceRadiusM),
+        provides_food: anyMealProvided(input.config.mealsProvided),
+        meal_breakfast: input.config.mealsProvided.breakfast,
+        meal_lunch: input.config.mealsProvided.lunch,
+        meal_dinner: input.config.mealsProvided.dinner,
+        meal_tea: input.config.mealsProvided.tea,
+        provides_accommodation: input.config.providesAccommodation,
+      })
+      .eq('id', input.siteId)
+      .eq('company_id', companyId);
+
+    if (error) throw new Error(error.message);
+
+    const [rows, mapping] = await Promise.all([
+      fetchWithRosterCompanyFallback(fetchSitesForCompany, companyId),
+      loadSiteMappingContext(companyId),
+    ]);
+    const site = rows.find((r) => String(r.id) === input.siteId);
+    if (!site) return { success: false, error: 'Site not found after update.' };
+
+    revalidatePath('/executive/sites');
+    revalidatePath('/fm/sites');
+    revalidatePath('/om');
+    revalidatePath('/hr/vacancies');
+
+    return {
+      success: true,
+      site: mapDbRowToMasterSite(
+        site,
+        mapping.smByEpf,
+        mapping.staffByEpf,
+        mapping.siteStaffBySiteId,
+      ),
+    };
+  } catch (error: unknown) {
+    const authFailure = siteDirectoryAuthFailure(error);
+    if (authFailure) return authFailure;
     const message = supabaseErrorMessage(error, 'Failed to save configuration.');
     console.error('❌ SUPABASE ERROR (updateMasterSiteConfig):', message);
     return { success: false, error: message };
@@ -1055,12 +1289,17 @@ export async function archiveMasterSite(input: {
   siteId: string;
 }): Promise<{ success: true; site: MasterSite } | { success: false; error: string }> {
   try {
-    const { companyId } = await resolveCompanyScope();
+    const { companyId } = await requireSiteDirectoryWriteScope();
     const db = getSiteDirectoryDb();
+
+    const existing = await loadSiteProfileForWrite(db, companyId, input.siteId, 'id');
+    if (!existing) return { success: false, error: 'Site not found.' };
+
     const { error } = await db
       .from('site_profiles')
       .update({ site_status: 'ARCHIVED' })
-      .eq('id', input.siteId);
+      .eq('id', input.siteId)
+      .eq('company_id', companyId);
 
     if (error) throw new Error(error.message);
 
@@ -1086,6 +1325,8 @@ export async function archiveMasterSite(input: {
       ),
     };
   } catch (error: unknown) {
+    const authFailure = siteDirectoryAuthFailure(error);
+    if (authFailure) return authFailure;
     const message = supabaseErrorMessage(error, 'Failed to archive site.');
     console.error('❌ SUPABASE ERROR (archiveMasterSite):', message);
     return { success: false, error: message };
@@ -1096,16 +1337,15 @@ export async function restoreMasterSite(input: {
   siteId: string;
 }): Promise<{ success: true; site: MasterSite } | { success: false; error: string }> {
   try {
-    const { companyId } = await resolveCompanyScope();
+    const { companyId } = await requireSiteDirectoryWriteScope();
     const db = getSiteDirectoryDb();
 
-    const { data: existing, error: fetchError } = await db
-      .from('site_profiles')
-      .select('assigned_sm_epf')
-      .eq('id', input.siteId)
-      .maybeSingle();
-
-    if (fetchError) throw new Error(fetchError.message);
+    const existing = await loadSiteProfileForWrite(
+      db,
+      companyId,
+      input.siteId,
+      'assigned_sm_epf',
+    );
     if (!existing) return { success: false, error: 'Site not found.' };
 
     const smEpf = existing.assigned_sm_epf
@@ -1116,7 +1356,8 @@ export async function restoreMasterSite(input: {
     const { error } = await db
       .from('site_profiles')
       .update({ site_status: nextStatus })
-      .eq('id', input.siteId);
+      .eq('id', input.siteId)
+      .eq('company_id', companyId);
 
     if (error) throw new Error(error.message);
 
@@ -1142,6 +1383,8 @@ export async function restoreMasterSite(input: {
       ),
     };
   } catch (error: unknown) {
+    const authFailure = siteDirectoryAuthFailure(error);
+    if (authFailure) return authFailure;
     const message = supabaseErrorMessage(error, 'Failed to restore site.');
     console.error('❌ SUPABASE ERROR (restoreMasterSite):', message);
     return { success: false, error: message };

@@ -26,6 +26,9 @@ import { getGratuitySettings } from '../../executive/settings/gratuity-actions';
 import { auditStaffAction } from '../../../lib/staff-audit';
 import { getRankPayMatrix } from '../../executive/settings/rank-matrix-actions';
 import {
+  persistedOffboardingBalanceLines,
+} from '../../../lib/offboarding-balance-sync';
+import {
   assertHrPortalEditor,
   fetchBackOfficeUserProfile,
 } from '../../../lib/hr-portal-access-server';
@@ -33,6 +36,8 @@ import type {
   ClearanceShiftRow,
   EmployeeClearanceSnapshot,
 } from './clearance-types';
+import { getUniformCollectionStatusForEmployee } from './uniform-collection-actions';
+import { mergeReturnedAgainstIssued } from '../../../lib/uniform-collection/issued-history';
 
 async function requireHrRole() {
   const supabase = await createSupabaseServerClient();
@@ -45,6 +50,30 @@ async function requireHrRole() {
   assertHrPortalEditor(profile.role);
 
   return { supabase, userId: user.id };
+}
+
+function revalidateOffboardingPaths() {
+  revalidatePath('/hr/mnr');
+  revalidatePath('/hq/deductions/uniform-collecting');
+}
+
+export type HrOffboardingQueueRow = {
+  id: string;
+  fullName: string;
+  empNo: string | null;
+  rank: string | null;
+  status: string | null;
+  dateJoined: string | null;
+  dateResigned: string | null;
+  uniformBalance: number;
+  accomBalance: number;
+  hrOffboardingSentToFmAt: string | null;
+  fmOffboardingPaymentConfirmedAt: string | null;
+};
+
+/** @deprecated Offboarding queue desk removed — use MNR clearance modal. */
+export async function fetchHrOffboardingClearanceQueue(): Promise<HrOffboardingQueueRow[]> {
+  return [];
 }
 
 function monthRange(offsetMonths: number) {
@@ -218,6 +247,7 @@ export async function getEmployeeClearance(
   const supabase = await createSupabaseServerClient();
 
   const selectAttempts = [
+    'id, full_name, emp_number, epf_num, rank, basic_salary, date_joined, status, uniform_balance, accom_balance, fm_offboarding_payment_confirmed_at, hr_offboarding_sent_to_fm_at',
     'id, full_name, emp_number, epf_num, rank, basic_salary, date_joined, status, fm_offboarding_payment_confirmed_at, hr_offboarding_sent_to_fm_at',
     'id, full_name, emp_number, epf_num, rank, basic_salary, date_joined, status',
     'id, full_name, emp_number, epf_num, rank, basic_salary, date_joined',
@@ -363,6 +393,22 @@ export async function getEmployeeClearance(
     // Tables may be absent in partial dev schemas — FM ledger still applies
   }
 
+  const persistedUniform = Number((emp as { uniform_balance?: number | null }).uniform_balance ?? 0);
+  const persistedAccom = Number((emp as { accom_balance?: number | null }).accom_balance ?? 0);
+  const hrOffboardingSentToFmAtEarly =
+    (emp as { hr_offboarding_sent_to_fm_at?: string | null }).hr_offboarding_sent_to_fm_at ?? null;
+  if (
+    persistedUniform > 0 ||
+    persistedAccom > 0 ||
+    Boolean(hrOffboardingSentToFmAtEarly)
+  ) {
+    const persisted = persistedOffboardingBalanceLines(persistedUniform, persistedAccom);
+    if (persisted.length > 0) {
+      unsettledBalances.length = 0;
+      unsettledBalances.push(...persisted);
+    }
+  }
+
   const totalOwedToCompanyLkr = unsettledBalances.reduce((s, l) => s + l.amountLkr, 0);
 
   const asOfIso =
@@ -396,9 +442,22 @@ export async function getEmployeeClearance(
     (emp as { hr_offboarding_sent_to_fm_at?: string | null }).hr_offboarding_sent_to_fm_at ??
     null;
   const hrOffboardingSentToFm = Boolean(hrOffboardingSentToFmAt);
+
+  const uniformStatus = await getUniformCollectionStatusForEmployee(emp.id);
+  const returnedLines =
+    uniformStatus.isCollected && uniformStatus.case
+      ? uniformStatus.case.returnedItems
+      : [];
+  const shortfallLines =
+    uniformStatus.isCollected && uniformStatus.case
+      ? mergeReturnedAgainstIssued(uniformStatus.issuedLines, returnedLines).shortfallLines
+      : [];
+
+  const uniformCollectionOk = !uniformStatus.required || uniformStatus.isCollected;
+
   const hrResignationGate = evaluateHrResignationGate({
-    settlement,
-    fmOffboardingPaymentConfirmed,
+    uniformCollectionOk,
+    uniformCollectionPending: uniformStatus.isPending,
   });
 
   return {
@@ -436,41 +495,42 @@ export async function getEmployeeClearance(
     hrOffboardingSentToFm,
     hrOffboardingSentToFmAt,
     gratuity,
+    uniformCollection: {
+      required: uniformStatus.required,
+      isCollected: uniformStatus.isCollected,
+      isPending: uniformStatus.isPending,
+      isDemo: uniformStatus.isDemo,
+      requestedAt: uniformStatus.case?.requestedAt ?? null,
+      confirmedAt: uniformStatus.case?.confirmedAt ?? null,
+      issuedLines: uniformStatus.issuedLines,
+      returnedLines,
+      shortfallLines,
+    },
   };
 }
 
-export async function confirmOffboardingPayment(employeeId: string) {
-  const { supabase, userId } = await requireHrRole();
+export async function finalizeClearanceOnResignation(
+  employeeId: string,
+  actorUserId: string,
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+): Promise<EmployeeClearanceSnapshot> {
   const snapshot = await getEmployeeClearance(employeeId);
 
   if ((snapshot.status || '').trim().toLowerCase() === 'resigned') {
     throw new Error('This employee is already resigned.');
   }
 
-  if (snapshot.fmOffboardingPaymentConfirmed) {
-    throw new Error('Final payment was already confirmed for this employee.');
-  }
-
-  const payable = snapshot.settlement.finalPayLkr + snapshot.settlement.gratuityLkr;
-  if (payable <= 0) {
-    throw new Error('No final payment is due — payment confirmation is not required.');
-  }
-
-  if (snapshot.hrResignationGate.requiresDebtClearance) {
+  if (!snapshot.hrResignationGate.ok) {
     throw new Error(snapshot.hrResignationGate.message);
-  }
-
-  if (snapshot.settlement.netSettlementLkr < 0) {
-    throw new Error(
-      'Employee owes a net balance to the company. Settle all pending recoveries before confirming payment.',
-    );
   }
 
   const { error } = await supabase
     .from('employees')
     .update({
       fm_offboarding_payment_confirmed_at: new Date().toISOString(),
-      fm_offboarding_payment_confirmed_by: userId,
+      fm_offboarding_payment_confirmed_by: actorUserId,
+      uniform_balance: 0,
+      accom_balance: 0,
     })
     .eq('id', employeeId);
 
@@ -479,7 +539,7 @@ export async function confirmOffboardingPayment(employeeId: string) {
   await auditStaffAction({
     supabase,
     portal: 'hr',
-    action: 'Confirm Offboarding Payment',
+    action: 'Confirm HR Clearance & Resignation',
     targetEntity: `Employee ${employeeId}`,
     details: {
       finalPayLkr: snapshot.settlement.finalPayLkr,
@@ -489,7 +549,25 @@ export async function confirmOffboardingPayment(employeeId: string) {
     },
   });
 
-  revalidatePath('/hr/mnr');
+  revalidateOffboardingPaths();
+  return snapshot;
+}
+
+/** @deprecated HR completes clearance in MNR — no FM queue step. */
+export async function confirmOffboardingPayment(employeeId: string) {
+  const { supabase, userId } = await requireHrRole();
+  await finalizeClearanceOnResignation(employeeId, userId, supabase);
+}
+
+/** @deprecated HR completes clearance in MNR — no FM queue step. */
+export async function sendOffboardingToFm(
+  employeeId: string,
+): Promise<{ success: boolean; error?: string }> {
+  void employeeId;
+  return {
+    success: false,
+    error: 'Offboarding is completed in MNR clearance — FM queue is no longer used.',
+  };
 }
 
 export async function assertHrCanConfirmResignation(employeeId: string): Promise<void> {

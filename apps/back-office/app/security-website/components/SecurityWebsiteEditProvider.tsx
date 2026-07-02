@@ -111,12 +111,14 @@ export function SecurityWebsiteEditBar() {
   const { editing, draft, resetDraft, patch, startEditing, setEditing } = useSecurityWebsiteEdit();
   const { guardRanks } = useSecurityWebsite();
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
   if (!canEdit) return null;
 
   const handleSave = () => {
     setSaveState('saving');
+    setSaveError(null);
     const toSave = {
       ...draft,
       rateCard: {
@@ -131,11 +133,13 @@ export function SecurityWebsiteEditBar() {
       const result = await saveSecurityWebsiteContent(toSave);
       if (result.success) {
         setSaveState('saved');
+        setSaveError(null);
         setEditing(false);
         router.refresh();
         window.setTimeout(() => setSaveState('idle'), 2000);
       } else {
         setSaveState('error');
+        setSaveError(result.error ?? 'Save failed. Try again.');
       }
     });
   };
@@ -158,7 +162,9 @@ export function SecurityWebsiteEditBar() {
             </span>
           ) : null}
           {saveState === 'error' ? (
-            <span className="text-xs font-semibold text-rose-600">Save failed</span>
+            <span className="max-w-xs text-xs font-semibold text-rose-600" title={saveError ?? undefined}>
+              {saveError ?? 'Save failed'}
+            </span>
           ) : null}
           {editing ? (
             <>

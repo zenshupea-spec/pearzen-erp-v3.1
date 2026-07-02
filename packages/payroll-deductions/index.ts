@@ -17,6 +17,74 @@ export const DEFAULT_APIT_SLABS: ApitSlab[] = [
 
 export const DEFAULT_STAMP_DUTY_LKR = 25;
 
+/** Stamp duty applies when monthly gross meets or exceeds this threshold (LKR). */
+export const DEFAULT_STAMP_DUTY_THRESHOLD_LKR = 30_000;
+
+/** @deprecated Use DEFAULT_STAMP_DUTY_THRESHOLD_LKR */
+export const STAMP_DUTY_GROSS_THRESHOLD_LKR = DEFAULT_STAMP_DUTY_THRESHOLD_LKR;
+
+export type PayrollStatutoryRates = {
+  epfEmployeeRate: number;
+  epfEmployerRate: number;
+  etfRate: number;
+  apitSlabs: ApitSlab[];
+  stampDutyLkr: number;
+  stampDutyThresholdLkr: number;
+};
+
+function roundLkr(amount: number): number {
+  return Math.round(amount);
+}
+
+export function calcEpfEmployeeLkr(gross: number, ratePct: number): number {
+  if (gross <= 0 || ratePct <= 0) return 0;
+  return roundLkr((gross * ratePct) / 100);
+}
+
+export function calcEpfEmployerLkr(gross: number, ratePct: number): number {
+  if (gross <= 0 || ratePct <= 0) return 0;
+  return roundLkr((gross * ratePct) / 100);
+}
+
+export function calcEtfEmployerLkr(gross: number, ratePct: number): number {
+  if (gross <= 0 || ratePct <= 0) return 0;
+  return roundLkr((gross * ratePct) / 100);
+}
+
+export function calcStampDutyLkr(
+  gross: number,
+  stampDutyLkr: number,
+  thresholdLkr: number = DEFAULT_STAMP_DUTY_THRESHOLD_LKR,
+): number {
+  if (gross < thresholdLkr || stampDutyLkr <= 0) return 0;
+  return stampDutyLkr;
+}
+
+/** Employee-side statutory deductions used for payslip net pay (MD `_payrollStatutory` reader). */
+export function computeEmployeePayrollStatutory(
+  gross: number,
+  rates: PayrollStatutoryRates,
+): {
+  epfEmployee: number;
+  epfEmployer: number;
+  etfEmployer: number;
+  apit: number;
+  stampDuty: number;
+  netPayBeforeAdvances: number;
+} {
+  const epfEmployee = calcEpfEmployeeLkr(gross, rates.epfEmployeeRate);
+  const epfEmployer = calcEpfEmployerLkr(gross, rates.epfEmployerRate);
+  const etfEmployer = calcEtfEmployerLkr(gross, rates.etfRate);
+  const apit = calcApit(gross, rates.apitSlabs);
+  const stampDuty = calcStampDutyLkr(
+    gross,
+    rates.stampDutyLkr,
+    rates.stampDutyThresholdLkr,
+  );
+  const netPayBeforeAdvances = gross - epfEmployee - apit - stampDuty;
+  return { epfEmployee, epfEmployer, etfEmployer, apit, stampDuty, netPayBeforeAdvances };
+}
+
 export function parseApitSlabs(raw: unknown): ApitSlab[] {
   if (!Array.isArray(raw) || raw.length === 0) return DEFAULT_APIT_SLABS;
   const parsed = raw
@@ -42,6 +110,13 @@ export function parseApitSlabs(raw: unknown): ApitSlab[] {
 export function parseStampDutyLkr(raw: unknown): number {
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? Math.round(n) : DEFAULT_STAMP_DUTY_LKR;
+}
+
+export function parseStampDutyThresholdLkr(raw: unknown): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0
+    ? Math.round(n)
+    : DEFAULT_STAMP_DUTY_THRESHOLD_LKR;
 }
 
 /** Progressive APIT using configured IRD slabs */

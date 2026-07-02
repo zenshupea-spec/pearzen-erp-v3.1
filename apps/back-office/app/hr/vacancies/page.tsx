@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { Building2, Home, MapPin, Megaphone, Users } from 'lucide-react';
 
+import HrHubPills from '../HrHubPills';
 import { getGuardVacanciesDesk, type GuardRankKey } from './actions';
 import VacancyGpsButton from './VacancyGpsButton';
 
@@ -18,7 +19,7 @@ export default async function GuardVacanciesPage() {
   const { sites, totalGuardsNeeded, error } = await getGuardVacanciesDesk();
 
   return (
-    <div className="w-full max-w-[1800px] mx-auto px-4 space-y-6">
+    <div className="w-full space-y-6">
       <header className="pt-2">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-4">
@@ -36,11 +37,13 @@ export default async function GuardVacanciesPage() {
           </div>
           <Link
             href="/dashboard"
-            className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-600 text-xs font-bold rounded-xl hover:bg-slate-50 transition-all shadow-sm"
+            className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-600 text-xs font-bold rounded-xl transition-all shadow-sm hover:border-[color:var(--cvs-accent-muted)] hover:bg-[var(--cvs-accent-soft)]/60 hover:text-[color:var(--cvs-accent)]"
           >
             <Home className="w-3.5 h-3.5" /> HQ Hub
           </Link>
         </div>
+
+        <HrHubPills />
       </header>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

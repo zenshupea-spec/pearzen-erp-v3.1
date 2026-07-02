@@ -75,6 +75,10 @@ export function scaleRosterRowForPeriod(
     epfEmployeeLkr: scaleMoney(row.epfEmployeeLkr),
     epfEmployerLkr: scaleMoney(row.epfEmployerLkr),
     etfEmployerLkr: scaleMoney(row.etfEmployerLkr),
+    payeeTaxLkr: scaleMoney(row.payeeTaxLkr),
+    stampDutyLkr: scaleMoney(row.stampDutyLkr),
+    smVisitPayLkr: scaleMoney(row.smVisitPayLkr),
+    smFixedBasicLkr: scaleMoney(row.smFixedBasicLkr),
     shiftTypeLines: row.shiftTypeLines?.map((line) => ({
       ...line,
       shifts: scaleShifts(line.shifts) ?? 0,

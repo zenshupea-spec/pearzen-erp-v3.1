@@ -12,7 +12,6 @@ export type SettingsSectionId =
   | 'rankPay'
   | 'gratuity'
   | 'welfareFund'
-  | 'fuelSurplus'
   | 'geofence'
   | 'internalWorkLocations'
   | 'shiftTimes'
@@ -35,7 +34,6 @@ export const SETTINGS_SECTION_AUDIT_ACTIONS: Record<SettingsSectionId, string[]>
   rankPay: ['UPDATE_RANK_PAY_MATRIX', 'UPDATE_RANK_SALARY'],
   gratuity: ['UPDATE_GRATUITY_SETTINGS'],
   welfareFund: ['UPDATE_WELFARE_FUND_SETTINGS'],
-  fuelSurplus: ['UPDATE_ENGINE_CONSTANTS'],
   geofence: ['UPDATE_GEOFENCE_SETTINGS'],
   internalWorkLocations: ['UPDATE_INTERNAL_WORK_LOCATIONS'],
   shiftTimes: ['UPDATE_SHIFT_SETTINGS'],

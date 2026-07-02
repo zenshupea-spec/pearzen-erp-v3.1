@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useTransition } from 'react';
 import { Camera, CheckCircle2, Clock, Eye, Trash2, XCircle } from 'lucide-react';
 
+import PwaPortalLoading from '../../../../packages/pwa-shell/PwaPortalLoading';
 import { ExecutiveGlassCard } from '../executive/ExecutiveVaultShell';
 import { getCafeFrontTasks, uploadCafeTaskProof } from '../../app/cafe-front/actions';
 
@@ -84,7 +85,7 @@ export function ComplianceDeskPanel() {
 
         <div className="p-5">
           {loading ? (
-            <p className="text-center text-sm text-slate-500">Loading tasks…</p>
+            <PwaPortalLoading portal="cafe-front" message="Loading tasks…" className="min-h-[10rem] py-8" />
           ) : tasks.length === 0 ? (
             <p className="rounded-xl border border-dashed border-slate-200/80 bg-white/40 px-4 py-8 text-center text-xs text-slate-500">
               No compliance tasks assigned yet.

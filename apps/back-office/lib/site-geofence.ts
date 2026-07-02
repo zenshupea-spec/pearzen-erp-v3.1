@@ -22,6 +22,10 @@ export function formatGpsCoords(lat: number, lng: number): string {
   return `${lat}, ${lng}`;
 }
 
+export function siteHasGpsCoordinates(lat: number, lng: number): boolean {
+  return Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0);
+}
+
 export function parseGpsCoords(input: string): { lat: number | null; lng: number | null } {
   const parts = input.split(',').map((part) => part.trim());
   const latRaw = parts[0] ?? '';

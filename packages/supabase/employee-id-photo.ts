@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 const ID_PHOTO_BUCKET = 'company-branding';
-const MAX_ID_PHOTO_BYTES = 5 * 1024 * 1024;
+const MAX_ID_PHOTO_BYTES = 2 * 1024 * 1024;
 
 const MIME_EXT: Record<string, string> = {
   'image/jpeg': 'jpg',
@@ -25,7 +25,7 @@ export async function uploadEmployeeIdPhotoFile(
     return { success: false, error: 'Choose a photo to upload.' };
   }
   if (file.size > MAX_ID_PHOTO_BYTES) {
-    return { success: false, error: 'Photo must be 5MB or smaller.' };
+    return { success: false, error: 'Photo must be 2MB or smaller.' };
   }
 
   const mime = file.type || 'application/octet-stream';

@@ -10,6 +10,8 @@ type BackupCodesPanelProps = {
   onContinue?: () => void;
   continueLabel?: string;
   title?: string;
+  description?: string;
+  formatCode?: (code: string) => string;
 };
 
 export default function BackupCodesPanel({
@@ -17,10 +19,12 @@ export default function BackupCodesPanel({
   onContinue,
   continueLabel = "I've saved these codes",
   title = 'Save your backup codes',
+  description = 'Store these 5 one-time codes somewhere safe. Each code works once if your authenticator app is unavailable, including when replacing or removing 2FA.',
+  formatCode = formatHeadOfficeBackupCode,
 }: BackupCodesPanelProps) {
   const [copied, setCopied] = useState(false);
 
-  const formattedCodes = codes.map((code) => formatHeadOfficeBackupCode(code));
+  const formattedCodes = codes.map((code) => formatCode(code));
   const copyText = formattedCodes.join('\n');
 
   const handleCopy = async () => {
@@ -39,10 +43,7 @@ export default function BackupCodesPanel({
         <KeyRound className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" />
         <div className="space-y-2">
           <p className="text-sm font-black uppercase tracking-wider text-amber-900">{title}</p>
-          <p className="text-sm text-amber-900">
-            Store these 5 one-time codes somewhere safe. Each code works once if your authenticator
-            app is unavailable, including when replacing or removing 2FA.
-          </p>
+          <p className="text-sm text-amber-900">{description}</p>
         </div>
       </div>
 

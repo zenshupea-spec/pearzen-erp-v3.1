@@ -18,7 +18,7 @@ import {
   DEPRECATED_SECURITY_WEBSITE_CLIENTS,
   resolveSecurityWebsiteClientLogo,
 } from './security-website-brand';
-import { stripImageCacheBuster } from './security-website-images';
+import { stripImageCacheBuster } from './security-website-image-utils';
 
 export type SecurityWebsiteStat = {
   value: string;
@@ -218,7 +218,7 @@ export const DEFAULT_SECURITY_WEBSITE_COMPLIANCE: SecurityWebsiteCompliance = {
     'Registered with Registrar General of Companies; EPF & ETF compliant; Fire Service Department approved for extinguishers.',
   replacementHours: '4',
   trainingHours: '40+',
-  companyRegistration: 'Classic Venture Security (Pvt) Ltd. — established 7 March 2008',
+  companyRegistration: 'Classic Venture Security (Pvt) Ltd. — established 7 March 2006',
   epfCompliant: true,
 };
 
@@ -313,7 +313,7 @@ export const DEFAULT_SECURITY_WEBSITE_CONTENT: SecurityWebsiteContent = {
   ],
   aboutTitle: 'A trusted name in Sri Lankan security',
   aboutBody:
-    'Classic Venture Security (Pvt) Ltd. was established on 7 March 2008 to provide reliable, innovative security solutions. Led by retired Major Susil Perera (BA Def) of the Sri Lanka Army, we employ a highly trained security force including a special task force of experienced ex-servicemen. Serving 170+ clients across Colombo, Kandy, Galle, Anuradhapura, Badulla, Kurunegala, and Matara, we deploy quickly anywhere in the country. Our goal is to be the best security services provider in Sri Lanka, offering clients 100% reliable, state-of-the-art solutions.',
+    'Classic Venture Security (Pvt) Ltd. was established on 7 March 2006 to provide reliable, innovative security solutions. Led by retired Major Susil Perera (BA Def) of the Sri Lanka Army, we employ a highly trained security force including a special task force of experienced ex-servicemen. Serving 170+ clients across Colombo, Kandy, Galle, Anuradhapura, Badulla, Kurunegala, and Matara, we deploy quickly anywhere in the country. Our goal is to be the best security services provider in Sri Lanka, offering clients 100% reliable, state-of-the-art solutions.',
   aboutImageUrl: CV_BROCHURE_ASSETS.about,
   timelineCoverageImageUrl: CV_BROCHURE_ASSETS.visitingOfficers,
   timelineMonitoringImageUrl: CV_BROCHURE_ASSETS.guardAppCheckin,
@@ -394,14 +394,14 @@ export const DEFAULT_SECURITY_WEBSITE_CONTENT: SecurityWebsiteContent = {
     si: {
       heroHeadline: 'බලපත්‍ර ලබා ඇති මානව බලය. සෑම වැඩමුරුවකම GPS සාක්ෂි.',
       heroSubheadline:
-        'GPS සත්‍යාපිත පැමිණීම්, සංචාරක නිලධාරී සත්‍යාපනය, සහ ඔබේ අඩවියේ කවුද සිටිනවාද යන්න පෙන්වන සේවාලාභී දොරටුව. 2008 සිට මේජර් සුසිල් පෙරේරා මෙහෙයවීමෙන්.',
+        'GPS සත්‍යාපිත පැමිණීම්, සංචාරක නිලධාරී සත්‍යාපනය, සහ ඔබේ අඩවියේ කවුද සිටිනවාද යන්න පෙන්වන සේවාලාභී දොරටුව. 2006 සිට මේජර් සුසිල් පෙරේරා මෙහෙයවීමෙන්.',
       heroCtaPrimary: 'අඩවි තක්සේරුවක් ඉල්ලන්න',
       heroCtaSecondary: 'ක්ෂණික ඇස්තමේන්තුව',
     },
     ta: {
       heroHeadline: 'உரிமம் பெற்ற மனிதவளம். ஒவ்வொரு ஷிப்டிலும் GPS சான்று.',
       heroSubheadline:
-        'GPS சரிபார்க்கப்பட்ட வருகை, மேற்பார்வையாளர் சரிபார்ப்பு, உங்கள் தளத்தில் யார் உள்ளனர் என்பதைக் காட்டும் வாடிக்கையாளர் போர்டல். 2008 முதல் மேஜர் சுசில் பெரேரா தலைமையில்.',
+        'GPS சரிபார்க்கப்பட்ட வருகை, மேற்பார்வையாளர் சரிபார்ப்பு, உங்கள் தளத்தில் யார் உள்ளனர் என்பதைக் காட்டும் வாடிக்கையாளர் போர்டல். 2006 முதல் மேஜர் சுசில் பெரேரா தலைமையில்.',
       heroCtaPrimary: 'தள மதிப்பீடு கோருங்கள்',
       heroCtaSecondary: 'உடனடி மதிப்பீடு',
     },
@@ -604,7 +604,9 @@ function mergeCompliance(raw: unknown): SecurityWebsiteCompliance {
     insuranceSummary: asString(data.insuranceSummary, d.insuranceSummary),
     replacementHours: asString(data.replacementHours, d.replacementHours),
     trainingHours: asString(data.trainingHours, d.trainingHours),
-    companyRegistration: asString(data.companyRegistration, d.companyRegistration),
+    companyRegistration: sanitizeSecurityWebsiteCopy(
+      asString(data.companyRegistration, d.companyRegistration),
+    ),
     epfCompliant: asBoolean(data.epfCompliant, d.epfCompliant),
   };
 }
@@ -701,6 +703,8 @@ export function getIndustryDetailBySlug(
 /** Strip legacy personnel/location headcount copy from saved CMS content. */
 function sanitizeSecurityWebsiteCopy(text: string): string {
   return text
+    .replace(/7 March 2008/g, '7 March 2006')
+    .replace(/\bestablished 2008\b/g, 'established 2006')
     .replace(/\boperations desk\b/gi, 'direct line')
     .replace(/\bon one contract\b/gi, '')
     .replace(/\s{2,}/g, ' ')

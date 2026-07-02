@@ -1,14 +1,19 @@
 'use client';
 
-import { useTransition, useState } from 'react';
+import { useState, useTransition } from 'react';
 import { Coffee, Eye, EyeOff, Radio } from 'lucide-react';
 
 import BrandWatermarkBackground from '../../../components/portal/BrandWatermarkBackground';
+import CafeLoginFaceCapture from '../../../components/portal/CafeLoginFaceCapture';
+import CafeFrontDeviceFrame from '../../cafe-front/CafeFrontDeviceFrame';
 import { authenticateCafeFrontStaff } from '../../cafe-front/actions';
+import { CVS_BRAND_CLASSES } from '../../../lib/cvs-brand-tokens';
 import {
   CAFE_FRONT_EPF_MAX_LENGTH,
   CAFE_FRONT_OTP_MAX_LENGTH,
-} from '../../../lib/cafe-front-auth';
+} from '../../../lib/cafe-front-auth-shared';
+
+type LoginStep = 'credentials' | 'face';
 
 export default function CafeFrontLoginForm({
   cafeLogoUrl,
@@ -23,10 +28,17 @@ export default function CafeFrontLoginForm({
   const [errorMsg, setErrorMsg] = useState(authError ?? '');
   const [epfNo, setEpfNo] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [step, setStep] = useState<LoginStep>('credentials');
+  const [credentials, setCredentials] = useState({ epfNo: '', password: '' });
 
-  const handleLogin = (formData: FormData) => {
+  const completeLogin = (faceSnapshot: string) => {
     setErrorMsg('');
     startTransition(async () => {
+      const formData = new FormData();
+      formData.set('epfNo', credentials.epfNo);
+      formData.set('password', credentials.password);
+      formData.set('faceSnapshot', faceSnapshot);
+
       const result = await authenticateCafeFrontStaff(formData);
       if (result?.error) setErrorMsg(result.error);
       else if (result?.success) {
@@ -35,9 +47,27 @@ export default function CafeFrontLoginForm({
     });
   };
 
+  const handleCredentials = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setErrorMsg('');
+    const form = e.currentTarget;
+    const epf = (form.elements.namedItem('epfNo') as HTMLInputElement).value
+      .toUpperCase()
+      .trim()
+      .slice(0, CAFE_FRONT_EPF_MAX_LENGTH);
+    const password = (form.elements.namedItem('password') as HTMLInputElement).value.trim();
+
+    if (!epf || password.length < 6) {
+      setErrorMsg('Enter your EPF and 6-digit PIN or OTP.');
+      return;
+    }
+
+    setCredentials({ epfNo: epf, password });
+    setStep('face');
+  };
+
   return (
-    <div className="relative min-h-[100dvh] w-full overflow-x-hidden bg-slate-300 text-slate-900 antialiased">
-      <main className="relative mx-auto flex min-h-[100dvh] w-full max-w-md flex-col overflow-hidden border-x border-slate-300/80 bg-white shadow-[0_0_60px_-12px_rgba(15,23,42,0.25)]">
+    <CafeFrontDeviceFrame>
         <BrandWatermarkBackground logoUrl={companyLogoUrl} mode="portal" />
 
         <div className="relative z-10 flex min-h-[100dvh] flex-col justify-center px-4 py-10 pb-[max(2.5rem,env(safe-area-inset-bottom))] pt-[max(2.5rem,env(safe-area-inset-top))]">
@@ -65,7 +95,7 @@ export default function CafeFrontLoginForm({
               </div>
             </div>
             <div>
-              <p className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-500">
+              <p className={`text-[10px] font-black uppercase tracking-[0.35em] ${CVS_BRAND_CLASSES.portalEyebrow}`}>
                 Café Tasha
               </p>
               <h1 className="mt-2 text-3xl font-black uppercase tracking-tight text-slate-900">
@@ -77,8 +107,9 @@ export default function CafeFrontLoginForm({
             </div>
           </div>
 
+          {step === 'credentials' ? (
           <form
-            action={handleLogin}
+            onSubmit={handleCredentials}
             className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
           >
             <div>
@@ -98,7 +129,7 @@ export default function CafeFrontLoginForm({
                 autoCapitalize="characters"
                 autoComplete="off"
                 spellCheck={false}
-                className="w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-4 py-4 text-center font-mono text-xl font-bold uppercase text-slate-900 shadow-inner transition-all placeholder:text-slate-400 focus:border-orange-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-orange-500/10"
+                className={`w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-4 py-4 text-center font-mono text-xl font-bold uppercase text-slate-900 shadow-inner transition-all placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-4 ${CVS_BRAND_CLASSES.focusRing}`}
               />
               <p className="mt-2 text-center text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                 Max {CAFE_FRONT_EPF_MAX_LENGTH} characters
@@ -117,7 +148,7 @@ export default function CafeFrontLoginForm({
                   required
                   inputMode="numeric"
                   maxLength={CAFE_FRONT_OTP_MAX_LENGTH}
-                  className="w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-4 py-4 pr-12 text-center font-mono text-2xl font-black tracking-[0.5em] text-slate-900 shadow-inner transition-all placeholder:text-base placeholder:tracking-normal placeholder:text-slate-400 focus:border-orange-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-orange-500/10"
+                  className={`w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-4 py-4 pr-12 text-center font-mono text-2xl font-black tracking-[0.5em] text-slate-900 shadow-inner transition-all placeholder:text-base placeholder:tracking-normal placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-4 ${CVS_BRAND_CLASSES.focusRing}`}
                 />
                 <button
                   type="button"
@@ -138,15 +169,28 @@ export default function CafeFrontLoginForm({
             <button
               type="submit"
               disabled={isPending || epfNo.trim().length === 0}
-              className="mt-2 w-full rounded-xl bg-orange-600 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-md shadow-orange-600/25 transition-all hover:bg-orange-500 active:scale-[0.98] disabled:opacity-50"
+              className="mt-2 w-full rounded-xl bg-[color:var(--cvs-accent)] py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-md shadow-[color:var(--cvs-glow)] transition-all hover:bg-[color:var(--cvs-accent-hover)] active:scale-[0.98] disabled:opacity-50"
             >
-              {isPending ? 'Verifying…' : 'Secure access'}
+              {isPending ? 'Verifying…' : 'Continue to face capture'}
             </button>
           </form>
+          ) : (
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <CafeLoginFaceCapture
+                onConfirm={completeLogin}
+                onBack={() => {
+                  setStep('credentials');
+                  setErrorMsg('');
+                }}
+                isSubmitting={isPending}
+                errorMsg={errorMsg}
+              />
+            </div>
+          )}
 
           <div className="space-y-2 text-center">
             <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-              GPS · Selfie check-in at site · HR verifies identity
+              Live face at login · GPS selfie at site check-in · HR verifies identity
             </p>
             <p className="text-[10px] font-mono text-slate-400">
               OTP expires in 1 minute · Forgot your PIN? Contact HR to issue a new OTP.
@@ -154,7 +198,6 @@ export default function CafeFrontLoginForm({
           </div>
           </div>
         </div>
-      </main>
-    </div>
+    </CafeFrontDeviceFrame>
   );
 }

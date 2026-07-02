@@ -39,6 +39,7 @@ import { recordPortalLoginEvent } from '../../../lib/portal-login-events';
 import {
   notifyExecutivePortalLoginAttempt,
   readPortalLoginRequestMetadata,
+  finalizePortalLoginNotifications,
 } from '../../../lib/head-office-portal-login-notification';
 import { resolveTenantCompanyFromRequest } from '../../../lib/tenant-context-server';
 import {
@@ -49,6 +50,7 @@ import type { StaffPortalId } from '../../../lib/portal-isolation';
 import {
   canSignInAtStaffPortal,
   staffPortalSignInError,
+  staffPortalIdForRole,
 } from '../../../lib/portal-isolation';
 import { maybeCreateSessionChallengeAfterLogin } from '../../actions/portal-session-actions';
 
@@ -166,6 +168,8 @@ export async function authenticateHeadOfficeStaff(formData: FormData) {
 
   const portalAuthEmail = resolvePortalAuthEmail(authRecord);
   const requestMeta = await readPortalLoginRequestMetadata();
+  const portalForNotify =
+    staffPortal ?? staffPortalIdForRole(profile.role, profile);
   const geofenceExempt =
     staffPortal === 'md' || isHeadOfficeGeofenceExempt(profile.role);
   if (!geofenceExempt) {
@@ -210,6 +214,7 @@ export async function authenticateHeadOfficeStaff(formData: FormData) {
           success: false,
           ipAddress: requestMeta.ipAddress,
           deviceLabel: requestMeta.deviceLabel,
+          staffPortal: portalForNotify,
         });
         return { success: false, error: failure.error };
       }
@@ -224,6 +229,7 @@ export async function authenticateHeadOfficeStaff(formData: FormData) {
           success: false,
           ipAddress: requestMeta.ipAddress,
           deviceLabel: requestMeta.deviceLabel,
+          staffPortal: portalForNotify,
         });
         return {
           success: false,
@@ -254,6 +260,7 @@ export async function authenticateHeadOfficeStaff(formData: FormData) {
           success: false,
           ipAddress: requestMeta.ipAddress,
           deviceLabel: requestMeta.deviceLabel,
+          staffPortal: portalForNotify,
         });
         return { success: false, error: failure.error };
       }
@@ -303,6 +310,7 @@ export async function authenticateHeadOfficeStaff(formData: FormData) {
       success: false,
       ipAddress: requestMeta.ipAddress,
       deviceLabel: requestMeta.deviceLabel,
+      staffPortal: portalForNotify,
     });
     return { success: false, error: failure.error };
   }
@@ -316,20 +324,29 @@ export async function authenticateHeadOfficeStaff(formData: FormData) {
     ipAddress: requestMeta.ipAddress,
     deviceLabel: requestMeta.deviceLabel,
   });
-  await notifyExecutivePortalLoginAttempt({
-    employeeId: authRecord.employee_id,
-    workEmail: authRecord.work_email,
-    recoveryEmail: authRecord.recovery_email,
-    portalAuthEmail,
-    rank: profile.role,
-    success: true,
-    ipAddress: requestMeta.ipAddress,
-    deviceLabel: requestMeta.deviceLabel,
-  });
 
-  await setVerifiedTenantSlugCookieForCompany(
-    await resolveEmployeeCompanyId(authRecord.employee_id),
-  );
+  const companyId = await resolveEmployeeCompanyId(authRecord.employee_id);
+  const employeeId = profile.employeeId ?? authRecord.employee_id;
+  const resolvedStaffPortal =
+    staffPortal ?? staffPortalIdForRole(profile.role, profile);
+  const loginCompletesNow = !(needsPortalAuth && employeeId);
+
+  if (loginCompletesNow) {
+    await finalizePortalLoginNotifications({
+      employeeId: authRecord.employee_id,
+      workEmail: authRecord.work_email,
+      recoveryEmail: authRecord.recovery_email,
+      portalAuthEmail,
+      rank: profile.role,
+      employeeName: profile.full_name,
+      companyId,
+      staffPortal: resolvedStaffPortal,
+      ipAddress: requestMeta.ipAddress,
+      deviceLabel: requestMeta.deviceLabel,
+    });
+  }
+
+  await setVerifiedTenantSlugCookieForCompany(companyId);
 
   const {
     data: { session: authSession },
@@ -340,7 +357,6 @@ export async function authenticateHeadOfficeStaff(formData: FormData) {
   const userId = authSession?.user?.id;
 
   const landing = authenticatedLandingPath(profile.role, profile);
-  const employeeId = profile.employeeId ?? authRecord.employee_id;
 
   if (sessionId && userId && employeeId) {
     await maybeCreateSessionChallengeAfterLogin(
@@ -356,7 +372,15 @@ export async function authenticateHeadOfficeStaff(formData: FormData) {
 
   if (needsPortalAuth && authRecord.needs_pin_setup && employeeId) {
     await clearPortal2faSessionCookiesStore();
-    await setOtpSetupSessionCookies(employeeId, portalAuthEmail);
+    try {
+      await setOtpSetupSessionCookies(employeeId, portalAuthEmail);
+    } catch {
+      return {
+        success: false,
+        error:
+          'Could not start your setup session. Please try again. If this persists, contact Pearzen support.',
+      };
+    }
     redirect('/login/set-pin');
   }
 

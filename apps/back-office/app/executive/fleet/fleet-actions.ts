@@ -304,8 +304,8 @@ export async function recordFleetTelematicsPing(input: {
   locationLabel?: string;
 }) {
   const { processFleetTelematicsPing } = await import('./fleet-telematics-ingest');
-  const { db } = await getExecutiveMdSettingsContext();
-  const result = await processFleetTelematicsPing(input, db);
+  const { db, companyId } = await getExecutiveMdSettingsContext();
+  const result = await processFleetTelematicsPing({ ...input, companyId }, db);
   if (result.success) revalidatePath('/executive/fleet');
   return result;
 }

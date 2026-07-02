@@ -9,6 +9,7 @@ import {
   portalHomePath,
 } from './portal-isolation';
 import { CVS_TENANT_SLUG } from './company-ids';
+import { isShalomPublicHost } from './shalom-public-host';
 import { tenantBaseDomain } from './tenant-host';
 
 export type TenantPortalHostBinding = {
@@ -94,6 +95,8 @@ export function parseConventionalTenantPortalHost(hostname: string): {
   tenantSlug: string;
   role: CvsDedicatedHostRole;
 } | null {
+  if (isShalomPublicHost(hostname)) return null;
+
   const sub = parseHostnameSubdomain(hostname);
   if (!sub) return null;
 
@@ -158,6 +161,8 @@ export function parseCvsDedicatedHost(hostname: string): {
 
 /** Back-office dedicated hosts (cvshq, demohq, cvsexec, demoexec, cvsom, demoom, cvstm, demotm). */
 export function parseTenantPortalHost(hostname: string): TenantPortalHostBinding | null {
+  if (isShalomPublicHost(hostname)) return null;
+
   const dedicated = parseDedicatedPortalHost(hostname);
   if (!dedicated) return null;
   if (dedicated.role === 'sm' || dedicated.role === 'checkin') return null;
@@ -229,6 +234,12 @@ export function pathAllowedOnTenantPortalHost(
   if (
     (binding.portal === 'hq' || binding.portal === 'md') &&
     (pathname === '/security-website' || pathname.startsWith('/security-website/'))
+  ) {
+    return true;
+  }
+  if (
+    (binding.portal === 'hq' || binding.portal === 'md') &&
+    (pathname === '/shalom-public' || pathname.startsWith('/shalom-public/'))
   ) {
     return true;
   }

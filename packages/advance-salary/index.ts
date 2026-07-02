@@ -53,3 +53,38 @@ export function maxAdvanceForEmployee(
 ): number {
   return isGuard ? settings.guardMaxAdvanceLkr : settings.otherEmployeeMaxAdvanceLkr;
 }
+
+export type AdvanceValidationResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+/** Shared server/UI guard for FM save, batch submit, MD approve, and HR approval. */
+export function validateAdvanceAmount(input: {
+  amount: number;
+  isGuard: boolean;
+  shiftsWorked: number;
+  settings?: AdvanceSalarySettings;
+}): AdvanceValidationResult {
+  const settings = input.settings ?? DEFAULT_ADVANCE_SALARY_SETTINGS;
+  const amount = Math.round(Number(input.amount));
+  if (!Number.isFinite(amount) || amount < 1) {
+    return { ok: false, error: 'Advance amount must be at least LKR 1.' };
+  }
+
+  if (input.isGuard && !guardEligibleForAdvanceSalary(input.shiftsWorked, settings)) {
+    return {
+      ok: false,
+      error: `Guard must work at least ${settings.guardMinShifts} shifts this month (recorded ${input.shiftsWorked}).`,
+    };
+  }
+
+  const maxLkr = maxAdvanceForEmployee(input.isGuard, settings);
+  if (amount > maxLkr) {
+    return {
+      ok: false,
+      error: `Advance LKR ${amount.toLocaleString('en-LK')} exceeds the ${input.isGuard ? 'guard' : 'staff'} cap of LKR ${maxLkr.toLocaleString('en-LK')}.`,
+    };
+  }
+
+  return { ok: true };
+}

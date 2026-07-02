@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import FmSubnav from '../components/FmSubnav';
+import { useFmHolidayCalendarIncomplete } from '../use-fm-holiday-calendar-incomplete';
 import { usePathname } from 'next/navigation';
 import OmCommandShellLayout from '../../om/components/OmCommandShellLayout';
 import {
@@ -72,6 +73,55 @@ function totalMonthlyVisitPay(sites: SmVisitCapsSiteRow[], rate = DEFAULT_SM_VIS
 function totalMonthlyVisits(sites: SmVisitCapsSiteRow[]): number {
   return sites.reduce((sum, s) => sum + s.monthlyTarget, 0);
 }
+
+/** Keep daily ≤ weekly ≤ monthly; derive companion caps when one field changes. */
+function deriveVisitFrequencies(
+  field: keyof Pick<SmVisitCapsSiteRow, 'dailyCap' | 'weeklyCap' | 'monthlyTarget'>,
+  dailyCap: number,
+  weeklyCap: number,
+  monthlyTarget: number,
+): Pick<SmVisitCapsSiteRow, 'dailyCap' | 'weeklyCap' | 'monthlyTarget'> {
+  const clamp = (n: number) => Math.max(0, Math.min(31, Math.floor(n) || 0));
+  let daily = clamp(dailyCap);
+  let weekly = clamp(weeklyCap);
+  let monthly = clamp(monthlyTarget);
+
+  if (field === 'monthlyTarget') {
+    if (monthly === 0) {
+      return { dailyCap: 0, weeklyCap: 0, monthlyTarget: 0 };
+    }
+    daily = 1;
+    weekly = Math.min(monthly, Math.max(1, Math.ceil(monthly / 2)));
+    return { dailyCap: daily, weeklyCap: weekly, monthlyTarget: monthly };
+  }
+
+  if (field === 'weeklyCap') {
+    if (weekly === 0) {
+      return { dailyCap: 0, weeklyCap: 0, monthlyTarget: monthly === 0 ? 0 : monthly };
+    }
+    daily = Math.min(weekly, Math.max(daily > 0 ? daily : 1, 1));
+    monthly = Math.max(monthly, weekly);
+    return { dailyCap: daily, weeklyCap: weekly, monthlyTarget: monthly };
+  }
+
+  if (field === 'dailyCap') {
+    weekly = Math.max(weekly, daily);
+    monthly = Math.max(monthly, weekly);
+    return { dailyCap: daily, weeklyCap: weekly, monthlyTarget: monthly };
+  }
+
+  return { dailyCap: daily, weeklyCap: weekly, monthlyTarget: monthly };
+}
+
+const VISIT_FREQ_FIELDS: {
+  field: keyof Pick<SmVisitCapsSiteRow, 'dailyCap' | 'weeklyCap' | 'monthlyTarget'>;
+  short: string;
+  unit: string;
+}[] = [
+  { field: 'dailyCap', short: 'D', unit: '/day' },
+  { field: 'weeklyCap', short: 'W', unit: '/week' },
+  { field: 'monthlyTarget', short: 'M', unit: '/month' },
+];
 
 function computeVisitScore(
   smId: string,
@@ -145,12 +195,24 @@ function SMHandlerTab({
   const isDirty = selectedSmId in drafts;
 
   function updateRow(siteId: string, field: keyof SmVisitCapsSiteRow, raw: string) {
-    const val = Math.max(0, parseInt(raw) || 0);
+    const val = Math.max(0, parseInt(raw, 10) || 0);
     setDrafts((prev) => {
       const base = prev[selectedSmId] ?? [...baseSites];
       return {
         ...prev,
-        [selectedSmId]: base.map((r) => r.siteId === siteId ? { ...r, [field]: val } : r),
+        [selectedSmId]: base.map((r) => {
+          if (r.siteId !== siteId) return r;
+          if (field !== 'dailyCap' && field !== 'weeklyCap' && field !== 'monthlyTarget') {
+            return { ...r, [field]: val };
+          }
+          const next = deriveVisitFrequencies(
+            field,
+            field === 'dailyCap' ? val : r.dailyCap,
+            field === 'weeklyCap' ? val : r.weeklyCap,
+            field === 'monthlyTarget' ? val : r.monthlyTarget,
+          );
+          return { ...r, ...next };
+        }),
       };
     });
   }
@@ -334,14 +396,16 @@ function SMHandlerTab({
                 <div className="grid grid-cols-[1fr_auto] items-center border-b border-slate-100 bg-slate-50 px-5 py-2">
                   <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Site</p>
                   <div className="flex items-center gap-6 pr-1">
-                    {[
-                      { key: 'D', title: 'Max visits per day' },
-                      { key: 'W', title: 'Max visits per week' },
-                      { key: 'M', title: 'Required per month' },
-                    ].map(({ key, title }) => (
-                      <div key={key} className="w-14 text-center" title={title}>
-                        <p className="text-xs font-black uppercase tracking-widest text-slate-500">{key}</p>
-                        <p className="text-[10px] text-slate-400 leading-tight">{key === 'D' ? '/day' : key === 'W' ? '/week' : '/month'}</p>
+                    {VISIT_FREQ_FIELDS.map(({ short, unit, field }) => (
+                      <div key={field} className="w-14 text-center" title={
+                        field === 'dailyCap'
+                          ? 'Max visits per day'
+                          : field === 'weeklyCap'
+                            ? 'Max visits per week'
+                            : 'Required visits per month'
+                      }>
+                        <p className="text-xs font-black uppercase tracking-widest text-slate-500">{short}</p>
+                        <p className="text-[10px] text-slate-400 leading-tight">{unit}</p>
                       </div>
                     ))}
                   </div>
@@ -360,8 +424,13 @@ function SMHandlerTab({
                         </div>
                         <p className="mt-0.5 pl-5 text-xs text-slate-400 truncate">{row.client} · {row.location}</p>
                         <p className="mt-1 pl-5 text-xs text-slate-400">
-                          Rule: max <span className="font-bold text-slate-600">{row.weeklyCap}</span>/week,{' '}
+                          Rule: max{' '}
+                          <span className="font-bold text-slate-600">{row.dailyCap}</span>/day,{' '}
+                          <span className="font-bold text-slate-600">{row.weeklyCap}</span>/week,{' '}
                           target <span className="font-bold text-slate-600">{row.monthlyTarget}</span>/month
+                          {row.monthlyTarget > 0 && row.dailyCap <= row.weeklyCap && row.weeklyCap <= row.monthlyTarget ? (
+                            <span className="text-emerald-600"> · synced</span>
+                          ) : null}
                         </p>
                         {row.monthlyTarget > 0 && (
                           <p className="mt-1 pl-5 text-xs font-bold text-emerald-700">
@@ -377,24 +446,25 @@ function SMHandlerTab({
                       </div>
 
                       <div className="flex items-center gap-3 flex-shrink-0">
-                        {(
-                          [
-                            { field: 'dailyCap',      val: row.dailyCap      },
-                            { field: 'weeklyCap',     val: row.weeklyCap     },
-                            { field: 'monthlyTarget', val: row.monthlyTarget },
-                          ] as { field: keyof SmVisitCapsSiteRow; val: number }[]
-                        ).map(({ field, val }) => (
-                          <div key={field} className="flex w-14 flex-col items-center gap-1">
+                        {VISIT_FREQ_FIELDS.map(({ field, short, unit }) => {
+                          const val = row[field];
+                          return (
+                          <div key={field} className="flex w-14 flex-col items-center gap-0.5">
                             <input
                               type="number"
                               min={0}
                               max={31}
                               value={val}
+                              aria-label={`${row.siteName} ${short} ${unit}`}
                               onChange={(e) => updateRow(row.siteId, field, e.target.value)}
                               className="w-full rounded-lg border border-slate-200 bg-white px-0 py-1.5 text-center text-sm font-black text-slate-800 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 tabular-nums"
                             />
+                            <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">
+                              {unit}
+                            </span>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   ))}
@@ -427,9 +497,9 @@ function SMHandlerTab({
           <div className="flex flex-wrap items-center gap-4 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3">
             <p className="text-xs font-black uppercase tracking-wider text-slate-400">Frequency legend</p>
             {[
-              { key: 'D', label: 'Daily cap — max visits on any one day (usually 1)' },
-              { key: 'W', label: 'Weekly cap — max visits in any calendar week' },
-              { key: 'M', label: 'Monthly target — visits required this month' },
+              { key: 'D', label: 'Daily cap — max visits on any one day (auto-set to 1 when monthly target is set)' },
+              { key: 'W', label: 'Weekly cap — auto-derived from monthly (about half the monthly target, min 1)' },
+              { key: 'M', label: 'Monthly target — visits required this month; drives day & week caps' },
             ].map(({ key, label }) => (
               <div key={key} className="flex items-center gap-1.5">
                 <span className="flex h-5 w-5 items-center justify-center rounded border border-slate-300 bg-white text-xs font-black text-slate-700">{key}</span>
@@ -448,7 +518,7 @@ function SMHandlerTab({
 export default function SMHandlerPage() {
   const pathname = usePathname() ?? '';
   const isOmPortal = pathname.startsWith('/om/');
-  const holidayCalendarIncomplete = true;
+  const holidayCalendarIncomplete = useFmHolidayCalendarIncomplete();
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | undefined>();

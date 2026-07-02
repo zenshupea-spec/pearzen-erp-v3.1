@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, useTransition } from 'react';
 import { CalendarDays } from 'lucide-react';
 
+import PwaPortalLoading from '../../../../packages/pwa-shell/PwaPortalLoading';
 import { ExecutiveGlassCard } from '../executive/ExecutiveVaultShell';
 import { getCafeFrontRosterDays, requestCafeLeave } from '../../app/cafe-front/actions';
 import {
@@ -98,7 +99,7 @@ export function RosterLeavePanel() {
         </p>
 
         {loading ? (
-          <p className="text-sm text-slate-500">Loading roster…</p>
+          <PwaPortalLoading portal="cafe-front" message="Loading roster…" className="min-h-[10rem] py-8" />
         ) : (
           <div className="grid grid-cols-7 gap-2">
             {monthDays.map((date) => {

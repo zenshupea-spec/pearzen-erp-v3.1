@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CalendarDays,
@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
+import { CVS_BRAND_CLASSES } from '../../../lib/cvs-brand-tokens';
 import {
   addIngredientStockLot,
   assignUsePriorityForNewLot,
@@ -47,7 +48,9 @@ function FulfillmentToggle({
           onChange('bought');
         }}
         className={`rounded-lg px-2 py-1 transition-all ${
-          mode === 'bought' ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'
+          mode === 'bought'
+            ? `${CVS_BRAND_CLASSES.mobileTabActive} border-transparent`
+            : 'text-slate-500 hover:text-slate-700'
         }`}
       >
         Bought
@@ -60,7 +63,9 @@ function FulfillmentToggle({
           onChange('delivered');
         }}
         className={`rounded-lg px-2 py-1 transition-all ${
-          mode === 'delivered' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'
+          mode === 'delivered'
+            ? `${CVS_BRAND_CLASSES.mobileTabActive} border-transparent`
+            : 'text-slate-500 hover:text-slate-700'
         }`}
       >
         Delivered
@@ -72,15 +77,30 @@ function IngredientsLedger({
   ingredients,
   setIngredients,
   setItems,
+  focusIngredientId = null,
 }: {
   ingredients: Ingredient[];
   setIngredients: React.Dispatch<React.SetStateAction<Ingredient[]>>;
   setItems: React.Dispatch<React.SetStateAction<CafeMenuRecipeItem[]>>;
+  focusIngredientId?: string | null;
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [stockAddById, setStockAddById] = useState<Record<string, { quantity: string; expiresOn: string }>>({});
+  const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map());
+  const focusHandledRef = useRef<string | null>(null);
 
-  const inputCls = 'w-full rounded-xl border border-slate-200/80 bg-white/80 px-2.5 py-1.5 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400/40 transition-all';
+  useEffect(() => {
+    if (!focusIngredientId) return;
+    if (!ingredients.some((ing) => ing.id === focusIngredientId)) return;
+    if (focusHandledRef.current === focusIngredientId) return;
+    focusHandledRef.current = focusIngredientId;
+    setExpandedId(focusIngredientId);
+    requestAnimationFrame(() => {
+      rowRefs.current.get(focusIngredientId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }, [focusIngredientId, ingredients]);
+
+  const inputCls = `w-full rounded-xl border border-slate-200/80 bg-white/80 px-2.5 py-1.5 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 ${CVS_BRAND_CLASSES.focusRing} transition-all`;
   const labelCls = 'mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-600';
 
   const applyIngredientPatch = (ing: Ingredient, patch: Partial<Ingredient>): Ingredient => {
@@ -162,6 +182,7 @@ function IngredientsLedger({
             <th className="px-4 py-3 text-center">Unit</th>
             <th className="px-4 py-3 text-center">Amount</th>
             <th className="px-4 py-3 text-center">Price (LKR)</th>
+            <th className="px-4 py-3 text-center">On Hand</th>
             <th className="px-4 py-3 text-center">Δ Since Last</th>
             <th className="px-4 py-3 text-center">Source</th>
             <th className="px-4 py-3 w-10" />
@@ -170,11 +191,19 @@ function IngredientsLedger({
         <tbody className="divide-y divide-slate-200/60">
           {ingredients.map((ing) => {
             const pricePct = calcPriceChangePct(ing.unitPrice, ing.prevUnitPrice);
+            const belowMinimum =
+              ing.minimumStock > 0 && ing.currentStock < ing.minimumStock;
             const isExpanded = expandedId === ing.id;
             return (
               <React.Fragment key={ing.id}>
                 <tr
-                  className={`hover:bg-white/40 transition-colors group cursor-pointer ${isExpanded ? 'bg-white/50' : ''}`}
+                  ref={(el) => {
+                    if (el) rowRefs.current.set(ing.id, el);
+                    else rowRefs.current.delete(ing.id);
+                  }}
+                  className={`hover:bg-white/40 transition-colors group cursor-pointer ${isExpanded ? 'bg-white/50' : ''} ${
+                    focusIngredientId === ing.id ? 'ring-2 ring-inset ring-[color:var(--cvs-accent)]/50' : ''
+                  }`}
                   onClick={() => toggleExpanded(ing.id)}
                 >
                   <td className="px-4 py-3">
@@ -240,6 +269,23 @@ function IngredientsLedger({
                     />
                   </td>
                   <td className="px-4 py-3 text-center">
+                    <span
+                      className={`inline-flex flex-col items-center font-mono text-sm font-black tabular-nums ${
+                        belowMinimum ? 'text-rose-800' : ing.currentStock > 0 ? 'text-slate-800' : 'text-slate-400'
+                      }`}
+                      title={
+                        belowMinimum
+                          ? `Below MD minimum (${ing.minimumStock.toLocaleString()} ${ing.unit})`
+                          : 'Live stock from active lots'
+                      }
+                    >
+                      {ing.currentStock.toLocaleString()}
+                      <span className="text-[9px] font-bold uppercase tracking-wide text-slate-500">
+                        {ing.unit}
+                      </span>
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-center">
                     {pricePct !== null ? (
                       <span
                         className={`inline-flex items-center gap-0.5 font-mono text-sm font-bold tabular-nums ${
@@ -272,11 +318,11 @@ function IngredientsLedger({
                 </tr>
 
                 {isExpanded && (
-                  <tr className="bg-indigo-50/25">
-                    <td colSpan={8} className="px-5 py-4" onClick={(e) => e.stopPropagation()}>
-                      <div className="rounded-2xl border border-indigo-200/60 bg-white/70 p-4">
+                  <tr className="bg-[var(--cvs-accent-soft)]/25">
+                    <td colSpan={9} className="px-5 py-4" onClick={(e) => e.stopPropagation()}>
+                      <div className="rounded-2xl border border-[color:var(--cvs-accent-muted)]/60 bg-white/70 p-4">
                         <div className="mb-3 flex items-center justify-between gap-3">
-                          <p className="text-[10px] font-black uppercase tracking-widest text-indigo-900">
+                          <p className="text-[10px] font-black uppercase tracking-widest text-[color:var(--cvs-accent)]">
                             Supplier — {ing.name}
                           </p>
                           <button
@@ -344,9 +390,9 @@ function IngredientsLedger({
                               : null;
 
                           return (
-                            <div className="mt-5 space-y-4 border-t border-indigo-100/80 pt-4">
+                            <div className="mt-5 space-y-4 border-t border-[color:var(--cvs-accent-muted)]/80 pt-4">
                               <div>
-                                <p className="text-[10px] font-black uppercase tracking-widest text-indigo-900">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-[color:var(--cvs-accent)]">
                                   Stock on Hand
                                 </p>
                                 <p className="mt-0.5 text-[9px] leading-relaxed text-slate-500">
@@ -367,7 +413,7 @@ function IngredientsLedger({
                                       className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200/80 bg-white/80 px-3 py-2"
                                     >
                                       <div className="flex items-center gap-2">
-                                        <span className="inline-flex min-w-[2.75rem] items-center justify-center rounded-lg border border-indigo-300/80 bg-indigo-50/90 px-2 py-1 font-mono text-sm font-black tabular-nums text-indigo-900">
+                                        <span className="inline-flex min-w-[2.75rem] items-center justify-center rounded-lg border border-[color:var(--cvs-accent-muted)]/80 bg-[var(--cvs-accent-soft)]/90 px-2 py-1 font-mono text-sm font-black tabular-nums text-[color:var(--cvs-accent)]">
                                           {lot.usePriority ?? USE_PRIORITY_START}
                                         </span>
                                         <span className="font-mono text-sm font-bold tabular-nums text-slate-800">
@@ -413,7 +459,7 @@ function IngredientsLedger({
                                   </div>
                                   <div className="flex flex-col justify-end">
                                     {previewPriority != null ? (
-                                      <p className="mb-2 rounded-lg border border-indigo-200/80 bg-indigo-50/80 px-3 py-2 text-center text-xs font-bold text-indigo-900">
+                                      <p className="mb-2 rounded-lg border border-[color:var(--cvs-accent-muted)]/80 bg-[var(--cvs-accent-soft)]/80 px-3 py-2 text-center text-xs font-bold text-[color:var(--cvs-accent)]">
                                         Write{' '}
                                         <span className="font-mono text-base tabular-nums">{previewPriority}</span>{' '}
                                         on the package
@@ -423,7 +469,7 @@ function IngredientsLedger({
                                       type="button"
                                       onClick={() => handleAddStock(ing)}
                                       disabled={addQty <= 0 || !stockForm.expiresOn}
-                                      className="rounded-xl border border-emerald-300/80 bg-emerald-600 px-4 py-2 text-xs font-black uppercase tracking-widest text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
+                                      className="rounded-xl bg-[color:var(--cvs-accent)] px-4 py-2 text-xs font-black uppercase tracking-widest text-white shadow-md shadow-[color:var(--cvs-glow)] hover:bg-[color:var(--cvs-accent-hover)] disabled:cursor-not-allowed disabled:opacity-40"
                                     >
                                       Add to Stock
                                     </button>
@@ -451,19 +497,21 @@ export function IngredientsLedgerPanel({
   setIngredients,
   menuItems,
   setMenuItems,
+  focusIngredientId = null,
 }: {
   ingredients: Ingredient[];
   setIngredients: React.Dispatch<React.SetStateAction<Ingredient[]>>;
   menuItems: CafeMenuRecipeItem[];
   setMenuItems: React.Dispatch<React.SetStateAction<CafeMenuRecipeItem[]>>;
+  focusIngredientId?: string | null;
 }) {
   return (
     <ExecutiveGlassCard className="overflow-hidden">
       <div className="border-b border-slate-200/80 bg-slate-50/80 px-5 py-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-2xl border border-indigo-200/80 bg-indigo-50/80">
-              <Package className="h-4 w-4 text-indigo-700" />
+            <div className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[color:var(--cvs-accent-muted)]/80 bg-[var(--cvs-accent-soft)]/80">
+              <Package className="h-4 w-4 text-[color:var(--cvs-accent)]" />
             </div>
             <div>
               <h2 className="text-xs font-black uppercase tracking-widest text-slate-800">
@@ -477,7 +525,7 @@ export function IngredientsLedgerPanel({
               </p>
             </div>
           </div>
-          <span className="rounded-full border border-indigo-200/80 bg-indigo-50/80 px-3 py-1 text-[10px] font-black text-indigo-800">
+          <span className="rounded-full border border-[color:var(--cvs-accent-muted)]/80 bg-[var(--cvs-accent-soft)]/80 px-3 py-1 text-[10px] font-black text-[color:var(--cvs-accent)]">
             {ingredients.length} ingredient{ingredients.length !== 1 ? 's' : ''}
           </span>
         </div>
@@ -486,6 +534,7 @@ export function IngredientsLedgerPanel({
         ingredients={ingredients}
         setIngredients={setIngredients}
         setItems={setMenuItems}
+        focusIngredientId={focusIngredientId}
       />
     </ExecutiveGlassCard>
   );
@@ -524,7 +573,14 @@ function ExpiryStatusBadge({ daysLeft }: { daysLeft: number }) {
   );
 }
 
-export function ExpiryTrackingPanel({ ingredients }: { ingredients: Ingredient[] }) {
+export function ExpiryTrackingPanel({
+  ingredients,
+  readOnly = false,
+}: {
+  ingredients: Ingredient[];
+  /** Café front office — view lots only; stock changes happen on MD desk */
+  readOnly?: boolean;
+}) {
   const rows = useMemo(() => buildExpiryRows(ingredients), [ingredients]);
   const expired = rows.filter((r) => r.daysLeft < 0).length;
   const urgent = rows.filter((r) => r.daysLeft >= 0 && r.daysLeft <= 3).length;
@@ -542,8 +598,9 @@ export function ExpiryTrackingPanel({ ingredients }: { ingredients: Ingredient[]
                 Expiry Tracking
               </h2>
               <p className="mt-0.5 max-w-2xl text-[10px] leading-relaxed text-slate-500">
-                Stock lots sorted by use number (lowest first). Set expiry when adding stock or receiving
-                procurement — sales and wastage deduct from the lowest number first.
+                {readOnly
+                  ? 'View-only at the counter — managers receive stock and set expiry on Café Backoffice.'
+                  : 'Stock lots sorted by use number (lowest first). Set expiry when adding stock or receiving procurement — sales and wastage deduct from the lowest number first.'}
               </p>
             </div>
           </div>
@@ -565,9 +622,20 @@ export function ExpiryTrackingPanel({ ingredients }: { ingredients: Ingredient[]
         </div>
       </div>
 
+      {readOnly ? (
+        <div className="border-b border-amber-200/70 bg-amber-50/80 px-5 py-3 text-xs leading-relaxed text-amber-950">
+          <span className="font-bold uppercase tracking-wide">View only</span> — counter staff cannot
+          receive stock or log wastage here. Report spoilage to your manager; they update ingredients and
+          expiry lots on{' '}
+          <span className="font-semibold">Café Backoffice → Ingredients / Expiry</span>.
+        </div>
+      ) : null}
+
       {rows.length === 0 ? (
         <p className="px-5 py-10 text-center text-sm text-slate-500">
-          No expiry-tracked stock yet — add opening stock with an expiry date or receive procurement with a lot date.
+          {readOnly
+            ? 'No expiry lots on file yet. Your manager adds opening stock and procurement on Café Backoffice.'
+            : 'No expiry-tracked stock yet — add opening stock with an expiry date or receive procurement with a lot date.'}
         </p>
       ) : (
         <div className="overflow-x-auto">
@@ -600,7 +668,7 @@ export function ExpiryTrackingPanel({ ingredients }: { ingredients: Ingredient[]
                     ) : null}
                   </td>
                   <td className="px-5 py-3.5 text-center">
-                    <span className="inline-flex min-w-[2.5rem] items-center justify-center rounded-lg border border-indigo-200/80 bg-indigo-50/80 px-2 py-0.5 font-mono text-sm font-black tabular-nums text-indigo-900">
+                    <span className="inline-flex min-w-[2.5rem] items-center justify-center rounded-lg border border-[color:var(--cvs-accent-muted)]/80 bg-[var(--cvs-accent-soft)]/80 px-2 py-0.5 font-mono text-sm font-black tabular-nums text-[color:var(--cvs-accent)]">
                       {row.usePriority}
                     </span>
                   </td>

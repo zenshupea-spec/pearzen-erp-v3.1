@@ -1,11 +1,63 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { createSupabaseServerClient } from '../../../../packages/supabase/server';
 import { createSupabaseServiceClient } from '../../../../packages/supabase/service';
+import {
+  assertSessionCompanyId,
+  resolveSessionRosterCompanyId,
+} from '../../lib/company-context-server';
+import { requireOmRole } from '../../lib/om-integrity-auth';
+import {
+  isOmSectorScopeEmpty,
+  omScopeIncludesGuardEmployeeId,
+  resolveOmSectorScopeForSession,
+} from '../../lib/om-sector-scope';
+
+async function resolveIntegrityCompanyId(clientCompanyId?: string): Promise<string> {
+  if (clientCompanyId?.trim()) {
+    return assertSessionCompanyId(clientCompanyId);
+  }
+  const sessionId = await resolveSessionRosterCompanyId();
+  if (!sessionId) throw new Error('Forbidden');
+  return sessionId;
+}
+
+async function assertAttendanceLogTenant(attendanceLogId: string) {
+  await requireOmRole();
+  const sessionId = await resolveSessionRosterCompanyId();
+  if (!sessionId) throw new Error('Forbidden');
+
+  const supabase = createSupabaseServiceClient();
+  const { data: log, error } = await supabase
+    .from('attendance_logs')
+    .select('company_id, guard_id')
+    .eq('id', attendanceLogId)
+    .maybeSingle();
+
+  if (error || !log?.company_id || log.company_id !== sessionId) {
+    throw new Error('Log not found');
+  }
+
+  const omScope = await resolveOmSectorScopeForSession();
+  if (omScope !== null) {
+    if (isOmSectorScopeEmpty(omScope)) throw new Error('Log not found');
+    if (!omScopeIncludesGuardEmployeeId(omScope, log.guard_id as string | null)) {
+      throw new Error('Log not found');
+    }
+  }
+
+  return sessionId;
+}
 
 /** Pending rows for the OM Integrity & Discrepancy queue (45-minute / overlap rule). */
-export async function getPendingDiscrepancies(companyId: string) {
+export async function getPendingDiscrepancies() {
+  await requireOmRole();
+  const companyId = await resolveSessionRosterCompanyId();
+  if (!companyId) throw new Error('Forbidden');
+
+  const omScope = await resolveOmSectorScopeForSession();
+  if (omScope !== null && isOmSectorScopeEmpty(omScope)) return [];
+
   const supabase = createSupabaseServiceClient();
 
   const { data, error } = await supabase
@@ -27,7 +79,9 @@ export async function getPendingDiscrepancies(companyId: string) {
     .order('shift_date', { ascending: false });
 
   if (error) throw new Error(error.message);
-  return data ?? [];
+  const rows = data ?? [];
+  if (omScope === null) return rows;
+  return rows.filter((row) => omScopeIncludesGuardEmployeeId(omScope, row.guard_id as string));
 }
 
 /**
@@ -37,48 +91,80 @@ export async function getPendingDiscrepancies(companyId: string) {
 export async function resolveDiscrepancy(
   logId: string,
   resolutionType: 'TRUST_FORM' | 'TRUST_CHECK_IN',
-  adminId: string,
 ) {
+  const { actorId, actorEmail } = await requireOmRole();
+  const sessionId = await resolveSessionRosterCompanyId();
+  if (!sessionId) throw new Error('Forbidden');
+
   const supabase = createSupabaseServiceClient();
-  const authClient = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await authClient.auth.getUser();
-  const actorEmail = user?.email ?? adminId;
 
   const { data: log, error: fetchError } = await supabase
     .from('attendance_logs')
-    .select('rostered_start, biometric_check_in, guard_id, company_id')
+    .select('rostered_start, biometric_check_in, guard_id, company_id, status')
     .eq('id', logId)
     .single();
 
   if (fetchError || !log) throw new Error('Log not found');
+  if (log.company_id !== sessionId) throw new Error('Log not found');
+  if (log.status !== 'PENDING_RESOLUTION') {
+    throw new Error('Log is not pending discrepancy resolution.');
+  }
+
+  const omScope = await resolveOmSectorScopeForSession();
+  if (omScope !== null) {
+    if (isOmSectorScopeEmpty(omScope)) throw new Error('Log not found');
+    if (!omScopeIncludesGuardEmployeeId(omScope, log.guard_id as string | null)) {
+      throw new Error('Log not found');
+    }
+  }
 
   const finalTime =
     resolutionType === 'TRUST_FORM' ? log.rostered_start : log.biometric_check_in;
 
-  const { error: updateError } = await supabase
+  if (!finalTime) {
+    throw new Error(
+      resolutionType === 'TRUST_FORM'
+        ? 'Sector form time is missing on this log.'
+        : 'Biometric check-in time is missing on this log.',
+    );
+  }
+
+  const { data: updated, error: updateError } = await supabase
     .from('attendance_logs')
     .update({
       status: 'APPROVED',
       final_approved_time: finalTime,
-      resolved_by: adminId,
+      resolved_by: actorId,
       resolution_method: resolutionType,
     })
-    .eq('id', logId);
+    .eq('id', logId)
+    .eq('company_id', sessionId)
+    .eq('status', 'PENDING_RESOLUTION')
+    .select('id')
+    .maybeSingle();
 
   if (updateError) throw new Error(updateError.message);
+  if (!updated) throw new Error('Log not found');
 
-  await supabase.from('executive_audit_logs').insert({
+  const { error: auditError } = await supabase.from('executive_audit_logs').insert({
     company_id: log.company_id,
     actor_email: actorEmail,
+    admin_id: actorId,
+    target_guard_id: log.guard_id,
     action_type: 'TIME_DISCREPANCY_OVERRIDE',
     entity: 'ATTENDANCE_LOG',
     details: {
       summary: `Resolved conflict for Log ${logId}. Action: ${resolutionType}. Final Time: ${finalTime}`,
       target_guard_id: log.guard_id,
+      resolution_method: resolutionType,
+      final_approved_time: finalTime,
+      attendance_log_id: logId,
     },
   });
+
+  if (auditError) {
+    console.error('resolveDiscrepancy audit log failed:', auditError.message);
+  }
 
   revalidatePath('/om/discrepancies');
   revalidatePath('/om');
@@ -87,6 +173,7 @@ export async function resolveDiscrepancy(
 
 /** Fetch the active recovery plan for a specific attendance log, if any. */
 export async function getActiveRecoveryPlan(attendanceLogId: string) {
+  await assertAttendanceLogTenant(attendanceLogId);
   const supabase = createSupabaseServiceClient();
 
   const { data, error } = await supabase
@@ -102,6 +189,7 @@ export async function getActiveRecoveryPlan(attendanceLogId: string) {
 
 /** Fetch all recovery plans for a log (history view). */
 export async function getRecoveryPlanHistory(attendanceLogId: string) {
+  await assertAttendanceLogTenant(attendanceLogId);
   const supabase = createSupabaseServiceClient();
 
   const { data, error } = await supabase
@@ -116,6 +204,9 @@ export async function getRecoveryPlanHistory(attendanceLogId: string) {
 
 /** Fetch all active employees for a company — used by guard selector in recovery plans. */
 export async function getCompanyEmployees(companyId: string) {
+  companyId = await resolveIntegrityCompanyId(companyId);
+  await requireOmRole();
+  const omScope = await resolveOmSectorScopeForSession();
   const supabase = createSupabaseServiceClient();
 
   const { data, error } = await supabase
@@ -127,7 +218,14 @@ export async function getCompanyEmployees(companyId: string) {
 
   if (error) throw new Error(error.message);
 
-  return (data ?? []).map((row) => {
+  const scopedRows =
+    omScope === null
+      ? (data ?? [])
+      : isOmSectorScopeEmpty(omScope)
+        ? []
+        : (data ?? []).filter((row) => omScopeIncludesGuardEmployeeId(omScope, row.id as string));
+
+  return scopedRows.map((row) => {
     const parts = String(row.full_name ?? '').trim().split(/\s+/);
     const first_name = parts[0] ?? '';
     const last_name = parts.slice(1).join(' ');
@@ -148,6 +246,8 @@ export async function getCompanyEmployees(companyId: string) {
  * Falls back to Sri Lanka Wages Boards Ordinance defaults (26 days, 20%).
  */
 export async function getComplianceSettings(companyId: string) {
+  companyId = await resolveIntegrityCompanyId(companyId);
+  await requireOmRole();
   const supabase = createSupabaseServiceClient();
 
   const { data } = await supabase
@@ -187,8 +287,6 @@ export async function saveRecoveryPlan({
   perShiftValueLkr,
   guardConfigs,
   notes,
-  editorId,
-  editorName,
 }: {
   attendanceLogId: string;
   companyId: string;
@@ -200,17 +298,27 @@ export async function saveRecoveryPlan({
   perShiftValueLkr?: number;
   guardConfigs?: GuardConfig[];
   notes?: string;
-  editorId: string;
-  editorName: string;
 }) {
+  const { actorId, actorEmail, actorName } = await requireOmRole();
+  companyId = await resolveIntegrityCompanyId(companyId);
+  await assertAttendanceLogTenant(attendanceLogId);
+
+  const omScope = await resolveOmSectorScopeForSession();
+  if (omScope !== null) {
+    if (isOmSectorScopeEmpty(omScope)) throw new Error('Forbidden');
+    if (!omScopeIncludesGuardEmployeeId(omScope, guardId)) {
+      throw new Error('Forbidden');
+    }
+  }
+
   const supabase = createSupabaseServiceClient();
 
   await supabase
     .from('discrepancy_recovery_plans')
     .update({
       status: 'SUPERSEDED',
-      updated_by: editorId,
-      updated_by_name: editorName,
+      updated_by: actorId,
+      updated_by_name: actorName,
       updated_at: new Date().toISOString(),
     })
     .eq('attendance_log_id', attendanceLogId)
@@ -228,26 +336,21 @@ export async function saveRecoveryPlan({
     guard_configs: guardConfigs ?? [],
     notes: notes ?? null,
     status: 'ACTIVE',
-    created_by: editorId,
-    created_by_name: editorName,
+    created_by: actorId,
+    created_by_name: actorName,
   });
 
   if (error) throw new Error('Failed to save recovery plan: ' + error.message);
 
-  const authClient = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await authClient.auth.getUser();
-  const actorEmail = user?.email ?? editorId;
-
   const guardSummary =
     guardConfigs && guardConfigs.length > 1
       ? `${guardConfigs.length} guards`
-      : editorName;
+      : actorName;
 
   await supabase.from('executive_audit_logs').insert({
     company_id: companyId,
     actor_email: actorEmail,
+    admin_id: actorId,
     action_type: 'RECOVERY_PLAN_SAVED',
     entity: 'DISCREPANCY_RECOVERY_PLAN',
     details: {

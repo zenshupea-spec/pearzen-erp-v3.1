@@ -1,8 +1,21 @@
 import {
   consumeIngredientStock,
   consumeIngredientsForRecipe,
+  stockFromLots,
   type Ingredient,
 } from './cafe-ingredient-utils';
+import {
+  calcMenuWeekdayVelocity,
+  type MenuDailySaleRecord,
+} from './cafe-menu-velocity';
+
+import {
+  DEFAULT_CAFE_MENU_ITEM_IMAGE_FRAME,
+  normalizeCafeMenuItemImageFrame,
+  type CafeMenuItemImageFrame,
+} from './cafe-menu-item-image';
+
+export type { CafeMenuItemImageFrame } from './cafe-menu-item-image';
 
 export interface RecipeLine {
   ingredientId: string;
@@ -16,10 +29,14 @@ export interface CafeMenuRecipeItem {
   recipeCost: number;
   targetMargin: number;
   hasImage: boolean;
+  imageUrl: string | null;
+  imageFrame: CafeMenuItemImageFrame;
   recipe: RecipeLine[];
   availableToSell: number;
   minReadyStock: number;
   rollingAvg14d: number;
+  velocityBoostCarry?: number;
+  velocityBoostWeekIso?: string;
 }
 
 export const PLANNING_DAYS = 14;
@@ -53,18 +70,86 @@ export function calcSellingPrice(baseCost: number, margin: number): number {
   return Math.round(baseCost / (1 - margin / 100));
 }
 
-export function calcAvailableToSell(recipe: RecipeLine[], ingredients: Ingredient[]): number {
-  if (!recipe.length) return 0;
-  const yields = recipe.map((line) => {
+/** Coerce legacy snapshot recipe lines (snake_case ids, partial rows). */
+export function normalizeRecipeLine(raw: unknown): RecipeLine | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const line = raw as Record<string, unknown>;
+  const ingredientId = String(line.ingredientId ?? line.ingredient_id ?? '').trim();
+  const quantity = Number(line.quantity ?? line.qty ?? 0);
+  if (!ingredientId) return null;
+  return { ingredientId, quantity: Number.isFinite(quantity) ? quantity : 0 };
+}
+
+export function normalizeRecipe(recipe: unknown): RecipeLine[] {
+  if (!Array.isArray(recipe)) return [];
+  return recipe
+    .map((line) => normalizeRecipeLine(line))
+    .filter((line): line is RecipeLine => line != null);
+}
+
+/** On-hand stock from active lots, falling back to persisted currentStock. */
+export function liveIngredientStock(ing: Ingredient): number {
+  const activeLotStock = stockFromLots(ing.stockLots.filter((lot) => lot.quantity > 0));
+  if (activeLotStock > 0) return activeLotStock;
+  return Math.max(0, ing.currentStock ?? 0);
+}
+
+export type MenuAvailContext = {
+  prepItems?: Array<{ menuItemId: string; currentStock: number }>;
+  displayItems?: Array<{
+    menuItemId: string;
+    currentWhole: number;
+    currentSlices: number;
+    slicesPerWhole: number;
+  }>;
+};
+
+function calcPrepDisplayAvailable(menuItemId: string, ctx: MenuAvailContext): number | null {
+  const display = ctx.displayItems?.find((row) => row.menuItemId === menuItemId);
+  if (display) {
+    return Math.max(
+      0,
+      Math.floor(
+        display.currentSlices + display.currentWhole * (display.slicesPerWhole || 10),
+      ),
+    );
+  }
+  const prep = ctx.prepItems?.find((row) => row.menuItemId === menuItemId);
+  if (prep) {
+    return Math.max(0, Math.floor(prep.currentStock));
+  }
+  return null;
+}
+
+/** Min recipe yield from live ingredient stock, or prep/display on-hand when linked. */
+export function calcMenuAvailableToSell(
+  menuItemId: string,
+  recipe: RecipeLine[] | unknown,
+  ingredients: Ingredient[],
+  ctx: MenuAvailContext = {},
+): number {
+  const prepDisplay = calcPrepDisplayAvailable(menuItemId, ctx);
+  if (prepDisplay != null) return prepDisplay;
+  return calcAvailableToSell(normalizeRecipe(recipe), ingredients);
+}
+
+export function calcAvailableToSell(recipe: RecipeLine[] | unknown, ingredients: Ingredient[]): number {
+  const lines = normalizeRecipe(recipe);
+  if (!lines.length) return 0;
+  const yields = lines.map((line) => {
     if (line.quantity <= 0) return 0;
     const ing = ingredients.find((i) => i.id === line.ingredientId);
     if (!ing) return 0;
-    return Math.floor(ing.currentStock / line.quantity);
+    return Math.floor(liveIngredientStock(ing) / line.quantity);
   });
   return Math.min(...yields);
 }
 
-export function calcMenuRollingAvg14d(recipe: RecipeLine[], ingredients: Ingredient[]): number {
+/** Ingredient-implied daily units (legacy fallback when no POS weekday history). */
+export function calcMenuRollingAvg14dFromIngredients(
+  recipe: RecipeLine[],
+  ingredients: Ingredient[],
+): number {
   if (!recipe.length) return 0;
   const impliedDaily = recipe
     .map((line) => {
@@ -76,6 +161,33 @@ export function calcMenuRollingAvg14d(recipe: RecipeLine[], ingredients: Ingredi
     .filter((rate) => rate > 0);
   if (!impliedDaily.length) return 0;
   return Math.round(Math.min(...impliedDaily));
+}
+
+/** Planning reference daily units — weekday POS avg (+ sold-out boost) when sales exist. */
+export function calcMenuReferenceDaily(
+  recipe: RecipeLine[],
+  ingredients: Ingredient[],
+  sales: MenuDailySaleRecord[] = [],
+  boostCarry = 0,
+  boostWeekIso?: string,
+  today: Date = new Date(),
+): number {
+  if (sales.length > 0) {
+    return calcMenuWeekdayVelocity(sales, boostCarry, boostWeekIso, today).referenceDaily;
+  }
+  return calcMenuRollingAvg14dFromIngredients(recipe, ingredients);
+}
+
+/** @deprecated Use calcMenuReferenceDaily — kept for call-site compatibility. */
+export function calcMenuRollingAvg14d(
+  recipe: RecipeLine[],
+  ingredients: Ingredient[],
+  sales: MenuDailySaleRecord[] = [],
+  boostCarry = 0,
+  boostWeekIso?: string,
+  today: Date = new Date(),
+): number {
+  return calcMenuReferenceDaily(recipe, ingredients, sales, boostCarry, boostWeekIso, today);
 }
 
 /** Finished-menu units per day implied by MD min/day and 14d sales velocity. */
@@ -97,7 +209,10 @@ export function calcMenuIngredientDailyDemand(
   let total = 0;
   for (const item of menuItems) {
     if (!item.recipe.some((line) => line.ingredientId === ingredientId)) continue;
-    const rollingAvg14d = calcMenuRollingAvg14d(item.recipe, ingredients);
+    const rollingAvg14d =
+      item.rollingAvg14d > 0
+        ? item.rollingAvg14d
+        : calcMenuRollingAvg14dFromIngredients(item.recipe, ingredients);
     const dailyUnits = calcEffectiveMenuDailyUnits(item.minReadyStock, rollingAvg14d);
     for (const line of item.recipe) {
       if (line.ingredientId !== ingredientId) continue;
@@ -153,11 +268,16 @@ export function calcIngredientBelowMinimum(
 export function normalizeMenuItem(
   raw: Partial<CafeMenuRecipeItem> & Pick<CafeMenuRecipeItem, 'id' | 'name' | 'category'>,
 ): CafeMenuRecipeItem {
+  const imageUrl =
+    typeof raw.imageUrl === 'string' && raw.imageUrl.trim() ? raw.imageUrl.trim() : null;
+  const imageFrame = normalizeCafeMenuItemImageFrame(raw.imageFrame);
   return {
     recipeCost: raw.recipeCost ?? 0,
     targetMargin: raw.targetMargin ?? 65,
-    hasImage: raw.hasImage ?? false,
-    recipe: raw.recipe ?? [],
+    imageUrl,
+    imageFrame,
+    hasImage: Boolean(imageUrl) || Boolean(raw.hasImage),
+    recipe: normalizeRecipe(raw.recipe ?? []),
     availableToSell: raw.availableToSell ?? 0,
     minReadyStock: raw.minReadyStock ?? 0,
     rollingAvg14d: raw.rollingAvg14d ?? 0,
@@ -176,15 +296,36 @@ export function normalizeMenuItems(
 export function syncMenuRecipeCosts<T extends CafeMenuRecipeItem>(
   items: T[],
   ingredients: Ingredient[],
+  salesByMenuId: Map<string, MenuDailySaleRecord[]> = new Map(),
+  today: Date = new Date(),
+  availCtx: MenuAvailContext = {},
 ): T[] {
   return items.map((item) => {
-    const recipe = item.recipe ?? [];
+    const recipe = normalizeRecipe(item.recipe ?? []);
+    const sales = salesByMenuId.get(item.id) ?? [];
+    const velocity = sales.length
+      ? calcMenuWeekdayVelocity(
+          sales,
+          item.velocityBoostCarry ?? 0,
+          item.velocityBoostWeekIso,
+          today,
+        )
+      : null;
     return {
       ...item,
       recipe,
       recipeCost: calcRecipeCost(recipe, ingredients),
-      availableToSell: calcAvailableToSell(recipe, ingredients),
-      rollingAvg14d: calcMenuRollingAvg14d(recipe, ingredients),
+      availableToSell: calcMenuAvailableToSell(item.id, recipe, ingredients, availCtx),
+      rollingAvg14d: calcMenuReferenceDaily(
+        recipe,
+        ingredients,
+        sales,
+        item.velocityBoostCarry ?? 0,
+        item.velocityBoostWeekIso,
+        today,
+      ),
+      velocityBoostCarry: velocity?.soldOutBoost ?? item.velocityBoostCarry ?? 0,
+      velocityBoostWeekIso: velocity?.boostWeekIso ?? item.velocityBoostWeekIso,
     };
   });
 }

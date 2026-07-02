@@ -16,35 +16,18 @@ import {
   Timer,
   ShieldCheck,
   ShieldAlert,
-  Smartphone,
-  Users,
-  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Unlock,
   Clock,
   Info,
-  Copy,
   RefreshCw,
+  Bell,
+  ScrollText,
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
-import { getRbacMatrixPayload, savePortalRbacMatrix } from './rbac-actions';
-import type { HeadOfficePortalAuthStatus } from '../../../lib/head-office-portal-auth';
-import { readDeviceGeolocationWithRetry } from '../../../lib/device-geolocation';
-import {
-  provisionHeadOfficePortalOtpAction,
-  resetHeadOfficePortalAccessAction,
-  resetHeadOfficeTwoFactorAction,
-} from './portal-auth-actions';
-import PortalOtpCountdown from './PortalOtpCountdown';
-import { HO_PORTAL_OTP_LIFETIME_MS } from '../../../lib/head-office-portal-password';
-import {
-  isSystemLockedRank,
-  makeBlankPortalRbacRow,
-  PORTAL_RBAC_PORTALS,
-  type HeadOfficeRbacStaffRow,
-  type PortalAccessLevel,
-  type PortalRbacMatrix,
-} from '../../../../../packages/portal-rbac';
-import type { SettingsSectionAudit } from './settings-traceability-actions';
+import { ExecutivePageLoading } from '../../../components/executive/ExecutivePageChrome';
+import { CVS_BRAND_CLASSES } from '../../../lib/cvs-brand-tokens';
 import { SettingsTraceability } from './settings-section-ui';
 
 const inputCls =
@@ -70,7 +53,7 @@ interface VaultSession {
 }
 
 const ROLE_META: Record<VaultRole, { label: string; cls: string }> = {
-  MD:         { label: 'MD',         cls: 'border-indigo-200/80 bg-indigo-50/80 text-indigo-800' },
+  MD:         { label: 'MD',         cls: CVS_BRAND_CLASSES.rankBadge },
   OD:         { label: 'OD',         cls: 'border-sky-200/80 bg-sky-50/80 text-sky-800' },
   'Exec Admin': { label: 'Exec Admin', cls: 'border-slate-200/80 bg-slate-100/80 text-slate-700' },
 };
@@ -241,9 +224,10 @@ function SecuritySessionsPanel() {
 
       <div className="hidden overflow-x-auto md:block">
         {loading ? (
-          <div className="px-6 py-10 text-center text-sm text-slate-500">
-            Loading active vault sessions…
-          </div>
+          <ExecutivePageLoading
+            message="Loading active vault sessions…"
+            className="min-h-[10rem] py-8"
+          />
         ) : loadError ? (
           <div className="px-6 py-10 text-center text-sm font-semibold text-rose-700">
             {loadError}
@@ -337,7 +321,10 @@ function SecuritySessionsPanel() {
       {/* Mobile card list */}
       <div className="space-y-3 p-4 md:hidden">
         {loading ? (
-          <p className="text-center text-sm text-slate-500">Loading active vault sessions…</p>
+          <ExecutivePageLoading
+            message="Loading active vault sessions…"
+            className="min-h-[8rem] py-6"
+          />
         ) : loadError ? (
           <p className="text-center text-sm font-semibold text-rose-700">{loadError}</p>
         ) : sessions.length === 0 ? (
@@ -512,8 +499,8 @@ function VaultPinConfigPanel() {
       {/* Card header */}
       <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-indigo-200/80 bg-indigo-50/80">
-            <KeyRound className="h-5 w-5 text-indigo-700" />
+          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-[color:var(--cvs-accent-muted)]/80 bg-[var(--cvs-accent-soft)]/80">
+            <KeyRound className="h-5 w-5 text-[color:var(--cvs-accent)]" />
           </div>
           <div>
             <h3 className="text-lg font-bold text-slate-800">
@@ -556,7 +543,7 @@ function VaultPinConfigPanel() {
             <div className="flex items-center justify-between rounded-xl border border-slate-200/70 bg-slate-50/60 px-4 py-3">
               <div className="flex items-center gap-2.5">
                 {autoLockEnabled
-                  ? <ShieldCheck className="h-4 w-4 text-indigo-600 flex-shrink-0" />
+                  ? <ShieldCheck className="h-4 w-4 text-[color:var(--cvs-accent)] flex-shrink-0" />
                   : <Unlock className="h-4 w-4 text-rose-500 flex-shrink-0" />
                 }
                 <span className="text-sm font-black uppercase tracking-wider text-slate-700">
@@ -569,9 +556,9 @@ function VaultPinConfigPanel() {
                 role="switch"
                 aria-checked={autoLockEnabled}
                 onClick={() => setAutoLockEnabled((v) => !v)}
-                className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer items-center rounded-full border-2 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 ${
+                className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer items-center rounded-full border-2 transition-colors duration-200 focus:outline-none focus:ring-2 ${CVS_BRAND_CLASSES.focusRing} ${
                   autoLockEnabled
-                    ? 'border-indigo-300/80 bg-indigo-600'
+                    ? 'border-[color:var(--cvs-accent-muted)]/80 bg-[color:var(--cvs-accent)]'
                     : 'border-slate-300/80 bg-slate-300'
                 }`}
               >
@@ -676,7 +663,7 @@ function VaultPinConfigPanel() {
             {/* MFA Code */}
             <div>
               <label className={`${labelCls} flex items-center gap-1.5`}>
-                <ShieldCheck className="h-3 w-3 text-indigo-600" />
+                <ShieldCheck className="h-3 w-3 text-[color:var(--cvs-accent)]" />
                 Current Google Auth Code (MFA)
               </label>
               <input
@@ -758,7 +745,7 @@ function VaultPinConfigPanel() {
 
           {/* Security advisory */}
           <div className="mt-4 flex items-start gap-2 rounded-xl border border-slate-200/60 bg-slate-50/60 px-3 py-2.5 text-sm text-slate-600">
-            <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-indigo-500" />
+            <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-[color:var(--cvs-accent)]" />
             <span>
               Your new PIN will replace the current vault PIN immediately. Avoid simple sequences (e.g. 1234, 0000).
               The MFA code must be verified first — this action is logged to the vault audit trail.
@@ -777,7 +764,7 @@ function VaultPinConfigPanel() {
               disabled={!pinReady || pinSaving}
               className={`flex items-center gap-2 rounded-2xl px-6 py-2.5 text-sm font-black uppercase tracking-widest text-white shadow-lg transition-all ${
                 pinReady && !pinSaving
-                  ? 'bg-slate-900 shadow-slate-900/20 hover:bg-slate-700'
+                  ? 'bg-[color:var(--cvs-accent)] shadow-[color:var(--cvs-glow)] hover:bg-[color:var(--cvs-accent-hover)]'
                   : 'cursor-not-allowed bg-slate-300 shadow-none'
               }`}
             >
@@ -792,121 +779,43 @@ function VaultPinConfigPanel() {
   );
 }
 
-interface RbacStaffRow {
-  id: string;
-  label: string;
-  sub: string;
-  email: string | null;
-  status: string;
-  isLocked: boolean;
-  portalAuth: HeadOfficePortalAuthStatus;
+
+function formatPortalEventLabel(eventType: string): string {
+  if (eventType === 'after_hours_login') return 'After-hours sign-in';
+  if (eventType === 'shalom_direct_booking_confirmed') return 'Shalom direct booking';
+  if (eventType === 'shalom_booking_received') return 'Shalom booking received';
+  return eventType
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
-function formatPortalOtpAuditTime(iso: string | null): string {
-  if (!iso) return 'Never';
-  try {
-    return new Intl.DateTimeFormat('en-LK', {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-    }).format(new Date(iso));
-  } catch {
-    return iso;
-  }
-}
-
-const RBAC_PORTALS = PORTAL_RBAC_PORTALS;
-
-const PORTAL_SECTION_SPANS = (() => {
-  const order: string[] = [];
-  const counts: Record<string, number> = {};
-  RBAC_PORTALS.forEach((p) => {
-    if (!counts[p.section]) { order.push(p.section); counts[p.section] = 0; }
-    counts[p.section]++;
-  });
-  return order.map((s) => ({ label: s, count: counts[s] }));
-})();
-
-function staffRowsFromPayload(
-  staff: HeadOfficeRbacStaffRow[],
-  portalAuthByEmployeeId: Record<string, HeadOfficePortalAuthStatus>,
-): RbacStaffRow[] {
-  return staff.map((person) => ({
-    id: person.id,
-    label: person.fullName,
-    sub: person.rank ? `${person.rank} · Head Office` : 'Head Office · No rank set',
-    email: person.email,
-    status: person.status,
-    isLocked: isSystemLockedRank(person.rank),
-    portalAuth: portalAuthByEmployeeId[person.id] ?? {
-      isProvisioned: false,
-      isActive: false,
-      twoFactorEnabled: false,
-      lastOtpProvisionedAt: null,
-      lastOtpProvisionedByName: null,
-      lastOtpProvisionedLocationLabel: null,
-    },
-  }));
-}
-
-const ACCESS_META: Record<PortalAccessLevel, { label: string; cls: string; dotCls: string; selectCls: string }> = {
-  FULL: {
-    label:     'Full Access',
-    cls:       'border-emerald-200/80 bg-emerald-50/80 text-emerald-900',
-    dotCls:    'bg-emerald-500',
-    selectCls: 'border-emerald-200/80 bg-emerald-50/80 text-emerald-900 focus:ring-emerald-500/40',
-  },
-  READ: {
-    label:     'Read Only',
-    cls:       'border-amber-200/80 bg-amber-50/80 text-amber-900',
-    dotCls:    'bg-amber-400',
-    selectCls: 'border-amber-200/80 bg-amber-50/80 text-amber-900 focus:ring-amber-500/40',
-  },
-  NONE: {
-    label:     'No Access',
-    cls:       'border-slate-200/80 bg-slate-100/80 text-slate-500',
-    dotCls:    'bg-slate-300',
-    selectCls: 'border-slate-200/80 bg-slate-50/80 text-slate-500 focus:ring-slate-400/40',
-  },
-};
-
-function RbacMatrixPanel({
-  audit,
-}: {
-  audit?: SettingsSectionAudit;
-}) {
-  const [staffRows, setStaffRows] = useState<RbacStaffRow[]>([]);
-  const [matrix, setMatrix] = useState<PortalRbacMatrix>({});
+function AfterHoursLoginAlertsPanel() {
+  const [enabled, setEnabled] = useState(true);
+  const [startTime, setStartTime] = useState('17:00');
+  const [endTime, setEndTime] = useState('08:00');
+  const [notifyEmails, setNotifyEmails] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [generatingId, setGeneratingId] = useState<string | null>(null);
-  const [resettingId, setResettingId] = useState<string | null>(null);
-  const [resettingTwoFactorId, setResettingTwoFactorId] = useState<string | null>(null);
-  const [generatedOtp, setGeneratedOtp] = useState<{
-    otp: string;
-    staffName: string;
-    email: string;
-    expiresAt: number;
-    provisionedBy: string;
-    provisionedWhere: string;
-  } | null>(null);
-  const [otpCopied, setOtpCopied] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      setLoading(true);
-      setError(null);
       try {
-        const payload = await getRbacMatrixPayload();
+        const { getPortalAfterHoursLoginAlertSettingsAction } = await import(
+          './portal-after-hours-alert-actions'
+        );
+        const settings = await getPortalAfterHoursLoginAlertSettingsAction();
         if (cancelled) return;
-        setStaffRows(staffRowsFromPayload(payload.staff, payload.portalAuthByEmployeeId));
-        setMatrix(payload.matrix);
+        setEnabled(settings.enabled);
+        setStartTime(settings.startTime);
+        setEndTime(settings.endTime);
+        setNotifyEmails(settings.notifyEmails.join('\n'));
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load staff permissions');
+          setError(err instanceof Error ? err.message : 'Failed to load after-hours alert settings.');
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -917,491 +826,546 @@ function RbacMatrixPanel({
     };
   }, []);
 
-  const getCell = (employeeId: string, portalId: string): PortalAccessLevel =>
-    matrix[employeeId]?.[portalId] ?? 'NONE';
-
-  const setCell = (employeeId: string, portalId: string, val: PortalAccessLevel) =>
-    setMatrix((prev) => ({
-      ...prev,
-      [employeeId]: { ...(prev[employeeId] ?? makeBlankPortalRbacRow()), [portalId]: val },
-    }));
-
   const handleSave = async () => {
     setSaving(true);
     setError(null);
-    const result = await savePortalRbacMatrix(matrix);
-    setSaving(false);
-    if (!result.success) {
-      setError(result.error ?? 'Failed to save permissions');
-      return;
-    }
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
-  };
-
-  const handleGenerateOtp = async (person: RbacStaffRow) => {
-    setAuthError(null);
-    setGeneratedOtp(null);
-    setGeneratingId(person.id);
-
-    const geo = await readDeviceGeolocationWithRetry().catch(() => null);
-    const lat = geo && geo.ok ? geo.latitude : null;
-    const lng = geo && geo.ok ? geo.longitude : null;
-
-    const result = await provisionHeadOfficePortalOtpAction(person.id, lat, lng);
-    setGeneratingId(null);
-    if (result.error) {
-      setAuthError(result.error);
-      return;
-    }
-    if (result.success && result.otp) {
-      setGeneratedOtp({
-        otp: result.otp,
-        staffName: result.staffName ?? person.label,
-        email: result.email ?? person.email ?? '—',
-        expiresAt: result.expiresAt ?? Date.now() + HO_PORTAL_OTP_LIFETIME_MS,
-        provisionedBy: result.provisionedBy ?? 'Executive',
-        provisionedWhere: result.provisionedWhere ?? '—',
-      });
-      setStaffRows((rows) =>
-        rows.map((row) =>
-          row.id === person.id
-            ? {
-                ...row,
-                portalAuth: {
-                  ...row.portalAuth,
-                  isProvisioned: true,
-                  isActive: true,
-                  twoFactorEnabled: false,
-                  lastOtpProvisionedAt: new Date().toISOString(),
-                  lastOtpProvisionedByName: result.provisionedBy ?? 'Executive',
-                  lastOtpProvisionedLocationLabel: result.provisionedWhere ?? '—',
-                },
-              }
-            : row,
-        ),
+    setSaved(false);
+    try {
+      const { savePortalAfterHoursLoginAlertSettingsAction } = await import(
+        './portal-after-hours-alert-actions'
       );
+      const result = await savePortalAfterHoursLoginAlertSettingsAction({
+        enabled,
+        startTime,
+        endTime,
+        notifyEmails: notifyEmails
+          .split(/[\n,;]+/)
+          .map((value) => value.trim())
+          .filter(Boolean),
+      });
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save settings.');
+    } finally {
+      setSaving(false);
     }
   };
-
-  const handleResetAccess = async (person: RbacStaffRow) => {
-    setAuthError(null);
-    setResettingId(person.id);
-    const result = await resetHeadOfficePortalAccessAction(person.id);
-    setResettingId(null);
-    if (result.error) {
-      setAuthError(result.error);
-      return;
-    }
-    setGeneratedOtp(null);
-  };
-
-  const handleResetTwoFactor = async (person: RbacStaffRow) => {
-    setAuthError(null);
-    setResettingTwoFactorId(person.id);
-    const result = await resetHeadOfficeTwoFactorAction(person.id);
-    setResettingTwoFactorId(null);
-    if (result.error) {
-      setAuthError(result.error);
-      return;
-    }
-    setStaffRows((rows) =>
-      rows.map((row) =>
-        row.id === person.id
-          ? {
-              ...row,
-              portalAuth: {
-                ...row.portalAuth,
-                twoFactorEnabled: false,
-              },
-            }
-          : row,
-      ),
-    );
-  };
-
-  const copyGeneratedOtp = () => {
-    if (!generatedOtp) return;
-    navigator.clipboard.writeText(generatedOtp.otp);
-    setOtpCopied(true);
-    setTimeout(() => setOtpCopied(false), 2000);
-  };
-
-  const staffMemberCell = (person: RbacStaffRow) => (
-    <div className="flex items-center gap-3">
-      <div className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl border ${person.isLocked ? 'border-rose-200/80 bg-rose-50/80' : 'border-violet-200/80 bg-violet-50/80'}`}>
-        {person.isLocked
-          ? <Lock className="h-3.5 w-3.5 text-rose-600" />
-          : <User className="h-3.5 w-3.5 text-violet-700" />
-        }
-      </div>
-      <div>
-        <p className="text-sm font-black text-slate-900">{person.label}</p>
-        <p className="text-[11px] text-slate-500">{person.sub}</p>
-        {person.email ? (
-          <p className="text-[11px] text-slate-400">{person.email}</p>
-        ) : null}
-        <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-          {person.status !== 'ACTIVE' && (
-            <span className="inline-flex rounded-full border border-amber-200/80 bg-amber-50/80 px-1.5 py-px text-[9px] font-black uppercase tracking-wider text-amber-800">
-              {person.status}
-            </span>
-          )}
-          {person.isLocked && (
-            <span className="inline-block rounded-full bg-rose-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-rose-600 border border-rose-200/60">
-              System locked
-            </span>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-
-  const emptyStaffMessage = (
-  <>
-    <p className="font-bold text-slate-800">No Head Office corporate staff yet</p>
-    <p className="mt-1">
-      Add employees in HR → MNR, set their corporate group to <strong>Head Office</strong>, and assign a Head Office rank (MD, OD, FM, HR, EA, OM). Resigned and terminated records are excluded.
-    </p>
-  </>
-  );
 
   return (
-    <div className="space-y-6">
-      {/* Portal OTP — separate from permission matrix */}
-      <ExecutiveGlassCard className="overflow-hidden">
-        <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-violet-200/80 bg-violet-50/80">
-              <KeyRound className="h-5 w-5 text-violet-700" />
-            </div>
-            <div>
-              <h3 className="text-lg font-bold text-slate-800">Portal OTP</h3>
-              <p className="text-sm font-medium text-slate-600">
-                Generate a one-time password for HQ email sign-in (valid 1 minute). Staff set a permanent password (15+ chars), then bind 2FA. Reset access immediately revokes login.
-              </p>
-            </div>
+    <ExecutiveGlassCard className="overflow-hidden" id="after-hours-login-alerts">
+      <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-amber-200/80 bg-amber-50/80">
+            <Clock className="h-5 w-5 text-amber-700" />
+          </div>
+          <div>
+            <h3 className="text-lg font-bold text-slate-800">After-Hours Login Alerts</h3>
+            <p className="text-sm font-medium text-slate-600">
+              Notify OD when HQ, OM, TM, or MD portal staff sign in outside office hours
+            </p>
           </div>
         </div>
+      </div>
 
-        {authError ? (
-          <div className="border-b border-rose-100 bg-rose-50 px-6 py-3 text-sm font-semibold text-rose-800">
-            {authError}
-          </div>
-        ) : null}
+      <div className="space-y-5 px-6 py-5">
+        {loading ? (
+          <ExecutivePageLoading message="Loading alert settings…" className="min-h-[6rem] py-4" />
+        ) : (
+          <>
+            <label className="flex items-start gap-3 rounded-xl border border-slate-200/80 bg-white/70 px-4 py-3">
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={(event) => setEnabled(event.target.checked)}
+                className="mt-1 h-4 w-4 rounded border-slate-300 text-[color:var(--cvs-accent)] focus:ring-[color:var(--cvs-accent)]"
+              />
+              <span>
+                <span className="block text-sm font-bold text-slate-800">
+                  Enable after-hours login alerts
+                </span>
+                <span className="mt-1 block text-xs font-medium text-slate-500">
+                  When off, no OD feed entry or alert email is sent for late sign-ins.
+                </span>
+              </span>
+            </label>
 
-        {generatedOtp ? (
-          <div className="border-b border-violet-100 bg-violet-50 px-6 py-4">
-            <div className="flex flex-wrap items-center gap-3">
-              <CheckCircle2 className="h-5 w-5 shrink-0 text-violet-700" />
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-bold text-violet-900">
-                  OTP for {generatedOtp.staffName} ({generatedOtp.email})
-                </p>
-                <div className="mt-2 flex flex-wrap items-center gap-3">
-                  <span className="font-mono text-3xl font-black tracking-[0.25em] text-violet-700">
-                    {generatedOtp.otp}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={copyGeneratedOtp}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-violet-300 bg-white px-3 py-2 text-xs font-bold text-violet-900"
-                  >
-                    {otpCopied ? <CheckCircle2 className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                    {otpCopied ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-                <p className="mt-2 text-xs font-semibold text-violet-800">
-                  Issued by {generatedOtp.provisionedBy} from {generatedOtp.provisionedWhere}.
-                  Staff sign in with work email + OTP, set a password, then bind 2FA.
-                </p>
-                <PortalOtpCountdown
-                  expiresAt={generatedOtp.expiresAt}
-                  onExpired={() => setGeneratedOtp(null)}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className={labelCls}>Alert window start</label>
+                <input
+                  type="time"
+                  value={startTime}
+                  onChange={(event) => setStartTime(event.target.value)}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className={labelCls}>Alert window end</label>
+                <input
+                  type="time"
+                  value={endTime}
+                  onChange={(event) => setEndTime(event.target.value)}
+                  className={inputCls}
                 />
               </div>
             </div>
-          </div>
-        ) : null}
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="border-b border-slate-200/80 bg-slate-50/60">
-              <tr>
-                <th className="w-52 px-6 py-3 text-left text-[11px] font-bold uppercase tracking-widest text-slate-500">
-                  Staff Member
-                </th>
-                <th className="w-28 px-3 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-slate-500 border-l border-slate-200/40">
-                  2FA
-                </th>
-                <th className="min-w-[10rem] px-3 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-slate-500 border-l border-slate-200/40">
-                  Last OTP
-                </th>
-                <th className="w-48 px-3 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-slate-500 border-l border-slate-200/40">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200/60">
-              {loading ? (
-                <tr>
-                  <td colSpan={4} className="px-6 py-10 text-center text-sm font-medium text-slate-500">
-                    Loading Head Office staff from MNR…
-                  </td>
-                </tr>
-              ) : staffRows.length === 0 ? (
-                <tr>
-                  <td colSpan={4} className="px-6 py-10 text-center text-sm text-slate-600">
-                    {emptyStaffMessage}
-                  </td>
-                </tr>
-              ) : (
-                staffRows.map((person, ri) => (
-                  <tr
-                    key={person.id}
-                    className={`transition-colors hover:bg-white/40 ${ri % 2 === 0 ? 'bg-white/20' : ''}`}
-                  >
-                    <td className="px-6 py-4">
-                      {staffMemberCell(person)}
-                    </td>
-                    <td className="px-3 py-3 text-center border-l border-slate-200/40">
-                      <span
-                        className={`inline-flex items-center justify-center gap-1.5 rounded-lg border px-2 py-1.5 text-[10px] font-black uppercase tracking-wider ${
-                          person.portalAuth.twoFactorEnabled
-                            ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                            : 'border-rose-200 bg-rose-50 text-rose-700'
-                        }`}
-                      >
-                        <span
-                          className={`h-1.5 w-1.5 rounded-full ${
-                            person.portalAuth.twoFactorEnabled ? 'bg-emerald-500' : 'bg-rose-500'
-                          }`}
-                        />
-                        {person.portalAuth.twoFactorEnabled ? 'On' : 'Off'}
-                      </span>
-                    </td>
-                    <td className="px-3 py-3 border-l border-slate-200/40">
-                      <div className="text-[11px] leading-relaxed text-slate-600">
-                        <p className="font-semibold text-slate-800">
-                          {formatPortalOtpAuditTime(person.portalAuth.lastOtpProvisionedAt)}
-                        </p>
-                        {person.portalAuth.lastOtpProvisionedByName ? (
-                          <p className="mt-1">
-                            By {person.portalAuth.lastOtpProvisionedByName}
-                          </p>
-                        ) : null}
-                        {person.portalAuth.lastOtpProvisionedLocationLabel ? (
-                          <p className="mt-0.5 text-slate-500">
-                            @ {person.portalAuth.lastOtpProvisionedLocationLabel}
-                          </p>
-                        ) : null}
-                      </div>
-                    </td>
-                    <td className="px-3 py-3 border-l border-slate-200/40">
-                      <div className="flex flex-col gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handleGenerateOtp(person)}
-                          disabled={!person.email || generatingId === person.id || resettingId === person.id || resettingTwoFactorId === person.id}
-                          className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-violet-600 px-2.5 py-2 text-[10px] font-black uppercase tracking-wider text-white hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          <RefreshCw className={`h-3 w-3 ${generatingId === person.id ? 'animate-spin' : ''}`} />
-                          {generatingId === person.id ? '…' : 'Generate OTP'}
-                        </button>
-                        {person.portalAuth.twoFactorEnabled ? (
-                          <button
-                            type="button"
-                            onClick={() => handleResetTwoFactor(person)}
-                            disabled={!person.email || generatingId === person.id || resettingId === person.id || resettingTwoFactorId === person.id}
-                            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[10px] font-black uppercase tracking-wider text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            <Smartphone className={`h-3 w-3 ${resettingTwoFactorId === person.id ? 'animate-pulse' : ''}`} />
-                            {resettingTwoFactorId === person.id ? '…' : 'Reset 2FA'}
-                          </button>
-                        ) : null}
-                        <button
-                          type="button"
-                          onClick={() => handleResetAccess(person)}
-                          disabled={!person.email || generatingId === person.id || resettingId === person.id || resettingTwoFactorId === person.id}
-                          className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-2 text-[10px] font-black uppercase tracking-wider text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          <KeyRound className="h-3 w-3" />
-                          {resettingId === person.id ? '…' : 'Reset access'}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </ExecutiveGlassCard>
+            <p className="flex items-start gap-2 rounded-xl border border-sky-100 bg-sky-50/70 px-3 py-2 text-xs font-medium text-sky-900">
+              <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+              Times use Asia/Colombo. Overnight windows are supported — e.g. 17:00 to 08:00 covers
+              evenings through early morning.
+            </p>
 
-      {/* Staff portal permissions */}
-      <ExecutiveGlassCard className="overflow-hidden">
-        <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-violet-200/80 bg-violet-50/80">
-                <Users className="h-5 w-5 text-violet-700" />
-              </div>
-              <div>
-                <h3 className="text-lg font-bold text-slate-800">
-                  Role-Based Access Control Matrix
-                </h3>
-                <p className="text-sm font-medium text-slate-600">
-                  Head Office staff added in HR → MNR appear here automatically. Set portal access per module below.
-                </p>
-                <SettingsTraceability sectionId="portalRbac" audit={audit} />
-              </div>
+            <div>
+              <label className={labelCls}>Alert email recipients</label>
+              <textarea
+                value={notifyEmails}
+                onChange={(event) => setNotifyEmails(event.target.value)}
+                rows={4}
+                placeholder={'od@company.com\nsecurity@company.com'}
+                className={`${inputCls} min-h-[6rem] resize-y font-mono text-xs normal-case tracking-normal`}
+              />
+              <p className="mt-2 text-xs font-medium text-slate-500">
+                One email per line or comma-separated. Leave blank to use active OD portal work
+                emails.
+              </p>
             </div>
 
-            <div className="flex items-center gap-2">
-              {error && (
-                <span className="rounded-xl border border-rose-200/80 bg-rose-50/80 px-3 py-1.5 text-sm font-bold text-rose-800">
-                  {error}
-                </span>
-              )}
-              {saved && (
-                <span className="flex items-center gap-1.5 rounded-xl border border-emerald-200/80 bg-emerald-50/80 px-3 py-1.5 text-sm font-bold text-emerald-800">
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                  Permissions saved
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
+            {error ? (
+              <p className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">
+                {error}
+              </p>
+            ) : null}
 
-        <div className="border-b border-slate-200/60 bg-white/30 px-6 py-3">
-          <div className="flex flex-wrap items-center gap-4">
-            <span className="text-sm font-bold uppercase tracking-widest text-slate-600">Access Levels:</span>
-            {(Object.entries(ACCESS_META) as [PortalAccessLevel, typeof ACCESS_META[PortalAccessLevel]][]).map(([key, meta]) => (
-              <span
-                key={key}
-                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-sm font-black uppercase tracking-wider ${meta.cls}`}
-              >
-                <span className={`h-1.5 w-1.5 rounded-full ${meta.dotCls}`} />
-                {meta.label}
-              </span>
-            ))}
-          </div>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="border-b border-slate-200/80 bg-slate-50/60">
-              <tr className="border-b border-slate-100/80">
-                <th className="w-52 px-6 py-2" />
-                {PORTAL_SECTION_SPANS.map(({ label, count }) => (
-                  <th
-                    key={label}
-                    colSpan={count}
-                    className="px-4 py-2 text-center text-[9px] font-black uppercase tracking-widest text-slate-400 border-l border-slate-200/60"
-                  >
-                    {label}
-                  </th>
-                ))}
-              </tr>
-              <tr>
-                <th className="w-52 px-6 py-3 text-left text-[11px] font-bold uppercase tracking-widest text-slate-500">
-                  Staff Member
-                </th>
-                {RBAC_PORTALS.map((portal) => (
-                  <th
-                    key={portal.id}
-                    className="px-3 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-slate-500 border-l border-slate-200/40"
-                  >
-                    <div className="whitespace-nowrap">{portal.label}</div>
-                    <div className="mt-0.5 text-[9px] font-semibold normal-case tracking-normal text-slate-400 whitespace-nowrap">
-                      {portal.sub}
-                    </div>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200/60">
-              {loading ? (
-                <tr>
-                  <td colSpan={RBAC_PORTALS.length + 1} className="px-6 py-10 text-center text-sm font-medium text-slate-500">
-                    Loading Head Office staff from MNR…
-                  </td>
-                </tr>
-              ) : staffRows.length === 0 ? (
-                <tr>
-                  <td colSpan={RBAC_PORTALS.length + 1} className="px-6 py-10 text-center text-sm text-slate-600">
-                    {emptyStaffMessage}
-                  </td>
-                </tr>
-              ) : (
-                staffRows.map((person, ri) => (
-                  <tr
-                    key={person.id}
-                    className={`transition-colors hover:bg-white/40 ${ri % 2 === 0 ? 'bg-white/20' : ''}`}
-                  >
-                    <td className="px-6 py-4">
-                      {staffMemberCell(person)}
-                    </td>
-
-                    {RBAC_PORTALS.map((portal) => {
-                      const level = getCell(person.id, portal.id);
-                      const meta = ACCESS_META[level];
-                      return (
-                        <td key={portal.id} className="px-3 py-3 text-center border-l border-slate-200/40">
-                          {person.isLocked ? (
-                            <span className={`inline-flex items-center gap-1 rounded-xl border px-2 py-1 text-[10px] font-black uppercase tracking-wider opacity-70 ${meta.cls}`}>
-                              <span className={`h-1.5 w-1.5 rounded-full ${meta.dotCls}`} />
-                              {level === 'FULL' ? 'Full' : level === 'READ' ? 'Read' : 'None'}
-                            </span>
-                          ) : (
-                            <div className="relative inline-block">
-                              <select
-                                value={level}
-                                onChange={(e) => setCell(person.id, portal.id, e.target.value as PortalAccessLevel)}
-                                className={`appearance-none rounded-xl border py-1.5 pl-2.5 pr-6 text-[11px] font-black uppercase tracking-wider shadow-sm focus:outline-none focus:ring-2 transition-all cursor-pointer ${meta.selectCls}`}
-                              >
-                                <option value="FULL">Full Access</option>
-                                <option value="READ">Read Only</option>
-                                <option value="NONE">No Access</option>
-                              </select>
-                              <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 opacity-60" />
-                            </div>
-                          )}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="border-t border-slate-200/60 bg-slate-50/60 px-6 py-4">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-start gap-2 text-sm text-slate-600 max-w-xl">
-              <Lock className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-violet-500" />
-              <span>
-                Staff are sourced from MNR Head Office records. Permission changes are logged to the executive audit trail and enforced on the next sign-in.
-                MD and OD access is system-locked. Operating Managers are locked to OM Command Center only. Territory Managers are locked to TM Command Center only.
-              </span>
-            </div>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <button
                 type="button"
-                onClick={handleSave}
-                disabled={saving || loading || staffRows.length === 0}
-                className="flex flex-shrink-0 items-center gap-2 rounded-2xl bg-violet-700 px-6 py-2.5 text-sm font-black uppercase tracking-widest text-white shadow-lg shadow-violet-700/25 hover:bg-violet-600 transition-all disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={() => void handleSave()}
+                disabled={saving}
+                className="inline-flex items-center gap-2 rounded-xl bg-[color:var(--cvs-accent)] px-4 py-2.5 text-xs font-black uppercase tracking-wider text-white shadow-sm hover:opacity-95 disabled:opacity-50"
               >
-                <Save className="h-4 w-4" />
-                {saving ? 'Saving…' : 'Commit Permissions'}
+                <Save className="h-3.5 w-3.5" />
+                {saving ? 'Saving…' : 'Save alert settings'}
               </button>
+              {saved ? (
+                <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-emerald-700">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Saved
+                </span>
+              ) : null}
             </div>
-          </div>
+          </>
+        )}
+      </div>
+    </ExecutiveGlassCard>
+  );
+}
+
+function PortalSecurityNotificationsPanel() {
+  const [notifications, setNotifications] = useState<
+    Array<{
+      id: string;
+      eventType: string;
+      message: string;
+      createdAt: string;
+      readAt: string | null;
+    }>
+  >([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const { listPortalSecurityNotificationsAction } = await import(
+        './portal-security-feed-actions'
+      );
+      const result = await listPortalSecurityNotificationsAction();
+      if ('error' in result) {
+        setError(result.error);
+        setNotifications([]);
+        return;
+      }
+      setNotifications(result.notifications);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load notifications.');
+      setNotifications([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const markRead = async (id: string) => {
+    setBusyId(id);
+    try {
+      const { markPortalSecurityNotificationReadAction } = await import(
+        './portal-security-feed-actions'
+      );
+      await markPortalSecurityNotificationReadAction(id);
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const unreadCount = notifications.filter((n) => !n.readAt).length;
+
+  return (
+    <ExecutiveGlassCard className="overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/70 px-6 py-4">
+        <div className="flex items-center gap-2">
+          <Bell className="h-4 w-4 text-amber-600" />
+          <h3 className="text-sm font-black uppercase tracking-widest text-slate-800">
+            Security Notifications
+          </h3>
+          {unreadCount > 0 ? (
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-amber-800">
+              {unreadCount} unread
+            </span>
+          ) : null}
         </div>
-      </ExecutiveGlassCard>
+        <button
+          type="button"
+          onClick={() => void load()}
+          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white/80 px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-slate-600 hover:bg-slate-50"
+        >
+          <RefreshCw className="h-3 w-3" />
+          Refresh
+        </button>
+      </div>
+
+      <div className="divide-y divide-slate-200/60">
+        {loading ? (
+          <ExecutivePageLoading
+            message="Loading notifications…"
+            compact
+            className="px-4 py-8 sm:px-6"
+          />
+        ) : error ? (
+          <p className="px-4 py-6 text-center text-sm font-semibold text-rose-700 sm:px-6">{error}</p>
+        ) : notifications.length === 0 ? (
+          <p className="px-4 py-6 text-center text-sm text-slate-500 sm:px-6">
+            No security notifications yet. OTP provisions and access events appear here.
+          </p>
+        ) : (
+          notifications.map((item) => (
+            <div
+              key={item.id}
+              className={`flex flex-col gap-2 px-6 py-4 sm:flex-row sm:items-start sm:justify-between ${
+                item.readAt ? 'bg-white/30' : 'bg-amber-50/40'
+              }`}
+            >
+              <div className="min-w-0">
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                  {formatPortalEventLabel(item.eventType)}
+                  <span className="mx-2 text-slate-300">·</span>
+                  {new Date(item.createdAt).toLocaleString('en-LK', {
+                    dateStyle: 'medium',
+                    timeStyle: 'short',
+                  })}
+                </p>
+                <p className="mt-1 text-sm font-medium text-slate-800">{item.message}</p>
+              </div>
+              {!item.readAt ? (
+                <button
+                  type="button"
+                  onClick={() => void markRead(item.id)}
+                  disabled={busyId === item.id}
+                  className="flex-shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  {busyId === item.id ? 'Marking…' : 'Mark read'}
+                </button>
+              ) : (
+                <span className="flex-shrink-0 text-xs font-semibold text-slate-400">Read</span>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </ExecutiveGlassCard>
+  );
+}
+
+const LOGIN_HISTORY_PAGE_SIZE = 10;
+
+type PortalLoginHistoryEvent = {
+  id: string;
+  employeeName: string | null;
+  employeeRank: string | null;
+  eventType: string;
+  success: boolean;
+  ipAddress: string | null;
+  detail: string | null;
+  createdAt: string;
+};
+
+function formatLoginHistoryTimestamp(iso: string): string {
+  return new Date(iso).toLocaleString('en-LK', {
+    dateStyle: 'short',
+    timeStyle: 'short',
+  });
+}
+
+function LoginHistoryResultBadge({ success }: { success: boolean }) {
+  return success ? (
+    <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-black uppercase text-emerald-800">
+      OK
+    </span>
+  ) : (
+    <span className="inline-flex rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-black uppercase text-rose-800">
+      Failed
+    </span>
+  );
+}
+
+function LoginHistoryPaginationBar({
+  page,
+  total,
+  pageSize,
+  loading,
+  onPageChange,
+}: {
+  page: number;
+  total: number;
+  pageSize: number;
+  loading: boolean;
+  onPageChange: (nextPage: number) => void;
+}) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const rangeStart = total === 0 ? 0 : (safePage - 1) * pageSize + 1;
+  const rangeEnd = total === 0 ? 0 : Math.min(safePage * pageSize, total);
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200/70 bg-slate-50/50 px-4 py-3 sm:px-6">
+      <p className="text-[11px] font-semibold text-slate-500">
+        {total === 0
+          ? 'No events'
+          : `Showing ${rangeStart}–${rangeEnd} of ${total.toLocaleString()} events`}
+      </p>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onPageChange(safePage - 1)}
+          disabled={loading || safePage <= 1}
+          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <ChevronLeft className="h-3.5 w-3.5" />
+          Prev
+        </button>
+        <span className="min-w-[5.5rem] text-center text-[11px] font-bold text-slate-600">
+          Page {safePage} / {totalPages}
+        </span>
+        <button
+          type="button"
+          onClick={() => onPageChange(safePage + 1)}
+          disabled={loading || safePage >= totalPages}
+          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Next
+          <ChevronRight className="h-3.5 w-3.5" />
+        </button>
+      </div>
     </div>
   );
 }
 
-export { SecuritySessionsPanel, VaultPinConfigPanel, RbacMatrixPanel };
+function PortalLoginHistoryPanel() {
+  const [events, setEvents] = useState<PortalLoginHistoryEvent[]>([]);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async (targetPage = page) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const { listCompanyPortalLoginEventsAction } = await import(
+        './portal-security-feed-actions'
+      );
+      const result = await listCompanyPortalLoginEventsAction(
+        targetPage,
+        LOGIN_HISTORY_PAGE_SIZE,
+      );
+      if ('error' in result) {
+        setError(result.error);
+        setEvents([]);
+        setTotal(0);
+        return;
+      }
+      setEvents(result.events);
+      setTotal(result.total);
+      setPage(result.page);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load login history.');
+      setEvents([]);
+      setTotal(0);
+    } finally {
+      setLoading(false);
+    }
+  }, [page]);
+
+  useEffect(() => {
+    void load(page);
+  }, [load, page]);
+
+  const handleRefresh = () => {
+    void load(page);
+  };
+
+  const handlePageChange = (nextPage: number) => {
+    if (nextPage < 1) return;
+    setPage(nextPage);
+  };
+
+  return (
+    <ExecutiveGlassCard className="overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/70 px-6 py-4">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <ScrollText className="h-4 w-4 text-[color:var(--cvs-accent)]" />
+            <h3 className="text-sm font-black uppercase tracking-widest text-slate-800">
+              Portal Login History
+            </h3>
+            {total > 0 ? (
+              <span className="rounded-full border border-slate-200 bg-white/80 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-slate-500">
+                {total.toLocaleString()} total
+              </span>
+            ) : null}
+          </div>
+          <p className="mt-1 text-xs font-medium text-slate-500">
+            Head Office sign-ins, OTP issues, and MFA events — newest first, {LOGIN_HISTORY_PAGE_SIZE} per page.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={handleRefresh}
+          disabled={loading}
+          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white/80 px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+        >
+          <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
+      </div>
+
+      <div className="hidden overflow-x-auto md:block">
+        {loading ? (
+          <ExecutivePageLoading
+            message="Loading login events…"
+            className="min-h-[8rem] py-6"
+          />
+        ) : error ? (
+          <p className="px-6 py-6 text-center text-sm font-semibold text-rose-700">{error}</p>
+        ) : events.length === 0 ? (
+          <p className="px-6 py-6 text-center text-sm text-slate-500">No login events recorded yet.</p>
+        ) : (
+          <table className="w-full text-left text-sm">
+            <thead className="border-b border-slate-200/80 bg-slate-50/60 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+              <tr>
+                <th className="w-36 px-4 py-2.5">When</th>
+                <th className="px-4 py-2.5">Staff</th>
+                <th className="px-4 py-2.5">Event</th>
+                <th className="w-32 px-4 py-2.5">IP</th>
+                <th className="w-24 px-4 py-2.5 text-center">Result</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200/50">
+              {events.map((event) => (
+                <tr key={event.id} className="hover:bg-white/40">
+                  <td className="whitespace-nowrap px-4 py-2.5 text-xs text-slate-600">
+                    {formatLoginHistoryTimestamp(event.createdAt)}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <p className="text-sm font-semibold text-slate-900">
+                      {event.employeeName ?? 'Unknown'}
+                    </p>
+                    {event.employeeRank ? (
+                      <p className="text-[11px] text-slate-500">{event.employeeRank}</p>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <p className="text-sm font-medium text-slate-700">
+                      {formatPortalEventLabel(event.eventType)}
+                    </p>
+                    {event.detail ? (
+                      <p className="mt-0.5 line-clamp-1 text-[11px] text-slate-500">{event.detail}</p>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-2.5 font-mono text-[11px] text-slate-600">
+                    {event.ipAddress ?? '—'}
+                  </td>
+                  <td className="px-4 py-2.5 text-center">
+                    <LoginHistoryResultBadge success={event.success} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="space-y-2 p-4 md:hidden">
+        {loading ? (
+          <ExecutivePageLoading
+            message="Loading login events…"
+            className="min-h-[8rem] py-6"
+          />
+        ) : error ? (
+          <p className="text-center text-sm font-semibold text-rose-700">{error}</p>
+        ) : events.length === 0 ? (
+          <p className="text-center text-sm text-slate-500">No login events recorded yet.</p>
+        ) : (
+          events.map((event) => (
+            <div key={event.id} className="rounded-xl border border-slate-200/80 bg-white/60 p-3">
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-[11px] font-semibold text-slate-500">
+                  {formatLoginHistoryTimestamp(event.createdAt)}
+                </p>
+                <LoginHistoryResultBadge success={event.success} />
+              </div>
+              <p className="mt-1 text-sm font-bold text-slate-900">
+                {event.employeeName ?? 'Unknown'}
+                {event.employeeRank ? ` · ${event.employeeRank}` : ''}
+              </p>
+              <p className="mt-0.5 text-sm text-slate-700">{formatPortalEventLabel(event.eventType)}</p>
+              {event.detail ? (
+                <p className="mt-1 line-clamp-2 text-[11px] text-slate-500">{event.detail}</p>
+              ) : null}
+              <p className="mt-2 font-mono text-[11px] text-slate-500">{event.ipAddress ?? '—'}</p>
+            </div>
+          ))
+        )}
+      </div>
+
+      {!error ? (
+        <LoginHistoryPaginationBar
+          page={page}
+          total={total}
+          pageSize={LOGIN_HISTORY_PAGE_SIZE}
+          loading={loading}
+          onPageChange={handlePageChange}
+        />
+      ) : null}
+    </ExecutiveGlassCard>
+  );
+}
+
+export {
+  SecuritySessionsPanel,
+  VaultPinConfigPanel,
+  AfterHoursLoginAlertsPanel,
+  PortalSecurityNotificationsPanel,
+  PortalLoginHistoryPanel,
+};

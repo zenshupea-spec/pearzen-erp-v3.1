@@ -1,4 +1,16 @@
 /** Labels aligned with MD Settings → Dynamic Statutory Formula Builder sections. */
+import {
+  findRankPayEntry,
+  type OperationalGroup,
+  type RankPayEntry,
+} from '../../../../../packages/rank-pay-matrix';
+import {
+  EMPTY_EMPLOYEE_FIXED_ALLOWANCES,
+  fixedAllowancesFromEmployeeRow as fixedAllowancesFromEmployeeRowCore,
+  sumEmployeeFixedAllowances,
+  type EmployeeFixedAllowances,
+} from '../../../lib/employee-pay-components';
+
 export const FM_FORMULA_GUARD_SOURCE =
   'Dynamic Statutory Formula Builder Guards (MD Settings)';
 export const FM_FORMULA_CAFE_SOURCE =
@@ -6,8 +18,8 @@ export const FM_FORMULA_CAFE_SOURCE =
 export const FM_FORMULA_SM_SOURCE =
   'Global SM Compensation Settings (MD Settings — Fixed Base vs. Per-Visit)';
 
-/** HO / CVS monthly pay — `employees.base_salary` on the Master Nominal Roll. */
-export const FM_MNR_SALARY_SOURCE = 'Master Nominal Roll (MNR) — Base Salary';
+/** HO / CVS monthly pay — `employees.base_salary` (basic B) on the Master Nominal Roll. */
+export const FM_MNR_SALARY_SOURCE = 'Master Nominal Roll (MNR) — Basic Salary (B)';
 
 export type CorporatePayrollGroup =
   | 'GUARD_FIELD'
@@ -20,24 +32,20 @@ export type HoFixedEarnings = { mnrBaseSalaryLkr: number };
 export type GuardFieldEarnings = {
   monthlyBasicLkr: number;
   standardDayGrossLkr: number;
+  /** MD formula shift-box total for the month. */
+  formulaGrossLkr?: number;
+  /** Site pay-rate total across all worked sites. */
+  siteRateGrossLkr?: number;
 };
 
-export type FixedMonthlyAllowances = {
-  siteAllowanceLkr: number;
-  mealAllowanceLkr: number;
-  transportAllowanceLkr: number;
-};
+export type FixedMonthlyAllowances = EmployeeFixedAllowances;
 
 export type VariablePayrollEarnings = {
   arrearsLkr: number;
   performanceIncentiveLkr: number;
 };
 
-export const EMPTY_FIXED_ALLOWANCES: FixedMonthlyAllowances = {
-  siteAllowanceLkr: 0,
-  mealAllowanceLkr: 0,
-  transportAllowanceLkr: 0,
-};
+export const EMPTY_FIXED_ALLOWANCES = EMPTY_EMPLOYEE_FIXED_ALLOWANCES;
 
 export const EMPTY_VARIABLE_EARNINGS: VariablePayrollEarnings = {
   arrearsLkr: 0,
@@ -51,23 +59,17 @@ function roundLkr(value: unknown): number {
 }
 
 export function fixedAllowancesFromEmployeeRow(row: {
+  fixed_allowance_lkr?: unknown;
   site_allowance_lkr?: unknown;
   meal_allowance_lkr?: unknown;
   transport_allowance_lkr?: unknown;
+  special_allowance_lkr?: unknown;
 }): FixedMonthlyAllowances {
-  return {
-    siteAllowanceLkr: roundLkr(row.site_allowance_lkr),
-    mealAllowanceLkr: roundLkr(row.meal_allowance_lkr),
-    transportAllowanceLkr: roundLkr(row.transport_allowance_lkr),
-  };
+  return fixedAllowancesFromEmployeeRowCore(row);
 }
 
 export function sumFixedAllowances(allowances: FixedMonthlyAllowances): number {
-  return (
-    allowances.siteAllowanceLkr +
-    allowances.mealAllowanceLkr +
-    allowances.transportAllowanceLkr
-  );
+  return sumEmployeeFixedAllowances(allowances);
 }
 
 export function sumVariableEarnings(earnings: VariablePayrollEarnings): number {
@@ -117,6 +119,30 @@ export function hoFixedFromMnrBaseSalary(
   return { mnrBaseSalaryLkr: Math.round(n) };
 }
 
+/** MNR monthly basic: `basic_salary` (payroll) then `base_salary` (nominal roll). */
+export function resolveMnrMonthlyBasicLkr(
+  basicSalary: number | string | null | undefined,
+  baseSalary: number | string | null | undefined,
+): number | undefined {
+  for (const raw of [basicSalary, baseSalary]) {
+    if (raw == null || raw === '') continue;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return Math.round(n);
+  }
+  return undefined;
+}
+
+/** HO month-end gross — MNR basic first, then rank-matrix B fallback (matches `buildHoEmployee`). */
+export function resolveHoPayrollGrossLkr(input: {
+  basicSalary?: unknown;
+  baseSalary?: unknown;
+  rankMatrixBasicLkr: number;
+}): number {
+  const mnrBasic = resolveMnrMonthlyBasicLkr(input.basicSalary, input.baseSalary);
+  if (mnrBasic != null && mnrBasic > 0) return mnrBasic;
+  return Math.max(0, Math.round(input.rankMatrixBasicLkr));
+}
+
 /** HO fixed-pay shell when group is HEAD_OFFICE but MNR base salary is not set yet. */
 export function hoFixedShellFromMnrBaseSalary(
   baseSalary: number | string | null | undefined,
@@ -143,7 +169,7 @@ export function normalizeCorporatePayrollGroup(
   if (g === 'GUARD' || g === 'GUARD_FIELD') return 'GUARD_FIELD';
   if (g === 'CAFE') return 'CAFE';
   if (g === 'SECTOR_MANAGER' || g === 'SM') return 'SECTOR_MANAGER';
-  if (g === 'HEAD_OFFICE' || g === 'HO') return 'HEAD_OFFICE';
+  if (g === 'HEAD_OFFICE' || g === 'HO' || g === 'HEAD OFFICE') return 'HEAD_OFFICE';
   return null;
 }
 
@@ -160,9 +186,35 @@ export function corporatePayrollGroupLabel(group: CorporatePayrollGroup): string
   }
 }
 
+function operationalGroupToCorporatePayrollGroup(
+  operationalGroup: OperationalGroup,
+): CorporatePayrollGroup {
+  if (operationalGroup === 'HEAD_OFFICE') return 'HEAD_OFFICE';
+  if (operationalGroup === 'SECTOR_MANAGER') return 'SECTOR_MANAGER';
+  if (operationalGroup === 'CAFE') return 'CAFE';
+  return 'GUARD_FIELD';
+}
+
+/** HO desk ranks when matrix row or explicit group is missing (matches MNR Head Office staffing). */
+const HEAD_OFFICE_RANK_CODES = new Set([
+  'HR',
+  'HRA',
+  'FM',
+  'OM',
+  'TM',
+  'EA',
+  'GAD',
+  'AM',
+  'ACCT',
+  'ADMIN',
+  'RECEPTION',
+]);
+
 export function inferCorporatePayrollGroup(input: {
   group?: unknown;
   rank?: unknown;
+  site?: unknown;
+  rankMatrix?: RankPayEntry[];
   earnings?: {
     smPayData?: unknown;
     cafeData?: unknown;
@@ -173,8 +225,17 @@ export function inferCorporatePayrollGroup(input: {
   if (explicit) return explicit;
 
   const rank = String(input.rank ?? '').trim().toUpperCase();
+
+  if (input.rankMatrix?.length && rank) {
+    const entry = findRankPayEntry(input.rankMatrix, rank);
+    if (entry) {
+      return operationalGroupToCorporatePayrollGroup(entry.operationalGroup);
+    }
+  }
+
   if (rank === 'MD' || rank === 'OD') return 'HEAD_OFFICE';
-  if (rank.includes('SECTOR MANAGER')) return 'SECTOR_MANAGER';
+  if (rank === 'SM' || rank.includes('SECTOR MANAGER')) return 'SECTOR_MANAGER';
+  if (HEAD_OFFICE_RANK_CODES.has(rank)) return 'HEAD_OFFICE';
   if (
     rank.includes('BARISTA') ||
     rank.includes('CAFÉ') ||
@@ -184,6 +245,9 @@ export function inferCorporatePayrollGroup(input: {
   ) {
     return 'CAFE';
   }
+
+  const site = String(input.site ?? '').trim().toUpperCase();
+  if (site === 'HEAD OFFICE' || site.startsWith('HEAD OFFICE')) return 'HEAD_OFFICE';
 
   if (input.earnings?.smPayData) return 'SECTOR_MANAGER';
   if (input.earnings?.cafeData) return 'CAFE';

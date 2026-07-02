@@ -5,6 +5,11 @@ import {
   resolveCompanyIdForSession,
 } from '../../../lib/company-context-server';
 import { getOmServiceDb } from '../../../lib/om-service-db';
+import {
+  filterGuardsForOmScope,
+  filterSitesForOmScope,
+  resolveOmSectorScopeForSession,
+} from '../../../lib/om-sector-scope';
 import { getLiveRosters } from '../../actions/time-engine';
 import OmCommandShell from '../components/OmCommandShell';
 import RosterGrid from './RosterGrid';
@@ -20,7 +25,7 @@ async function fetchRosterEmployees(companyId: string | null) {
   const supabase = getOmServiceDb();
   let query = supabase
     .from('employees')
-    .select('id, emp_number, full_name, company_id')
+    .select('id, emp_number, full_name, company_id, site')
     .eq('status', 'ACTIVE')
     .in('group', ['GUARD', 'GUARD_FIELD'])
     .order('emp_number', { ascending: true });
@@ -37,7 +42,7 @@ async function fetchRosterSites(companyId: string | null) {
   const supabase = getOmServiceDb();
   let query = supabase
     .from('site_profiles')
-    .select('id, site_name')
+    .select('id, site_name, assigned_sm_epf')
     .neq('site_status', 'ARCHIVED')
     .order('site_name', { ascending: true });
   if (companyId) query = query.eq('company_id', companyId);
@@ -53,10 +58,18 @@ export default async function RosterPage() {
   const supabase = await createSupabaseServerClient();
   const sessionCompanyId = await resolveCompanyIdForSession(supabase);
 
-  const [employees, sites] = await Promise.all([
+  const omScope = await resolveOmSectorScopeForSession();
+
+  const [employeesRaw, sitesRaw] = await Promise.all([
     fetchWithRosterCompanyFallback(fetchRosterEmployees, sessionCompanyId),
     fetchWithRosterCompanyFallback(fetchRosterSites, sessionCompanyId),
   ]);
+
+  const employees = filterGuardsForOmScope(employeesRaw, omScope);
+  const sites = filterSitesForOmScope(sitesRaw, omScope).map(({ id, site_name }) => ({
+    id,
+    site_name,
+  }));
 
   const liveRosters = await getLiveRosters();
 

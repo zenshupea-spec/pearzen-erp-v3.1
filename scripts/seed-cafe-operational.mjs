@@ -124,7 +124,8 @@ async function assignCafeStaffSite(siteName) {
 }
 
 function cafeFrontAuthEmail(epf) {
-  return `${String(epf).trim().toLowerCase()}@pearzen.local`;
+  const domain = process.env.CAFE_FRONT_AUTH_EMAIL_DOMAIN?.trim() || 'pearzen.cafe';
+  return `${String(epf).trim().toLowerCase()}@${domain}`;
 }
 
 async function provisionCafePortalAuth(employee) {

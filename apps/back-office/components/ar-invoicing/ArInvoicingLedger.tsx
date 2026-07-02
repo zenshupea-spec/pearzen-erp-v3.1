@@ -37,17 +37,51 @@ import {
   Building2,
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../executive/ExecutiveVaultShell';
+import {
+  ExecutivePageBody,
+  ExecutivePageHeader,
+  ExecutivePageLiveSubtitle,
+  ExecutivePageShell,
+} from '../executive/ExecutivePageChrome';
+import { CVS_BRAND_CLASSES } from '../../lib/cvs-brand-tokens';
 import { InvoiceDeskCard, InvoiceDeskModalCard } from '../invoice-desk/InvoiceDeskShell';
 import { InvoiceDeskBillingModal } from '../invoice-desk/InvoiceDeskBillingModal';
 import { getInvoiceDeskSettings } from '../../app/invoice-desk/actions';
-import { getArLedger, saveArLedger } from '../../app/ar-invoicing/actions';
-import type { ArGuardRosterEntry } from '../../lib/ar-invoicing/live-ledger';
+import {
+  allocateArTaxInvoiceNumbers,
+  fetchCollectionWarningStatus,
+  getArLedger,
+  saveArLedger,
+  type CollectionWarningSnapshot,
+} from '../../app/ar-invoicing/actions';
+import type { ArGuardRostersByClientMonth } from '../../lib/ar-invoicing/guard-roster';
+import { guardRosterForCell } from '../../lib/ar-invoicing/guard-roster';
+import {
+  AR_BILLING_CYCLE_DEFAULTS,
+  type ArBillingCycle,
+} from '../../lib/ar-invoicing/ar-billing-cycle-config';
+import {
+  AR_BANK_FEE_TOLERANCE_LKR,
+  canAcceptPartialPayment,
+  canMarkPaidWithinTolerance,
+  canSettleWithFines,
+  effectiveRolloverDebt,
+  invoiceNetDue,
+  invoiceOutstandingBalance,
+  mdSettlementShortfall,
+  partialRolloverShortfall,
+  patrolSubtotal,
+  rankSubtotal,
+  sumClientDeductions,
+  sumCreditNotes,
+} from '../../lib/ar-invoicing/collection-math';
 import {
   MONTH_SHORT,
   buildChronoMonthKeys,
   buildMonthsForYear,
   buildRollingMonthDefs,
   getCurrentMonthKey,
+  invoiceGeneratedAtIso,
   monthKeyAfter as monthKeyAfterInChrono,
   monthKeyBefore as monthKeyBeforeInChrono,
   monthKeyToLabel,
@@ -66,13 +100,8 @@ import {
   type SupplierInvoiceProfile,
   DEFAULT_SUPPLIER_PROFILE,
   INVOICE_DESK_CLIENTS_KEY,
-  TAX_INVOICE_SEQ_KEY,
 } from '../../lib/invoice-desk/types';
-import {
-  assignMissingTaxInvoiceNumbers,
-  countMissingTaxInvoiceNumbers,
-  deriveTaxSeqFromClients,
-} from '../../lib/invoice-desk/tax-invoice';
+import { countMissingTaxInvoiceNumbers } from '../../lib/invoice-desk/tax-invoice';
 import { HQ_HUB_PATH } from '../../lib/hq-hub';
 
 export type ArInvoicingVariant = 'md' | 'exec-admin' | 'invoice-desk';
@@ -248,8 +277,6 @@ function chronoMonthKeys(): string[] {
   return buildChronoMonthKeys(GRID_MIN_YEAR, gridMaxYear() + 1);
 }
 
-const BANK_FEE_TOLERANCE = 300;
-
 function monthKeyBefore(monthKey: string): string | undefined {
   return monthKeyBeforeInChrono(monthKey, chronoMonthKeys());
 }
@@ -265,28 +292,6 @@ function rolloverSourceLabel(monthKey: string): string {
   return `${short} ${monthKey.slice(0, 4)}`;
 }
 
-function sumCreditNotes(cell: InvoiceCell): number {
-  return (cell.creditNotes ?? []).reduce((s, cn) => s + cn.amount, 0);
-}
-
-/** Net shortfall on a PARTIAL invoice after receipts and credit notes (rollover-eligible). */
-function partialNetShortfall(cell: InvoiceCell): number {
-  if (cell.status !== 'PARTIAL' || cell.amountReceived == null) return 0;
-  const raw = cell.totalAmount - cell.amountReceived - sumCreditNotes(cell);
-  return raw <= BANK_FEE_TOLERANCE ? 0 : Math.max(0, raw);
-}
-
-/** Rollover shown on a month: derived from prior PARTIAL when linked, else stored value. */
-function effectiveRolloverDebt(
-  cell: InvoiceCell,
-  priorMonthCell: InvoiceCell | undefined,
-): number {
-  if (cell.rolloverFromMonth && priorMonthCell?.status === 'PARTIAL') {
-    return partialNetShortfall(priorMonthCell);
-  }
-  return cell.rolloverDebt ?? 0;
-}
-
 function applyNextMonthRollover(
   invoices: Partial<Record<string, InvoiceCell>>,
   partialMonthKey: string,
@@ -295,7 +300,7 @@ function applyNextMonthRollover(
   const nextKey = monthKeyAfter(partialMonthKey);
   if (!nextKey) return invoices;
 
-  const shortfall = partialNetShortfall(partialCell);
+  const shortfall = partialRolloverShortfall(partialCell);
   const nextExisting = invoices[nextKey];
   if (!nextExisting || nextExisting.status === 'NONE') return invoices;
 
@@ -339,17 +344,11 @@ function buildRolling5YearMonthKeys(endMonthKey: string, fallbackMonthKeys: stri
 }
 
 /** Client balance still owed after credit notes and any partial receipts */
-function invoiceOutstandingBalance(
+function invoiceOutstandingBalanceForCell(
   cell: InvoiceCell,
   priorMonthCell: InvoiceCell | undefined,
 ): number {
-  if (cell.status === 'NONE' || cell.status === 'PAID') return 0;
-  const rollover = effectiveRolloverDebt(cell, priorMonthCell);
-  const netDue = cell.totalAmount + rollover - sumCreditNotes(cell);
-  if (cell.status === 'PARTIAL' || cell.status === 'SETTLED_FINED') {
-    return Math.max(0, netDue - (cell.amountReceived ?? 0));
-  }
-  return Math.max(0, netDue);
+  return invoiceOutstandingBalance(cell, priorMonthCell);
 }
 
 function sumOutstandingForMonthKeys(
@@ -548,12 +547,6 @@ function dateOnlyToIso(dateStr: string, hour = 12): string {
   return new Date(y, m - 1, d, hour, 0, 0).toISOString();
 }
 
-function invoiceGeneratedAt(monthKey: string): string {
-  const [y, m] = monthKey.split('-').map(Number);
-  if (!y || !m) return new Date().toISOString();
-  return new Date(y, m - 1, 1, 9, 0, 0).toISOString();
-}
-
 function appendAuditEvent(
   cell: InvoiceCell,
   partial: Omit<ArInvoiceAuditEvent, 'id' | 'version'>,
@@ -573,20 +566,22 @@ function seedAuditTrailFromState(
   cell: InvoiceCell,
   monthKey: string,
   dispatched: boolean,
+  billingCycle: ArBillingCycle,
 ): InvoiceCell {
   if (cell.status === 'NONE' || (cell.auditEvents?.length ?? 0) > 0) return cell;
 
   const monthLabel = monthKeyToLabel(monthKey);
+  const generatedAt = invoiceGeneratedAtIso(monthKey, billingCycle.invoiceDispatchDay);
   let seeded = appendAuditEvent(cell, {
     action: 'INVOICE_GENERATED',
     statusAfter: 'PENDING',
-    at: invoiceGeneratedAt(monthKey),
+    at: generatedAt,
     actor: 'System',
     detail: `Invoice ${cell.invoiceNo} issued for ${monthLabel}`,
   });
 
   if (dispatched) {
-    const gen = new Date(invoiceGeneratedAt(monthKey));
+    const gen = new Date(generatedAt);
     gen.setDate(gen.getDate() + 1);
     seeded = appendAuditEvent(seeded, {
       action: 'INVOICE_DISPATCHED',
@@ -601,7 +596,7 @@ function seedAuditTrailFromState(
     seeded = appendAuditEvent(seeded, {
       action: 'DISPUTE_HOLD_PLACED',
       statusAfter: 'DISPUTED',
-      at: cell.dueDate ? dateOnlyToIso(cell.dueDate, 10) : invoiceGeneratedAt(monthKey),
+      at: cell.dueDate ? dateOnlyToIso(cell.dueDate, 10) : generatedAt,
       actor: 'Exec Admin — Finance',
       detail: cell.disputeRef
         ? `Dispute hold ${cell.disputeRef} placed`
@@ -624,7 +619,7 @@ function seedAuditTrailFromState(
     seeded = appendAuditEvent(seeded, {
       action: 'PAYMENT_PARTIAL',
       statusAfter: 'PARTIAL',
-      at: cell.paidDate ? dateOnlyToIso(cell.paidDate) : invoiceGeneratedAt(monthKey),
+      at: cell.paidDate ? dateOnlyToIso(cell.paidDate) : generatedAt,
       actor: 'MD',
       detail: `Partial payment accepted · ${lkr(cell.amountReceived)} received`,
     });
@@ -634,7 +629,7 @@ function seedAuditTrailFromState(
     seeded = appendAuditEvent(seeded, {
       action: 'PAYMENT_SETTLED_FINED',
       statusAfter: 'SETTLED_FINED',
-      at: cell.paidDate ? dateOnlyToIso(cell.paidDate) : invoiceGeneratedAt(monthKey),
+      at: cell.paidDate ? dateOnlyToIso(cell.paidDate) : generatedAt,
       actor: 'MD',
       detail: `Settled with fines · ${lkr(cell.amountReceived ?? 0)} received`,
     });
@@ -644,7 +639,7 @@ function seedAuditTrailFromState(
     seeded = appendAuditEvent(seeded, {
       action: 'PAYMENT_VERIFIED_PAID',
       statusAfter: 'PAID',
-      at: cell.paidDate ? dateOnlyToIso(cell.paidDate) : invoiceGeneratedAt(monthKey),
+      at: cell.paidDate ? dateOnlyToIso(cell.paidDate) : generatedAt,
       actor: 'MD',
       detail: `Payment verified — paid in full${cell.paidDate ? ` · ${cell.paidDate}` : ''}`,
     });
@@ -666,6 +661,7 @@ function seedAuditTrailFromState(
 function hydrateLedgerAudit(
   clients: ClientRecord[],
   dispatched: Set<string>,
+  billingCycle: ArBillingCycle,
 ): ClientRecord[] {
   return clients.map((c) => ({
     ...c,
@@ -678,24 +674,12 @@ function hydrateLedgerAudit(
             cell,
             mk,
             dispatched.has(dispatchKey(c.clientId, mk)),
+            billingCycle,
           ),
         ];
       }),
     ) as ClientRecord['invoices'],
   }));
-}
-
-function hydrateLedgerTaxNumbers(
-  clients: ClientRecord[],
-  seqState: Record<string, number>,
-): { clients: ClientRecord[]; nextSeq: Record<string, number> } {
-  const withAudit = clients;
-  const mergedSeq = { ...deriveTaxSeqFromClients(withAudit), ...seqState };
-  const { clients: assigned, nextSeq } = assignMissingTaxInvoiceNumbers(
-    withAudit,
-    mergedSeq,
-  );
-  return { clients: assigned, nextSeq };
 }
 
 function auditActionTitle(action: ArAuditAction): string {
@@ -830,7 +814,7 @@ function TaxInvoicePreviewModal({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[200] flex flex-col bg-sky-950/30 p-4 backdrop-blur-sm sm:p-6"
+      className="fixed inset-0 z-[200] flex flex-col bg-slate-900/50 p-4 backdrop-blur-sm sm:p-6"
       onClick={onClose}
       role="dialog"
       aria-modal="true"
@@ -846,7 +830,7 @@ function TaxInvoicePreviewModal({
             <button
               type="button"
               onClick={onPrint}
-              className="inline-flex items-center gap-2 rounded-xl border border-indigo-300/70 bg-indigo-600 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-white shadow-sm hover:bg-indigo-500"
+              className="inline-flex items-center gap-2 rounded-xl border border-[color:var(--cvs-accent-muted)] bg-[color:var(--cvs-accent)] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-white shadow-sm hover:bg-[color:var(--cvs-accent-hover)]"
             >
               <Printer className="h-3.5 w-3.5" />
               Print
@@ -889,28 +873,30 @@ function TaxInvoicePreviewModal({
 
 function buildAuditLines(
   clientId: string,
+  monthKey: string,
   rankLines: RankShiftLine[],
-  guardRostersByClient: Record<string, ArGuardRosterEntry[]>,
+  guardRostersByClientMonth: ArGuardRostersByClientMonth,
 ): GuardAuditLine[] {
-  const roster = guardRostersByClient[clientId] ?? [];
-  const lines: GuardAuditLine[] = [];
-  let rIdx = 0;
-  for (const rl of rankLines) {
-    for (let i = 0; i < rl.headcount; i++) {
-      const g = roster.filter((r) => r.rank === rl.rank)[i % Math.max(1, roster.filter((r) => r.rank === rl.rank).length)];
-      const fallback = roster[rIdx % Math.max(1, roster.length)];
-      const guardRef = g ?? fallback ?? { empNo: `EMP-???`, name: `Guard ${rIdx + 1}`, rank: rl.rank };
-      lines.push({
-        guardName:   guardRef.name,
-        empNo:       guardRef.empNo,
-        rank:        rl.rank,
-        shiftsWorked: rl.shiftsPerHead,
-        billedRate:   rl.ratePerShift,
-      });
-      rIdx++;
-    }
+  const roster = guardRosterForCell(guardRostersByClientMonth, clientId, monthKey);
+  if (roster.length > 0) {
+    return roster.map((guardRef) => ({
+      guardName: guardRef.name,
+      empNo: guardRef.empNo,
+      rank: guardRef.rank,
+      shiftsWorked: guardRef.shiftsWorked ?? 0,
+      billedRate: guardRef.billedRate ?? 0,
+    }));
   }
-  return lines;
+
+  return rankLines.flatMap((rl) =>
+    Array.from({ length: rl.headcount }, () => ({
+      guardName: '—',
+      empNo: '—',
+      rank: rl.rank,
+      shiftsWorked: rl.shiftsPerHead,
+      billedRate: rl.ratePerShift,
+    })),
+  );
 }
 
 const SCOPE_OPTS: { key: TimeScope; label: string }[] = [
@@ -1116,6 +1102,7 @@ function TimeRangeSelector({
   onCustomFromChange,
   onCustomToChange,
   rollingMonths,
+  useBrandActive = false,
 }: {
   scope: TimeScope;
   onScopeChange: (s: TimeScope) => void;
@@ -1124,6 +1111,7 @@ function TimeRangeSelector({
   onCustomFromChange: (k: string) => void;
   onCustomToChange: (k: string) => void;
   rollingMonths: MonthDef[];
+  useBrandActive?: boolean;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2.5">
@@ -1135,7 +1123,9 @@ function TimeRangeSelector({
             onClick={() => onScopeChange(opt.key)}
             className={`rounded-xl px-3.5 py-1.5 text-[11px] font-black uppercase tracking-wider transition-all ${
               scope === opt.key
-                ? 'bg-slate-900 text-white shadow-sm'
+                ? useBrandActive
+                  ? `${CVS_BRAND_CLASSES.mobileTabActive} border-transparent`
+                  : 'bg-slate-900 text-white shadow-sm'
                 : 'text-slate-500 hover:bg-white/70 hover:text-slate-800'
             }`}
           >
@@ -1149,7 +1139,7 @@ function TimeRangeSelector({
           <select
             value={customFrom}
             onChange={(e) => onCustomFromChange(e.target.value)}
-            className="rounded-xl border border-slate-200/80 bg-white/80 px-3 py-1.5 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
+            className={`rounded-xl border border-slate-200/80 bg-white/80 px-3 py-1.5 text-xs font-bold text-slate-700 focus:outline-none ${CVS_BRAND_CLASSES.focusRing}`}
           >
             {rollingMonths.map((m) => (<option key={m.key} value={m.key}>{m.label}</option>))}
           </select>
@@ -1157,7 +1147,7 @@ function TimeRangeSelector({
           <select
             value={customTo}
             onChange={(e) => onCustomToChange(e.target.value)}
-            className="rounded-xl border border-slate-200/80 bg-white/80 px-3 py-1.5 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
+            className={`rounded-xl border border-slate-200/80 bg-white/80 px-3 py-1.5 text-xs font-bold text-slate-700 focus:outline-none ${CVS_BRAND_CLASSES.focusRing}`}
           >
             {rollingMonths.map((m) => (<option key={m.key} value={m.key}>{m.label}</option>))}
           </select>
@@ -1455,28 +1445,20 @@ function KpiInvoiceListModal({
 
   return (
     <div
-      className={`fixed inset-0 z-[90] flex items-center justify-center p-4 backdrop-blur-sm ${
-        isDesk ? 'bg-sky-950/25' : 'bg-slate-900/50'
-      }`}
+      className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
-        className={`relative flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-3xl border ${
-          isDesk
-            ? 'border-sky-200/90 bg-white shadow-[0_32px_80px_-16px_rgba(56,189,248,0.35)]'
-            : 'border-white/75 bg-[#eef2f6] shadow-[0_32px_80px_-16px_rgba(15,23,42,0.35)] backdrop-blur-2xl'
-        }`}
+        className="relative flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-3xl border border-white/75 bg-[#eef2f6] shadow-[0_32px_80px_-16px_rgba(15,23,42,0.35)] backdrop-blur-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div
-          className={`flex flex-shrink-0 items-start justify-between gap-3 border-b px-5 py-4 ${
-            isDesk ? 'border-sky-100 bg-sky-50/50' : 'border-slate-200/80 bg-slate-50/80'
-          }`}
+          className="flex flex-shrink-0 items-start justify-between gap-3 border-b border-slate-200/80 bg-slate-50/80 px-5 py-4"
         >
           <div>
             <p
               className={`text-[10px] font-black uppercase tracking-widest ${
-                isDesk ? 'text-sky-700' : 'text-slate-500'
+                isDesk ? CVS_BRAND_CLASSES.portalEyebrow : 'text-slate-500'
               }`}
             >
               {subtitle}
@@ -1507,11 +1489,7 @@ function KpiInvoiceListModal({
                   <button
                     type="button"
                     onClick={() => onSelectInvoice(row)}
-                    className={`group flex w-full items-center gap-3 rounded-2xl border px-4 py-3 text-left transition-all hover:scale-[1.01] active:scale-[0.99] ${
-                      isDesk
-                        ? 'border-sky-100/90 bg-white hover:border-sky-200 hover:bg-sky-50/40 hover:shadow-md'
-                        : 'border-slate-200/70 bg-white/80 hover:border-slate-300 hover:bg-white hover:shadow-md'
-                    }`}
+                    className="group flex w-full items-center gap-3 rounded-2xl border border-slate-200/70 bg-white/80 px-4 py-3 text-left transition-all hover:border-[color:var(--cvs-accent-muted)] hover:bg-[var(--cvs-accent-soft)]/40 hover:shadow-md hover:scale-[1.01] active:scale-[0.99]"
                   >
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-bold text-slate-900">{row.clientName}</p>
@@ -1536,9 +1514,7 @@ function KpiInvoiceListModal({
         </div>
 
         <div
-          className={`flex-shrink-0 border-t px-5 py-3 ${
-            isDesk ? 'border-sky-100 bg-sky-50/30' : 'border-slate-200/80 bg-slate-50/60'
-          }`}
+          className="flex-shrink-0 border-t border-slate-200/80 bg-slate-50/60 px-5 py-3"
         >
           <p className="text-[10px] font-semibold text-slate-500">
             Click an invoice to open details, upload proof, or print the tax invoice.
@@ -1593,7 +1569,7 @@ function DrillModal({
   vatRate = 18,
   ssclRate = 2.5,
   onOpenTaxInvoice,
-  guardRostersByClient = {},
+  guardRostersByClientMonth = {},
 }: {
   variant: ArInvoicingVariant;
   target: DrillTarget | null;
@@ -1615,7 +1591,7 @@ function DrillModal({
   vatRate?: number;
   ssclRate?: number;
   onOpenTaxInvoice?: (mode: 'view' | 'print' | 'download', payload: TaxInvoiceOpenPayload) => void;
-  guardRostersByClient?: Record<string, ArGuardRosterEntry[]>;
+  guardRostersByClientMonth?: ArGuardRostersByClientMonth;
 }) {
   const isDesk = variant === 'invoice-desk';
   const isExecAdmin = variant === 'exec-admin';
@@ -1652,7 +1628,11 @@ function DrillModal({
     setAdminProofFile(null);
     setAdminProofUrl(target.cell.pendingVerificationProof ?? null);
     setIsDragging(false);
-    setMdAmount('');
+    setMdAmount(
+      target.cell.amountReceived != null && target.cell.amountReceived > 0
+        ? String(target.cell.amountReceived)
+        : '',
+    );
     setProofViewOpen(false);
     setLocalPaidDate(target.cell.paidDate ?? null);
     setOpenPenaltyId(null);
@@ -1737,11 +1717,11 @@ function DrillModal({
   const { clientId, clientName, monthLabel, cell, rolloverSourceCell } = target;
 
   const auditEvents = filterAuditEventsForVariant(cell.auditEvents ?? [], variant);
-  const auditLines = buildAuditLines(clientId, cell.rankLines, guardRostersByClient);
+  const auditLines = buildAuditLines(clientId, target.monthKey, cell.rankLines, guardRostersByClientMonth);
 
   const rankTotal        = cell.rankLines.reduce((s, l) => s + l.headcount * l.shiftsPerHead * l.ratePerShift, 0);
   const patrolTotal      = cell.patrols.reduce((s, p) => s + p.charge, 0);
-  const deductionTotal   = (cell.clientDeductions ?? []).reduce((s, d) => s + d.deductionThisMonth, 0);
+  const deductionTotal   = sumClientDeductions(cell);
   const rolloverDebt     = effectiveRolloverDebt(cell, rolloverSourceCell);
   const rolloverReducedByCn =
     rolloverSourceCell != null &&
@@ -1749,7 +1729,7 @@ function DrillModal({
     (cell.rolloverDebt ?? 0) > rolloverDebt;
   const partialRollforward =
     localStatus === 'PARTIAL' && cell.amountReceived != null
-      ? partialNetShortfall({
+      ? partialRolloverShortfall({
           ...cell,
           status: 'PARTIAL',
           amountReceived: cell.amountReceived,
@@ -1757,8 +1737,11 @@ function DrillModal({
         })
       : 0;
   const grandTotal       = cell.totalAmount + rolloverDebt;
-  const creditNoteTotal  = localCreditNotes.reduce((s, cn) => s + cn.amount, 0);
-  const netDue           = grandTotal - creditNoteTotal;
+  const creditNoteTotal  = sumCreditNotes({ creditNotes: localCreditNotes });
+  const netDue           = invoiceNetDue(
+    { ...cell, creditNotes: localCreditNotes },
+    rolloverSourceCell,
+  );
   const hasCreditNotes   = localCreditNotes.length > 0;
   const adminAmountNum   = parseFloat(adminAmountReceived) || 0;
   const hasPaymentShortfall = adminAmountNum > 0 && adminAmountNum < netDue;
@@ -1777,14 +1760,15 @@ function DrillModal({
       localStatus === 'SETTLED_FINED');
 
   const mdAmountNum        = parseFloat(mdAmount) || 0;
-  const shortfall          = cell.totalAmount - mdAmountNum;
-  const canMarkFull        = mdAmountNum > 0 && shortfall <= 300;
+  const shortfall          = mdSettlementShortfall(
+    { ...cell, creditNotes: localCreditNotes },
+    mdAmountNum,
+    rolloverSourceCell,
+  );
+  const canMarkFull        = mdAmountNum > 0 && canMarkPaidWithinTolerance(shortfall);
   const canMarkSettledFined =
-    mdAmountNum > 0 &&
-    deductionTotal > 0 &&
-    shortfall > 300 &&
-    Math.abs(shortfall - deductionTotal) <= 300;
-  const canPartial  = mdAmountNum > 0 && shortfall > 300 && !canMarkSettledFined;
+    mdAmountNum > 0 && canSettleWithFines(shortfall, deductionTotal);
+  const canPartial  = mdAmountNum > 0 && canAcceptPartialPayment(shortfall, deductionTotal);
 
   const st = STATUS_CELL[localStatus] ?? STATUS_CELL['PENDING'];
 
@@ -1807,17 +1791,11 @@ function DrillModal({
       />
     )}
     <div
-      className={`fixed inset-0 z-[100] flex items-center justify-center p-4 backdrop-blur-sm ${
-        isDesk ? 'bg-sky-950/25' : 'bg-slate-900/50'
-      }`}
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
-        className={`relative w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-3xl border ${
-          isDesk
-            ? 'border-sky-200/90 bg-white shadow-[0_32px_80px_-16px_rgba(56,189,248,0.35)]'
-            : 'border-white/75 bg-[#eef2f6] shadow-[0_32px_80px_-16px_rgba(15,23,42,0.35)] backdrop-blur-2xl'
-        }`}
+        className="relative w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-3xl border border-white/75 bg-[#eef2f6] shadow-[0_32px_80px_-16px_rgba(15,23,42,0.35)] backdrop-blur-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Ambient glow — purple tint when disputed (subtle on desk modal for legibility) */}
@@ -1886,15 +1864,16 @@ function DrillModal({
               ) : (
                 <p className="mt-1 text-3xl font-black tabular-nums text-slate-900">{lkr(grandTotal)}</p>
               )}
+              {(rankTotal > 0 || patrolTotal > 0 || deductionTotal > 0) && (
+                <p className="mt-0.5 text-[10px] font-semibold text-slate-500">
+                  {lkr(rankTotal)} rank + {lkr(patrolTotal)} patrol − {lkr(deductionTotal)} ded ={' '}
+                  {lkr(cell.totalAmount)}
+                </p>
+              )}
               {rolloverDebt > 0 && (
                 <p className="mt-0.5 flex items-center gap-1 text-[10px] font-semibold text-rose-600">
                   <Link2 className="h-3 w-3" />
                   Includes {lkr(rolloverDebt)} rolled over from {cell.rolloverFromMonth}
-                </p>
-              )}
-              {deductionTotal > 0 && (
-                <p className="mt-0.5 text-[10px] font-semibold text-rose-600">
-                  -{lkr(deductionTotal)} client deductions applied
                 </p>
               )}
               {hasCreditNotes && (
@@ -1975,7 +1954,7 @@ function DrillModal({
                       deductions: cell.clientDeductions ?? [],
                     });
                   }}
-                  className="flex flex-1 min-w-[7rem] items-center justify-center gap-2 rounded-xl border border-sky-300/80 bg-white py-2.5 text-[11px] font-black uppercase tracking-wider text-sky-900 shadow-sm transition-all hover:bg-sky-50 active:scale-[0.98] disabled:opacity-40"
+                  className="flex flex-1 min-w-[7rem] items-center justify-center gap-2 rounded-xl border border-[color:var(--cvs-accent-muted)] bg-white py-2.5 text-[11px] font-black uppercase tracking-wider text-[color:var(--cvs-accent)] shadow-sm transition-all hover:bg-[var(--cvs-accent-soft)]/60 active:scale-[0.98] disabled:opacity-40"
                 >
                   <Eye className="h-3.5 w-3.5" />
                   View Invoice
@@ -1997,7 +1976,7 @@ function DrillModal({
                     });
                     onRecordInvoicePrint?.();
                   }}
-                  className="flex flex-1 min-w-[7rem] items-center justify-center gap-2 rounded-xl border border-indigo-300/70 bg-indigo-600 py-2.5 text-[11px] font-black uppercase tracking-wider text-white shadow-sm transition-all hover:bg-indigo-500 active:scale-[0.98] disabled:opacity-40"
+                  className="flex flex-1 min-w-[7rem] items-center justify-center gap-2 rounded-xl border border-[color:var(--cvs-accent-muted)] bg-[color:var(--cvs-accent)] py-2.5 text-[11px] font-black uppercase tracking-wider text-white shadow-sm transition-all hover:bg-[color:var(--cvs-accent-hover)] active:scale-[0.98] disabled:opacity-40"
                 >
                   <Printer className="h-3.5 w-3.5" />
                   Print
@@ -2410,7 +2389,7 @@ function DrillModal({
                   const currentLiability  = liabilityMap[ded.penaltyId] ?? 'PASS_TO_GUARD';
                   const isCompanyAbsorbs  = currentLiability === 'COMPANY_ABSORBS';
                   const isEscalated       = mdApprovalEscalated.has(ded.penaltyId);
-                  const rosterForClient   = guardRostersByClient[clientId] ?? [];
+                  const rosterForClient   = guardRosterForCell(guardRostersByClientMonth, clientId, target.monthKey);
                   const search            = guardSearch[ded.penaltyId] ?? '';
                   const filteredRoster    = rosterForClient.filter(
                     (g) =>
@@ -2965,16 +2944,16 @@ function DrillModal({
                 </div>
                 {mdAmountNum > 0 && (
                   <div className={`mt-2 rounded-xl border px-3 py-2 text-[10px] font-semibold ${
-                    shortfall <= 0 || shortfall <= 300
+                    shortfall <= 0 || shortfall <= AR_BANK_FEE_TOLERANCE_LKR
                       ? 'border-emerald-200/60 bg-emerald-50 text-emerald-800'
                       : canMarkSettledFined
                         ? 'border-emerald-200/60 bg-emerald-50/80 text-emerald-800'
                         : 'border-rose-200/60 bg-rose-50 text-rose-800'
                   }`}>
                     {shortfall <= 0 && `Overpayment of ${lkr(Math.abs(shortfall))} detected — treated as paid in full.`}
-                    {shortfall > 0 && shortfall <= 300 && `Shortfall: ${lkr(shortfall)} — within the 300 LKR bank fee tolerance. ✓`}
+                    {shortfall > 0 && shortfall <= AR_BANK_FEE_TOLERANCE_LKR && `Shortfall: ${lkr(shortfall)} — within the ${AR_BANK_FEE_TOLERANCE_LKR} LKR bank fee tolerance. ✓`}
                     {canMarkSettledFined && `Shortfall: ${lkr(shortfall)} — exactly covered by client deductions (${lkr(deductionTotal)}). Invoice can be settled as Settled (Fined). ✓`}
-                    {shortfall > 300 && !canMarkSettledFined && `Shortfall: ${lkr(shortfall)} — exceeds tolerance. A rollover entry will be created.`}
+                    {shortfall > AR_BANK_FEE_TOLERANCE_LKR && !canMarkSettledFined && `Shortfall: ${lkr(shortfall)} — exceeds tolerance. A rollover entry will be created.`}
                   </div>
                 )}
               </div>
@@ -3014,7 +2993,7 @@ function DrillModal({
                     Accept Partial & Rollover
                   </button>
                 )}
-                <div className="flex flex-shrink-0 items-center gap-1.5 rounded-xl bg-slate-900 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-white">
+                <div className="flex flex-shrink-0 items-center gap-1.5 rounded-xl bg-[color:var(--cvs-accent)] px-3 py-2 text-[9px] font-black uppercase tracking-widest text-white">
                   <ShieldCheck className="h-3.5 w-3.5 text-amber-400" />
                   <span className="leading-tight">Auth Level<br />MD Only</span>
                 </div>
@@ -3266,6 +3245,13 @@ function DrillModal({
 
 // ─── Traffic-Light Cell ───────────────────────────────────────────────────────
 
+function invoiceCellAmountTooltip(cell: InvoiceCell): string {
+  const rank = rankSubtotal(cell.rankLines);
+  const patrol = patrolSubtotal(cell.patrols);
+  const ded = sumClientDeductions(cell);
+  return `${cell.invoiceNo} · ${lkr(cell.totalAmount)} (${lkr(rank)} rank + ${lkr(patrol)} patrol − ${lkr(ded)} ded)`;
+}
+
 function TrafficCell({
   cell,
   onClick,
@@ -3305,7 +3291,8 @@ function TrafficCell({
       <button
         type="button"
         onClick={onClick}
-        title={`${cell.invoiceNo} · ${lkr(cell.totalAmount)}`}
+        title={invoiceCellAmountTooltip(cell)}
+        aria-label={`${label} · ${lkr(cell.totalAmount)}`}
         className={`group mx-auto inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-bold transition-all hover:scale-110 hover:shadow-md ${st.pill}`}
       >
         {st.dot && <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${st.dot}`} />}
@@ -3326,10 +3313,18 @@ function TrafficCell({
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) {
+export function ArInvoicingLedger({
+  variant,
+  hideChromeHeader = false,
+}: {
+  variant: ArInvoicingVariant;
+  hideChromeHeader?: boolean;
+}) {
   const isDesk = variant === 'invoice-desk';
   const isExecAdmin = variant === 'exec-admin';
   const isMd = variant === 'md';
+  const useExecutiveBrand = isMd && hideChromeHeader;
+  const useBrandChrome = useExecutiveBrand || isDesk;
   const [clients,    setClients]    = useState<ClientRecord[]>([]);
   const [drill,      setDrill]      = useState<DrillTarget | null>(null);
   const [scope,      setScope]      = useState<TimeScope>('1Y');
@@ -3337,8 +3332,8 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
   const [rollingMonths, setRollingMonths] = useState<MonthDef[]>(() =>
     buildRollingMonthDefs(getCurrentMonthKey()),
   );
-  const [guardRostersByClient, setGuardRostersByClient] = useState<
-    Record<string, ArGuardRosterEntry[]>
+  const [guardRostersByClientMonth, setGuardRostersByClientMonth] = useState<
+    ArGuardRostersByClientMonth
   >({});
   const rollingMonthKeys = useMemo(() => rollingMonths.map((m) => m.key), [rollingMonths]);
   const rolling5yMonthKeys = useMemo(
@@ -3358,17 +3353,18 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
   const [vatRate, setVatRate] = useState(18);
   const [ssclRate, setSsclRate] = useState(2.5641);
   const [companyLogoUrl, setCompanyLogoUrl] = useState<string | null>(null);
+  const [billingCycle, setBillingCycle] = useState<ArBillingCycle>(AR_BILLING_CYCLE_DEFAULTS);
   const [taxInvoicePreview, setTaxInvoicePreview] = useState<{ title: string; html: string } | null>(
     null,
   );
   const [kpiListFilter, setKpiListFilter] = useState<KpiFilter | null>(null);
-  const taxSeqRef = useRef(taxSeq);
-  taxSeqRef.current = taxSeq;
+  const [collectionWarning, setCollectionWarning] = useState<CollectionWarningSnapshot | null>(null);
+  const lastTaxInvoicePayloadRef = useRef<TaxInvoiceOpenPayload | null>(null);
+
   const missingTaxInvoiceCount = useMemo(
     () => countMissingTaxInvoiceNumbers(clients),
     [clients],
   );
-  const lastTaxInvoicePayloadRef = useRef<TaxInvoiceOpenPayload | null>(null);
 
   useEffect(() => {
     if (!isDesk) return;
@@ -3377,8 +3373,6 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
       if (storedClients) {
         setBillingClients(JSON.parse(storedClients) as InvoiceBillingClient[]);
       }
-      const storedSeq = localStorage.getItem(TAX_INVOICE_SEQ_KEY);
-      if (storedSeq) setTaxSeq(JSON.parse(storedSeq) as Record<string, number>);
     } catch {
       // ignore
     }
@@ -3409,18 +3403,6 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
   useEffect(() => {
     let cancelled = false;
 
-    const hydrateFromParsed = (
-      parsedClients: ClientRecord[],
-      dispatchSet: Set<string>,
-      seq: Record<string, number>,
-    ) => {
-      const audited = hydrateLedgerAudit(parsedClients, dispatchSet);
-      const { clients: withTax, nextSeq } = hydrateLedgerTaxNumbers(audited, seq);
-      setClients(withTax);
-      setDispatched(dispatchSet);
-      setTaxSeq(nextSeq);
-    };
-
     (async () => {
       try {
         const remote = await getArLedger();
@@ -3432,16 +3414,27 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
 
         setCurrentMonthKey(remote.currentMonthKey);
         setRollingMonths(buildRollingMonthDefs(remote.currentMonthKey));
-        setGuardRostersByClient(remote.guardRostersByClient);
+        setGuardRostersByClientMonth(remote.guardRostersByClientMonth ?? {});
         setCustomFrom(remote.rollingMonthKeys[0] ?? remote.currentMonthKey);
         setCustomTo(remote.currentMonthKey);
         setGridYear(parseInt(remote.currentMonthKey.slice(0, 4), 10));
+        setBillingCycle(remote.billingCycle ?? AR_BILLING_CYCLE_DEFAULTS);
 
         const parsedClients = remote.clients as ClientRecord[];
         const dispatchSet = new Set(remote.dispatched);
-        const seq = remote.taxSeq;
+        const cycle = remote.billingCycle ?? AR_BILLING_CYCLE_DEFAULTS;
 
-        hydrateFromParsed(parsedClients, dispatchSet, seq);
+        const audited = hydrateLedgerAudit(parsedClients, dispatchSet, cycle);
+        setClients(audited);
+        setDispatched(dispatchSet);
+        setTaxSeq(remote.taxSeq);
+
+        const alloc = await allocateArTaxInvoiceNumbers();
+        if (cancelled) return;
+        if (alloc.ok && alloc.changed && alloc.clients) {
+          setClients(alloc.clients as ClientRecord[]);
+          if (alloc.taxSeq) setTaxSeq(alloc.taxSeq);
+        }
       } catch {
         // Supabase is source of truth — no localStorage fallback
       } finally {
@@ -3456,19 +3449,28 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
 
   useEffect(() => {
     if (!ledgerReady || missingTaxInvoiceCount === 0) return;
-    setClients((prev) => {
-      const audited = hydrateLedgerAudit(prev, dispatched);
-      const { clients: withTax, nextSeq, changed } = assignMissingTaxInvoiceNumbers(
-        audited,
-        taxSeqRef.current,
-      );
-      if (changed) {
-        setTaxSeq(nextSeq);
-        return withTax;
-      }
-      return prev;
+    let cancelled = false;
+    void (async () => {
+      const alloc = await allocateArTaxInvoiceNumbers();
+      if (cancelled || !alloc.ok || !alloc.changed || !alloc.clients) return;
+      setClients(alloc.clients as ClientRecord[]);
+      if (alloc.taxSeq) setTaxSeq(alloc.taxSeq);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ledgerReady, missingTaxInvoiceCount]);
+
+  useEffect(() => {
+    if (!ledgerReady || !isExecAdmin) return;
+    let cancelled = false;
+    void fetchCollectionWarningStatus(currentMonthKey).then((status) => {
+      if (!cancelled) setCollectionWarning(status);
     });
-  }, [ledgerReady, dispatched, missingTaxInvoiceCount]);
+    return () => {
+      cancelled = true;
+    };
+  }, [ledgerReady, isExecAdmin, currentMonthKey]);
 
   useEffect(() => {
     if (!ledgerReady) return;
@@ -3487,11 +3489,10 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
     if (!isDesk) return;
     try {
       localStorage.setItem(INVOICE_DESK_CLIENTS_KEY, JSON.stringify(billingClients));
-      localStorage.setItem(TAX_INVOICE_SEQ_KEY, JSON.stringify(taxSeq));
     } catch {
       // ignore
     }
-  }, [billingClients, taxSeq, isDesk]);
+  }, [billingClients, isDesk]);
 
   const handleSaveBillingClients = useCallback((next: InvoiceBillingClient[]) => {
     setBillingClients(next);
@@ -3562,22 +3563,24 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
           invoiceContactPhone: '',
         } satisfies InvoiceBillingClient);
 
-      let taxNo = '';
+      const alloc = await allocateArTaxInvoiceNumbers();
+      let workingClients = clients as ClientRecord[];
+      if (alloc.ok && alloc.clients) {
+        workingClients = alloc.clients as ClientRecord[];
+        if (alloc.changed) {
+          setClients(workingClients);
+          if (alloc.taxSeq) setTaxSeq(alloc.taxSeq);
+        }
+      }
 
-      setClients((prev) => {
-        const { clients: assigned, nextSeq, changed } = assignMissingTaxInvoiceNumbers(
-          prev,
-          taxSeqRef.current,
-        );
-        if (changed) setTaxSeq(nextSeq);
+      const liveCell = workingClients.find((c) => c.clientId === payload.clientId)?.invoices[
+        payload.monthKey
+      ];
+      const taxNo = liveCell?.taxInvoiceNo ?? payload.cell.taxInvoiceNo ?? '';
 
-        const liveCell = assigned.find((c) => c.clientId === payload.clientId)?.invoices[
-          payload.monthKey
-        ];
-        taxNo = liveCell?.taxInvoiceNo ?? payload.cell.taxInvoiceNo ?? '';
-
-        if (mode === 'print' || mode === 'download') {
-          return assigned.map((c) => {
+      if (mode === 'print' || mode === 'download') {
+        setClients((prev) =>
+          prev.map((c) => {
             if (c.clientId !== payload.clientId) return c;
             const existing = c.invoices[payload.monthKey];
             if (!existing) return c;
@@ -3591,11 +3594,9 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
                 },
               },
             };
-          });
-        }
-
-        return changed ? assigned : prev;
-      });
+          }),
+        );
+      }
 
       const invoiceDate =
         mode === 'view'
@@ -3678,6 +3679,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
               ...existing,
               status: 'PENDING_MD_VERIFICATION' as PayStatus,
               pendingVerificationProof: proofUrl,
+              amountReceived: meta?.amountReceived,
               disputeRef: undefined,
               disputeNote: undefined,
             },
@@ -3685,7 +3687,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
               action: 'PROOF_SUBMITTED',
               statusAfter: 'PENDING_MD_VERIFICATION',
               at: new Date().toISOString(),
-              actor: meta?.submittedBy ?? 'Exec Admin — Finance',
+              actor: meta?.submittedBy ?? 'Desk',
               detail,
               reason: meta?.shortfallReason,
             },
@@ -3716,7 +3718,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
               action: 'PAYMENT_VERIFIED_PAID',
               statusAfter: 'PAID',
               at: new Date().toISOString(),
-              actor: 'MD',
+              actor: 'Checker',
               detail: `Payment verified — paid in full · ${paidDate}`,
             },
           );
@@ -3745,7 +3747,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
               action: 'PAYMENT_PARTIAL',
               statusAfter: 'PARTIAL',
               at: new Date().toISOString(),
-              actor: 'MD',
+              actor: 'Checker',
               detail: `Partial payment accepted · ${lkr(amountReceived)} received`,
             },
           );
@@ -3781,7 +3783,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
               action: 'PAYMENT_SETTLED_FINED',
               statusAfter: 'SETTLED_FINED',
               at: new Date().toISOString(),
-              actor: 'MD',
+              actor: 'Checker',
               detail: `Settled with fines · ${lkr(amountReceived)} received · ${paidDate}`,
             },
           );
@@ -3856,7 +3858,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
               action: 'REVENUE_REVERTED',
               statusAfter: 'PENDING',
               at: new Date().toISOString(),
-              actor: 'MD',
+              actor: 'Checker',
               detail,
             },
           );
@@ -4170,7 +4172,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
         vatRate={isDesk ? vatRate : undefined}
         ssclRate={isDesk ? ssclRate : undefined}
         onOpenTaxInvoice={isDesk ? handleOpenTaxInvoice : undefined}
-        guardRostersByClient={guardRostersByClient}
+        guardRostersByClientMonth={guardRostersByClientMonth}
       />
 
       {isDesk && (
@@ -4184,12 +4186,12 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
         />
       )}
 
-      <div className="w-full flex-grow flex flex-col pb-12 font-sans">
-        {/* ── Header ── */}
+      <div className={hideChromeHeader ? 'space-y-6' : 'w-full flex-grow flex flex-col pb-12 font-sans'}>
+        {!hideChromeHeader ? (
         <header
           className={
             isDesk
-              ? 'sticky top-0 z-40 border-b border-sky-100/90 bg-white/80 px-6 md:px-12 2xl:px-24 py-5 shadow-[0_10px_40px_-14px_rgba(56,189,248,0.22)] backdrop-blur-xl backdrop-saturate-150'
+              ? 'sticky top-0 z-40 border-b border-white/60 bg-white/45 px-6 md:px-12 2xl:px-24 py-5 shadow-[0_8px_32px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl backdrop-saturate-150'
               : 'sticky top-0 z-40 border-b border-white/60 bg-white/45 px-6 md:px-12 2xl:px-24 py-4 shadow-[0_8px_32px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl backdrop-saturate-150'
           }
         >
@@ -4198,26 +4200,36 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
               href={HQ_HUB_PATH}
               className={`mb-4 inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-bold shadow-sm transition-all hover:shadow-md ${
                 isDesk
-                  ? 'border-sky-200/80 bg-gradient-to-r from-white to-sky-50/80 text-sky-800 hover:border-sky-300'
+                  ? 'border-slate-200/80 bg-white/80 text-slate-800 hover:border-[color:var(--cvs-accent-muted)] hover:bg-[var(--cvs-accent-soft)]/60 hover:text-[color:var(--cvs-accent)]'
                   : 'border-slate-200/80 bg-white/80 text-slate-800 hover:border-slate-300'
               }`}
             >
-              <ArrowLeft className={`h-4 w-4 ${isDesk ? 'text-sky-600' : 'text-slate-600'}`} />
+              <ArrowLeft className={`h-4 w-4 ${isDesk ? 'text-[color:var(--cvs-accent)]' : 'text-slate-600'}`} />
               Return to HQ Hub
             </Link>
           )}
           <div className={isDesk ? 'flex flex-wrap items-start justify-between gap-4' : undefined}>
             <div className="flex items-start gap-4">
               {isDesk && (
-                <div className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-2xl border border-sky-200/80 bg-gradient-to-br from-sky-100 via-white to-violet-100 shadow-md shadow-sky-200/50">
-                  <Receipt className="h-7 w-7 text-sky-600" />
+                <div className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-2xl border border-[color:var(--cvs-accent-muted)] bg-[var(--cvs-accent-soft)] shadow-md shadow-[color:var(--cvs-glow)]">
+                  <Receipt className="h-7 w-7 text-[color:var(--cvs-accent)]" />
                 </div>
               )}
               <div>
+                {isDesk ? (
+                  <p
+                    className={`mb-1 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-[0.2em] ${CVS_BRAND_CLASSES.portalEyebrow}`}
+                  >
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full ${CVS_BRAND_CLASSES.portalDot} shadow-[0_0_8px_var(--cvs-glow)]`}
+                    />
+                    AR Invoicing
+                  </p>
+                ) : null}
                 <h1
                   className={
                     isDesk
-                      ? 'text-2xl md:text-3xl font-black uppercase tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-sky-600 via-indigo-600 to-violet-600'
+                      ? 'text-2xl md:text-3xl font-black uppercase tracking-tight text-slate-900'
                       : 'text-2xl md:text-3xl font-black text-slate-900 uppercase tracking-tight'
                   }
                 >
@@ -4230,7 +4242,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
                 <p
                   className={
                     isDesk
-                      ? 'mt-1 text-sm font-bold uppercase tracking-widest text-sky-700/80'
+                      ? 'mt-1 text-sm font-bold uppercase tracking-widest text-[color:var(--cvs-accent-hover)]'
                       : 'text-sm font-bold text-slate-500 uppercase tracking-widest mt-1'
                   }
                 >
@@ -4246,7 +4258,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
               <button
                 type="button"
                 onClick={() => setBillingOpen(true)}
-                className="flex flex-shrink-0 items-center gap-2 rounded-xl border border-indigo-300/80 bg-gradient-to-r from-indigo-600 to-sky-600 px-4 py-2.5 text-xs font-black uppercase tracking-wider text-white shadow-md shadow-indigo-300/40 transition-all hover:from-indigo-500 hover:to-sky-500 active:scale-[0.98]"
+                className="flex flex-shrink-0 items-center gap-2 rounded-xl border border-[color:var(--cvs-accent-muted)] bg-[color:var(--cvs-accent)] px-4 py-2.5 text-xs font-black uppercase tracking-wider text-white shadow-md shadow-[color:var(--cvs-glow)] transition-all hover:bg-[color:var(--cvs-accent-hover)] active:scale-[0.98]"
               >
                 <Building2 className="h-4 w-4" />
                 Manage Clients &amp; Invoice Details
@@ -4254,22 +4266,23 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
             )}
           </div>
         </header>
+        ) : null}
 
-        <div className="px-6 md:px-12 2xl:px-24 space-y-6 pt-8">
+        <div className={hideChromeHeader ? 'space-y-6' : 'px-6 md:px-12 2xl:px-24 space-y-6 pt-8'}>
 
           {/* ── Time Range Selector ── */}
           <div
             className={
               isDesk
-                ? 'flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-sky-100/90 bg-gradient-to-r from-white/90 via-sky-50/50 to-violet-50/40 px-5 py-3.5 shadow-sm shadow-sky-100/60 backdrop-blur-sm'
+                ? 'flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/60 bg-white/40 px-5 py-3.5 shadow-sm backdrop-blur-sm'
                 : 'flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/60 bg-white/40 px-5 py-3 shadow-sm backdrop-blur-sm'
             }
           >
             <div>
-              <p className={`text-[10px] font-black uppercase tracking-widest ${isDesk ? 'text-sky-700' : 'text-slate-600'}`}>
+              <p className={`text-[10px] font-black uppercase tracking-widest ${isDesk ? CVS_BRAND_CLASSES.portalEyebrow : 'text-slate-600'}`}>
                 Reporting Scope
               </p>
-              <p className={`mt-0.5 text-xs font-bold ${isDesk ? 'text-violet-700' : 'text-indigo-700'}`}>{scopeLabel}</p>
+              <p className={`mt-0.5 text-xs font-bold ${useBrandChrome ? 'text-[color:var(--cvs-accent)]' : 'text-indigo-700'}`}>{scopeLabel}</p>
             </div>
             <TimeRangeSelector
               scope={scope}
@@ -4279,6 +4292,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
               onCustomFromChange={setCustomFrom}
               onCustomToChange={setCustomTo}
               rollingMonths={rollingMonths}
+              useBrandActive={useBrandChrome}
             />
           </div>
 
@@ -4289,7 +4303,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
                 (showCollectionKpis
                   ? 'bg-gradient-to-br from-rose-50/90 via-white/80 to-orange-50/60 p-4'
                   : isDesk
-                    ? 'bg-gradient-to-br from-sky-50/90 via-white/80 to-indigo-50/60 p-4'
+                    ? 'p-4'
                     : 'p-4') +
                 (showCollectionKpis ? ` ${kpiCardInteractive}` : '')
               }
@@ -4309,13 +4323,13 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
                 </>
               ) : (
                 <>
-                  <p className={`text-[10px] font-bold uppercase tracking-widest ${isDesk ? 'text-sky-700' : 'text-slate-500'}`}>
+                  <p className={`text-[10px] font-bold uppercase tracking-widest ${isDesk ? CVS_BRAND_CLASSES.portalEyebrow : 'text-slate-500'}`}>
                     Total Invoiced
                   </p>
-                  <p className={`mt-2 text-3xl font-black tabular-nums ${isDesk ? 'text-sky-950' : 'text-slate-900'}`}>
+                  <p className="mt-2 text-3xl font-black tabular-nums text-slate-900">
                     {lkr(totals.totalInvoiced)}
                   </p>
-                  <p className={`mt-1 text-[10px] font-semibold ${isDesk ? 'text-indigo-600' : 'text-indigo-600'}`}>{scopeLabel}</p>
+                  <p className={`mt-1 text-[10px] font-semibold ${useBrandChrome ? 'text-[color:var(--cvs-accent-hover)]' : 'text-indigo-600'}`}>{scopeLabel}</p>
                 </>
               )}
             </GlassCard>
@@ -4410,20 +4424,16 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
             <div
               className={
                 isDesk
-                  ? 'flex flex-wrap items-center justify-between gap-2 border-b border-sky-100 bg-gradient-to-r from-sky-50/90 via-white/80 to-violet-50/60 px-5 py-3.5'
+                  ? 'flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 bg-slate-50/80 px-5 py-3.5'
                   : 'flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 bg-slate-50/80 px-5 py-3.5'
               }
             >
               <div className="flex flex-wrap items-center gap-3">
-                <h2 className={`text-lg font-bold uppercase ${isDesk ? 'text-indigo-900' : 'text-slate-800'}`}>
+                <h2 className={`text-lg font-bold uppercase ${useBrandChrome ? 'text-[color:var(--cvs-accent)]' : 'text-slate-800'}`}>
                   {isDesk ? '12-Month Billing Grid' : '12-Month Traffic-Light Grid'}
                 </h2>
                 <div
-                  className={`flex items-center gap-0.5 rounded-xl border p-0.5 shadow-sm ${
-                    isDesk
-                      ? 'border-sky-200/80 bg-white/90'
-                      : 'border-white/70 bg-white/60 backdrop-blur-sm'
-                  }`}
+                  className="flex items-center gap-0.5 rounded-xl border border-white/70 bg-white/60 p-0.5 shadow-sm backdrop-blur-sm"
                   role="group"
                   aria-label="Billing year"
                 >
@@ -4437,9 +4447,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
                     <ChevronLeft className="h-4 w-4" />
                   </button>
                   <span
-                    className={`min-w-[3.25rem] px-2 text-center text-sm font-black tabular-nums ${
-                      isDesk ? 'text-indigo-900' : 'text-slate-900'
-                    }`}
+                    className="min-w-[3.25rem] px-2 text-center text-sm font-black tabular-nums text-slate-900"
                   >
                     {gridYear}
                   </span>
@@ -4453,7 +4461,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
                     <ChevronRight className="h-4 w-4" />
                   </button>
                 </div>
-                <p className={`text-[10px] font-semibold ${isDesk ? 'text-sky-700/90' : 'text-slate-500'}`}>
+                <p className={`text-[10px] font-semibold ${isDesk ? 'text-[color:var(--cvs-accent-hover)]' : 'text-slate-500'}`}>
                   Jan – Dec {gridYear}
                 </p>
               </div>
@@ -4471,20 +4479,10 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
 
             <div className="overflow-x-auto">
               <table className="w-full min-w-[1084px] border-separate border-spacing-0 text-sm">
-                <thead
-                  className={
-                    isDesk
-                      ? 'border-b border-sky-100 bg-sky-50/50'
-                      : 'border-b border-slate-200/80 bg-slate-50/60'
-                  }
-                >
+                <thead className="border-b border-slate-200/80 bg-slate-50/60">
                   <tr>
                     <th
-                      className={`sticky left-0 z-10 w-[220px] min-w-[220px] px-5 py-3 text-left text-xs font-bold uppercase tracking-wider backdrop-blur-sm ${
-                        isDesk
-                          ? 'bg-sky-50/90 text-sky-800'
-                          : 'bg-slate-50/80 text-slate-500'
-                      }`}
+                      className="sticky left-0 z-10 w-[220px] min-w-[220px] bg-slate-50/80 px-5 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500 backdrop-blur-sm"
                     >
                       Client
                     </th>
@@ -4492,7 +4490,7 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
                       <th
                         key={m.key}
                         className={`w-[72px] min-w-[72px] px-1 py-3 text-center text-xs font-bold uppercase tracking-wider ${
-                          isDesk ? 'text-indigo-700/90' : 'text-slate-500'
+                          isDesk ? 'text-[color:var(--cvs-accent-hover)]' : 'text-slate-500'
                         }`}
                       >
                         {m.short}
@@ -4500,11 +4498,11 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
                     ))}
                   </tr>
                 </thead>
-                <tbody className={isDesk ? 'divide-y divide-sky-100/80' : 'divide-y divide-slate-200/60'}>
+                <tbody className="divide-y divide-slate-200/60">
                   {clients.map((client) => (
                     <tr
                       key={client.clientId}
-                      className={isDesk ? 'transition-colors hover:bg-sky-50/40' : 'hover:bg-white/30 transition-colors'}
+                      className="transition-colors hover:bg-white/30"
                     >
                       <td
                         className={`sticky left-0 z-10 w-[220px] min-w-[220px] px-5 py-3 backdrop-blur-sm ${
@@ -4591,7 +4589,21 @@ export function ArInvoicingLedger({ variant }: { variant: ArInvoicingVariant }) 
             </div>
           )}
 
-          {isExecAdmin && totals.pending > 0 && (
+          {isExecAdmin && collectionWarning?.active && (
+            <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-rose-200/70 bg-rose-50/50 px-5 py-3 text-xs text-rose-800 backdrop-blur-md">
+              <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+              <span className="font-bold">Collection Warning ({scopeLabel}):</span>
+              <span>
+                Day {collectionWarning.collectionWarningDay}+ reached — cash received{' '}
+                <strong>{lkr(collectionWarning.cashReceivedLkr)}</strong> vs prorated target{' '}
+                <strong>{lkr(collectionWarning.gapTargetLkr)}</strong>. Shortfall{' '}
+                <strong>{lkr(collectionWarning.shortfallLkr)}</strong>. Issue credit notes, manage dispute
+                holds, and chase payment proof on Invoice Desk for MD verification.
+              </span>
+            </div>
+          )}
+
+          {isExecAdmin && !collectionWarning?.active && totals.pending > 0 && (
             <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-rose-200/70 bg-rose-50/50 px-5 py-3 text-xs text-rose-800 backdrop-blur-md">
               <AlertTriangle className="h-4 w-4 flex-shrink-0" />
               <span className="font-bold">Collections Alert ({scopeLabel}):</span>

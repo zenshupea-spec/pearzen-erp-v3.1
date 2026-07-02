@@ -41,6 +41,8 @@ if (!secret) {
 
 const port = process.env.NEXT_PUBLIC_BACK_OFFICE_PORT || '3002';
 const baseUrl = `http://127.0.0.1:${port}`;
+const companyId =
+  process.env.SEED_COMPANY_ID?.trim() || '29fbb2ff-6aa6-46c4-8b2d-d19eebb2874e';
 
 /** Nawala → Galle Face (fast / flagged) */
 const route = [
@@ -62,6 +64,7 @@ async function postPing(point, index) {
     },
     body: JSON.stringify({
       tag_id: tagId,
+      company_id: companyId,
       latitude: point.lat,
       longitude: point.lng,
       speed_kmh: point.speed,

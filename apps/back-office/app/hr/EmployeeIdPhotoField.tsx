@@ -3,6 +3,15 @@
 import { useRef, useState } from 'react';
 import { Loader2, Upload } from 'lucide-react';
 
+import {
+  ID_PHOTO_MAX_EDGE_PX,
+  ID_PHOTO_TARGET_MAX_BYTES,
+  ID_PHOTO_UPLOAD_MAX_BYTES,
+} from '../../lib/hr-document-compress';
+import {
+  compressHrDocumentFileClient,
+  formatHrDocumentBytes,
+} from '../../lib/hr-document-compress-client';
 import { uploadEmployeeIdPhoto } from './id-photo-actions';
 
 type Props = {
@@ -12,6 +21,19 @@ type Props = {
   onUploaded?: (url: string) => void;
 };
 
+async function prepareIdPhotoFile(file: File): Promise<File> {
+  if (file.size <= ID_PHOTO_UPLOAD_MAX_BYTES) {
+    return file;
+  }
+
+  const compressed = await compressHrDocumentFileClient(file, {
+    targetMaxBytes: ID_PHOTO_TARGET_MAX_BYTES,
+    maxEdgePx: ID_PHOTO_MAX_EDGE_PX,
+    grayscale: false,
+  });
+  return compressed.file;
+}
+
 export default function EmployeeIdPhotoField({
   employeeId,
   photoUrl,
@@ -20,18 +42,41 @@ export default function EmployeeIdPhotoField({
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+  const [compressing, setCompressing] = useState(false);
   const [error, setError] = useState('');
   const [localUrl, setLocalUrl] = useState<string | null>(null);
+  const [statusNote, setStatusNote] = useState('');
 
   const url = localUrl ?? photoUrl ?? null;
   const hasPhoto = Boolean(url?.trim());
+  const busy = uploading || compressing;
+
+  const openFilePicker = () => {
+    if (busy) return;
+    inputRef.current?.click();
+  };
 
   const handleUpload = async (file: File) => {
-    setUploading(true);
+    setCompressing(true);
+    setUploading(false);
     setError('');
-    const fd = new FormData();
-    fd.append('file', file);
+    setStatusNote('');
+
+    let prepared = file;
     try {
+      if (file.size > ID_PHOTO_UPLOAD_MAX_BYTES) {
+        setStatusNote(`Compressing ${formatHrDocumentBytes(file.size)} photo…`);
+        prepared = await prepareIdPhotoFile(file);
+        setStatusNote(
+          `Compressed ${formatHrDocumentBytes(file.size)} → ${formatHrDocumentBytes(prepared.size)}`,
+        );
+      }
+
+      setCompressing(false);
+      setUploading(true);
+
+      const fd = new FormData();
+      fd.append('file', prepared);
       const result = await uploadEmployeeIdPhoto(employeeId, fd);
       if (!result.success) {
         setError(result.error || 'Upload failed.');
@@ -44,6 +89,7 @@ export default function EmployeeIdPhotoField({
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed.');
     } finally {
+      setCompressing(false);
       setUploading(false);
       if (inputRef.current) inputRef.current.value = '';
     }
@@ -67,7 +113,7 @@ export default function EmployeeIdPhotoField({
               : 'bg-slate-50 border-slate-200 text-slate-500'
           }`}
         >
-          {hasPhoto ? 'On file' : 'Not uploaded'}
+          {compressing ? 'Compressing…' : uploading ? 'Uploading…' : hasPhoto ? 'On file' : 'Not uploaded'}
         </span>
       </div>
 
@@ -87,34 +133,46 @@ export default function EmployeeIdPhotoField({
 
       {canUpload && (
         <div className="space-y-2">
-          <label
-            className={`flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-3 py-4 cursor-pointer transition-colors ${
-              uploading
-                ? 'border-slate-200 bg-slate-50 opacity-60 pointer-events-none'
-                : 'border-slate-200 bg-slate-50 hover:border-rose-300 hover:bg-rose-50/30'
+          <button
+            type="button"
+            onClick={openFilePicker}
+            disabled={busy}
+            className={`flex w-full flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-3 py-4 transition-colors ${
+              busy
+                ? 'border-slate-200 bg-slate-50 opacity-60 cursor-not-allowed'
+                : 'border-slate-200 bg-slate-50 cursor-pointer hover:border-rose-300 hover:bg-rose-50/30'
             }`}
           >
-            {uploading ? (
+            {busy ? (
               <Loader2 className="w-5 h-5 text-rose-600 animate-spin" />
             ) : (
               <Upload className="w-5 h-5 text-slate-400" />
             )}
             <span className="text-[10px] font-bold text-slate-500 text-center">
-              JPEG, PNG, or WebP (max 5MB)
+              {hasPhoto ? 'Replace photo' : 'Choose photo'}
             </span>
-            <input
-              ref={inputRef}
-              type="file"
-              accept="image/jpeg,image/png,image/webp"
-              className="sr-only"
-              disabled={uploading}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) void handleUpload(file);
-              }}
-            />
-          </label>
+            <span className="text-[10px] font-medium text-slate-400 text-center">
+              JPEG, PNG, or WebP — over 2MB compressed automatically
+            </span>
+          </button>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            className="sr-only"
+            disabled={busy}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void handleUpload(file);
+            }}
+          />
         </div>
+      )}
+
+      {statusNote && !error && (
+        <p className="text-[10px] font-semibold text-sky-800 bg-sky-50 border border-sky-200 rounded-lg px-2 py-1.5">
+          {statusNote}
+        </p>
       )}
 
       {error && (

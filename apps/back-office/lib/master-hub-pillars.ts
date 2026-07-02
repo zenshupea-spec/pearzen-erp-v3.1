@@ -148,6 +148,12 @@ const MASTER_HUB_PILLARS_BASE: MasterHubPillar[] = [
         route: '/security-website',
       },
       {
+        label: 'Shalom Guest Website',
+        description:
+          'Public holiday rental site — property listings, direct bookings, and guest confirmation for Shalom Residence.',
+        route: '/shalom-public?edit=1',
+      },
+      {
         label: 'Café Backoffice',
         description:
           'Café roster, float reconciliation, inventory, and daily operations.',

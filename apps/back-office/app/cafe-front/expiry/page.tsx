@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 
 import { CafeFrontSessionGate } from '../../../components/cafe-front/CafeFrontSessionGate';
+import PwaPortalLoading from '../../../../../packages/pwa-shell/PwaPortalLoading';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
 import { ExpiryTrackingPanel } from '../../executive/cafe/cafe-ingredients-panels';
 import { getCafeFrontDashboard } from '../actions';
@@ -29,11 +30,9 @@ function ExpiryContent() {
 
   if (loading) {
     return (
-      <ExecutiveGlassCard className="p-8 text-center text-sm text-slate-500">
-        Loading expiry tracker…
-      </ExecutiveGlassCard>
+      <PwaPortalLoading portal="cafe-front" message="Loading expiry tracker…" className="min-h-[12rem]" />
     );
   }
 
-  return <ExpiryTrackingPanel ingredients={ingredients} />;
+  return <ExpiryTrackingPanel ingredients={ingredients} readOnly />;
 }

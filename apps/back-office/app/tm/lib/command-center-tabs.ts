@@ -1,7 +1,8 @@
-export type TmCommandCenterTabKey = 'shift-verification' | 'guard-cards';
+export type TmCommandCenterTabKey = 'shift-verification' | 'territory' | 'guard-cards';
 
 export const TM_COMMAND_CENTER_TAB_KEYS: TmCommandCenterTabKey[] = [
   'shift-verification',
+  'territory',
   'guard-cards',
 ];
 

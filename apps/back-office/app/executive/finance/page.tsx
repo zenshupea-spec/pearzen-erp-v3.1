@@ -1,15 +1,12 @@
 'use client';
 
-import React, { useState, useMemo, useEffect, Suspense } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import {
   TrendingUp,
   TrendingDown,
   Activity,
-  Settings,
-  FileText,
-  Grid3x3,
   Building2,
   Coffee,
   Home,
@@ -22,6 +19,15 @@ import {
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
 import {
+  ExecutivePageBody,
+  ExecutivePageHeader,
+  ExecutivePageLiveSubtitle,
+  ExecutivePageLoading,
+  ExecutivePageShell,
+} from '../../../components/executive/ExecutivePageChrome';
+import { CVS_BRAND_CLASSES } from '../../../lib/cvs-brand-tokens';
+import { formatShalomCalendarMonthPeriod } from '../../../lib/shalom-calendar';
+import {
   fetchMonetaryHealth,
   type CompanyKey,
   type MonetaryHealth,
@@ -31,6 +37,13 @@ import {
   fetchShalomHostGlance,
 } from './finance-glance-actions';
 import type { CafePortfolioGlance, ShalomHostGlance } from './finance-glance-types';
+import FmHrPayrollExceptionRadar from '../../fm/components/FmHrPayrollExceptionRadar';
+import {
+  fetchFmHrPayrollExceptions,
+  type ResignationDebtRecord,
+  type SalaryOverrideRecord,
+} from '../../fm/fm-payroll-exceptions-actions';
+import { EXECUTIVE_SIDEBAR_NAV } from '../lib/executive-nav';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -47,9 +60,18 @@ const EMPTY_COMPANY_DATA: CompanyData = {
   grossLiabilities: 0,
   netEbitda: 0,
   targetInvoices: 0,
+  proratedTargetInvoices: 0,
   actualInvoices: 0,
   cashReceived: 0,
   upcomingPayroll: 0,
+  invoiceDispatchDay: 1,
+  payrollTargetDay: 10,
+  serviceMonthKey: '',
+  payrollServiceMonthKey: '',
+  collectionWarningActive: false,
+  collectionCashShortfall: 0,
+  collectionWarningDay: 6,
+  disputesSilenced: false,
   revenueBreakdown: [],
   liabilityBreakdown: [],
   ebitdaBreakdown: [],
@@ -88,11 +110,40 @@ const EMPTY_SHALOM_GLANCE: ShalomHostGlance = {
   tableReady: false,
 };
 
-const NAV_MODULES = [
-  { href: '/executive/settings', label: 'Dynamic Settings',    Icon: Settings, accent: 'indigo' },
-  { href: '/executive/matrix',   label: 'Compensation Matrix', Icon: Grid3x3,  accent: 'emerald' },
-  { href: '/executive/audit',    label: 'Universal Audit Log', Icon: FileText, accent: 'rose'    },
-];
+const GLANCE_FETCH_TIMEOUT_MS = 20_000;
+
+async function loadGlanceWithTimeout<T>(promise: Promise<T>): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(
+        new Error(
+          'Portfolio data is taking too long. Try again or open the Shalom desk directly.',
+        ),
+      );
+    }, GLANCE_FETCH_TIMEOUT_MS);
+  });
+
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+const COMMAND_MODULE_HREFS = [
+  '/executive/settings',
+  '/executive/matrix',
+  '/executive/audit',
+] as const;
+
+const NAV_MODULES = COMMAND_MODULE_HREFS.map((href) => {
+  const item = EXECUTIVE_SIDEBAR_NAV.find((nav) => nav.href === href);
+  if (!item) {
+    throw new Error(`Missing executive nav entry for ${href}`);
+  }
+  return { href: item.href, label: item.label, Icon: item.Icon };
+});
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -104,14 +155,43 @@ function lkr(n: number) {
   return `${sign}LKR ${abs.toLocaleString()}`;
 }
 
+function performanceCardCopy(company: CompanyKey, data: CompanyData) {
+  if (company === 'cafe') {
+    return {
+      revenueSub: `${lkr(data.actualInvoices)} POS sales this period`,
+      liabilitySub: `${lkr(data.upcomingPayroll)} café labor + OPEX`,
+      ebitdaSub:
+        data.netEbitda >= 0
+          ? 'Profitable this period'
+          : 'Below break-even — review café labor & OPEX',
+    };
+  }
+  if (company === 'bnb') {
+    return {
+      revenueSub: `${lkr(data.actualInvoices)} booking revenue this period`,
+      liabilitySub: `${lkr(data.upcomingPayroll)} Shalom payroll + OPEX`,
+      ebitdaSub:
+        data.netEbitda >= 0
+          ? 'Profitable this period'
+          : 'Below break-even — review residence OPEX',
+    };
+  }
+  return {
+    revenueSub: `${lkr(data.actualInvoices)} invoiced this period`,
+    liabilitySub: `${lkr(data.upcomingPayroll)} payroll + OPEX`,
+    ebitdaSub:
+      data.netEbitda >= 0 ? 'Profitable this period' : 'Below break-even — review OPEX',
+  };
+}
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function CompanyToggle({ active, onChange }: { active: CompanyKey; onChange: (k: CompanyKey) => void }) {
   const accentStyles: Record<CompanyKey, { active: string; idle: string; ring: string }> = {
     security: {
-      active: 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/25 ring-indigo-500/30',
-      idle: 'text-slate-600 hover:bg-indigo-50/80 hover:text-indigo-900',
-      ring: 'ring-indigo-100',
+      active: `${CVS_BRAND_CLASSES.mobileTabActive} border-transparent ring-1 ring-[color:var(--cvs-accent-muted)]`,
+      idle: 'text-slate-600 hover:bg-[var(--cvs-accent-soft)] hover:text-[color:var(--cvs-accent)]',
+      ring: 'ring-[color:var(--cvs-accent-muted)]',
     },
     cafe: {
       active: 'bg-amber-600 text-white shadow-lg shadow-amber-600/25 ring-amber-500/30',
@@ -175,7 +255,7 @@ function ExpandablePerfCard({
   value: string;
   sub: string;
   trend: 'up' | 'down' | 'neutral';
-  accent: 'emerald' | 'rose' | 'indigo';
+  accent: 'emerald' | 'rose' | 'indigo' | 'brand';
   breakdown: BreakdownItem[];
   isOpen: boolean;
   onToggle: () => void;
@@ -186,21 +266,25 @@ function ExpandablePerfCard({
     emerald: 'from-white/70 to-emerald-50/60',
     rose:    'from-white/70 to-rose-50/60',
     indigo:  'from-white/70 to-indigo-50/60',
+    brand:   'from-white/70 to-[var(--cvs-accent-soft)]',
   };
   const dots = {
     emerald: 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.85)]',
     rose:    'bg-rose-500    shadow-[0_0_10px_rgba(244,63,94,0.8)]',
     indigo:  'bg-indigo-500  shadow-[0_0_10px_rgba(99,102,241,0.8)]',
+    brand:   'bg-[color:var(--cvs-accent)] shadow-[0_0_10px_var(--cvs-glow)]',
   };
   const barColors = {
     emerald: 'bg-emerald-500',
     rose:    'bg-rose-500',
     indigo:  'bg-indigo-500',
+    brand:   'bg-[color:var(--cvs-accent)]',
   };
   const dividerColors = {
     emerald: 'divide-emerald-100/80 border-emerald-100/80',
     rose:    'divide-rose-100/80    border-rose-100/80',
     indigo:  'divide-indigo-100/80  border-indigo-100/80',
+    brand:   'divide-[color:var(--cvs-accent-muted)]/40 border-[color:var(--cvs-accent-muted)]/40',
   };
 
   const total = breakdown.reduce((s, b) => s + b.value, 0);
@@ -291,28 +375,42 @@ function GapBar({ label, value, max, color, sub }: { label: string; value: numbe
   );
 }
 
+function formatServiceMonthLabel(monthKey: string): string {
+  const [y, m] = monthKey.split('-').map(Number);
+  if (!y || !m) return monthKey;
+  return `${MONTH_LABELS[m - 1] ?? monthKey} ${y}`;
+}
+
 function CashflowAnalyzer({ d, embedded = false }: { d: CompanyData; embedded?: boolean }) {
   const targetInvoices = safeNum(d.targetInvoices);
+  const proratedTarget = safeNum(d.proratedTargetInvoices);
+  const gapTarget = proratedTarget > 0 ? proratedTarget : targetInvoices;
   const actualInvoices = safeNum(d.actualInvoices);
   const cashReceived = safeNum(d.cashReceived);
   const upcomingPayroll = safeNum(d.upcomingPayroll);
-  const max = Math.max(targetInvoices, actualInvoices, cashReceived, upcomingPayroll, 1);
-  const gapPct = targetInvoices > 0 ? Math.round(((targetInvoices - cashReceived) / targetInvoices) * 100) : 0;
+  const max = Math.max(targetInvoices, proratedTarget, actualInvoices, cashReceived, upcomingPayroll, 1);
+  const gapPct = gapTarget > 0 ? Math.round(((gapTarget - cashReceived) / gapTarget) * 100) : 0;
   const coverPct = upcomingPayroll > 0 ? Math.round((cashReceived / upcomingPayroll) * 100) : 100;
-  const isAlert = cashReceived < upcomingPayroll;
+  const isAlert = d.collectionWarningActive;
+  const payrollMonthLabel = d.payrollServiceMonthKey
+    ? formatServiceMonthLabel(d.payrollServiceMonthKey)
+    : 'prior month';
 
   const body = (
     <>
       <div className="mb-5 flex items-start justify-between">
         <div>
           <h3 className="text-sm font-black uppercase tracking-widest text-slate-900">Cashflow Gap Analyzer</h3>
-          <p className="mt-0.5 text-xs text-slate-500">Billing pipeline vs. payroll liability — month-to-date</p>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Live AR vs. payroll — warning day {d.collectionWarningDay} · payroll day {d.payrollTargetDay}
+            {d.disputesSilenced ? ' · dispute hold silencing alerts' : ''}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           {isAlert && (
             <span className="flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50/90 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-rose-800">
               <AlertTriangle className="h-3 w-3" />
-              Cash Buffer Alert
+              Cash Buffer Alert · {lkr(d.collectionCashShortfall)} short
             </span>
           )}
           <BarChart3 className="h-5 w-5 text-slate-400" />
@@ -320,22 +418,44 @@ function CashflowAnalyzer({ d, embedded = false }: { d: CompanyData; embedded?: 
       </div>
 
       <div className="space-y-5">
-        <GapBar label="Target Invoices"      value={targetInvoices}  max={max} color="bg-slate-400"   sub="Contracted monthly billing target" />
-        <GapBar label="Actual Invoices Issued" value={actualInvoices} max={max} color="bg-indigo-500"  sub="Invoices raised this period" />
-        <GapBar label="Cash Received"         value={cashReceived}    max={max} color="bg-emerald-500" sub="Confirmed payments cleared" />
         <GapBar
-          label="Previous Month Payroll Liability"
+          label="Target Invoices (prorated)"
+          value={proratedTarget > 0 ? proratedTarget : targetInvoices}
+          max={max}
+          color="bg-slate-400"
+          sub={
+            proratedTarget > 0
+              ? `Contracted ${lkr(targetInvoices)} · prorated to dispatch day ${d.invoiceDispatchDay}`
+              : 'Contracted monthly billing target'
+          }
+        />
+        <GapBar
+          label="Actual Invoices Issued"
+          value={actualInvoices}
+          max={max}
+          color="bg-[color:var(--cvs-accent)]"
+          sub="Live Invoice Desk total for selected service month"
+        />
+        <GapBar
+          label="Cash Received"
+          value={cashReceived}
+          max={max}
+          color="bg-emerald-500"
+          sub="Confirmed payments cleared for selected service month"
+        />
+        <GapBar
+          label={`Payroll Liability (${payrollMonthLabel})`}
           value={upcomingPayroll}
           max={max}
           color="bg-rose-500"
-          sub="Matches payroll cost against the invoices generated for those shifts."
+          sub={`Prior service month payroll · target pay day ${d.payrollTargetDay}`}
         />
       </div>
 
       <div className="mt-6 grid grid-cols-3 divide-x divide-slate-200/80 overflow-hidden rounded-xl border border-slate-200/80 bg-slate-50/80">
         <div className="px-4 py-3 text-center">
           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Collection Gap</p>
-          <p className="mt-1 text-lg font-black tabular-nums text-rose-800">{lkr(targetInvoices - cashReceived)}</p>
+          <p className="mt-1 text-lg font-black tabular-nums text-rose-800">{lkr(gapTarget - cashReceived)}</p>
         </div>
         <div className="px-4 py-3 text-center">
           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Gap %</p>
@@ -631,9 +751,11 @@ export default function FinancialOverviewPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex min-h-[40vh] items-center justify-center px-6 py-12">
-          <p className="text-sm font-medium text-slate-400">Loading executive finance…</p>
-        </div>
+        <ExecutivePageShell>
+          <ExecutivePageBody>
+            <ExecutivePageLoading message="Loading executive finance…" />
+          </ExecutivePageBody>
+        </ExecutivePageShell>
       }
     >
       <FinancialOverviewPageInner />
@@ -650,6 +772,16 @@ function FinancialOverviewPageInner() {
   const [shalomGlance, setShalomGlance] = useState<ShalomHostGlance | null>(null);
   const [loading, setLoading] = useState(true);
   const [glanceLoading, setGlanceLoading] = useState(false);
+  const [exceptionOverrides, setExceptionOverrides] = useState<SalaryOverrideRecord[]>([]);
+  const [exceptionDebts, setExceptionDebts] = useState<ResignationDebtRecord[]>([]);
+  const [exceptionsLoading, setExceptionsLoading] = useState(false);
+
+  const refreshExceptions = useCallback(() => {
+    return fetchFmHrPayrollExceptions().then(({ overrides, debts }) => {
+      setExceptionOverrides(overrides);
+      setExceptionDebts(debts);
+    });
+  }, []);
 
   const { displayMonth, displayYear } = useMemo(() => {
     const param = searchParams.get('period');
@@ -663,19 +795,37 @@ function FinancialOverviewPageInner() {
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    void fetchMonetaryHealth(company, displayYear, displayMonth)
-      .then((health) => {
-        if (!cancelled) setData(health);
-      })
-      .catch(() => {
-        if (!cancelled) setData(EMPTY_COMPANY_DATA);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+
+    const refreshHealth = () => {
+      setLoading(true);
+      void fetchMonetaryHealth(company, displayYear, displayMonth)
+        .then((health) => {
+          if (!cancelled) setData(health);
+        })
+        .catch(() => {
+          if (!cancelled) setData(EMPTY_COMPANY_DATA);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    };
+
+    refreshHealth();
+
+    // Refresh policy: refetch on focus/visibility and every 60s so Invoice Desk dispatch updates MD cards.
+    const onFocus = () => refreshHealth();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') refreshHealth();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    const poll = window.setInterval(refreshHealth, 60_000);
+
     return () => {
       cancelled = true;
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.clearInterval(poll);
     };
   }, [company, displayYear, displayMonth]);
 
@@ -685,72 +835,122 @@ function FinancialOverviewPageInner() {
       return;
     }
 
-    let cancelled = false;
-    setGlanceLoading(true);
+    let glanceRequestSeq = 0;
+    const activeCompany = company;
 
-    const glancePromise =
-      company === 'cafe'
-        ? fetchCafePortfolioGlance()
-        : fetchShalomHostGlance(displayYear, displayMonth);
+    const refreshGlance = () => {
+      const seq = ++glanceRequestSeq;
+      setGlanceLoading(true);
 
-    void glancePromise
-      .then((glance) => {
-        if (cancelled) return;
-        if (company === 'cafe') {
-          setCafeGlance(glance as CafePortfolioGlance);
-        } else {
-          setShalomGlance(glance as ShalomHostGlance);
-        }
-      })
-      .catch(() => {
-        if (cancelled) return;
-        if (company === 'cafe') {
-          setCafeGlance({ ...EMPTY_CAFE_GLANCE, error: 'Failed to load café portfolio data.' });
-        } else {
-          setShalomGlance({ ...EMPTY_SHALOM_GLANCE, error: 'Failed to load host portfolio data.' });
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setGlanceLoading(false);
-      });
+      const glancePromise =
+        activeCompany === 'cafe'
+          ? loadGlanceWithTimeout(fetchCafePortfolioGlance(displayYear, displayMonth))
+          : loadGlanceWithTimeout(fetchShalomHostGlance(displayYear, displayMonth));
+
+      void glancePromise
+        .then((glance) => {
+          if (seq !== glanceRequestSeq) return;
+          if (activeCompany === 'cafe') {
+            setCafeGlance(glance as CafePortfolioGlance);
+          } else {
+            setShalomGlance(glance as ShalomHostGlance);
+          }
+        })
+        .catch((err: unknown) => {
+          if (seq !== glanceRequestSeq) return;
+          const message =
+            err instanceof Error ? err.message : 'Failed to load portfolio data.';
+          if (activeCompany === 'cafe') {
+            setCafeGlance({ ...EMPTY_CAFE_GLANCE, error: message });
+          } else {
+            setShalomGlance({ ...EMPTY_SHALOM_GLANCE, error: message });
+          }
+        })
+        .finally(() => {
+          if (seq === glanceRequestSeq) setGlanceLoading(false);
+        });
+    };
+
+    refreshGlance();
+
+    const onFocus = () => refreshGlance();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') refreshGlance();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    const poll = window.setInterval(refreshGlance, 60_000);
 
     return () => {
-      cancelled = true;
+      glanceRequestSeq += 1;
+      setGlanceLoading(false);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.clearInterval(poll);
     };
   }, [company, displayYear, displayMonth]);
 
+  useEffect(() => {
+    if (company !== 'security') {
+      setExceptionOverrides([]);
+      setExceptionDebts([]);
+      setExceptionsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setExceptionsLoading(true);
+
+    void fetchFmHrPayrollExceptions()
+      .then(({ overrides, debts }) => {
+        if (!cancelled) {
+          setExceptionOverrides(overrides);
+          setExceptionDebts(debts);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setExceptionsLoading(false);
+      });
+
+    const onFocus = () => {
+      void refreshExceptions();
+    };
+    window.addEventListener('focus', onFocus);
+    const poll = window.setInterval(() => {
+      void refreshExceptions();
+    }, 60_000);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', onFocus);
+      window.clearInterval(poll);
+    };
+  }, [company, refreshExceptions]);
+
   const active = COMPANIES.find((c) => c.key === company)!;
   const periodLabel = `${MONTH_LABELS[displayMonth - 1]} ${displayYear}`;
+  const shalomPeriodLabel = formatShalomCalendarMonthPeriod(displayYear, displayMonth);
+  const perfCopy = performanceCardCopy(company, data);
 
   return (
-    <div className="min-h-0 pb-24 font-sans">
-      {/* Sticky Header */}
-      <header className="sticky top-0 z-50 border-b border-white/60 bg-white/45 px-4 py-4 shadow-[0_8px_32px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl backdrop-saturate-150 sm:px-6">
-        <div className="w-full">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-full border border-white/80 bg-white/70 text-xs font-black text-slate-800 shadow-inner ring-1 ring-slate-900/5">
-                MD
-              </div>
-              <div>
-                <h1 className="text-xl font-black uppercase tracking-tight text-slate-900 sm:text-2xl">
-                  Executive Vault
-                </h1>
-                <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-emerald-700">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.85)]" />
-                  Global Bypass Active — {active.label}
-                </p>
-              </div>
-            </div>
-
+    <ExecutivePageShell>
+      <ExecutivePageHeader
+        title="Executive Vault"
+        leading={
+          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full border border-white/80 bg-white/70 text-xs font-black text-slate-800 shadow-inner ring-1 ring-slate-900/5">
+            MD
           </div>
-        </div>
-      </header>
+        }
+        subtitle={
+          <ExecutivePageLiveSubtitle>
+            Global Bypass Active — {active.label}
+          </ExecutivePageLiveSubtitle>
+        }
+      />
 
-      <div className="w-full space-y-8 px-4 py-6 sm:px-6 lg:px-12 2xl:px-24 md:py-8">
-
+      <ExecutivePageBody spacing="relaxed">
         {loading ? (
-          <p className="text-sm font-semibold text-slate-500">Loading live financial data…</p>
+          <ExecutivePageLoading message="Loading live financial data…" />
         ) : null}
 
         {/* Enterprise Performance Cards */}
@@ -766,7 +966,16 @@ function FinancialOverviewPageInner() {
                     {periodLabel}
                   </h2>
                   <p className="mt-1 text-xs font-semibold text-slate-500">
-                    Viewing <span className="text-slate-800">{active.label}</span> — owner ops appear below; tap any KPI card for breakdowns.
+                    Viewing <span className="text-slate-800">{active.label}</span>
+                    {company === 'bnb' ? (
+                      <>
+                        {' '}
+                        · calendar month{' '}
+                        <span className="text-slate-800">{shalomPeriodLabel}</span>
+                      </>
+                    ) : null}
+                    {' '}
+                    — owner ops appear below; tap any KPI card for breakdowns.
                   </p>
                 </div>
                 <div className="w-full xl:max-w-xl xl:flex-shrink-0">
@@ -779,10 +988,10 @@ function FinancialOverviewPageInner() {
               {company === 'security' ? (
                 <CashflowAnalyzer embedded d={data} />
               ) : glanceLoading ? (
-                <div className="flex items-center justify-center gap-2 py-6 text-sm font-semibold text-slate-500">
-                  <span className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
-                  Loading {active.label} operations…
-                </div>
+                <ExecutivePageLoading
+                  message={`Loading ${active.label} operations…`}
+                  className="min-h-[8rem] py-6"
+                />
               ) : company === 'cafe' ? (
                 <CafePortfolioPulse embedded glance={cafeGlance ?? EMPTY_CAFE_GLANCE} />
               ) : (
@@ -794,7 +1003,7 @@ function FinancialOverviewPageInner() {
               <ExpandablePerfCard
                 label="Gross Accrued Revenue"
                 value={lkr(data.grossRevenue)}
-                sub={`${lkr(data.actualInvoices)} invoiced this period`}
+                sub={perfCopy.revenueSub}
                 trend="up"
                 accent="emerald"
                 breakdown={data.revenueBreakdown}
@@ -804,7 +1013,7 @@ function FinancialOverviewPageInner() {
               <ExpandablePerfCard
                 label="Gross Corporate Liabilities"
                 value={lkr(data.grossLiabilities)}
-                sub={`${lkr(data.upcomingPayroll)} payroll + OPEX`}
+                sub={perfCopy.liabilitySub}
                 trend="down"
                 accent="rose"
                 breakdown={data.liabilityBreakdown}
@@ -814,9 +1023,9 @@ function FinancialOverviewPageInner() {
               <ExpandablePerfCard
                 label="Net EBITDA"
                 value={lkr(data.netEbitda)}
-                sub={data.netEbitda >= 0 ? 'Profitable this period' : 'Below break-even — review OPEX'}
+                sub={perfCopy.ebitdaSub}
                 trend={data.netEbitda >= 0 ? 'up' : 'down'}
-                accent="indigo"
+                accent="brand"
                 breakdown={data.ebitdaBreakdown}
                 isOpen={isPerformanceExpanded}
                 onToggle={() => setIsPerformanceExpanded((p) => !p)}
@@ -824,6 +1033,19 @@ function FinancialOverviewPageInner() {
             </div>
           </ExecutiveGlassCard>
         </section>
+
+        {company === 'security' && !exceptionsLoading ? (
+          <section>
+            <FmHrPayrollExceptionRadar
+              overrides={exceptionOverrides}
+              debts={exceptionDebts}
+              onRefresh={() => {
+                void refreshExceptions();
+              }}
+              readOnly
+            />
+          </section>
+        ) : null}
 
         {/* Command Module Quick Links */}
         <section>
@@ -835,18 +1057,18 @@ function FinancialOverviewPageInner() {
               <Link
                 key={href}
                 href={href}
-                className="group flex items-center gap-4 rounded-2xl border border-white/75 bg-white/50 p-5 shadow-[0_12px_48px_-14px_rgba(15,23,42,0.12)] backdrop-blur-2xl backdrop-saturate-[1.35] ring-1 ring-slate-900/[0.045] transition-all hover:bg-white/70 hover:shadow-[0_16px_56px_-12px_rgba(15,23,42,0.18)]"
+                className="group flex items-center gap-4 rounded-2xl border border-white/75 bg-white/50 p-5 shadow-[0_12px_48px_-14px_rgba(15,23,42,0.12)] backdrop-blur-2xl backdrop-saturate-[1.35] ring-1 ring-slate-900/[0.045] transition-all hover:border-[color:var(--cvs-accent-muted)] hover:bg-white/70 hover:shadow-[0_16px_56px_-12px_rgba(15,23,42,0.18)]"
               >
-                <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl border border-slate-200/80 bg-slate-100/80 transition-transform group-hover:scale-110">
-                  <Icon className="h-5 w-5 text-slate-700" />
+                <div className={`flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl border border-slate-200/80 bg-slate-100/80 transition-all group-hover:scale-110 group-hover:border-[color:var(--cvs-accent-muted)] group-hover:bg-[var(--cvs-accent-soft)]`}>
+                  <Icon className="h-5 w-5 text-slate-700 transition-colors group-hover:text-[color:var(--cvs-accent)]" />
                 </div>
-                <span className="font-bold text-slate-900">{label}</span>
+                <span className="font-bold text-slate-900 transition-colors group-hover:text-[color:var(--cvs-accent)]">{label}</span>
               </Link>
             ))}
           </div>
         </section>
 
-      </div>
-    </div>
+      </ExecutivePageBody>
+    </ExecutivePageShell>
   );
 }

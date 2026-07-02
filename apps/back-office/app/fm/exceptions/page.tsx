@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, ShieldAlert } from 'lucide-react';
 
+import StaffPortalLoading from '../../../components/portal/StaffPortalLoading';
 import FmSubnav from '../components/FmSubnav';
 import FmHrPayrollExceptionRadar from '../components/FmHrPayrollExceptionRadar';
 import {
@@ -34,7 +35,7 @@ export default function FmPayrollExceptionsPage() {
     pendingOverrides + debts.filter((d) => d.status !== 'WRITTEN_OFF').length;
 
   return (
-    <div className="min-h-0 pb-24 font-sans">
+    <div className="min-h-screen pb-24 font-sans">
       <FmSubnav />
 
       <div className="w-full space-y-6 px-4 py-6 sm:px-6 lg:px-12 2xl:px-24 md:py-8">
@@ -60,7 +61,7 @@ export default function FmPayrollExceptionsPage() {
         </div>
 
         {loading ? (
-          <p className="text-sm font-semibold text-slate-500">Loading exception queue…</p>
+          <StaffPortalLoading portal="fm" message="Loading exception queue…" className="min-h-[16rem]" />
         ) : (
           <section>
             <div className="mb-4 flex items-center gap-2">

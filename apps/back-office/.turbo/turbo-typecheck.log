@@ -2,3 +2,527 @@
 > pearzen-erp-back-office@0.0.0 typecheck
 > tsc -p tsconfig.json
 
+app/account/layout.tsx(6,11): error TS2559: Type '{ children: ReactNode; }' has no properties in common with type 'IntrinsicAttributes'.
+app/actions/portal-session-actions.ts(208,30): error TS1355: A 'const' assertion can only be applied to references to enum members, or string, number, boolean, array, or object literals.
+app/actions/site-directory-actions.ts(916,62): error TS2345: Argument of type 'string | null' is not assignable to parameter of type 'string'.
+  Type 'null' is not assignable to type 'string'.
+app/actions/site-directory-actions.ts(1194,56): error TS2339: Property 'rate_matrix' does not exist on type 'GenericStringError'.
+app/actions/site-directory-actions.ts(1196,43): error TS2339: Property 'site_status' does not exist on type 'GenericStringError'.
+app/actions/site-directory-actions.ts(1351,28): error TS2339: Property 'assigned_sm_epf' does not exist on type 'GenericStringError'.
+app/actions/site-directory-actions.ts(1352,25): error TS2339: Property 'assigned_sm_epf' does not exist on type 'GenericStringError'.
+app/actions/time-engine.ts(159,50): error TS2345: Argument of type '{ site_name?: string | undefined; assigned_sm_epf?: string | null | undefined; }' is not assignable to parameter of type 'OmScopeSiteLike'.
+  Types of property 'site_name' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+app/actions/vault-session-actions.ts(212,34): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+app/actions/vault-session-actions.ts(233,34): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+app/actions/vault-session-actions.ts(264,34): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+app/ar-invoicing/actions.ts(273,64): error TS2345: Argument of type 'ArLedgerClientRecord[]' is not assignable to parameter of type 'ArCollectionClientRecord[]'.
+  Type 'ArLedgerClientRecord' is not assignable to type 'ArCollectionClientRecord'.
+    Types of property 'invoices' are incompatible.
+      Type 'Record<string, ArInvoiceCell>' is not assignable to type 'Record<string, ArCollectionCell & Record<string, unknown>>'.
+        'string' index signatures are incompatible.
+          Type 'ArInvoiceCell' is not assignable to type 'ArCollectionCell & Record<string, unknown>'.
+            Type 'ArInvoiceCell' is not assignable to type 'ArCollectionCell'.
+              Types of property 'creditNotes' are incompatible.
+                Type 'unknown[] | undefined' is not assignable to type 'ArCreditNote[] | undefined'.
+                  Type 'unknown[]' is not assignable to type 'ArCreditNote[]'.
+                    Type 'unknown' is not assignable to type 'ArCreditNote'.
+app/ar-invoicing/actions.ts(279,5): error TS2345: Argument of type 'ArCollectionClientRecord[]' is not assignable to parameter of type 'ArLedgerClientRecord[]'.
+  Type 'ArCollectionClientRecord' is not assignable to type 'ArLedgerClientRecord'.
+    Types of property 'invoices' are incompatible.
+      Type 'Record<string, ArCollectionCell & Record<string, unknown>>' is not assignable to type 'Record<string, ArInvoiceCell>'.
+        'string' index signatures are incompatible.
+          Type 'ArCollectionCell & Record<string, unknown>' is missing the following properties from type 'ArInvoiceCell': invoiceNo, rankLines, patrols
+app/ar-invoicing/actions.ts(283,5): error TS2322: Type 'ArCollectionClientRecord[]' is not assignable to type 'ArLedgerClientRecord[]'.
+  Type 'ArCollectionClientRecord' is not assignable to type 'ArLedgerClientRecord'.
+    Types of property 'invoices' are incompatible.
+      Type 'Record<string, ArCollectionCell & Record<string, unknown>>' is not assignable to type 'Record<string, ArInvoiceCell>'.
+        'string' index signatures are incompatible.
+          Type 'ArCollectionCell & Record<string, unknown>' is missing the following properties from type 'ArInvoiceCell': invoiceNo, rankLines, patrols
+app/ar-invoicing/actions.ts(423,59): error TS2345: Argument of type 'PaymentStatusChange' is not assignable to parameter of type '{ toStatus: string; after: ArCollectionCell; before: ArCollectionCell; clientName: string; monthKey: string; }'.
+  The types of 'after.creditNotes' are incompatible between these types.
+    Type 'unknown[] | undefined' is not assignable to type 'ArCreditNote[] | undefined'.
+      Type 'unknown[]' is not assignable to type 'ArCreditNote[]'.
+        Type 'unknown' is not assignable to type 'ArCreditNote'.
+app/ar-invoicing/actions.ts(431,7): error TS2345: Argument of type 'ArLedgerClientRecord[]' is not assignable to parameter of type 'ArCollectionClientRecord[]'.
+  Type 'ArLedgerClientRecord' is not assignable to type 'ArCollectionClientRecord'.
+    Types of property 'invoices' are incompatible.
+      Type 'Record<string, ArInvoiceCell>' is not assignable to type 'Record<string, ArCollectionCell & Record<string, unknown>>'.
+        'string' index signatures are incompatible.
+          Type 'ArInvoiceCell' is not assignable to type 'ArCollectionCell & Record<string, unknown>'.
+            Type 'ArInvoiceCell' is not assignable to type 'ArCollectionCell'.
+              Types of property 'creditNotes' are incompatible.
+                Type 'unknown[] | undefined' is not assignable to type 'ArCreditNote[] | undefined'.
+                  Type 'unknown[]' is not assignable to type 'ArCreditNote[]'.
+                    Type 'unknown' is not assignable to type 'ArCreditNote'.
+app/ar-invoicing/actions.ts(437,5): error TS2345: Argument of type 'ArLedgerClientRecord[]' is not assignable to parameter of type 'ArCollectionClientRecord[]'.
+  Type 'ArLedgerClientRecord' is not assignable to type 'ArCollectionClientRecord'.
+    Types of property 'invoices' are incompatible.
+      Type 'Record<string, ArInvoiceCell>' is not assignable to type 'Record<string, ArCollectionCell & Record<string, unknown>>'.
+        'string' index signatures are incompatible.
+          Type 'ArInvoiceCell' is not assignable to type 'ArCollectionCell & Record<string, unknown>'.
+            Type 'ArInvoiceCell' is not assignable to type 'ArCollectionCell'.
+              Types of property 'creditNotes' are incompatible.
+                Type 'unknown[] | undefined' is not assignable to type 'ArCreditNote[] | undefined'.
+                  Type 'unknown[]' is not assignable to type 'ArCreditNote[]'.
+                    Type 'unknown' is not assignable to type 'ArCreditNote'.
+app/ar-invoicing/actions.ts(437,52): error TS2345: Argument of type 'ArCollectionClientRecord[]' is not assignable to parameter of type 'ArLedgerClientRecord[]'.
+  Type 'ArCollectionClientRecord' is not assignable to type 'ArLedgerClientRecord'.
+    Types of property 'invoices' are incompatible.
+      Type 'Record<string, ArCollectionCell & Record<string, unknown>>' is not assignable to type 'Record<string, ArInvoiceCell>'.
+        'string' index signatures are incompatible.
+          Type 'ArCollectionCell & Record<string, unknown>' is missing the following properties from type 'ArInvoiceCell': invoiceNo, rankLines, patrols
+app/ar-invoicing/actions.ts(439,42): error TS2345: Argument of type 'ArCollectionClientRecord[]' is not assignable to parameter of type '{ invoices: Partial<Record<string, { taxInvoiceNo?: string | undefined; } | undefined>>; }[]'.
+  Type 'ArCollectionClientRecord' is not assignable to type '{ invoices: Partial<Record<string, { taxInvoiceNo?: string | undefined; } | undefined>>; }'.
+    Types of property 'invoices' are incompatible.
+      Type 'Record<string, ArCollectionCell & Record<string, unknown>>' is not assignable to type 'Partial<Record<string, { taxInvoiceNo?: string | undefined; } | undefined>>'.
+        'string' index signatures are incompatible.
+          Type 'ArCollectionCell & Record<string, unknown>' is not assignable to type '{ taxInvoiceNo?: string | undefined; } | undefined'.
+            Type 'ArCollectionCell & Record<string, unknown>' has no properties in common with type '{ taxInvoiceNo?: string | undefined; }'.
+app/auth/callback/route.ts(93,69): error TS2339: Property 'reason' does not exist on type 'PearsWebsiteClientSignInGate'.
+  Property 'reason' does not exist on type '{ ok: true; }'.
+app/dashboard/layout.tsx(12,8): error TS2559: Type '{ children: ReactNode; }' has no properties in common with type 'IntrinsicAttributes'.
+app/executive/cafe/actions.ts(334,30): error TS2345: Argument of type '{ recipe: CafeRecipeLine[]; targetMargin: number; id: string; name: string; category: string; recipeCost: number; hasImage: boolean; imageUrl?: string | null | undefined; imageFrame?: CafeMenuItemImageFrame | undefined; ... 4 more ...; velocityBoostWeekIso?: string | undefined; }[]' is not assignable to parameter of type 'CafeMenuRecipeItem[]'.
+  Type '{ recipe: CafeRecipeLine[]; targetMargin: number; id: string; name: string; category: string; recipeCost: number; hasImage: boolean; imageUrl?: string | null; imageFrame?: import("./cafe-menu-item-image").CafeMenuItemImageFrame; ... 4 more ...; velocityBoostWeekIso?: string; }' is not assignable to type 'CafeMenuRecipeItem'.
+    Types of property 'imageUrl' are incompatible.
+      Type 'string | null | undefined' is not assignable to type 'string | null'.
+        Type 'undefined' is not assignable to type 'string | null'.
+app/executive/cafe/actions.ts(962,49): error TS2345: Argument of type 'CafeMenuItem[]' is not assignable to parameter of type 'CafeMenuRecipeItem[]'.
+  Type 'CafeMenuItem' is not assignable to type 'CafeMenuRecipeItem'.
+    Types of property 'imageUrl' are incompatible.
+      Type 'string | null | undefined' is not assignable to type 'string | null'.
+        Type 'undefined' is not assignable to type 'string | null'.
+app/executive/cafe/actions.ts(1600,5): error TS2322: Type '{ otTotalLkr: number; name: string; id: string; role: string; dailyRate: number; daysWorked: number; deductionsMTD: number; }[]' is not assignable to type 'CafeLaborRosterMember[]'.
+  Type '{ otTotalLkr: number; name: string; id: string; role: string; dailyRate: number; daysWorked: number; deductionsMTD: number; }' is not assignable to type 'CafeLaborRosterMember'.
+    Property 'monthlyBasicLkr' is missing in type '{ otTotalLkr: number; name: string; id: string; role: string; dailyRate: number; daysWorked: number; deductionsMTD: number; }' but required in type 'CafeStaffMember'.
+app/executive/cafe/cafe-cost-utils.ts(41,33): error TS2345: Argument of type '{ dailyRate: number; daysWorked: number; otTotalLkr?: number | undefined; }[]' is not assignable to parameter of type 'Pick<CafePayrollMember, "dailyRate" | "daysWorked" | "otTotalLkr">[]'.
+  Type '{ dailyRate: number; daysWorked: number; otTotalLkr?: number | undefined; }' is not assignable to type 'Pick<CafePayrollMember, "dailyRate" | "daysWorked" | "otTotalLkr">'.
+    Types of property 'otTotalLkr' are incompatible.
+      Type 'number | undefined' is not assignable to type 'number'.
+        Type 'undefined' is not assignable to type 'number'.
+app/executive/settings/executive-role-actions.ts(83,39): error TS1355: A 'const' assertion can only be applied to references to enum members, or string, number, boolean, array, or object literals.
+app/executive/settings/executive-role-actions.ts(163,34): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+app/executive/settings/executive-role-actions.ts(218,52): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+app/executive/settings/executive-role-actions.ts(230,32): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+app/executive/settings/executive-role-actions.ts(307,52): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+app/executive/settings/executive-role-actions.ts(323,32): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+app/executive/settings/rank-matrix-actions.ts(204,23): error TS2322: Type '{ success: boolean; error?: string | undefined; }' is not assignable to type '{ success: true; rankCode: string; entry: RankPayEntry; } | { success: false; error: string; }'.
+  Type '{ success: boolean; error?: string | undefined; }' is not assignable to type '{ success: false; error: string; }'.
+    Types of property 'success' are incompatible.
+      Type 'boolean' is not assignable to type 'false'.
+app/executive/settings/security-access-panels.tsx(992,18): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'SetStateAction<string | null>'.
+  Type 'undefined' is not assignable to type 'SetStateAction<string | null>'.
+app/executive/settings/security-access-panels.tsx(1203,18): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'SetStateAction<string | null>'.
+  Type 'undefined' is not assignable to type 'SetStateAction<string | null>'.
+app/executive/settings/staff-command-center-actions.ts(63,37): error TS2677: A type predicate's type must be assignable to its parameter's type.
+  Type '"MD" | "OD" | "OM" | "HR" | "FM" | "EA" | "AD" | "SC"' is not assignable to type '"MD" | "OD" | "FM"'.
+    Type '"OM"' is not assignable to type '"MD" | "OD" | "FM"'.
+app/executive/shalom/page.tsx(3012,11): error TS2322: Type '{ id: string; guestName: string; channel: ShalomChannel; checkIn: string; checkOut: string; nights: number; ratePerNight: number; totalRevenue: number; paid: boolean; notes: string | undefined; enriched: boolean | undefined; enrichedContact: string | undefined; }[]' is not assignable to type 'Booking[]'.
+  Type '{ id: string; guestName: string; channel: ShalomChannel; checkIn: string; checkOut: string; nights: number; ratePerNight: number; totalRevenue: number; paid: boolean; notes: string | undefined; enriched: boolean | undefined; enrichedContact: string | undefined; }' is not assignable to type 'Booking'.
+    Types of property 'channel' are incompatible.
+      Type 'ShalomChannel' is not assignable to type 'Channel'.
+        Type '"DIRECT"' is not assignable to type 'Channel'.
+app/executive/shalom/page.tsx(3040,21): error TS2345: Argument of type '(prev: Record<string, PropSettings>) => { [x: string]: PropSettings | { cleanBufferEnabled: true; cleanBufferDays: number; defaultRate: number; airbnbCommissionPct: number; bookingCommissionPct: number; seasonalRates: never[]; }; }' is not assignable to parameter of type 'SetStateAction<Record<string, PropSettings>>'.
+  Type '(prev: Record<string, PropSettings>) => { [x: string]: PropSettings | { cleanBufferEnabled: true; cleanBufferDays: number; defaultRate: number; airbnbCommissionPct: number; bookingCommissionPct: number; seasonalRates: never[]; }; }' is not assignable to type '(prevState: Record<string, PropSettings>) => Record<string, PropSettings>'.
+    Type '{ [x: string]: PropSettings | { cleanBufferEnabled: true; cleanBufferDays: number; defaultRate: number; airbnbCommissionPct: number; bookingCommissionPct: number; seasonalRates: never[]; }; }' is not assignable to type 'Record<string, PropSettings>'.
+      'string' index signatures are incompatible.
+        Type 'PropSettings | { cleanBufferEnabled: true; cleanBufferDays: number; defaultRate: number; airbnbCommissionPct: number; bookingCommissionPct: number; seasonalRates: never[]; }' is not assignable to type 'PropSettings'.
+          Type '{ cleanBufferEnabled: true; cleanBufferDays: number; defaultRate: number; airbnbCommissionPct: number; bookingCommissionPct: number; seasonalRates: never[]; }' is missing the following properties from type 'PropSettings': collectInquiryPhone, damagePresets, handoverRooms
+app/executive/shalom/page.tsx(3122,94): error TS2345: Argument of type 'ShalomBookingRecord' is not assignable to parameter of type 'Booking'.
+  Types of property 'channel' are incompatible.
+    Type 'ShalomChannel' is not assignable to type 'Channel'.
+      Type '"DIRECT"' is not assignable to type 'Channel'.
+app/executive/shalom/page.tsx(3123,92): error TS2345: Argument of type 'ShalomBookingRecord' is not assignable to parameter of type 'Booking'.
+  Types of property 'channel' are incompatible.
+    Type 'ShalomChannel' is not assignable to type 'Channel'.
+      Type '"DIRECT"' is not assignable to type 'Channel'.
+app/fm/components/FmDeductionsModal.tsx(153,17): error TS2783: 'totalLiability' is specified more than once, so this usage will be overwritten.
+app/fm/components/FmDeductionsModal.tsx(153,37): error TS2783: 'installmentTotal' is specified more than once, so this usage will be overwritten.
+app/fm/components/FmPayrollAllowancesPanel.tsx(93,36): error TS2739: Type '{ siteAllowanceLkr: number; mealAllowanceLkr: number; transportAllowanceLkr: number; }' is missing the following properties from type 'EmployeeFixedAllowances': fixedAllowanceLkr, specialAllowanceLkr
+app/fm/lib/fm-client-billing-actions.ts(67,49): error TS2345: Argument of type 'ArLedgerClientRecord[]' is not assignable to parameter of type 'FmArLedgerClientRef[]'.
+  Type 'ArLedgerClientRecord' is not assignable to type 'FmArLedgerClientRef'.
+    Types of property 'invoices' are incompatible.
+      Type 'Record<string, ArInvoiceCell>' is not assignable to type 'Record<string, ArCollectionCell & { paidDate?: string | undefined; }>'.
+        'string' index signatures are incompatible.
+          Type 'ArInvoiceCell' is not assignable to type 'ArCollectionCell & { paidDate?: string | undefined; }'.
+            Type 'ArInvoiceCell' is not assignable to type 'ArCollectionCell'.
+              Types of property 'creditNotes' are incompatible.
+                Type 'unknown[] | undefined' is not assignable to type 'ArCreditNote[] | undefined'.
+                  Type 'unknown[]' is not assignable to type 'ArCreditNote[]'.
+                    Type 'unknown' is not assignable to type 'ArCreditNote'.
+app/fm/lib/fm-discrepancy-actions.ts(28,46): error TS2552: Cannot find name 'prevPayrollPeriod'. Did you mean 'payrollPeriod'?
+app/fm/lib/fm-discrepancy-actions.ts(95,47): error TS2345: Argument of type 'ArLedgerClientRecord[]' is not assignable to parameter of type 'ArLedgerClientRow[]'.
+  Type 'ArLedgerClientRecord' is not assignable to type 'ArLedgerClientRow'.
+    Types of property 'invoices' are incompatible.
+      Type 'Record<string, ArInvoiceCell>' is not assignable to type 'Record<string, ArLedgerInvoiceCell | undefined>'.
+        'string' index signatures are incompatible.
+          Type 'ArInvoiceCell' is not assignable to type 'ArLedgerInvoiceCell'.
+            Types of property 'clientDeductions' are incompatible.
+              Type 'unknown[] | undefined' is not assignable to type 'ArClientDeduction[] | undefined'.
+                Type 'unknown[]' is not assignable to type 'ArClientDeduction[]'.
+                  Type 'unknown' is not assignable to type 'ArClientDeduction'.
+app/fm/lib/fm-employee-deduction-plans.ts(233,55): error TS2345: Argument of type 'T' is not assignable to parameter of type '{ totalGross: number; earnings?: { hoFixedData?: { mnrBaseSalaryLkr: number; } | undefined; cafeData?: { monthlyBasicLkr: number; } | undefined; smPayData?: { fixedBasicLkr: number; } | undefined; guardData?: { ...; } | undefined; basePayLkr?: number | undefined; } | undefined; }'.
+  Type '{ totalGross: number; deductions: FmPortfolioDeduction[]; earnings?: { hoFixedData?: { mnrBaseSalaryLkr: number; } | undefined; cafeData?: { monthlyBasicLkr: number; } | undefined; smPayData?: { ...; } | undefined; guardData?: { ...; } | undefined; basePayLkr?: number | undefined; } | undefined; }' is not assignable to type '{ totalGross: number; earnings?: { hoFixedData?: { mnrBaseSalaryLkr: number; } | undefined; cafeData?: { monthlyBasicLkr: number; } | undefined; smPayData?: { fixedBasicLkr: number; } | undefined; guardData?: { ...; } | undefined; basePayLkr?: number | undefined; } | undefined; }'.
+    Types of property 'earnings' are incompatible.
+      Type '{ hoFixedData?: { mnrBaseSalaryLkr: number; } | undefined; cafeData?: { monthlyBasicLkr: number; } | undefined; smPayData?: { fixedBasicLkr?: number | undefined; epfEmployeeLkr?: number | undefined; payeeTaxLkr?: number | undefined; stampDutyLkr?: number | undefined; } | undefined; guardData?: { ...; } | undefined; ...' is not assignable to type '{ hoFixedData?: { mnrBaseSalaryLkr: number; } | undefined; cafeData?: { monthlyBasicLkr: number; } | undefined; smPayData?: { fixedBasicLkr: number; } | undefined; guardData?: { monthlyBasicLkr: number; } | undefined; basePayLkr?: number | undefined; } | undefined'.
+        Type '{ hoFixedData?: { mnrBaseSalaryLkr: number; } | undefined; cafeData?: { monthlyBasicLkr: number; } | undefined; smPayData?: { fixedBasicLkr?: number | undefined; epfEmployeeLkr?: number | undefined; payeeTaxLkr?: number | undefined; stampDutyLkr?: number | undefined; } | undefined; guardData?: { ...; } | undefined; ...' is not assignable to type '{ hoFixedData?: { mnrBaseSalaryLkr: number; } | undefined; cafeData?: { monthlyBasicLkr: number; } | undefined; smPayData?: { fixedBasicLkr: number; } | undefined; guardData?: { monthlyBasicLkr: number; } | undefined; basePayLkr?: number | undefined; }'.
+          Types of property 'smPayData' are incompatible.
+            Type '{ fixedBasicLkr?: number | undefined; epfEmployeeLkr?: number | undefined; payeeTaxLkr?: number | undefined; stampDutyLkr?: number | undefined; } | undefined' is not assignable to type '{ fixedBasicLkr: number; } | undefined'.
+              Type '{ fixedBasicLkr?: number | undefined; epfEmployeeLkr?: number | undefined; payeeTaxLkr?: number | undefined; stampDutyLkr?: number | undefined; }' is not assignable to type '{ fixedBasicLkr: number; }'.
+                Types of property 'fixedBasicLkr' are incompatible.
+                  Type 'number | undefined' is not assignable to type 'number'.
+                    Type 'undefined' is not assignable to type 'number'.
+app/fm/lib/fm-payroll-roster-data.ts(238,20): error TS2339: Property 'epfEmployeeLkr' does not exist on type '{ payMode: SmPayMode; visitsCompleted: number; visitsTarget: number; perVisitRateLkr: number; visitPayLkr: number; fixedBasicLkr: number; }'.
+app/fm/lib/fm-payroll-roster-data.ts(239,20): error TS2339: Property 'payeeTaxLkr' does not exist on type '{ payMode: SmPayMode; visitsCompleted: number; visitsTarget: number; perVisitRateLkr: number; visitPayLkr: number; fixedBasicLkr: number; }'.
+app/fm/lib/fm-payroll-roster-data.ts(240,20): error TS2339: Property 'stampDutyLkr' does not exist on type '{ payMode: SmPayMode; visitsCompleted: number; visitsTarget: number; perVisitRateLkr: number; visitPayLkr: number; fixedBasicLkr: number; }'.
+app/fm/lib/fm-payroll-roster-data.ts(285,31): error TS2339: Property 'payeeTaxLkr' does not exist on type '{ payMode: SmPayMode; visitsCompleted: number; visitsTarget: number; perVisitRateLkr: number; visitPayLkr: number; fixedBasicLkr: number; }'.
+app/fm/lib/fm-payroll-roster-data.ts(286,32): error TS2339: Property 'stampDutyLkr' does not exist on type '{ payMode: SmPayMode; visitsCompleted: number; visitsTarget: number; perVisitRateLkr: number; visitPayLkr: number; fixedBasicLkr: number; }'.
+app/fm/lib/fm-payroll-roster-data.ts(287,34): error TS2339: Property 'epfEmployeeLkr' does not exist on type '{ payMode: SmPayMode; visitsCompleted: number; visitsTarget: number; perVisitRateLkr: number; visitPayLkr: number; fixedBasicLkr: number; }'.
+app/fm/lib/fm-payroll-roster-data.ts(288,34): error TS2339: Property 'epfEmployerLkr' does not exist on type '{ payMode: SmPayMode; visitsCompleted: number; visitsTarget: number; perVisitRateLkr: number; visitPayLkr: number; fixedBasicLkr: number; }'.
+app/fm/lib/fm-payroll-roster-data.ts(289,34): error TS2339: Property 'etfEmployerLkr' does not exist on type '{ payMode: SmPayMode; visitsCompleted: number; visitsTarget: number; perVisitRateLkr: number; visitPayLkr: number; fixedBasicLkr: number; }'.
+app/fm/lib/fm-payslip-layout.ts(168,41): error TS2339: Property 'smFixedBasicLkr' does not exist on type 'FmPayrollRosterRow'.
+app/fm/lib/fm-retention-actions.ts(229,31): error TS2339: Property 'full_name' does not exist on type 'GuardEmpRow'.
+app/fm/lib/fm-roster-payslip-history.ts(81,5): error TS2353: Object literal may only specify known properties, and 'smFixedBasicLkr' does not exist in type 'FmPayrollRosterRow'.
+app/fm/lib/fm-roster-payslip-history.ts(81,37): error TS2339: Property 'smFixedBasicLkr' does not exist on type 'FmPayrollRosterRow'.
+app/fm/lib/payroll-earnings-display.ts(141,46): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'string | number | null | undefined'.
+app/fm/payroll-run-actions.ts(467,13): error TS2345: Argument of type 'number' is not assignable to parameter of type '2500'.
+app/fm/portfolio-actions.ts(1057,5): error TS2304: Cannot find name 'fetchHqMonthlyDeductions'.
+app/fm/portfolio-actions.ts(1058,5): error TS2304: Cannot find name 'fetchApprovedSalaryAdvances'.
+app/fm/portfolio-actions.ts(1059,5): error TS2304: Cannot find name 'fetchActiveFmDeductionPlans'.
+app/forge/clients/actions.ts(832,23): error TS2352: Conversion of type '{ id: any; name: any; slug: any; }[]' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Index signature for type 'string' is missing in type '{ id: any; name: any; slug: any; }[]'.
+app/forge/commerce/actions.ts(116,29): error TS2339: Property 'billingModel' does not exist on type '{ code: string; name: string; }'.
+app/forge/page.tsx(549,41): error TS2322: Type 'string | null' is not assignable to type 'string'.
+  Type 'null' is not assignable to type 'string'.
+app/forge/settings/pricing-actions.ts(178,23): error TS2352: Conversion of type '{ name: any; }[]' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Index signature for type 'string' is missing in type '{ name: any; }[]'.
+app/forge/tenants/[companyId]/domains/page.tsx(56,22): error TS2345: Argument of type 'readonly ["erp_staff", "public_website", "customer_menu", "security_website"]' is not assignable to parameter of type 'SetStateAction<("erp_staff" | "public_website" | "customer_menu" | "security_website")[]>'.
+  The type 'readonly ["erp_staff", "public_website", "customer_menu", "security_website"]' is 'readonly' and cannot be assigned to the mutable type '("erp_staff" | "public_website" | "customer_menu" | "security_website")[]'.
+app/forge/tenants/[companyId]/domains/page.tsx(57,22): error TS2345: Argument of type 'readonly ["pending", "active", "error"]' is not assignable to parameter of type 'SetStateAction<("error" | "active" | "pending")[]>'.
+  The type 'readonly ["pending", "active", "error"]' is 'readonly' and cannot be assigned to the mutable type '("error" | "active" | "pending")[]'.
+app/forge/tenants/[companyId]/domains/page.tsx(217,18): error TS18048: 'domains' is possibly 'undefined'.
+app/forge/tenants/[companyId]/domains/page.tsx(224,19): error TS18048: 'domains' is possibly 'undefined'.
+app/forge/tenants/page.tsx(113,24): error TS2345: Argument of type 'readonly ["trial", "active", "past_due", "suspended"]' is not assignable to parameter of type 'SetStateAction<("suspended" | "active" | "trial" | "past_due")[]>'.
+  The type 'readonly ["trial", "active", "past_due", "suspended"]' is 'readonly' and cannot be assigned to the mutable type '("suspended" | "active" | "trial" | "past_due")[]'.
+app/forge/tenants/page.tsx(114,24): error TS2345: Argument of type 'readonly ["full_erp", "wfm_only"]' is not assignable to parameter of type 'SetStateAction<("full_erp" | "wfm_only")[]>'.
+  The type 'readonly ["full_erp", "wfm_only"]' is 'readonly' and cannot be assigned to the mutable type '("full_erp" | "wfm_only")[]'.
+app/hq/deductions/lib/monthly-site-shifts.ts(295,9): error TS2353: Object literal may only specify known properties, and 'checkInDeviceTime' does not exist in type '{ employeeId: string; siteName: string; siteProfileId: string | null; shiftDate: string; }'.
+app/hq/deductions/lib/monthly-site-shifts.ts(306,26): error TS2345: Argument of type '{ employeeId: string; siteName: string; siteProfileId: string | null; shiftDate: string; }' is not assignable to parameter of type 'ApprovedAttendancePair'.
+  Property 'checkInDeviceTime' is missing in type '{ employeeId: string; siteName: string; siteProfileId: string | null; shiftDate: string; }' but required in type 'ApprovedAttendancePair'.
+app/hr/cafe-roster/actions.ts(491,54): error TS2345: Argument of type 'string | null' is not assignable to parameter of type '"MD" | "OD" | "HR" | "FM" | "EA"'.
+  Type 'null' is not assignable to type '"MD" | "OD" | "HR" | "FM" | "EA"'.
+app/hr/cafe-roster/actions.ts(552,7): error TS2322: Type 'string | null' is not assignable to type 'string | undefined'.
+  Type 'null' is not assignable to type 'string | undefined'.
+app/hr/cafe-roster/actions.ts(553,7): error TS2322: Type 'string | null' is not assignable to type 'string | undefined'.
+  Type 'null' is not assignable to type 'string | undefined'.
+app/hr/cafe-roster/actions.ts(579,54): error TS2345: Argument of type 'string | null' is not assignable to parameter of type '"MD" | "OD" | "HR" | "FM" | "EA"'.
+  Type 'null' is not assignable to type '"MD" | "OD" | "HR" | "FM" | "EA"'.
+app/hr/cafe-roster/actions.ts(624,7): error TS2322: Type 'string | null' is not assignable to type 'string | undefined'.
+  Type 'null' is not assignable to type 'string | undefined'.
+app/hr/cafe-roster/actions.ts(625,7): error TS2322: Type 'string | null' is not assignable to type 'string | undefined'.
+  Type 'null' is not assignable to type 'string | undefined'.
+app/hr/epf-actions.ts(95,14): error TS2345: Argument of type 'GenericStringError' is not assignable to parameter of type 'Record<string, unknown>'.
+  Index signature for type 'string' is missing in type '{ error: true; } & String'.
+app/hr/hr-sector-actions.ts(80,21): error TS2322: Type '{ success: boolean; error?: string | undefined; }' is not assignable to type '{ success: true; sectorName: string; sectorNames: string[]; } | { success: false; error: string; }'.
+  Type '{ success: boolean; error?: string | undefined; }' is not assignable to type '{ success: false; error: string; }'.
+    Types of property 'success' are incompatible.
+      Type 'boolean' is not assignable to type 'false'.
+app/hr/mnr/actions.ts(178,38): error TS2367: This comparison appears to be unintentional because the types 'number' and 'string' have no overlap.
+app/hr/mnr/clearance-actions.ts(285,43): error TS2345: Argument of type 'Record<string, unknown>' is not assignable to parameter of type 'ClearanceEmployeeRow & { id: string; }'.
+  Property 'id' is missing in type 'Record<string, unknown>' but required in type '{ id: string; }'.
+app/hr/mnr/clearance-actions.ts(286,43): error TS2345: Argument of type 'Record<string, unknown>' is not assignable to parameter of type 'ClearanceEmployeeRow & { id: string; }'.
+  Property 'id' is missing in type 'Record<string, unknown>' but required in type '{ id: string; }'.
+app/hr/mnr/clearance-actions.ts(287,37): error TS2345: Argument of type 'Record<string, unknown>' is not assignable to parameter of type 'ClearanceEmployeeRow & { id: string; }'.
+  Property 'id' is missing in type 'Record<string, unknown>' but required in type '{ id: string; }'.
+app/hr/mnr/clearance-actions.ts(300,56): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'string | null'.
+app/hr/mnr/clearance-actions.ts(317,7): error TS2322: Type '{} | null' is not assignable to type 'string | null'.
+  Type '{}' is not assignable to type 'string'.
+app/hr/mnr/clearance-actions.ts(335,41): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'string | null'.
+app/hr/mnr/clearance-actions.ts(422,5): error TS2322: Type '{} | null' is not assignable to type 'string | null | undefined'.
+  Type '{}' is not assignable to type 'string'.
+app/hr/mnr/clearance-actions.ts(446,69): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'string'.
+app/hr/mnr/clearance-actions.ts(464,5): error TS2322: Type 'unknown' is not assignable to type 'string'.
+app/hr/mnr/clearance-actions.ts(466,5): error TS2322: Type '{}' is not assignable to type 'string'.
+app/hr/mnr/clearance-actions.ts(468,5): error TS2322: Type '{} | null' is not assignable to type 'string | null'.
+  Type '{}' is not assignable to type 'string'.
+app/hr/mnr/clearance-actions.ts(469,5): error TS2322: Type '{} | null' is not assignable to type 'string | null'.
+  Type '{}' is not assignable to type 'string'.
+app/hr/temp-roster/actions.ts(326,42): error TS2339: Property 'eq' does not exist on type 'PostgrestBuilder<any, { temp_id: any; status: any; company_id: any; } | null, false>'.
+app/hr/temp-roster/actions.ts(345,50): error TS2339: Property 'eq' does not exist on type 'PostgrestBuilder<any, { id: any; company_id: any; emp_number: any; epf_no: any; epf_num: any; } | null, false>'.
+app/login/forge/actions.ts(19,5): error TS2366: Function lacks ending return statement and return type does not include 'undefined'.
+app/login/LoginShell.tsx(14,51): error TS2304: Cannot find name 'StaffPortalId'.
+app/om/actions/field-radar.ts(303,22): error TS2339: Property 'phone' does not exist on type 'SectorManagerEmployeeRecord'.
+app/om/actions/field-radar.ts(303,49): error TS2339: Property 'phone' does not exist on type 'SectorManagerEmployeeRecord'.
+app/om/actions/sector-role-assignments.ts(66,39): error TS1355: A 'const' assertion can only be applied to references to enum members, or string, number, boolean, array, or object literals.
+app/om/actions/sector-role-assignments.ts(199,52): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+app/om/actions/sector-role-assignments.ts(223,32): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+app/om/actions/sector-role-assignments.ts(275,52): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+app/om/guard-cards/GuardCardsTab.tsx(67,11): error TS2322: Type '(silent?: boolean) => Promise<void>' is not assignable to type 'MouseEventHandler<HTMLButtonElement>'.
+  Types of parameters 'silent' and 'event' are incompatible.
+    Type 'MouseEvent<HTMLButtonElement, MouseEvent>' is not assignable to type 'boolean | undefined'.
+app/om/lib/demo-data.ts(276,37): error TS2345: Argument of type '{ penaltyCount12m: number; penaltyAmount12m: number; lateCheckIns12m: number; shiftsPerMonth: number; maxConsecutiveMissedDays: number; deductionTotal12m: number; }[]' is not assignable to parameter of type 'GuardRawMetrics[]'.
+  Property 'empNumber' is missing in type '{ penaltyCount12m: number; penaltyAmount12m: number; lateCheckIns12m: number; shiftsPerMonth: number; maxConsecutiveMissedDays: number; deductionTotal12m: number; }' but required in type 'GuardRawMetrics'.
+app/om/lib/demo-data.ts(277,3): error TS2322: Type '{ employeeId: string; fullName: string; rank: string; idPhotoUrl: null; isBlacklisted: false; empNumber: string; penaltyCount12m: number; penaltyAmount12m: number; lateCheckIns12m: number; shiftsPerMonth: number; maxConsecutiveMissedDays: number; deductionTotal12m: number; scores: GuardMetricScores; rating: number; ...' is not assignable to type 'GuardCardDisplay[]'.
+  Type '{ employeeId: string; fullName: string; rank: string; idPhotoUrl: null; isBlacklisted: false; empNumber: string; penaltyCount12m: number; penaltyAmount12m: number; lateCheckIns12m: number; ... 4 more ...; rating: number; }' is not assignable to type 'GuardCardDisplay'.
+    Type '{ employeeId: string; fullName: string; rank: string; idPhotoUrl: null; isBlacklisted: false; empNumber: string; penaltyCount12m: number; penaltyAmount12m: number; lateCheckIns12m: number; shiftsPerMonth: number; maxConsecutiveMissedDays: number; deductionTotal12m: number; scores: GuardMetricScores; rating: number; }' is missing the following properties from type '{ employeeId: string; fullName: string; rank: string | null; sector: string | null; site: string | null; idPhotoUrl: string | null; isBlacklisted: boolean; }': sector, site
+app/om/roster/page.tsx(87,25): error TS2352: Conversion of type '{ id: any; shift_date: any; planned_start_time: any; planned_end_time: any; status: any; employee_id: any; employees: { emp_number: any; full_name: any; }[]; site_profiles: { site_name: any; assigned_sm_epf: any; }[]; }[]' to type 'Roster[]' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Type '{ id: any; shift_date: any; planned_start_time: any; planned_end_time: any; status: any; employee_id: any; employees: { emp_number: any; full_name: any; }[]; site_profiles: { site_name: any; assigned_sm_epf: any; }[]; }' is not comparable to type 'Roster'.
+    Types of property 'employees' are incompatible.
+      Type '{ emp_number: any; full_name: any; }[]' is missing the following properties from type '{ emp_number: string; full_name: string; }': emp_number, full_name
+app/partners/clients/[companyId]/setup/page.tsx(58,22): error TS2345: Argument of type 'readonly ["erp_staff", "public_website", "customer_menu", "security_website"]' is not assignable to parameter of type 'SetStateAction<("erp_staff" | "public_website" | "customer_menu" | "security_website")[]>'.
+  The type 'readonly ["erp_staff", "public_website", "customer_menu", "security_website"]' is 'readonly' and cannot be assigned to the mutable type '("erp_staff" | "public_website" | "customer_menu" | "security_website")[]'.
+app/partners/clients/[companyId]/setup/page.tsx(235,18): error TS18048: 'domains' is possibly 'undefined'.
+app/partners/clients/[companyId]/setup/page.tsx(242,19): error TS18048: 'domains' is possibly 'undefined'.
+app/partners/portfolio/[companyId]/page.tsx(55,22): error TS2345: Argument of type 'readonly ["saas_erp", "wfm_tool", "custom_software", "website_build"]' is not assignable to parameter of type 'SetStateAction<("saas_erp" | "wfm_tool" | "custom_software" | "website_build")[]>'.
+  The type 'readonly ["saas_erp", "wfm_tool", "custom_software", "website_build"]' is 'readonly' and cannot be assigned to the mutable type '("saas_erp" | "wfm_tool" | "custom_software" | "website_build")[]'.
+app/partners/portfolio/[companyId]/page.tsx(56,21): error TS2345: Argument of type 'readonly ["active", "churned"]' is not assignable to parameter of type 'SetStateAction<("active" | "churned")[]>'.
+  The type 'readonly ["active", "churned"]' is 'readonly' and cannot be assigned to the mutable type '("active" | "churned")[]'.
+app/partners/portfolio/page.tsx(52,20): error TS2345: Argument of type 'readonly ["saas_erp", "wfm_tool", "custom_software", "website_build"]' is not assignable to parameter of type 'SetStateAction<("saas_erp" | "wfm_tool" | "custom_software" | "website_build")[]>'.
+  The type 'readonly ["saas_erp", "wfm_tool", "custom_software", "website_build"]' is 'readonly' and cannot be assigned to the mutable type '("saas_erp" | "wfm_tool" | "custom_software" | "website_build")[]'.
+app/pearzen-website/components/PearzenWebsiteContext.tsx(5,44): error TS2307: Cannot find module '../../lib/pearzen-website-types' or its corresponding type declarations.
+app/pearzen-website/components/PearzenWebsiteEditProvider.tsx(179,15): error TS7006: Parameter 'prev' implicitly has an 'any' type.
+app/pearzen-website/components/PearzenWebsiteEditProvider.tsx(187,15): error TS7006: Parameter 'prev' implicitly has an 'any' type.
+app/pearzen-website/components/PearzenWebsiteEditProvider.tsx(189,30): error TS7006: Parameter 'stat' implicitly has an 'any' type.
+app/pearzen-website/components/PearzenWebsiteEditProvider.tsx(189,36): error TS7006: Parameter 'i' implicitly has an 'any' type.
+app/pearzen-website/components/PearzenWebsiteEditProvider.tsx(194,15): error TS7006: Parameter 'prev' implicitly has an 'any' type.
+app/pearzen-website/components/PearzenWebsiteEditProvider.tsx(196,36): error TS7006: Parameter 'item' implicitly has an 'any' type.
+app/pearzen-website/components/PearzenWebsiteEditProvider.tsx(196,42): error TS7006: Parameter 'i' implicitly has an 'any' type.
+app/pearzen-website/components/PearzenWebsiteEditProvider.tsx(203,15): error TS7006: Parameter 'prev' implicitly has an 'any' type.
+app/pearzen-website/components/PearzenWebsiteEditProvider.tsx(205,40): error TS7006: Parameter 'item' implicitly has an 'any' type.
+app/pearzen-website/components/PearzenWebsiteEditProvider.tsx(205,46): error TS7006: Parameter 'i' implicitly has an 'any' type.
+app/pearzen-website/components/PearzenWebsiteEditProvider.tsx(212,15): error TS7006: Parameter 'prev' implicitly has an 'any' type.
+app/pearzen-website/components/PearzenWebsiteEditProvider.tsx(214,50): error TS7006: Parameter 'bullet' implicitly has an 'any' type.
+app/pearzen-website/components/PearzenWebsiteEditProvider.tsx(214,58): error TS7006: Parameter 'i' implicitly has an 'any' type.
+app/pearzen-website/PearzenWebsiteHome.tsx(64,40): error TS7006: Parameter 'item' implicitly has an 'any' type.
+app/pearzen-website/PearzenWebsiteHome.tsx(64,46): error TS7006: Parameter 'index' implicitly has an 'any' type.
+app/security-website/actions.ts(154,17): error TS2339: Property 'email' does not exist on type '{ id: string; }'.
+app/security-website/actions.ts(257,73): error TS2339: Property 'email' does not exist on type '{ id: string; }'.
+app/settings/public-website/actions.ts(54,66): error TS2339: Property 'email' does not exist on type 'BackOfficeUserProfile'.
+app/shalom-front/actions.ts(133,25): error TS2552: Cannot find name 'isShalomPortalOtpActive'. Did you mean 'isShalomPortalOtpValid'?
+components/ar-invoicing/ArInvoicingLedger.tsx(3479,9): error TS2322: Type 'ClientRecord[]' is not assignable to type 'ArLedgerClientRecord[]'.
+  Type 'ClientRecord' is not assignable to type 'ArLedgerClientRecord'.
+    Types of property 'invoices' are incompatible.
+      Type 'Partial<Record<string, InvoiceCell>>' is not assignable to type 'Record<string, ArInvoiceCell>'.
+        'string' index signatures are incompatible.
+          Type 'InvoiceCell | undefined' is not assignable to type 'ArInvoiceCell'.
+            Type 'undefined' is not assignable to type 'ArInvoiceCell'.
+components/ar-invoicing/ArInvoicingLedger.tsx(3690,15): error TS2322: Type '"Desk" | ArAuditActor' is not assignable to type 'ArAuditActor'.
+  Type '"Desk"' is not assignable to type 'ArAuditActor'.
+components/ar-invoicing/ArInvoicingLedger.tsx(3721,15): error TS2322: Type '"Checker"' is not assignable to type 'ArAuditActor'.
+components/ar-invoicing/ArInvoicingLedger.tsx(3750,15): error TS2322: Type '"Checker"' is not assignable to type 'ArAuditActor'.
+components/ar-invoicing/ArInvoicingLedger.tsx(3786,15): error TS2322: Type '"Checker"' is not assignable to type 'ArAuditActor'.
+components/ar-invoicing/ArInvoicingLedger.tsx(3861,15): error TS2322: Type '"Checker"' is not assignable to type 'ArAuditActor'.
+components/audit/AuditLedgerView.tsx(199,11): error TS2304: Cannot find name 'Home'.
+components/audit/AuditLedgerView.tsx(256,38): error TS2339: Property 'forbidden' does not exist on type 'FetchAuditLogsResult'.
+  Property 'forbidden' does not exist on type '{ success: true; data: AuditRow[]; }'.
+components/bulk-editor/BulkEditorGrid.tsx(133,32): error TS2339: Property 'key' does not exist on type 'ColumnOrColumnGroup<BulkEditorRow, unknown>'.
+  Property 'key' does not exist on type 'ColumnGroup<BulkEditorRow, unknown>'.
+components/cafe-front/CafeFrontSchedulePreview.tsx(98,10): error TS2304: Cannot find name 'getCafeFrontRollingSchedule'.
+components/cafe-front/CafeFrontSchedulePreview.tsx(98,46): error TS7006: Parameter 'payload' implicitly has an 'any' type.
+components/geofence/GeofenceGoogleMap.tsx(207,5): error TS2353: Object literal may only specify known properties, and 'subdomains' does not exist in type 'TileLayerOptions'.
+components/hq/HqLayoutShell.tsx(19,8): error TS2559: Type '{ children: Element; }' has no properties in common with type 'IntrinsicAttributes'.
+components/hq/HqLayoutShell.tsx(26,6): error TS2559: Type '{ children: Element; }' has no properties in common with type 'IntrinsicAttributes'.
+components/hr/ExecutiveRecoveryEmailMnrField.tsx(28,22): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'SetStateAction<string | null>'.
+  Type 'undefined' is not assignable to type 'SetStateAction<string | null>'.
+components/portal/ExecutiveRecoveryEmailCard.tsx(67,20): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'SetStateAction<string | null>'.
+  Type 'undefined' is not assignable to type 'SetStateAction<string | null>'.
+components/portal/ExecutiveRecoveryEmailCard.tsx(129,18): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'SetStateAction<string | null>'.
+  Type 'undefined' is not assignable to type 'SetStateAction<string | null>'.
+components/portal/ExecutiveRecoveryEmailCard.tsx(146,18): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'SetStateAction<string | null>'.
+  Type 'undefined' is not assignable to type 'SetStateAction<string | null>'.
+components/portal/ExecutiveWorkEmailCard.tsx(44,20): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'SetStateAction<string | null>'.
+  Type 'undefined' is not assignable to type 'SetStateAction<string | null>'.
+components/portal/ExecutiveWorkEmailCard.tsx(83,18): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'SetStateAction<string | null>'.
+  Type 'undefined' is not assignable to type 'SetStateAction<string | null>'.
+components/portal/ExecutiveWorkEmailCard.tsx(101,18): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'SetStateAction<string | null>'.
+  Type 'undefined' is not assignable to type 'SetStateAction<string | null>'.
+components/portal/PartnerPortalChrome.tsx(51,21): error TS2339: Property 'badge' does not exist on type '{ href: string; label: string; }'.
+components/portal/PartnerPortalChrome.tsx(53,25): error TS2339: Property 'badge' does not exist on type '{ href: string; label: string; }'.
+components/portal/StaffProfileMenu.tsx(145,17): error TS2304: Cannot find name 'changePasswordHref'.
+components/shalom-front/ShalomFrontCalendar.tsx(428,26): error TS2345: Argument of type '(photos: Record<string, { previewUrl: string; photoUrl: string; }>) => { [x: string]: { previewUrl: string; photoUrl: string; } | { previewUrl: string; photoUrl: string | undefined; }; }' is not assignable to parameter of type 'SetStateAction<Record<string, { previewUrl: string; photoUrl: string; }>>'.
+  Type '(photos: Record<string, { previewUrl: string; photoUrl: string; }>) => { [x: string]: { previewUrl: string; photoUrl: string; } | { previewUrl: string; photoUrl: string | undefined; }; }' is not assignable to type '(prevState: Record<string, { previewUrl: string; photoUrl: string; }>) => Record<string, { previewUrl: string; photoUrl: string; }>'.
+    Type '{ [x: string]: { previewUrl: string; photoUrl: string; } | { previewUrl: string; photoUrl: string | undefined; }; }' is not assignable to type 'Record<string, { previewUrl: string; photoUrl: string; }>'.
+      'string' index signatures are incompatible.
+        Type '{ previewUrl: string; photoUrl: string; } | { previewUrl: string; photoUrl: string | undefined; }' is not assignable to type '{ previewUrl: string; photoUrl: string; }'.
+          Type '{ previewUrl: string; photoUrl: string | undefined; }' is not assignable to type '{ previewUrl: string; photoUrl: string; }'.
+            Types of property 'photoUrl' are incompatible.
+              Type 'string | undefined' is not assignable to type 'string'.
+                Type 'undefined' is not assignable to type 'string'.
+components/shalom-front/ShalomFrontCalendar.tsx(1167,85): error TS2345: Argument of type 'ShalomCalendarBooking[]' is not assignable to parameter of type 'SetStateAction<ShalomFrontCalendarBooking[]>'.
+  Type 'ShalomCalendarBooking[]' is not assignable to type 'ShalomFrontCalendarBooking[]'.
+    Type 'ShalomCalendarBooking' is missing the following properties from type 'ShalomFrontCalendarBooking': damages, guestIdDocumentUrl, invoiceEmail, invoiceSentAt, and 3 more.
+components/shalom-public/ShalomPropertyCard.tsx(16,68): error TS2339: Property 'publicUrl' does not exist on type 'ShalomPublicPropertyPhoto'.
+components/shalom-public/ShalomPropertyCard.tsx(17,24): error TS2339: Property 'publicUrl' does not exist on type 'ShalomPublicPropertyPhoto'.
+components/shalom-public/ShalomPublicHomeHero.tsx(27,13): error TS2322: Type '{}' is not assignable to type 'string | StaticImport'.
+lib/ar-invoicing/collection-math.ts(88,41): error TS2339: Property 'length' does not exist on type '{}'.
+lib/ar-invoicing/collection-math.ts(88,76): error TS2339: Property 'length' does not exist on type '{}'.
+lib/ar-invoicing/collection-math.ts(93,9): error TS2862: Type 'T["invoices"]' is generic and can only be indexed for reading.
+lib/ar-invoicing/collection-math.ts(108,41): error TS2339: Property 'length' does not exist on type '{}'.
+lib/ar-invoicing/collection-math.ts(108,76): error TS2339: Property 'length' does not exist on type '{}'.
+lib/ar-invoicing/finance-revenue-math.ts(60,45): error TS2345: Argument of type 'ArInvoiceCell' is not assignable to parameter of type 'Pick<ArCollectionCell, "clientDeductions">'.
+  Types of property 'clientDeductions' are incompatible.
+    Type 'unknown[] | undefined' is not assignable to type 'ArClientDeduction[] | undefined'.
+      Type 'unknown[]' is not assignable to type 'ArClientDeduction[]'.
+        Type 'unknown' is not assignable to type 'ArClientDeduction'.
+lib/ar-invoicing/finance-revenue.ts(151,3): error TS2322: Type 'ArCollectionClientRecord[]' is not assignable to type 'ArLedgerClientRecord[]'.
+  Type 'ArCollectionClientRecord' is not assignable to type 'ArLedgerClientRecord'.
+    Types of property 'invoices' are incompatible.
+      Type 'Record<string, ArCollectionCell & Record<string, unknown>>' is not assignable to type 'Record<string, ArInvoiceCell>'.
+        'string' index signatures are incompatible.
+          Type 'ArCollectionCell & Record<string, unknown>' is missing the following properties from type 'ArInvoiceCell': invoiceNo, rankLines, patrols
+lib/ar-invoicing/finance-revenue.ts(151,55): error TS2345: Argument of type 'ArLedgerClientRecord[]' is not assignable to parameter of type 'ArCollectionClientRecord[]'.
+  Type 'ArLedgerClientRecord' is not assignable to type 'ArCollectionClientRecord'.
+    Types of property 'invoices' are incompatible.
+      Type 'Record<string, ArInvoiceCell>' is not assignable to type 'Record<string, ArCollectionCell & Record<string, unknown>>'.
+        'string' index signatures are incompatible.
+          Type 'ArInvoiceCell' is not assignable to type 'ArCollectionCell & Record<string, unknown>'.
+            Type 'ArInvoiceCell' is not assignable to type 'ArCollectionCell'.
+              Types of property 'creditNotes' are incompatible.
+                Type 'unknown[] | undefined' is not assignable to type 'ArCreditNote[] | undefined'.
+                  Type 'unknown[]' is not assignable to type 'ArCreditNote[]'.
+                    Type 'unknown' is not assignable to type 'ArCreditNote'.
+lib/ar-invoicing/guard-roster.ts(1,15): error TS2724: '"../guard-site-pay"' has no exported member named 'ArRankKey'. Did you mean 'GuardRankKey'?
+lib/ar-invoicing/live-ledger.ts(203,53): error TS2345: Argument of type 'ArInvoiceCell' is not assignable to parameter of type 'ArCellForTotal'.
+  Type 'ArInvoiceCell' is not assignable to type 'Pick<ArCollectionCell, "totalAmount" | "clientDeductions">'.
+    Types of property 'clientDeductions' are incompatible.
+      Type 'unknown[] | undefined' is not assignable to type 'ArClientDeduction[] | undefined'.
+        Type 'unknown[]' is not assignable to type 'ArClientDeduction[]'.
+          Type 'unknown' is not assignable to type 'ArClientDeduction'.
+lib/ar-invoicing/live-ledger.ts(208,51): error TS2345: Argument of type 'ArInvoiceCell' is not assignable to parameter of type 'ArCellForTotal'.
+  Type 'ArInvoiceCell' is not assignable to type 'Pick<ArCollectionCell, "totalAmount" | "clientDeductions">'.
+    Types of property 'clientDeductions' are incompatible.
+      Type 'unknown[] | undefined' is not assignable to type 'ArClientDeduction[] | undefined'.
+        Type 'unknown[]' is not assignable to type 'ArClientDeduction[]'.
+          Type 'unknown' is not assignable to type 'ArClientDeduction'.
+lib/ar-invoicing/live-ledger.ts(518,52): error TS2345: Argument of type '{ clientDeductions?: ArClientDeduction[] | undefined; rankLines: ArRankShiftLine[]; patrols: ArPatrolVisit[]; }' is not assignable to parameter of type 'ArCellForTotal'.
+  Property 'totalAmount' is missing in type '{ clientDeductions?: ArClientDeduction[] | undefined; rankLines: ArRankShiftLine[]; patrols: ArPatrolVisit[]; }' but required in type 'Pick<ArCollectionCell, "totalAmount" | "clientDeductions">'.
+lib/ar-invoicing/live-ledger.ts(551,3): error TS2322: Type 'ArCollectionClientRecord[]' is not assignable to type 'ArLedgerClientRecord[]'.
+  Type 'ArCollectionClientRecord' is not assignable to type 'ArLedgerClientRecord'.
+    Types of property 'invoices' are incompatible.
+      Type 'Record<string, ArCollectionCell & Record<string, unknown>>' is not assignable to type 'Record<string, ArInvoiceCell>'.
+        'string' index signatures are incompatible.
+          Type 'ArCollectionCell & Record<string, unknown>' is missing the following properties from type 'ArInvoiceCell': invoiceNo, rankLines, patrols
+lib/ar-invoicing/live-ledger.ts(551,39): error TS2345: Argument of type 'ArLedgerClientRecord[]' is not assignable to parameter of type 'ArCollectionClientRecord[]'.
+  Type 'ArLedgerClientRecord' is not assignable to type 'ArCollectionClientRecord'.
+    Types of property 'invoices' are incompatible.
+      Type 'Record<string, ArInvoiceCell>' is not assignable to type 'Record<string, ArCollectionCell & Record<string, unknown>>'.
+        'string' index signatures are incompatible.
+          Type 'ArInvoiceCell' is not assignable to type 'ArCollectionCell & Record<string, unknown>'.
+            Type 'ArInvoiceCell' is not assignable to type 'ArCollectionCell'.
+              Types of property 'creditNotes' are incompatible.
+                Type 'unknown[] | undefined' is not assignable to type 'ArCreditNote[] | undefined'.
+                  Type 'unknown[]' is not assignable to type 'ArCreditNote[]'.
+                    Type 'unknown' is not assignable to type 'ArCreditNote'.
+lib/ar-invoicing/tax-invoice-allocator.ts(183,12): error TS2322: Type 'TaxInvoiceClient<ArInvoiceCell>[]' is not assignable to type 'ArLedgerClientRecord[]'.
+  Type 'TaxInvoiceClient<ArInvoiceCell>' is missing the following properties from type 'ArLedgerClientRecord': clientName, sector
+lib/bulk-data-import.ts(517,59): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'string | null | undefined'.
+lib/bulk-data-import.ts(1520,46): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'string | null | undefined'.
+lib/bulk-data-import.ts(1523,48): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'string | null | undefined'.
+lib/bulk-editor-cafe-grid.ts(58,7): error TS2741: Property '[MIGRATION_EMPLOYEE_CORPORATE_GROUP_COLUMN]' is missing in type 'BulkEditorRow' but required in type '{ corporate_group: "CAFE"; _rowId: BulkEditorRowId; }'.
+lib/bulk-editor-dropdown-columns.ts(135,3): error TS4104: The type 'readonly string[]' is 'readonly' and cannot be assigned to the mutable type 'string[]'.
+lib/bulk-editor-row-clipboard.ts(42,15): error TS2552: Cannot find name 'BulkEditorPasteInput'. Did you mean 'BulkEditorPasteResult'?
+lib/bulk-roster-web-editor-export.ts(155,5): error TS2345: Argument of type '"SM"' is not assignable to parameter of type '"HEAD_OFFICE"'.
+lib/bulk-roster-web-editor-export.ts(158,93): error TS2345: Argument of type '"CAFE"' is not assignable to parameter of type '"HEAD_OFFICE"'.
+lib/bulk-roster-web-editor-export.ts(159,95): error TS2345: Argument of type '"GUARD"' is not assignable to parameter of type '"HEAD_OFFICE"'.
+lib/bulk-roster-web-editor-snapshot.ts(71,33): error TS2322: Type 'unknown' is not assignable to type 'string | null | undefined'.
+lib/bulk-roster-web-editor-snapshot.ts(71,51): error TS2322: Type 'unknown' is not assignable to type 'string | null | undefined'.
+lib/cafe-front-auth.ts(82,7): error TS2589: Type instantiation is excessively deep and possibly infinite.
+lib/cafe-front-checkin.ts(129,26): error TS2554: Expected 2 arguments, but got 1.
+lib/cafe-front-checkin.ts(149,26): error TS2554: Expected 2 arguments, but got 1.
+lib/cvs-regression-export.ts(124,52): error TS2345: Argument of type '{ epfEmployeeRate: number; epfEmployerRate: number; etfRate: number; apitSlabs: { min: number; max: number; rate: number; }[]; stampDutyLkr: number; stampDutyThresholdLkr: number; }' is not assignable to parameter of type 'PayrollStatutoryRates'.
+  Types of property 'apitSlabs' are incompatible.
+    Type '{ min: number; max: number; rate: number; }[]' is not assignable to type 'ApitSlab[]'.
+      Property 'id' is missing in type '{ min: number; max: number; rate: number; }' but required in type 'ApitSlab'.
+lib/cvs-regression-export.ts(236,58): error TS2345: Argument of type '{ epfEmployeeRate: number; epfEmployerRate: number; etfRate: number; apitSlabs: { min: number; max: number; rate: number; }[]; stampDutyLkr: number; stampDutyThresholdLkr: number; }' is not assignable to parameter of type 'PayrollStatutoryRates'.
+  Types of property 'apitSlabs' are incompatible.
+    Type '{ min: number; max: number; rate: number; }[]' is not assignable to type 'ApitSlab[]'.
+      Property 'id' is missing in type '{ min: number; max: number; rate: number; }' but required in type 'ApitSlab'.
+lib/employee-pii.ts(73,7): error TS2862: Type 'T' is generic and can only be indexed for reading.
+lib/employee-pii.ts(76,5): error TS2862: Type 'T' is generic and can only be indexed for reading.
+lib/employee-pii.ts(85,5): error TS2862: Type 'T' is generic and can only be indexed for reading.
+lib/executive-portal-server-gate.ts(73,62): error TS2345: Argument of type 'User | null' is not assignable to parameter of type 'User'.
+  Type 'null' is not assignable to type 'User'.
+lib/executive-portal-server-gate.ts(77,5): error TS18047: 'user' is possibly 'null'.
+lib/executive-portal-server-gate.ts(77,5): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+lib/executive-portal-server-gate.ts(78,5): error TS18047: 'user' is possibly 'null'.
+lib/head-office-mfa-actions.ts(78,34): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+lib/master-hub-actions.ts(66,38): error TS2345: Argument of type '(companyId: string | null) => Promise<number>' is not assignable to parameter of type '(companyId: string | null) => Promise<unknown[]>'.
+  Type 'Promise<number>' is not assignable to type 'Promise<unknown[]>'.
+    Type 'number' is not assignable to type 'unknown[]'.
+lib/master-hub-actions.ts(93,7): error TS2365: Operator '>' cannot be applied to types 'unknown[]' and 'number'.
+lib/master-hub-actions.ts(94,64): error TS2367: This comparison appears to be unintentional because the types 'unknown[]' and 'number' have no overlap.
+lib/mnr-operational-buckets.ts(149,36): error TS7006: Parameter 'emp' implicitly has an 'any' type.
+lib/partner-assist-server.ts(44,11): error TS2339: Property 'supabase' does not exist on type '{ partner: ForgeServicePartner; companyId: string; }'.
+lib/pears-website-client-auth.ts(70,21): error TS2352: Conversion of type '{ id: any; name: any; slug: any; }[]' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Index signature for type 'string' is missing in type '{ id: any; name: any; slug: any; }[]'.
+lib/pears-website-client-auth.ts(107,21): error TS2352: Conversion of type '{ id: any; name: any; slug: any; }[]' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Index signature for type 'string' is missing in type '{ id: any; name: any; slug: any; }[]'.
+lib/pearzen-website-types.ts(204,16): error TS2352: Conversion of type 'T' to type 'PearzenWebsiteCard' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Type 'Record<string, string>' is missing the following properties from type 'PearzenWebsiteCard': title, description
+lib/pearzen-website-types.ts(206,8): error TS2352: Conversion of type 'T' to type 'PearzenWebsiteCard' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Type 'Record<string, string>' is missing the following properties from type 'PearzenWebsiteCard': title, description
+lib/pearzen-website-types.ts(320,5): error TS2322: Type 'Record<string, string>[]' is not assignable to type 'PearzenWebsiteCard[]'.
+  Type 'Record<string, string>' is missing the following properties from type 'PearzenWebsiteCard': title, description
+lib/pearzen-website-types.ts(322,7): error TS2345: Argument of type 'PearzenWebsiteCard[]' is not assignable to parameter of type 'Record<string, string>[]'.
+  Type 'PearzenWebsiteCard' is not assignable to type 'Record<string, string>'.
+    Property 'external' is incompatible with index signature.
+      Type 'boolean' is not assignable to type 'string'.
+lib/pearzen-website-types.ts(327,5): error TS2322: Type 'Record<string, string>[]' is not assignable to type 'PearzenWebsiteCard[]'.
+  Type 'Record<string, string>' is missing the following properties from type 'PearzenWebsiteCard': title, description
+lib/pearzen-website-types.ts(329,7): error TS2345: Argument of type 'PearzenWebsiteCard[]' is not assignable to parameter of type 'Record<string, string>[]'.
+  Type 'PearzenWebsiteCard' is not assignable to type 'Record<string, string>'.
+    Property 'external' is incompatible with index signature.
+      Type 'boolean' is not assignable to type 'string'.
+lib/sector-role-assignment-spec.ts(261,5): error TS2352: Conversion of type '{ [k: string]: never[]; }' to type 'Record<"OM" | "TM" | "HR" | "FM" | "EA" | "AD", SectorRoleAssignmentCandidate[]>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Type '{ [k: string]: never[]; }' is missing the following properties from type 'Record<"OM" | "TM" | "HR" | "FM" | "EA" | "AD", SectorRoleAssignmentCandidate[]>': OM, TM, HR, FM, and 2 more.
+lib/security-website-types.ts(738,55): error TS2345: Argument of type 'string | null' is not assignable to parameter of type 'string'.
+  Type 'null' is not assignable to type 'string'.
+lib/security-website-types.ts(759,55): error TS2345: Argument of type 'string | null' is not assignable to parameter of type 'string'.
+  Type 'null' is not assignable to type 'string'.
+lib/security-website-types.ts(769,57): error TS2345: Argument of type 'string | null' is not assignable to parameter of type 'string'.
+  Type 'null' is not assignable to type 'string'.
+lib/security-website-types.ts(772,7): error TS2345: Argument of type 'string | null' is not assignable to parameter of type 'string'.
+  Type 'null' is not assignable to type 'string'.
+lib/security-website-types.ts(776,7): error TS2345: Argument of type 'string | null' is not assignable to parameter of type 'string'.
+  Type 'null' is not assignable to type 'string'.
+lib/shalom-public-direct-booking.ts(185,68): error TS2345: Argument of type '{ rpc: (args: Record<string, unknown>) => Promise<{ data: string | null; error: { message: string; } | null; }>; fetchListing?: ((slug: string, companyId?: string | undefined) => Promise<...>) | undefined; now?: Date | undefined; }' is not assignable to parameter of type '{ fetchListing: (slug: string, companyId?: string | undefined) => Promise<{ listing: ShalomPublicListingView; bookings: ShalomAvailabilityBooking[]; } | null>; now?: Date | undefined; }'.
+  Types of property 'fetchListing' are incompatible.
+    Type '((slug: string, companyId?: string | undefined) => Promise<{ listing: ShalomPublicListingView; bookings: ShalomAvailabilityBooking[]; } | null>) | undefined' is not assignable to type '(slug: string, companyId?: string | undefined) => Promise<{ listing: ShalomPublicListingView; bookings: ShalomAvailabilityBooking[]; } | null>'.
+      Type 'undefined' is not assignable to type '(slug: string, companyId?: string | undefined) => Promise<{ listing: ShalomPublicListingView; bookings: ShalomAvailabilityBooking[]; } | null>'.
+lib/shalom-public-direct-booking.ts(190,11): error TS2339: Property 'prepared' does not exist on type '{ ok: true; booking: ShalomDirectBookingCreated; } | { ok: true; prepared: PreparedDirectBooking; bookings: ShalomAvailabilityBooking[]; }'.
+lib/shalom-public-direct-booking.ts(250,11): error TS2339: Property 'prepared' does not exist on type '{ ok: true; booking: ShalomDirectBookingCreated; } | { ok: true; prepared: PreparedDirectBooking; bookings: ShalomAvailabilityBooking[]; }'.
+lib/shalom-public-listings.ts(106,3): error TS2322: Type 'ShalomPublicListingView' is not assignable to type 'ShalomPublicPropertyCatalogItem | null'.
+  Type 'ShalomPublicListingView' is not assignable to type 'ShalomPublicPropertyCatalogItem'.
+    Type 'ShalomPublicListingView' is missing the following properties from type '{ bookable: boolean; publishedOnWebsite: boolean; setupHint: string | null; }': bookable, publishedOnWebsite, setupHint
+lib/shalom-public-listings.ts(112,5): error TS2353: Object literal may only specify known properties, and 'bookable' does not exist in type 'ShalomPublicListing'.
+lib/sm-portal-access-server.ts(62,33): error TS2322: Type 'SectorManagerEmployeeRecord' is not assignable to type 'ActiveSectorManagerRow'.
+  Types of property 'emp_number' are incompatible.
+    Type 'string | null | undefined' is not assignable to type 'string | null'.
+      Type 'undefined' is not assignable to type 'string | null'.
+lib/tenant-host.ts(89,5): error TS2353: Object literal may only specify known properties, and 'httpOnly' does not exist in type '{ path?: string | undefined; sameSite?: "lax" | "strict" | "none" | undefined; maxAge?: number | undefined; }'.
+lib/tenant-host.ts(107,5): error TS2353: Object literal may only specify known properties, and 'httpOnly' does not exist in type '{ path?: string | undefined; sameSite?: "lax" | "strict" | "none" | undefined; maxAge?: number | undefined; }'.
+../../packages/rank-pay-matrix/index.ts(208,34): error TS2345: Argument of type '{ id: string; rankCode: string; fullTitle: string; basicPay: number; annualIncrement: number; salaryType: string; operationalGroup: OperationalGroup; }[]' is not assignable to parameter of type 'RankPayEntry[]'.
+  Type '{ id: string; rankCode: string; fullTitle: string; basicPay: number; annualIncrement: number; salaryType: string; operationalGroup: OperationalGroup; }' is not assignable to type 'RankPayEntry'.
+    Types of property 'salaryType' are incompatible.
+      Type 'string' is not assignable to type 'RankSalaryType'.
+npm error Lifecycle script `typecheck` failed with error:
+npm error code 2
+npm error path /Users/shauv/pearzen-erp-v3.1/apps/back-office
+npm error workspace pearzen-erp-back-office@0.0.0
+npm error location /Users/shauv/pearzen-erp-v3.1/apps/back-office
+npm error command failed
+npm error command sh -c tsc -p tsconfig.json

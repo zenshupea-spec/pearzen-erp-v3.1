@@ -3,7 +3,7 @@
 import { Suspense } from 'react';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { MapPin, ShieldCheck, Shirt, Trophy } from 'lucide-react';
+import { Ban, MapPin, Navigation, ShieldCheck, Shirt, Trophy, UserCircle2, Users } from 'lucide-react';
 import {
   tmCommandCenterHref,
   tmTabFromSearchParam,
@@ -16,10 +16,17 @@ const COMMAND_CENTER_TABS: {
   icon: typeof ShieldCheck;
 }[] = [
   { key: 'shift-verification', label: 'Shift verification', icon: ShieldCheck },
+  { key: 'territory', label: 'Territory oversight', icon: Users },
   { key: 'guard-cards', label: 'Guard cards', icon: Trophy },
 ];
 
 const FIELD_TOOL_LINKS = [
+  {
+    href: '/om/sites/location',
+    label: 'Site GPS',
+    icon: MapPin,
+    match: (p: string) => p.startsWith('/om/sites/location'),
+  },
   {
     href: '/tm/uniform',
     label: 'Uniform issue',
@@ -27,10 +34,22 @@ const FIELD_TOOL_LINKS = [
     match: (p: string) => p.startsWith('/tm/uniform'),
   },
   {
-    href: '/om/sites/location',
-    label: 'Site GPS',
-    icon: MapPin,
-    match: (p: string) => p.startsWith('/om/sites/location'),
+    href: '/tm/mnr-photos',
+    label: 'MNR photos',
+    icon: UserCircle2,
+    match: (p: string) => p.startsWith('/tm/mnr-photos'),
+  },
+  {
+    href: '/tm/site-gps',
+    label: 'GPS queue',
+    icon: Navigation,
+    match: (p: string) => p.startsWith('/tm/site-gps'),
+  },
+  {
+    href: '/om/guard-cards/blacklisted',
+    label: 'Blacklisted',
+    icon: Ban,
+    match: (p: string) => p.startsWith('/om/guard-cards/blacklisted'),
   },
 ] as const;
 

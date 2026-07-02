@@ -1,7 +1,14 @@
 'use server';
 
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
+import { resolveAuthUserCompanyId } from '../../../../packages/supabase/auth-tenant-metadata';
 import { revalidatePath } from 'next/cache';
+import {
+  isOmSectorScopeEmpty,
+  omScopeIncludesGuardEmployeeId,
+  omScopeIncludesSite,
+  resolveOmSectorScopeForSession,
+} from '../../lib/om-sector-scope';
 
 export interface CreateRosterParams {
   employee_id: string;
@@ -19,11 +26,46 @@ export async function createRoster(params: CreateRosterParams) {
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     if (authError || !user) throw new Error('Unauthorized');
     
-    let companyId = user.user_metadata?.company_id;
+    let companyId = resolveAuthUserCompanyId(user);
+    if (!companyId && user.email) {
+      const { data: emp } = await supabase
+        .from('employees')
+        .select('company_id')
+        .eq('email', user.email)
+        .maybeSingle();
+      if (emp?.company_id) companyId = emp.company_id as string;
+    }
     if (!companyId) {
-      const { data: fallbackData } = await supabase.from('employees').select('company_id').limit(1).single();
-      if (fallbackData?.company_id) companyId = fallbackData.company_id;
-      else throw new Error('Database is empty. Cannot attach Company ID.');
+      throw new Error('Could not resolve tenant company for this session.');
+    }
+
+    const omScope = await resolveOmSectorScopeForSession();
+    if (omScope !== null) {
+      if (isOmSectorScopeEmpty(omScope)) {
+        throw new Error('No assigned sectors — cannot create roster assignments.');
+      }
+
+      const { data: guard } = await supabase
+        .from('employees')
+        .select('id, site')
+        .eq('id', params.employee_id)
+        .eq('company_id', companyId)
+        .maybeSingle();
+
+      const { data: site } = await supabase
+        .from('site_profiles')
+        .select('id, site_name, assigned_sm_epf')
+        .eq('id', params.site_id)
+        .maybeSingle();
+
+      if (
+        !guard ||
+        !omScopeIncludesGuardEmployeeId(omScope, guard.id) ||
+        !site ||
+        !omScopeIncludesSite(omScope, site)
+      ) {
+        throw new Error('This guard or site is outside your assigned sectors.');
+      }
     }
 
     // 🚨 2. TEMPORAL OVERLAP CHECK: Prevent Double-Booking 🚨
@@ -83,6 +125,9 @@ export async function createRoster(params: CreateRosterParams) {
 export async function getLiveRosters() {
   try {
     const supabase = await createSupabaseServerClient();
+    const omScope = await resolveOmSectorScopeForSession();
+    if (omScope !== null && isOmSectorScopeEmpty(omScope)) return [];
+
     const { data, error } = await supabase
       .from('time_rosters')
       .select(`
@@ -91,14 +136,28 @@ export async function getLiveRosters() {
         planned_start_time,
         planned_end_time,
         status,
+        employee_id,
         employees ( emp_number, full_name ),
-        site_profiles ( site_name )
+        site_profiles ( site_name, assigned_sm_epf )
       `)
       .order('shift_date', { ascending: false })
       .limit(50); 
 
     if (error) throw error;
-    return data || [];
+
+    const rows = data ?? [];
+    if (omScope === null) return rows;
+
+    return rows.filter((row) => {
+      const guardId = String(row.employee_id ?? '');
+      if (guardId && omScopeIncludesGuardEmployeeId(omScope, guardId)) return true;
+      const siteProfiles = row.site_profiles as
+        | { site_name?: string; assigned_sm_epf?: string | null }
+        | { site_name?: string; assigned_sm_epf?: string | null }[]
+        | null;
+      const site = Array.isArray(siteProfiles) ? siteProfiles[0] : siteProfiles;
+      return site ? omScopeIncludesSite(omScope, site) : false;
+    });
   } catch (error: any) {
     console.error('❌ SUPABASE ERROR (getLiveRosters):', error.message);
     return [];

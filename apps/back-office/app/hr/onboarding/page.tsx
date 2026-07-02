@@ -1,37 +1,18 @@
 import Link from 'next/link';
-import { cookies } from 'next/headers';
-import { revalidatePath } from 'next/cache';
-import { redirect } from 'next/navigation';
 
 import {
-  findRankPayEntry,
-  isRankValidForCorporateGroup,
-} from '../../../../../packages/rank-pay-matrix';
-import { createSupabaseServerClient, createSupabaseServiceClient } from '../../../../../packages/supabase/server';
-import { resolveCompanyIdForSession } from '../../../lib/company-context-server';
-import { uploadCompressedEmployeeHrDocumentsFromForm } from '../../../lib/hr-document-upload';
-import {
-  assertCanAssignRank,
-  canManageExecutiveAccess,
-} from '../../../lib/executive-rank-guard';
-import {
-  assertHrPortalEditor,
   fetchBackOfficeUserProfile,
 } from '../../../lib/hr-portal-access-server';
+import { getEmployeePiiEncryptionError } from '../../../lib/employee-pii';
+import { resolveCompanyIdForSession } from '../../../lib/company-context-server';
+import { getOccupiedSingletonPortalRanks } from '../../../lib/singleton-portal-rank-guard';
+import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import { getRankPayMatrix } from '../../executive/settings/rank-matrix-actions';
-import { getOnboardingGuardSites } from '../onboarding-actions';
+import { getInternalWorkLocationsForMnr } from '../../executive/settings/internal-work-locations-actions';
+import { getHrSectorNames } from '../hr-sector-actions';
+import { getOnboardingGuardSites, onboardEmployee } from '../onboarding-actions';
 import HrHubPills from '../HrHubPills';
 import InductionForm from '../InductionForm';
-import { executeRosterMerge } from '../temp-roster/actions';
-import { provisionCafePortalAccess } from '../cafe-portal/actions';
-import { provisionSMPortalAccess } from '../sm-portal/actions';
-import { encryptEmployeePiiRecord } from '../../../lib/employee-pii';
-import {
-  assertEpfDiffersFromPrevious,
-  assertEpfNoUnique,
-  friendlyEpfSaveError,
-  normalizeEpfNo,
-} from '../../../lib/employee-epf';
 import { UserPlus, FileSignature, Home } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
@@ -46,193 +27,24 @@ export default async function HROnboardingPage({
     ? { tempId: tempEmpId.trim(), nameHint: tempNameHint?.trim() }
     : undefined;
   const rankMatrix = await getRankPayMatrix();
+  const sectorNames = await getHrSectorNames();
+  const internalWorkLocations = await getInternalWorkLocationsForMnr();
   const guardSites = await getOnboardingGuardSites();
   const db = await createSupabaseServerClient();
+  const companyId = await resolveCompanyIdForSession(db);
+  const occupiedSingletonRanks = companyId
+    ? await getOccupiedSingletonPortalRanks(companyId)
+    : [];
   const {
     data: { user },
   } = await db.auth.getUser();
   const editorProfile = user
     ? await fetchBackOfficeUserProfile(db, user)
     : { role: null, full_name: null };
-  const canManageExecutive = canManageExecutiveAccess(editorProfile.role);
-
-  async function onboardEmployee(formData: FormData) {
-    'use server';
-    const db = await createSupabaseServerClient();
-    const {
-      data: { user },
-    } = await db.auth.getUser();
-    if (!user) throw new Error('You must be signed in.');
-
-    const profile = await fetchBackOfficeUserProfile(db, user);
-    assertHrPortalEditor(profile.role);
-
-    const corporateGroup = (formData.get('corporate_group') as string)?.trim() || '';
-    const rank = ((formData.get('rank') as string) || '').trim().toUpperCase();
-    const matrix = await getRankPayMatrix();
-
-    assertCanAssignRank(profile.role, rank);
-
-    if (!corporateGroup) {
-      throw new Error('Corporate group is required.');
-    }
-    if (!isRankValidForCorporateGroup(matrix, corporateGroup, rank)) {
-      throw new Error(
-        `Rank "${rank}" is not valid for ${corporateGroup}. Define it in MD Settings → Rank Pay Matrix.`,
-      );
-    }
-
-    const rankEntry = findRankPayEntry(matrix, rank);
-    const baseFromMatrix = rankEntry?.basicPay ?? null;
-    const empNumber = ((formData.get('emp_number') as string) || '').trim().toUpperCase();
-    const companyId = await resolveCompanyIdForSession(db);
-
-    if (!companyId) {
-      throw new Error('Could not resolve company for this session. Sign in as MD, OD, or HR.');
-    }
-
-    if (corporateGroup === 'SECTOR_MANAGER' && !empNumber) {
-      throw new Error('Employee number is required for Sector Managers (SM portal login ID).');
-    }
-
-    const epfNo = normalizeEpfNo((formData.get('epf_no') as string) || '');
-    const previousEpfNo = normalizeEpfNo((formData.get('previous_epf_no') as string) || '');
-
-    assertEpfDiffersFromPrevious(epfNo, previousEpfNo);
-    try {
-      const epfDb = createSupabaseServiceClient();
-      await assertEpfNoUnique(epfDb, epfNo, { companyId });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'EPF number is already in use.';
-      throw new Error(friendlyEpfSaveError(message));
-    }
-
-    const insertData = encryptEmployeePiiRecord({
-      company_id: companyId,
-      full_name: (formData.get('full_name') as string).toUpperCase(),
-      nic: (formData.get('nic') as string).toUpperCase(),
-      passport_no: (formData.get('passport_no') as string)?.trim().toUpperCase() || null,
-      epf_no: epfNo || null,
-      previous_epf_no: previousEpfNo || null,
-      phone: formData.get('phone') as string,
-      dob: formData.get('dob') as string || null,
-      gender: formData.get('gender') as string || null,
-      nationality: (formData.get('nationality') as string).toUpperCase(),
-      religion: (formData.get('religion') as string)?.trim().toUpperCase() || null,
-      home_address: (formData.get('home_address') as string).toUpperCase(),
-      group: corporateGroup,
-      rank,
-      site:
-        corporateGroup === 'GUARD'
-          ? ((formData.get('assigned_site') as string) || null)
-          : null,
-      base_salary: formData.get('base_salary')
-        ? parseFloat(formData.get('base_salary') as string)
-        : baseFromMatrix,
-      site_allowance_lkr: formData.get('site_allowance_lkr')
-        ? Math.max(0, Math.round(parseFloat(formData.get('site_allowance_lkr') as string)))
-        : 0,
-      meal_allowance_lkr: formData.get('meal_allowance_lkr')
-        ? Math.max(0, Math.round(parseFloat(formData.get('meal_allowance_lkr') as string)))
-        : 0,
-      transport_allowance_lkr: formData.get('transport_allowance_lkr')
-        ? Math.max(0, Math.round(parseFloat(formData.get('transport_allowance_lkr') as string)))
-        : 0,
-      salary_type: formData.get('salary_type') as string,
-      bank_code: formData.get('bank_code') as string || null,
-      branch_code: formData.get('branch_code') as string || null,
-      account_number: formData.get('bank_acc') as string || null,
-      epf_yn: formData.get('epf_yn') === 'YES',
-      mod_expiry: (formData.get('mod_expiry') as string)?.trim() || null,
-      police_expiry: (formData.get('police_expiry') as string)?.trim() || null,
-      date_joined: new Date().toISOString().split('T')[0],
-      status: 'ACTIVE',
-      section_edits: {
-        personal: {
-          at: new Date().toISOString(),
-          by: 'HR Onboarding',
-        },
-      },
-      ...(empNumber ? { emp_number: empNumber } : {}),
-    });
-
-    const { data: inserted, error } = await db
-      .from('employees')
-      .insert([insertData])
-      .select('id')
-      .single();
-
-    if (error) {
-      console.error('\n[HR] SUPABASE ERROR:', error.message, '\n');
-      throw new Error(friendlyEpfSaveError(error.message));
-    }
-
-    if (inserted?.id) {
-      const docsDb = createSupabaseServiceClient();
-      await uploadCompressedEmployeeHrDocumentsFromForm(docsDb, inserted.id, formData);
-    }
-
-    const shadowTempId = ((formData.get('temp_emp_id') as string) || '').trim();
-    if (shadowTempId && inserted?.id) {
-      await executeRosterMerge(shadowTempId, inserted.id);
-      revalidatePath('/hr/temp-roster');
-    }
-
-    revalidatePath('/hr/onboarding');
-    revalidatePath('/hr/mnr');
-    if (corporateGroup === 'HEAD_OFFICE') {
-      revalidatePath('/executive/settings');
-    }
-
-    if (corporateGroup === 'SECTOR_MANAGER' && empNumber) {
-      const provision = await provisionSMPortalAccess(empNumber);
-      if (provision.error || !provision.success || !provision.otp) {
-        throw new Error(
-          provision.error ??
-            'Sector Manager was saved but SM portal access could not be provisioned. Use SM Portal Access to generate an OTP manually.',
-        );
-      }
-
-      const jar = await cookies();
-      jar.set(
-        'sm_portal_provision_flash',
-        JSON.stringify({
-          epf: provision.epf,
-          otp: provision.otp,
-          smName: provision.smName,
-        }),
-        { httpOnly: true, maxAge: 180, path: '/', sameSite: 'lax' },
-      );
-      redirect('/hr/sm-portal');
-    }
-
-    if (corporateGroup === 'CAFE' && epfNo) {
-      const provision = await provisionCafePortalAccess(epfNo);
-      if (provision.error || !provision.success || !provision.otp) {
-        throw new Error(
-          provision.error ??
-            'Café staff was saved but front office access could not be provisioned. Use Café Front Access to generate an OTP manually.',
-        );
-      }
-
-      const jar = await cookies();
-      jar.set(
-        'cafe_portal_provision_flash',
-        JSON.stringify({
-          epf: provision.epf,
-          otp: provision.otp,
-          staffName: provision.staffName,
-        }),
-        { httpOnly: true, maxAge: 180, path: '/', sameSite: 'lax' },
-      );
-      redirect('/hr/cafe-portal');
-    }
-
-    redirect('/hr/mnr');
-  }
+  const piiEncryptionError = getEmployeePiiEncryptionError();
 
   return (
-    <div className="w-full max-w-[1800px] mx-auto px-4 space-y-6">
+    <div className="w-full max-w-[1800px] mx-auto space-y-6">
 
       <header className="pt-2">
         <div className="flex items-center justify-between">
@@ -249,7 +61,7 @@ export default async function HROnboardingPage({
               </p>
             </div>
           </div>
-          <Link href="/hr" className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-600 text-xs font-bold rounded-xl hover:bg-slate-50 transition-all shadow-sm">
+          <Link href="/hr" className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-600 text-xs font-bold rounded-xl transition-all shadow-sm hover:border-[color:var(--cvs-accent-muted)] hover:bg-[var(--cvs-accent-soft)]/60 hover:text-[color:var(--cvs-accent)]">
             <Home className="w-3.5 h-3.5" /> HR Desk
           </Link>
         </div>
@@ -268,6 +80,12 @@ export default async function HROnboardingPage({
           </p>
         </div>
       )}
+
+      {piiEncryptionError ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm font-semibold text-rose-900">
+          Onboarding is blocked until PII encryption is configured: {piiEncryptionError}
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-12 gap-6 items-start">
         <section className="col-span-12 bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
@@ -292,9 +110,12 @@ export default async function HROnboardingPage({
             action={onboardEmployee}
             rankMatrix={rankMatrix}
             guardSites={guardSites}
+            internalWorkLocations={internalWorkLocations}
+            sectorNames={sectorNames}
+            occupiedSingletonRanks={occupiedSingletonRanks}
             editorRole={editorProfile.role}
-            canManageExecutive={canManageExecutive}
             mergeContext={mergeContext}
+            disabled={Boolean(piiEncryptionError)}
           />
         </section>
       </div>

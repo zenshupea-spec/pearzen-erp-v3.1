@@ -9,10 +9,27 @@ import {
   rosterCompanyId,
 } from '../../../lib/company-context-server';
 import { currentPeriodMonth, normalizePeriodMonth } from './period-month';
+import {
+  buildCafeStaffPeriodUpsert,
+  cafePeriodMonthFromWorkDate,
+  cafeWorkDateFromCheckin,
+  countCafeWorkedDays,
+  sumCafeOtFromDayLogs,
+} from '../../../lib/cafe-checkin-payroll-sync';
+import { resolveMaxCafeOtForWorkDay, syncCafeOtDayLogFromCheckin } from './cafe-ot-sync';
 import { auditStaffAction } from '../../../lib/staff-audit';
-import { calcLoggedWastageCostLkr, calcPayrollCostLkr } from './cafe-cost-utils';
+import { calcLoggedWastageCostLkr } from './cafe-cost-utils';
+import {
+  calcCafePayrollCostLkr,
+  cafePayrollMemberToStaffMember,
+  mergeCafePayrollMember,
+  type CafePayrollMember,
+} from '../../../lib/cafe-payroll-cost';
+import { validateCafeDeductionsMtd, validateCafeFineDeduction } from '../../../lib/cafe-fine-compliance';
+import { getPayrollComplianceSettings } from '../settings/actions';
 import { reconcilePrepWithMenu } from './prep-menu-sync';
-import { syncMenuRecipeCosts } from './cafe-menu-sync';
+import { normalizeRecipe, syncMenuRecipeCosts } from './cafe-menu-sync';
+import { loadMenuDailySalesMap } from './cafe-menu-daily-sales';
 import { loadCafeOpenHours } from '../../../lib/cafe-front-checkin';
 import { DEFAULT_CAFE_OPEN_HOURS } from '../../../../../packages/cafe-open-hours';
 
@@ -28,6 +45,7 @@ export type CafeStaffMember = {
   dailyRate: number;
   daysWorked: number;
   deductionsMTD: number;
+  monthlyBasicLkr: number;
 };
 
 export type CafeStaffDayLog = {
@@ -51,6 +69,14 @@ export type CafeLaborRosterMember = CafeStaffMember & {
 export type CafeLaborRosterPayload = {
   periodMonth: string;
   staff: CafeLaborRosterMember[];
+  totalGrossLkr: number;
+  error?: string;
+};
+
+export type CafePayrollCostPayload = {
+  periodMonth: string;
+  staff: CafePayrollMember[];
+  totalGrossLkr: number;
   error?: string;
 };
 
@@ -148,10 +174,14 @@ export type CafeMenuItem = {
   recipeCost: number;
   targetMargin: number;
   hasImage: boolean;
+  imageUrl?: string | null;
+  imageFrame?: import('./cafe-menu-item-image').CafeMenuItemImageFrame;
   recipe?: CafeRecipeLine[];
   availableToSell: number;
   minReadyStock: number;
   rollingAvg14d: number;
+  velocityBoostCarry?: number;
+  velocityBoostWeekIso?: string;
 };
 
 export type CafePrepItem = {
@@ -193,11 +223,17 @@ export type CafeDashboardPayload = {
   cafeCoverTintStrength: number;
   customerMenuUrl: string | null;
   showItemImages?: boolean;
+  menuDailySales?: Record<string, Array<{ saleDate: string; unitsSold: number; soldOut: boolean }>>;
   cafeOpenStart?: string;
   cafeOpenEnd?: string;
   locationId?: string;
   locationName?: string;
   mtdWastageCostLkr?: number;
+  fineCompliance?: {
+    maxDeductionPct: number;
+  };
+  payrollGrossMtd?: number;
+  payrollNetMtd?: number;
   error?: string;
 };
 
@@ -280,6 +316,7 @@ function prepareMenuItemsForPersist(
   menuItems: CafeMenuItem[],
   ingredients: CafeIngredient[],
   snapshot: SnapshotExtras,
+  salesByMenuId: Map<string, import('./cafe-menu-velocity').MenuDailySaleRecord[]>,
 ): CafeMenuItem[] {
   const snapshotIngredients = snapshot.ingredients ?? [];
   const ingredientsForSync = ingredients.length ? ingredients : snapshotIngredients;
@@ -294,7 +331,7 @@ function prepareMenuItemsForPersist(
     };
   });
 
-  return syncMenuRecipeCosts(merged, ingredientsForSync).map((item) => {
+  return syncMenuRecipeCosts(merged, ingredientsForSync, salesByMenuId).map((item) => {
     const snap = snapById.get(item.id);
     if (item.recipeCost <= 0 && snap && snap.recipeCost > 0) {
       return { ...item, recipeCost: snap.recipeCost };
@@ -345,7 +382,7 @@ function mapDayLogRow(row: {
   };
 }
 
-async function syncStaffPeriodFromDayLogs(
+export async function syncStaffPeriodFromDayLogs(
   companyId: string,
   employeeId: string,
   periodMonth: string,
@@ -353,17 +390,20 @@ async function syncStaffPeriodFromDayLogs(
   const supabase = createSupabaseServiceClient();
   const { start, end } = monthDateRange(periodMonth);
 
-  const { data: logs } = await supabase
+  const { data: logs, error: logsError } = await supabase
     .from('cafe_staff_day_logs')
-    .select('worked, ot_lkr')
+    .select('worked, ot_hours, ot_lkr')
     .eq('company_id', companyId)
     .eq('employee_id', employeeId)
     .gte('work_date', start)
     .lte('work_date', end);
 
-  const daysWorked = (logs ?? []).filter((l) => l.worked).length;
+  if (logsError) throw new Error(logsError.message);
 
-  const { data: period } = await supabase
+  const daysWorked = countCafeWorkedDays(logs ?? []);
+  const { otTotalHours, otTotalLkr } = sumCafeOtFromDayLogs(logs ?? []);
+
+  const { data: period, error: periodError } = await supabase
     .from('cafe_staff_periods')
     .select('daily_rate_lkr, deductions_mtd_lkr, role_label')
     .eq('company_id', companyId)
@@ -371,29 +411,50 @@ async function syncStaffPeriodFromDayLogs(
     .eq('period_month', normalizePeriodMonth(periodMonth))
     .maybeSingle();
 
-  const { data: emp } = await supabase
+  if (periodError) throw new Error(periodError.message);
+
+  const { data: emp, error: empError } = await supabase
     .from('employees')
     .select('base_salary, rank')
     .eq('id', employeeId)
     .maybeSingle();
+
+  if (empError) throw new Error(empError.message);
 
   const basic = Number(emp?.base_salary) || 45_000;
   const dailyRate = period
     ? Number(period.daily_rate_lkr) || Math.round(basic / 26)
     : Math.round(basic / 26);
 
-  await supabase.from('cafe_staff_periods').upsert(
-    {
-      company_id: companyId,
-      employee_id: employeeId,
-      period_month: normalizePeriodMonth(periodMonth),
-      daily_rate_lkr: dailyRate,
-      days_worked: daysWorked,
-      deductions_mtd_lkr: Number(period?.deductions_mtd_lkr) || 0,
-      role_label: period?.role_label || emp?.rank || 'Café Staff',
-    },
+  const { error: upsertError } = await supabase.from('cafe_staff_periods').upsert(
+    buildCafeStaffPeriodUpsert({
+      companyId,
+      employeeId,
+      periodMonth,
+      daysWorked,
+      dailyRateLkr: dailyRate,
+      deductionsMtdLkr: Number(period?.deductions_mtd_lkr) || 0,
+      otTotalHours,
+      otTotalLkr,
+      roleLabel: period?.role_label || emp?.rank || 'Café Staff',
+    }),
     { onConflict: 'employee_id,period_month' },
   );
+
+  if (upsertError) throw new Error(upsertError.message);
+}
+
+/** After HR approves a café front check-in, mark the day worked and roll up the payroll month. */
+export async function applyApprovedCafeCheckinToPayroll(
+  companyId: string,
+  employeeId: string,
+  checkinDate: string,
+): Promise<void> {
+  const workDate = cafeWorkDateFromCheckin(checkinDate);
+  const periodMonth = cafePeriodMonthFromWorkDate(workDate);
+
+  await syncCafeOtDayLogFromCheckin(companyId, employeeId, workDate, { markWorked: true });
+  await syncStaffPeriodFromDayLogs(companyId, employeeId, periodMonth);
 }
 
 function defaultDashboard(): CafeDashboardPayload {
@@ -464,6 +525,7 @@ function staffFromEmployees(
       dailyRate,
       daysWorked: period?.days_worked ?? 0,
       deductionsMTD: Number(period?.deductions_mtd_lkr) || 0,
+      monthlyBasicLkr: basic,
     };
   });
 }
@@ -814,17 +876,28 @@ async function loadMenu(
 
   const menuItems: CafeMenuItem[] = (items ?? []).map((item) => {
     const snap = snapshotById.get(item.id);
+    const dbImageUrl =
+      typeof item.image_url === 'string' &&
+      item.image_url.trim() &&
+      item.image_url.trim() !== 'pending'
+        ? item.image_url.trim()
+        : null;
+    const imageUrl = snap?.imageUrl ?? dbImageUrl;
     return {
       id: item.id,
       name: item.name,
       category: categoryById.get(item.category_id) ?? snap?.category ?? 'Uncategorized',
       recipeCost: Number(item.recipe_cost_lkr) || snap?.recipeCost || 0,
       targetMargin: Number(item.target_margin_pct) || snap?.targetMargin || 65,
-      hasImage: Boolean(item.image_url) || Boolean(snap?.hasImage),
-      recipe: snap?.recipe ?? [],
+      imageUrl,
+      imageFrame: snap?.imageFrame,
+      hasImage: Boolean(imageUrl) || Boolean(snap?.hasImage) || Boolean(item.image_url),
+      recipe: normalizeRecipe(snap?.recipe ?? []),
       availableToSell: snap?.availableToSell ?? 0,
       minReadyStock: snap?.minReadyStock ?? 0,
       rollingAvg14d: snap?.rollingAvg14d ?? 0,
+      velocityBoostCarry: snap?.velocityBoostCarry ?? 0,
+      velocityBoostWeekIso: snap?.velocityBoostWeekIso,
     };
   });
 
@@ -857,7 +930,7 @@ export async function getCafeDashboard(
 
     const { data: periods } = await supabase
       .from('cafe_staff_periods')
-      .select('employee_id, daily_rate_lkr, days_worked, deductions_mtd_lkr, role_label')
+      .select('employee_id, daily_rate_lkr, days_worked, deductions_mtd_lkr, role_label, ot_total_hours, ot_total_lkr')
       .eq('company_id', companyId)
       .eq('period_month', periodMonth);
 
@@ -885,10 +958,23 @@ export async function getCafeDashboard(
       extras.ingredients ?? [],
       menu.menuItems,
     );
+    const salesMap = await loadMenuDailySalesMap(companyId);
+    const syncedMenuItems = syncMenuRecipeCosts(menu.menuItems, ingredients, salesMap, new Date(), {
+      prepItems: linkedPrep.prepItems,
+      displayItems: linkedPrep.displayItems,
+    });
     const mtdWastageCostLkr = await loadMtdWastageCostLkr(
       companyId,
       location.id,
       ingredients,
+    );
+    const [fineCompliance, payroll] = await Promise.all([
+      getPayrollComplianceSettings(),
+      getCafePayrollCostForPeriod(periodMonth, companyId),
+    ]);
+    const payrollDeductionsMtd = payroll.staff.reduce(
+      (sum, member) => sum + member.deductionsMTD,
+      0,
     );
 
     return {
@@ -897,7 +983,7 @@ export async function getCafeDashboard(
       listA: stock.listA,
       listB: stock.listB,
       voids,
-      menuItems: menu.menuItems,
+      menuItems: syncedMenuItems,
       menuCategories: extras.menuCategories?.length
         ? extras.menuCategories
         : menu.menuCategories,
@@ -911,11 +997,15 @@ export async function getCafeDashboard(
       cafeCoverTintStrength: extras.cafeCoverTintStrength ?? 100,
       customerMenuUrl: extras.customerMenuUrl ?? 'https://tasha.lk',
       showItemImages: extras.showItemImages !== false,
+      menuDailySales: Object.fromEntries(salesMap),
       cafeOpenStart: openHours.openStart,
       cafeOpenEnd: openHours.openEnd,
       locationId: location.id,
       locationName: location.name,
       mtdWastageCostLkr,
+      fineCompliance: { maxDeductionPct: fineCompliance.maxDeductionPct },
+      payrollGrossMtd: payroll.totalGrossLkr,
+      payrollNetMtd: payroll.totalGrossLkr - payrollDeductionsMtd,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to load café dashboard';
@@ -929,6 +1019,18 @@ async function persistStaffPeriods(companyId: string, staff: CafeStaffMember[]) 
   const periodMonth = currentPeriodMonth();
 
   if (!staff.length) return;
+
+  const compliance = await getPayrollComplianceSettings();
+  for (const member of staff) {
+    const check = validateCafeDeductionsMtd({
+      monthlyBasicLkr: member.monthlyBasicLkr,
+      deductionsMtd: member.deductionsMTD,
+      maxDeductionPct: compliance.maxDeductionPct,
+    });
+    if (!check.ok) {
+      throw new Error(`${member.name}: ${check.error}`);
+    }
+  }
 
   const rows = staff.map((member) => ({
     company_id: companyId,
@@ -944,6 +1046,10 @@ async function persistStaffPeriods(companyId: string, staff: CafeStaffMember[]) 
     onConflict: 'employee_id,period_month',
   });
   if (error) throw new Error(error.message);
+
+  for (const member of staff) {
+    await syncStaffPeriodFromDayLogs(companyId, member.id, periodMonth);
+  }
 }
 
 async function persistTasks(companyId: string, locationId: string, tasks: CafeTask[]) {
@@ -1276,7 +1382,7 @@ async function persistMenu(
       name: item.name,
       recipe_cost_lkr: item.recipeCost,
       target_margin_pct: item.targetMargin,
-      image_url: item.hasImage ? 'pending' : null,
+      image_url: item.imageUrl?.trim() || (item.hasImage ? 'pending' : null),
       pos_synced_at: new Date().toISOString(),
     };
 
@@ -1364,6 +1470,7 @@ export async function saveCafeDashboard(
   try {
     const location = await resolveCafeLocation(companyId, locationIdInput ?? payload.locationId);
     const snapshot = await loadSnapshotExtras(companyId, location.id);
+    const salesMap = await loadMenuDailySalesMap(companyId);
     const ingredients = repairRecipeIngredientLedger(
       payload.ingredients,
       payload.menuItems,
@@ -1373,6 +1480,7 @@ export async function saveCafeDashboard(
       payload.menuItems,
       ingredients,
       snapshot,
+      salesMap,
     );
     const linkedPrep = reconcilePrepWithMenu(
       syncedMenuItems,
@@ -1416,15 +1524,16 @@ export async function saveCafeDashboard(
   }
 }
 
-/** Load labor roster for a payroll month (defaults to current month). */
-export async function getCafeLaborRoster(
+/** Shared café payroll reader — `cafe_staff_periods` + day-log OT (R-CAF-04). */
+export async function getCafePayrollCostForPeriod(
   periodMonthInput?: string,
-): Promise<CafeLaborRosterPayload> {
+  companyIdInput?: string | null,
+): Promise<CafePayrollCostPayload> {
   noStore();
-  const companyId = await resolveCompanyId();
+  const companyId = companyIdInput ?? (await resolveCompanyId());
   const periodMonth = normalizePeriodMonth(periodMonthInput);
   if (!companyId) {
-    return { periodMonth, staff: [], error: 'No company context' };
+    return { periodMonth, staff: [], totalGrossLkr: 0, error: 'No company context' };
   }
 
   const supabase = createSupabaseServiceClient();
@@ -1435,42 +1544,66 @@ export async function getCafeLaborRoster(
 
     const { data: periods } = await supabase
       .from('cafe_staff_periods')
-      .select('employee_id, daily_rate_lkr, days_worked, deductions_mtd_lkr, role_label')
+      .select('employee_id, daily_rate_lkr, days_worked, deductions_mtd_lkr, role_label, ot_total_hours, ot_total_lkr')
       .eq('company_id', companyId)
       .eq('period_month', periodMonth);
 
     const { data: dayLogs } = await supabase
       .from('cafe_staff_day_logs')
-      .select('employee_id, worked, ot_lkr')
+      .select('employee_id, worked, ot_lkr, ot_hours')
       .eq('company_id', companyId)
       .gte('work_date', start)
       .lte('work_date', end);
 
-    const logsByEmployee = new Map<string, Array<{ worked: boolean; ot_lkr: number }>>();
+    const periodByEmp = new Map((periods ?? []).map((row) => [row.employee_id, row]));
+    const logsByEmployee = new Map<
+      string,
+      Array<{ worked: boolean; ot_lkr: number; ot_hours: number }>
+    >();
     for (const log of dayLogs ?? []) {
       const list = logsByEmployee.get(log.employee_id) ?? [];
-      list.push({ worked: Boolean(log.worked), ot_lkr: Number(log.ot_lkr) || 0 });
+      list.push({
+        worked: Boolean(log.worked),
+        ot_lkr: Number(log.ot_lkr) || 0,
+        ot_hours: Number(log.ot_hours) || 0,
+      });
       logsByEmployee.set(log.employee_id, list);
     }
 
-    const baseStaff = staffFromEmployees(employees, periods ?? []);
-    const staff: CafeLaborRosterMember[] = baseStaff.map((member) => {
-      const logs = logsByEmployee.get(member.id) ?? [];
-      const daysFromLogs = logs.filter((l) => l.worked).length;
-      const otTotalLkr = logs.reduce((sum, l) => sum + l.ot_lkr, 0);
-      return {
-        ...member,
-        daysWorked: logs.length > 0 ? daysFromLogs : member.daysWorked,
-        otTotalLkr,
-      };
-    });
+    const staff: CafePayrollMember[] = employees.map((emp) =>
+      mergeCafePayrollMember({
+        employee: emp,
+        period: periodByEmp.get(emp.id) ?? null,
+        dayLogs: logsByEmployee.get(emp.id),
+      }),
+    );
 
-    return { periodMonth, staff };
+    return {
+      periodMonth,
+      staff,
+      totalGrossLkr: calcCafePayrollCostLkr(staff),
+    };
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to load labor roster';
-    console.error('❌ SUPABASE ERROR (getCafeLaborRoster):', message);
-    return { periodMonth, staff: [], error: message };
+    const message = err instanceof Error ? err.message : 'Failed to load café payroll cost';
+    console.error('❌ SUPABASE ERROR (getCafePayrollCostForPeriod):', message);
+    return { periodMonth, staff: [], totalGrossLkr: 0, error: message };
   }
+}
+
+/** Load labor roster for a payroll month (defaults to current month). */
+export async function getCafeLaborRoster(
+  periodMonthInput?: string,
+): Promise<CafeLaborRosterPayload> {
+  const payload = await getCafePayrollCostForPeriod(periodMonthInput);
+  return {
+    periodMonth: payload.periodMonth,
+    staff: payload.staff.map((member) => ({
+      ...cafePayrollMemberToStaffMember(member),
+      otTotalLkr: member.otTotalLkr,
+    })),
+    totalGrossLkr: payload.totalGrossLkr,
+    error: payload.error,
+  };
 }
 
 /** Load per-day attendance + OT for one staff member in a month. */
@@ -1526,6 +1659,17 @@ export async function updateCafeStaffDayLog(input: {
   const periodMonth = normalizePeriodMonth(input.periodMonth);
   const otHours = Math.max(0, input.otHours);
   const otLkr = Math.max(0, input.otLkr);
+
+  const otCap = await resolveMaxCafeOtForWorkDay(companyId, input.employeeId, input.workDate);
+  if (
+    otCap &&
+    (otHours > otCap.otHours + 0.01 || otLkr > otCap.otLkr + 1)
+  ) {
+    return {
+      ok: false,
+      error: `Manual OT cannot exceed ${otCap.otHours}h (LKR ${otCap.otLkr.toLocaleString()}) from check-in/checkout after the OT cutoff.`,
+    };
+  }
 
   try {
     const { data: existing } = await supabase
@@ -1604,15 +1748,31 @@ export async function issueCafeFine(input: {
   amount: number;
   reason: string;
 }): Promise<{ ok: boolean; staff?: CafeStaffMember[]; error?: string }> {
+  const reason = input.reason?.trim();
+  if (!reason) return { ok: false, error: 'Fine reason is required.' };
+
+  const compliance = await getPayrollComplianceSettings();
   const dashboard = await getCafeDashboard();
-  const staff = dashboard.staff.map((member) =>
-    member.id === input.staffId
-      ? { ...member, deductionsMTD: member.deductionsMTD + input.amount }
-      : member,
+  const member = dashboard.staff.find((row) => row.id === input.staffId);
+  if (!member) return { ok: false, error: 'Staff member not found on café roster.' };
+
+  const check = validateCafeFineDeduction({
+    monthlyBasicLkr: member.monthlyBasicLkr,
+    currentDeductionsMtd: member.deductionsMTD,
+    fineAmount: input.amount,
+    maxDeductionPct: compliance.maxDeductionPct,
+  });
+  if (!check.ok) return { ok: false, error: check.error };
+
+  const staff = dashboard.staff.map((row) =>
+    row.id === input.staffId
+      ? { ...row, deductionsMTD: check.nextDeductionsMtd }
+      : row,
   );
   const next = { ...dashboard, staff };
   const result = await saveCafeDashboard(next);
-  return { ...result, staff };
+  if (!result.ok) return result;
+  return { ok: true, staff };
 }
 
 export type CafeCustomerRow = {
@@ -1755,9 +1915,27 @@ function countLowStock(ingredients: CafeIngredient[]): number {
     .length;
 }
 
+function isViewingCurrentCalendarMonth(year: number, month: number) {
+  const now = new Date();
+  return now.getFullYear() === year && now.getMonth() + 1 === month;
+}
+
 /** Portfolio-wide café ops metrics for the Executive Vault finance view. */
-export async function fetchCafePortfolioGlance(): Promise<CafePortfolioGlance> {
+export async function fetchCafePortfolioGlance(
+  year?: number,
+  month?: number,
+): Promise<CafePortfolioGlance> {
   noStore();
+  const now = new Date();
+  const displayYear = year ?? now.getFullYear();
+  const displayMonth = month ?? now.getMonth() + 1;
+  const periodMonth = `${displayYear}-${String(displayMonth).padStart(2, '0')}-01`;
+  const monthStart = periodMonth;
+  const nextMonth = displayMonth === 12 ? 1 : displayMonth + 1;
+  const nextYear = displayMonth === 12 ? displayYear + 1 : displayYear;
+  const monthEnd = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`;
+  const viewingCurrentMonth = isViewingCurrentCalendarMonth(displayYear, displayMonth);
+
   const emptyTotals = {
     mtdSales: 0,
     laborCostMtd: 0,
@@ -1777,23 +1955,53 @@ export async function fetchCafePortfolioGlance(): Promise<CafePortfolioGlance> {
     if (!companyId) return { branches: [], totals: emptyTotals, error: 'No company context' };
 
     const supabase = createSupabaseServiceClient();
-    const { data: snapRows } = await supabase
-      .from('cafe_dashboard_snapshots')
-      .select('cafe_location_id, payload')
-      .eq('company_id', companyId);
+    let salesByLocation = new Map<string, number>();
 
-    const salesByLocation = new Map<string, number>();
-    for (const row of snapRows ?? []) {
-      const payload = row.payload as Record<string, unknown> | null;
-      const mtd = Number(payload?.mtdSales ?? payload?.mtd_sales ?? payload?.posTotal ?? 0);
-      const locId = String(row.cafe_location_id ?? '');
-      salesByLocation.set(locId, (salesByLocation.get(locId) ?? 0) + (Number.isFinite(mtd) ? mtd : 0));
+    if (viewingCurrentMonth) {
+      const { data: snapRows } = await supabase
+        .from('cafe_dashboard_snapshots')
+        .select('cafe_location_id, payload')
+        .eq('company_id', companyId);
+
+      for (const row of snapRows ?? []) {
+        const payload = row.payload as Record<string, unknown> | null;
+        const mtd = Number(payload?.mtdSales ?? payload?.mtd_sales ?? payload?.posTotal ?? 0);
+        const locId = String(row.cafe_location_id ?? '');
+        salesByLocation.set(
+          locId,
+          (salesByLocation.get(locId) ?? 0) + (Number.isFinite(mtd) ? mtd : 0),
+        );
+      }
+    } else {
+      const { data: orders } = await supabase
+        .from('cafe_customer_orders')
+        .select('total_lkr')
+        .eq('company_id', companyId)
+        .eq('status', 'COMPLETED')
+        .gte('completed_at', `${monthStart}T00:00:00.000Z`)
+        .lt('completed_at', `${monthEnd}T00:00:00.000Z`);
+
+      const historicalTotal = (orders ?? []).reduce(
+        (sum, row) => sum + Number(row.total_lkr ?? 0),
+        0,
+      );
+      if (branches.length > 0 && historicalTotal > 0) {
+        const perBranch = Math.round(historicalTotal / branches.length);
+        for (const branch of branches) {
+          salesByLocation.set(branch.id, perBranch);
+        }
+      }
     }
+
+    const payroll = await getCafePayrollCostForPeriod(periodMonth, companyId);
+    const laborPerBranch =
+      branches.length > 0
+        ? Math.round(payroll.totalGrossLkr / branches.length)
+        : payroll.totalGrossLkr;
 
     const branchGlances = await Promise.all(
       branches.map(async (branch) => {
         const dashboard = await getCafeDashboard(branch.id);
-        const laborCostMtd = calcPayrollCostLkr(dashboard.staff);
         const expiringSoon = countExpiringSoon(dashboard.ingredients);
         const lowStock = countLowStock(dashboard.ingredients);
         const overdueTasks = dashboard.tasks.filter((t) => t.status === 'OVERDUE').length;
@@ -1805,7 +2013,7 @@ export async function fetchCafePortfolioGlance(): Promise<CafePortfolioGlance> {
           name: branch.name,
           mtdSales,
           staffCount: dashboard.staff.length,
-          laborCostMtd,
+          laborCostMtd: laborPerBranch,
           wastageMtd: dashboard.mtdWastageCostLkr ?? 0,
           expiringSoon,
           lowStock,
@@ -1818,7 +2026,7 @@ export async function fetchCafePortfolioGlance(): Promise<CafePortfolioGlance> {
     const totals = branchGlances.reduce(
       (acc, b) => ({
         mtdSales: acc.mtdSales + b.mtdSales,
-        laborCostMtd: acc.laborCostMtd + b.laborCostMtd,
+        laborCostMtd: payroll.totalGrossLkr,
         wastageMtd: acc.wastageMtd + b.wastageMtd,
         stockAlerts: acc.stockAlerts + b.expiringSoon + b.lowStock,
         complianceAlerts: acc.complianceAlerts + b.overdueTasks + b.flaggedVoids,

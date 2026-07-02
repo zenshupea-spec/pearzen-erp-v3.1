@@ -1,5 +1,7 @@
 import { redirect } from 'next/navigation';
 
+import { ExecutiveBrandThemeProvider } from '../../../components/executive/ExecutiveBrandTheme';
+import { loadExecutiveBrandTokens } from '../../../lib/cvs-brand-tokens-server';
 import { getCafeLogoUrl } from '../../../../../packages/supabase/cafe-branding';
 import { getCompanyLogoUrl } from '../../../../../packages/supabase/company-branding';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
@@ -8,6 +10,8 @@ import {
   getCafePortalAuthRecord,
   resolveCafeEmployeeForUser,
 } from '../../../lib/cafe-front-auth';
+import { canAccessFrontOfficeAsExecutive } from '../../../lib/front-office-executive-access';
+import { fetchBackOfficeUserProfile } from '../../../lib/hr-portal-access-server';
 import { createSupabaseServiceClient } from '../../../../../packages/supabase/service';
 
 import CafeFrontLoginForm from './CafeFrontLoginForm';
@@ -30,6 +34,11 @@ export default async function CafeFrontLoginPage({
   } = await supabase.auth.getUser();
 
   if (user) {
+    const profile = await fetchBackOfficeUserProfile(supabase, user);
+    if (canAccessFrontOfficeAsExecutive(profile)) {
+      redirect('/cafe-front');
+    }
+
     const employee = await resolveCafeEmployeeForUser(user);
     if (employee) {
       const epf = cafeEmployeeEpfKey(employee);
@@ -39,16 +48,19 @@ export default async function CafeFrontLoginPage({
     }
   }
 
-  const [cafeLogoUrl, companyLogoUrl] = await Promise.all([
+  const [cafeLogoUrl, companyLogoUrl, brandTokens] = await Promise.all([
     getCafeLogoUrl(),
     getCompanyLogoUrl(),
+    loadExecutiveBrandTokens(),
   ]);
 
   return (
-    <CafeFrontLoginForm
-      cafeLogoUrl={cafeLogoUrl}
-      companyLogoUrl={companyLogoUrl}
-      authError={authError}
-    />
+    <ExecutiveBrandThemeProvider initialTokens={brandTokens}>
+      <CafeFrontLoginForm
+        cafeLogoUrl={cafeLogoUrl}
+        companyLogoUrl={companyLogoUrl}
+        authError={authError}
+      />
+    </ExecutiveBrandThemeProvider>
   );
 }

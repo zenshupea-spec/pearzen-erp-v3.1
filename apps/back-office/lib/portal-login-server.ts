@@ -48,6 +48,10 @@ const SHARED_LOGIN_ERRORS: Record<string, string> = {
     'Your session ended because your account was opened on another device.',
   tenant_suspended:
     'This tenant account is suspended. Contact Pearzen support to restore ERP access.',
+  setup_session:
+    'Setup session expired. Sign in again with your work email and access code (OTP) on this page — do not use the verify-pin screen for first-time setup.',
+  recovery_email_required:
+    'MD/OD portal requires a recovery email before sign-in. Ask OD to provision your portal OTP from Executive → Security & Access with a personal recovery inbox.',
 };
 
 export function portalLoginErrorMessage(
@@ -146,7 +150,10 @@ export async function resolvePortalLoginSession(
         user.email,
         user.last_sign_in_at,
       );
-      if (entryPath !== loginPathForStaffPortal(portal)) {
+      const loginPath = loginPathForStaffPortal(portal);
+      const entryIsLoginWithQuery =
+        entryPath === loginPath || entryPath.startsWith(`${loginPath}?`);
+      if (!entryIsLoginWithQuery) {
         return { kind: 'redirect', path: entryPath };
       }
     } else {

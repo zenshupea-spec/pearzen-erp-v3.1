@@ -25,13 +25,24 @@ import { LOGO_STORAGE_KEY } from '../../../../../packages/supabase/branding-cons
 import { BANK_EXPORT_FORMAT_LABELS } from '../../../../../packages/bank-export-settings';
 import { getBankExportSettings } from '../settings/bank-export-actions';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
+import {
+  ExecutivePageBody,
+  ExecutivePageHeader,
+  ExecutivePageLiveSubtitle,
+  ExecutivePageShell,
+} from '../../../components/executive/ExecutivePageChrome';
+import { CVS_BRAND_CLASSES } from '../../../lib/cvs-brand-tokens';
 import { batchIdToGroupId } from '../../../lib/payroll-batch-workflow';
 import FmPayrollMonthSelector from '../../fm/components/FmPayrollMonthSelector';
 import { FM_LIVE_PAYROLL_PERIOD, type PayrollPeriod } from '../../fm/lib/payroll-period';
 import {
   approvePayrollGroupRun,
+  downloadPayrollBankFile,
 } from '../../fm/payroll-run-actions';
 import { getMdPayrollAuditBatches, type MdPayrollBatch } from '../payroll-actions';
+import {
+  triggerPayrollBankDownload,
+} from '../../../lib/payroll-bank-export';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -80,28 +91,6 @@ function variancePct(line: PayslipLine) {
 
 function isVarianceFlagged(line: PayslipLine) {
   return Math.abs(variancePct(line)) >= 20;
-}
-
-function generateBankTransferCSV(batch: PayrollBatch): string {
-  const header = 'EMP_NO,ACCOUNT_NO,AMOUNT,BENEFICIARY_NAME';
-  const rows = batch.lines.map((line) =>
-    `${line.empNo},ACC-${line.empNo.replace('-', '')}-001,${netPay(line)},${line.guardName}`,
-  );
-  return [header, ...rows].join('\n');
-}
-
-function triggerBankFileDownload(batch: PayrollBatch) {
-  const periodSlug = batch.period.replace(' ', '');
-  const filename   = `Commercial_Bank_Transfer_${periodSlug}.csv`;
-  const blob = new Blob([generateBankTransferCSV(batch)], { type: 'text/csv' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
 }
 
 function batchTotals(batch: PayrollBatch) {
@@ -229,7 +218,7 @@ function DeductionAuditModal({
                           <button
                             type="button"
                             onClick={() => handleSendEmail(i)}
-                            className="flex items-center gap-1 rounded-lg border border-slate-200/80 bg-white/80 px-2 py-1 text-sm font-bold text-slate-700 transition-all hover:border-indigo-300/80 hover:bg-indigo-50/80 hover:text-indigo-700"
+                            className={`flex items-center gap-1 rounded-lg border border-slate-200/80 bg-white/80 px-2 py-1 text-sm font-bold text-slate-700 transition-all hover:border-[color:var(--cvs-accent-muted)] hover:bg-[var(--cvs-accent-soft)] hover:text-[color:var(--cvs-accent)]`}
                           >
                             <Mail className="h-3.5 w-3.5" />
                             Send Email Notice
@@ -496,10 +485,12 @@ function printPayslip(line: PayslipLine, batch: PayrollBatch) {
 
 function MasterGuardLedger({
   batch,
+  payrollPeriod,
   onAuditDeductions,
   onLock,
 }: {
   batch: PayrollBatch;
+  payrollPeriod: PayrollPeriod;
   onAuditDeductions: (line: PayslipLine) => void;
   onLock: (id: string) => void;
 }) {
@@ -507,6 +498,8 @@ function MasterGuardLedger({
   const [bankFormatLocked, setBankFormatLocked] = useState(true);
   const [lockedFormatLabel, setLockedFormatLabel] = useState(BANK_EXPORT_FORMAT_LABELS.commercial_csv);
   const [collapsed,  setCollapsed]  = useState(batch.status === 'APPROVED');
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
   const [isLocking,  setIsLocking]  = useState(false);
   const t         = batchTotals(batch);
   const isPending = batch.status === 'SUBMITTED_FOR_REVIEW';
@@ -524,6 +517,23 @@ function MasterGuardLedger({
       setIsLocking(false);
       onLock(batch.id);
     }, 800);
+  };
+
+  const handleDownloadBank = () => {
+    const groupId = batchIdToGroupId(batch.id);
+    if (!groupId) return;
+    setDownloadError(null);
+    setDownloading(true);
+    void downloadPayrollBankFile(groupId, payrollPeriod.year, payrollPeriod.month).then(
+      (result) => {
+        setDownloading(false);
+        if (!result.success || !result.content || !result.filename || !result.mimeType) {
+          setDownloadError(result.error ?? 'Could not generate bank file.');
+          return;
+        }
+        triggerPayrollBankDownload(result.filename, result.content, result.mimeType);
+      },
+    );
   };
 
   return (
@@ -641,7 +651,7 @@ function MasterGuardLedger({
                       </td>
                       <td className="px-5 py-3.5 text-right font-mono text-sm tabular-nums">
                         {line.overtimePay > 0
-                          ? <span className="font-bold text-indigo-700">+{lkr(line.overtimePay)}</span>
+                          ? <span className="font-bold text-[color:var(--cvs-accent)]">+{lkr(line.overtimePay)}</span>
                           : <span className="text-slate-600">—</span>}
                       </td>
                       <td className="px-5 py-3.5 text-right">
@@ -680,7 +690,7 @@ function MasterGuardLedger({
                           type="button"
                           onClick={() => printPayslip(line, batch)}
                           title="Print payslip"
-                          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200/80 bg-white/70 px-3 py-1.5 text-sm font-bold text-slate-600 shadow-sm transition-all hover:border-indigo-200/80 hover:bg-indigo-50/80 hover:text-indigo-700"
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200/80 bg-white/70 px-3 py-1.5 text-sm font-bold text-slate-600 shadow-sm transition-all hover:border-[color:var(--cvs-accent-muted)] hover:bg-[var(--cvs-accent-soft)] hover:text-[color:var(--cvs-accent)]"
                         >
                           <Printer className="h-3.5 w-3.5" />
                           Print
@@ -698,7 +708,7 @@ function MasterGuardLedger({
                     Batch Total — {batch.lines.length} members
                   </td>
                   <td className="px-5 py-3 text-right font-black tabular-nums text-slate-900 text-sm">{lkr(t.gross - batch.lines.reduce((s, l) => s + l.overtimePay, 0))}</td>
-                  <td className="px-5 py-3 text-right font-black tabular-nums text-indigo-800 text-sm">
+                  <td className="px-5 py-3 text-right font-black tabular-nums text-[color:var(--cvs-accent)] text-sm">
                     +{lkr(batch.lines.reduce((s, l) => s + l.overtimePay, 0))}
                   </td>
                   <td className="px-5 py-3 text-right font-black tabular-nums text-rose-800 text-sm">−{lkr(t.deducts)}</td>
@@ -730,17 +740,17 @@ function MasterGuardLedger({
                     Bank Upload Format
                   </label>
                   {bankFormatLocked ? (
-                    <div className="flex items-center gap-3 rounded-2xl border border-indigo-200/80 bg-indigo-50/60 px-4 py-3 shadow-inner">
-                      <Lock className="h-4 w-4 flex-shrink-0 text-indigo-700" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-black uppercase tracking-widest text-indigo-700">
+                    <div className="flex items-center gap-3 rounded-2xl border border-[color:var(--cvs-accent-muted)] bg-[var(--cvs-accent-soft)] px-4 py-3 shadow-inner">
+                      <Lock className="h-4 w-4 flex-shrink-0 text-[color:var(--cvs-accent)]" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-black uppercase tracking-widest text-[color:var(--cvs-accent)]">
                           Format Locked by MD
                         </p>
-                        <p className="mt-0.5 text-sm font-black text-indigo-900 truncate">
+                        <p className="mt-0.5 truncate text-sm font-black text-slate-900">
                           {lockedFormatLabel}
                         </p>
                       </div>
-                      <span className="flex-shrink-0 rounded-full border border-indigo-300/80 bg-indigo-100/80 px-2.5 py-0.5 text-xs font-black uppercase tracking-wider text-indigo-800">
+                      <span className={`flex-shrink-0 rounded-full border px-2.5 py-0.5 text-xs font-black uppercase tracking-wider ${CVS_BRAND_CLASSES.rankBadge}`}>
                         MD Lock
                       </span>
                     </div>
@@ -762,7 +772,7 @@ function MasterGuardLedger({
                   type="button"
                   onClick={handleLockClick}
                   disabled={isLocking}
-                  className="group flex w-full items-center justify-center gap-3 rounded-2xl bg-slate-900 px-8 py-5 text-sm font-black uppercase tracking-widest text-white shadow-xl shadow-slate-900/20 transition-all hover:bg-slate-800 hover:shadow-slate-900/30 disabled:cursor-wait disabled:opacity-75"
+                  className="group flex w-full items-center justify-center gap-3 rounded-2xl bg-[color:var(--cvs-accent)] px-8 py-5 text-sm font-black uppercase tracking-widest text-white shadow-xl shadow-[color:var(--cvs-glow)] transition-all hover:bg-[color:var(--cvs-accent-hover)] disabled:cursor-wait disabled:opacity-75"
                 >
                   {isLocking ? (
                     <>
@@ -805,12 +815,17 @@ function MasterGuardLedger({
                 </div>
                 <button
                   type="button"
-                  className="flex items-center gap-2 rounded-2xl border border-emerald-200/80 bg-emerald-50/80 px-5 py-3 text-sm font-black uppercase tracking-widest text-emerald-800 shadow-sm transition-all hover:bg-emerald-100/80"
+                  onClick={handleDownloadBank}
+                  disabled={downloading}
+                  className="flex items-center gap-2 rounded-2xl border border-emerald-200/80 bg-emerald-50/80 px-5 py-3 text-sm font-black uppercase tracking-widest text-emerald-800 shadow-sm transition-all hover:bg-emerald-100/80 disabled:cursor-wait disabled:opacity-70"
                 >
                   <Download className="h-4 w-4" />
-                  Download Bank .TXT
+                  {downloading ? 'Generating…' : 'Download Bank File'}
                 </button>
               </div>
+            )}
+            {downloadError && (
+              <p className="mt-3 text-sm font-semibold text-rose-700">{downloadError}</p>
             )}
           </div>
         </>
@@ -880,29 +895,34 @@ export default function PayrollAuditPage() {
       <DeductionAuditModal guard={auditGuard} onClose={() => setAuditGuard(null)} />
       <ConfirmModal batch={confirmBatch} onConfirm={handleConfirm} onCancel={() => setConfirmBatch(null)} />
 
-      <div className="min-h-0 pb-24 font-sans">
-        {/* ── Header ── */}
-        <header className="sticky top-0 z-40 border-b border-white/60 bg-white/45 px-6 py-4 shadow-[0_8px_32px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl backdrop-saturate-150">
-          <div className="flex w-full flex-wrap items-center justify-between gap-3">
-            <div>
-              <h1 className="text-xl font-black uppercase tracking-tight text-slate-900 sm:text-2xl">
-                FM Payroll Audit &amp; Bank Lock
-              </h1>
-              <p className="text-sm font-bold uppercase tracking-widest text-emerald-700">
-                Maker / Checker · MD Approval Lock · Immutable Bank File Generation
-              </p>
-            </div>
+      <ExecutivePageShell>
+        <ExecutivePageHeader
+          title="FM Payroll Audit & Bank Lock"
+          subtitle={
+            <ExecutivePageLiveSubtitle>
+              Maker / Checker · MD Approval Lock · Immutable Bank File Generation
+            </ExecutivePageLiveSubtitle>
+          }
+          actions={
             <div className="flex flex-wrap items-center gap-3">
               <FmPayrollMonthSelector period={payrollPeriod} onChange={setPayrollPeriod} />
               <div className="flex items-center gap-2 rounded-2xl border border-amber-200/80 bg-amber-50/80 px-4 py-2">
                 <Clock className="h-4 w-4 text-amber-700" />
-                <span className="text-sm font-black text-amber-800">{pendingBatches.length} batch{pendingBatches.length !== 1 ? 'es' : ''} pending MD approval</span>
+                <span className="text-sm font-black text-amber-800">
+                  {pendingBatches.length} batch{pendingBatches.length !== 1 ? 'es' : ''} pending MD approval
+                </span>
               </div>
             </div>
-          </div>
-        </header>
+          }
+        />
 
-        <div className="w-full space-y-6 px-6 lg:px-12 2xl:px-24 py-8">
+        <ExecutivePageBody spacing="relaxed">
+
+          {loadError ? (
+            <div className="rounded-2xl border border-amber-200/80 bg-amber-50/80 px-4 py-3 text-sm font-semibold text-amber-900">
+              {loadError}
+            </div>
+          ) : null}
 
           {approveError && (
             <div className="rounded-2xl border border-rose-200/80 bg-rose-50/80 px-4 py-3 text-sm font-semibold text-rose-800">
@@ -972,6 +992,7 @@ export default function PayrollAuditPage() {
                 <MasterGuardLedger
                   key={batch.id}
                   batch={batch}
+                  payrollPeriod={payrollPeriod}
                   onAuditDeductions={setAuditGuard}
                   onLock={handleLock}
                 />
@@ -994,6 +1015,7 @@ export default function PayrollAuditPage() {
                 <MasterGuardLedger
                   key={batch.id}
                   batch={batch}
+                  payrollPeriod={payrollPeriod}
                   onAuditDeductions={setAuditGuard}
                   onLock={handleLock}
                 />
@@ -1015,8 +1037,8 @@ export default function PayrollAuditPage() {
             </span>
           </div>
 
-        </div>
-      </div>
+        </ExecutivePageBody>
+      </ExecutivePageShell>
     </>
   );
 }

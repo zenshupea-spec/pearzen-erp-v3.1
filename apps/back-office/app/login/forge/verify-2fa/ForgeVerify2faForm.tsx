@@ -3,7 +3,7 @@
 import { useState, useTransition } from 'react';
 import Link from 'next/link';
 
-import { isForgeBackupCodeInput } from '../../../../lib/forge-portal-backup';
+import { isForgeBackupCodeInput } from '../../../../lib/forge-portal-backup-shared';
 import { verifyForgeTotpAction } from './actions';
 
 export default function ForgeVerify2faForm() {

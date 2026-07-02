@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { cookies } from 'next/headers';
 import { ArrowLeft, KeyRound } from 'lucide-react';
 
+import HrPortalPasswordResetNotice from '../../../components/hr/HrPortalPasswordResetNotice';
 import HrHubPills from '../HrHubPills';
 import { getActiveCafeStaff } from './actions';
 import CafePortalClient from './CafePortalClient';
@@ -14,6 +15,7 @@ export default async function CafePortalManagementPage() {
   const staff = await getActiveCafeStaff();
 
   let initialOtp: { epf: string; otp: string; staffName: string } | null = null;
+  let flashWarning: string | null = null;
   const jar = await cookies();
   const flash = jar.get(PROVISION_FLASH_COOKIE);
   if (flash?.value) {
@@ -22,6 +24,8 @@ export default async function CafePortalManagementPage() {
         epf?: string;
         otp?: string;
         staffName?: string;
+        docWarning?: string;
+        provisionWarning?: string;
       };
       if (parsed.epf && parsed.otp && parsed.staffName) {
         initialOtp = {
@@ -29,6 +33,10 @@ export default async function CafePortalManagementPage() {
           otp: parsed.otp,
           staffName: parsed.staffName,
         };
+      }
+      const warning = parsed.provisionWarning?.trim() || parsed.docWarning?.trim();
+      if (warning) {
+        flashWarning = warning;
       }
     } catch {
       /* ignore malformed flash */
@@ -54,12 +62,20 @@ export default async function CafePortalManagementPage() {
         </div>
         <Link
           href="/hr/mnr"
-          className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-600 shadow-sm transition-all hover:bg-slate-50"
+          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-600 shadow-sm transition-all hover:border-[color:var(--cvs-accent-muted)] hover:bg-[var(--cvs-accent-soft)]/60 hover:text-[color:var(--cvs-accent)]"
         >
           <ArrowLeft className="h-4 w-4" />
           HR Hub
         </Link>
       </header>
+
+      <HrPortalPasswordResetNotice />
+
+      {flashWarning ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900">
+          {flashWarning}
+        </div>
+      ) : null}
 
       <CafePortalClient staff={staff} initialOtp={initialOtp} />
     </div>

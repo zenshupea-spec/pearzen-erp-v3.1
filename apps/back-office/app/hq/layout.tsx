@@ -3,8 +3,10 @@ import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 
 import HqLayoutShell from '../../components/hq/HqLayoutShell';
-import { canAccessPortalActivityLedger } from '../../lib/audit-portals';
+import { ExecutiveBrandThemeProvider } from '../../components/executive/ExecutiveBrandTheme';
+import { canAccessHqAuditRoute } from '../../lib/audit-ledger-access';
 import { canAccessHqHub } from '../../lib/hq-hub';
+import { loadExecutiveBrandTokens } from '../../lib/cvs-brand-tokens-server';
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
 import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access-server';
 import { loginPathForStaffPortal } from '../../lib/portal-isolation';
@@ -31,19 +33,18 @@ export default async function HQLayout({ children }: { children: ReactNode }) {
   }
 
   if (isPortalActivityLedger) {
-    if (!canAccessPortalActivityLedger(role)) {
+    if (!canAccessHqAuditRoute(profile)) {
       redirect('/dashboard');
     }
   } else if (!canAccessHqHub(role) && !profile.rbacGated) {
     redirect(`${loginPathForStaffPortal('hq')}?error=hq_denied`);
   }
 
-  const profileName =
-    profile.full_name?.trim() || user.email?.split('@')[0] || 'User';
+  const brandTokens = await loadExecutiveBrandTokens();
 
   return (
-    <HqLayoutShell profileName={profileName} profileRank={role}>
-      {children}
-    </HqLayoutShell>
+    <ExecutiveBrandThemeProvider initialTokens={brandTokens}>
+      <HqLayoutShell>{children}</HqLayoutShell>
+    </ExecutiveBrandThemeProvider>
   );
 }

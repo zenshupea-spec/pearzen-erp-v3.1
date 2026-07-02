@@ -12,6 +12,10 @@ import {
   formatHrDocumentBytes,
   replaceFileInputFiles,
 } from '../../lib/hr-document-compress-client';
+import {
+  clearPendingHrDocument,
+  setPendingHrDocument,
+} from '../../lib/hr-document-pending-registry';
 import { OfficeCopyWatermarkOverlay } from '../../lib/identity-document-watermark-client';
 import { shouldApplyOfficeCopyWatermark } from '../../lib/identity-document-watermark';
 import { uploadEmployeeHrDocument } from './document-actions';
@@ -79,8 +83,11 @@ export default function EmployeeDocumentField({
         URL.revokeObjectURL(previewUrlRef.current);
         previewUrlRef.current = null;
       }
+      if (inductionMode) {
+        clearPendingHrDocument(docType);
+      }
     };
-  }, []);
+  }, [docType, inductionMode]);
 
   useEffect(() => {
     setThumbLoadFailed(false);
@@ -138,7 +145,9 @@ export default function EmployeeDocumentField({
       const compressed = await compressHrDocumentFileClient(file, {
         officeCopyWatermark: showOfficeCopyWatermark,
       });
-      if (inputRef.current) {
+      if (inductionMode) {
+        setPendingHrDocument(docType, compressed.file);
+      } else if (inputRef.current) {
         replaceFileInputFiles(inputRef.current, compressed.file);
       }
       setPreviewUrl(compressed.previewUrl);
@@ -171,6 +180,9 @@ export default function EmployeeDocumentField({
       setError(err instanceof Error ? err.message : 'Could not prepare file.');
       setFileStatus(null);
       setPreviewUrl(null);
+      if (inductionMode) {
+        clearPendingHrDocument(docType);
+      }
       if (inputRef.current) inputRef.current.value = '';
     } finally {
       setCompressing(false);
@@ -208,7 +220,6 @@ export default function EmployeeDocumentField({
       type="file"
       accept="image/jpeg,image/png,image/webp,application/pdf"
       className="sr-only"
-      name={inductionMode ? `hr_doc_${docType}` : undefined}
       required={inductionMode && required && !hasDoc}
       disabled={uploading || compressing}
       onChange={(e) => {
@@ -336,7 +347,7 @@ export default function EmployeeDocumentField({
                 <Upload className="w-5 h-5 text-slate-400" />
               )}
               <span className="text-[10px] font-bold text-slate-500 text-center">
-                PDF, JPEG, PNG, or WebP (max 5MB before compress)
+                PDF, JPEG, PNG, or WebP (max 2MB after compress)
               </span>
               <span className="text-[10px] font-medium text-slate-400 text-center">
                 Auto-compressed to grayscale — text stays readable

@@ -2,93 +2,126 @@
 
 import { revalidatePath } from 'next/cache';
 
-import { createSupabaseServiceClient } from '../../../../../../packages/supabase/service';
+import { validateExecutiveRecoveryEmail } from '../../../../lib/head-office-portal-recovery-email';
+import { upsertExecutivePortalRecoveryEmail } from '../../../../lib/head-office-portal-auth';
 import { createSupabaseServerClient } from '../../../../../../packages/supabase/server';
-import { provisionTenantDefaults } from '../../../../../../packages/supabase/tenant-provisioning';
+import { createSupabaseServiceClient } from '../../../../../../packages/supabase/service';
 import { getForgeOperatorEmails, isForgeOperatorEmail } from '../../../../lib/forge-access';
+import { assertForgeOperator } from '../../../../lib/forge-operator-server';
+import {
+  createForgeTenantRecord,
+  type ForgeTenantProvisionResult,
+} from '../../../../lib/forge-tenant-provision';
 
 type TenantPayload = {
   companyName: string;
   slug: string;
   mdEmail: string;
   odEmail: string;
+  mdRecoveryEmail: string;
+  odRecoveryEmail: string;
+  productBundle?: 'full_erp' | 'wfm_only';
 };
+
+export type CreateTenantResult = ForgeTenantProvisionResult;
 
 function normalizeEmail(value: string): string {
   return value.trim().toLowerCase();
 }
 
-export type CreateTenantResult =
-  | { success: true; companyId: string }
-  | { success: false; error: string };
+async function seedExecutiveRecoveryEmails(
+  companyId: string,
+  mdEmail: string,
+  odEmail: string,
+  mdRecoveryEmail: string,
+  odRecoveryEmail: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const mdRecoveryCheck = validateExecutiveRecoveryEmail(mdEmail, mdRecoveryEmail);
+  if (!mdRecoveryCheck.ok) {
+    return { ok: false, error: `MD recovery email: ${mdRecoveryCheck.error}` };
+  }
+  const odRecoveryCheck = validateExecutiveRecoveryEmail(odEmail, odRecoveryEmail);
+  if (!odRecoveryCheck.ok) {
+    return { ok: false, error: `OD recovery email: ${odRecoveryCheck.error}` };
+  }
+
+  const db = createSupabaseServiceClient();
+  for (const [empNumber, workEmail, recoveryEmail] of [
+    ['MD-001', mdEmail, mdRecoveryCheck.recoveryEmail],
+    ['OD-001', odEmail, odRecoveryCheck.recoveryEmail],
+  ] as const) {
+    const { data: employee } = await db
+      .from('employees')
+      .select('id')
+      .eq('company_id', companyId)
+      .eq('emp_number', empNumber)
+      .maybeSingle();
+    if (!employee?.id) continue;
+    const seeded = await upsertExecutivePortalRecoveryEmail(
+      String(employee.id),
+      workEmail,
+      recoveryEmail,
+    );
+    if (!seeded.ok) {
+      return { ok: false, error: seeded.error ?? `Failed to seed recovery email for ${empNumber}.` };
+    }
+  }
+
+  return { ok: true };
+}
 
 export async function createNewTenant(payload: TenantPayload): Promise<CreateTenantResult> {
-  const companyName = payload.companyName.trim().toUpperCase();
-  const slug = payload.slug.trim().toLowerCase();
-  const mdEmail = normalizeEmail(payload.mdEmail);
-  const odEmail = normalizeEmail(payload.odEmail);
-
-  if (!companyName || !slug) {
-    return { success: false, error: 'Company name and slug are required.' };
-  }
-  if (!mdEmail || !odEmail) {
-    return { success: false, error: 'MD and OD portal emails are required.' };
-  }
-  if (mdEmail === odEmail) {
-    return { success: false, error: 'MD and OD must use different Google sign-in emails.' };
-  }
-
   const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user || !(await isForgeOperatorEmail(user.email))) {
+  if (!user?.email || !(await isForgeOperatorEmail(user.email))) {
     return { success: false, error: 'You are not authorised to provision tenants in Forge.' };
   }
 
-  try {
-    const db = createSupabaseServiceClient();
+  const mdEmail = normalizeEmail(payload.mdEmail);
+  const odEmail = normalizeEmail(payload.odEmail);
+  const mdRecoveryEmail = normalizeEmail(payload.mdRecoveryEmail);
+  const odRecoveryEmail = normalizeEmail(payload.odRecoveryEmail);
 
-    const { data: slugConflict } = await db
-      .from('companies')
-      .select('id')
-      .eq('slug', slug)
-      .maybeSingle();
-    if (slugConflict?.id) {
-      return { success: false, error: `Slug "${slug}" is already in use.` };
-    }
+  const db = createSupabaseServiceClient();
+  const result = await createForgeTenantRecord(db, {
+    ...payload,
+    mdEmail,
+    odEmail,
+    mdRecoveryEmail,
+    odRecoveryEmail,
+    actorEmail: user.email,
+  });
 
-    const { data: company, error: insertError } = await db
-      .from('companies')
-      .insert([
-        {
-          name: companyName,
-          slug,
-          is_suspended: false,
-        },
-      ])
-      .select('id')
-      .single();
-
-    if (insertError) throw new Error(insertError.message);
-
-    await provisionTenantDefaults(db, company.id, companyName, {
-      mdEmail,
-      odEmail,
-    });
-
-    revalidatePath('/forge');
-
-    return { success: true, companyId: company.id };
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Tenant creation failed.';
-    console.error('❌ SUPABASE ERROR (Create Tenant):', message);
-    return { success: false, error: message };
+  if (!result.success) {
+    console.error('❌ SUPABASE ERROR (Create Tenant):', result.error);
+    return result;
   }
+
+  const recovery = await seedExecutiveRecoveryEmails(
+    result.companyId,
+    mdEmail,
+    odEmail,
+    mdRecoveryEmail,
+    odRecoveryEmail,
+  );
+
+  if (!recovery.ok) {
+    await db.from('companies').delete().eq('id', result.companyId);
+    return { success: false, error: recovery.error };
+  }
+
+  revalidatePath('/forge');
+  revalidatePath('/forge/tenants');
+  revalidatePath('/forge/companies/new');
+
+  return result;
 }
 
 export async function fetchDefaultOdEmail(): Promise<string> {
+  await assertForgeOperator();
   const operators = await getForgeOperatorEmails();
   return operators[0] ?? '';
 }

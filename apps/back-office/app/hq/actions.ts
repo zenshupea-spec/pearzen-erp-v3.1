@@ -1,10 +1,7 @@
 'use server';
 
 import { createSupabaseServiceClient } from '../../../../packages/supabase/service';
-import {
-  CLASSIC_VENTURE_COMPANY_ID,
-  resolveCompanyIdForSession,
-} from '../../lib/company-context-server';
+import { resolveCompanyIdForSession } from '../../lib/company-context-server';
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
 
 export type HqHubKpis = {
@@ -51,8 +48,8 @@ const EMPTY_KPIS: HqHubKpis = {
 export async function fetchHqHubKpis(): Promise<HqHubKpis> {
   try {
     const supabase = await createSupabaseServerClient();
-    let companyId = await resolveCompanyIdForSession(supabase);
-    if (!companyId) companyId = CLASSIC_VENTURE_COMPANY_ID;
+    const companyId = await resolveCompanyIdForSession(supabase);
+    if (!companyId) return EMPTY_KPIS;
 
     if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
       return EMPTY_KPIS;

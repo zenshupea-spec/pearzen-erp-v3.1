@@ -5,6 +5,8 @@ import { Check } from "lucide-react";
 
 import { createSupabaseBrowserClient } from "../../../packages/supabase/client";
 
+import type { StaffPortalId } from '../lib/portal-isolation';
+
 function GoogleIcon() {
   return (
     <svg className="h-5 w-5 shrink-0" viewBox="0 0 24 24" aria-hidden>
@@ -33,6 +35,8 @@ type Props = {
   onArm?: () => void;
   /** Post-OAuth redirect path (must start with /). */
   redirectNext?: string;
+  /** Staff portal that initiated OAuth — prevents Forge mis-routing. */
+  staffPortal?: StaffPortalId;
   disabled?: boolean;
   completed?: boolean;
   completedLabel?: string;
@@ -42,6 +46,7 @@ export default function GoogleSignInButton({
   armed = false,
   onArm,
   redirectNext = "/",
+  staffPortal,
   disabled = false,
   completed = false,
   completedLabel = "Google verified",
@@ -56,7 +61,9 @@ export default function GoogleSignInButton({
     setLoading(true);
     try {
       const nextPath = redirectNext.startsWith("/") ? redirectNext : "/";
-      const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent(nextPath)}`;
+      const params = new URLSearchParams({ next: nextPath });
+      if (staffPortal) params.set("portal", staffPortal);
+      const redirectTo = `${window.location.origin}/auth/callback?${params.toString()}`;
 
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",

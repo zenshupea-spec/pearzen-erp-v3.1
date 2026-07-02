@@ -73,6 +73,12 @@ export default async function VerifyPinPage({
       }
       redirect(entryPath);
     }
+  } else {
+    redirect(
+      buildHeadOfficePortalResetPath(
+        `${signInPath}?error=setup_session`,
+      ),
+    );
   }
 
   const tenant = await resolveTenantCompanyFromRequest();

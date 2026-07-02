@@ -23,6 +23,10 @@ const SHARED_KEYS = [
 const BACK_OFFICE_KEYS = [
   ...SHARED_KEYS,
   'ENCRYPTION_KEY',
+  'RESEND_API_KEY',
+  'PORTAL_EMAIL_FROM',
+  'PORTAL_OTP_EMAIL_FROM',
+  'SHALOM_STAY_INVOICE_EMAIL_FROM',
   'NEXT_PUBLIC_FIELD_PWA_URL',
   'NEXT_PUBLIC_SM_PWA_URL',
   'NEXT_PUBLIC_BACK_OFFICE_PORT',
@@ -32,6 +36,8 @@ const BACK_OFFICE_KEYS = [
   'NEXT_PUBLIC_TENANT_SUBDOMAINS_LIVE',
   'NEXT_PUBLIC_FORGE_HOST',
   'NEXT_PUBLIC_PLATFORM_HOSTS',
+  'FORGE_DEV_SKIP_GOOGLE',
+  'FORGE_OPERATOR_EMAILS',
   'HEAD_OFFICE_LAT',
   'HEAD_OFFICE_LNG',
   'HEAD_OFFICE_RADIUS_KM',
@@ -41,16 +47,24 @@ const BACK_OFFICE_KEYS = [
 
 const FIELD_PWA_KEYS = [
   ...SHARED_KEYS,
+  'NEXT_PUBLIC_DEV_TENANT_SLUG',
   'FIELD_PWA_AUTH_EMAIL_TEMPLATE',
   'FIELD_PWA_AUTH_PASSWORD_TEMPLATE',
   'FIELD_PWA_AUTH_PASSWORD',
 ];
 
-const SM_PWA_KEYS = [...SHARED_KEYS];
+const SM_PWA_KEYS = [...SHARED_KEYS, 'NEXT_PUBLIC_DEV_TENANT_SLUG'];
 
 const CLIENT_PWA_KEYS = [
   ...SHARED_KEYS,
+  'ENCRYPTION_KEY',
   'NEXT_PUBLIC_CUSTOMER_MENU_COMPANY_ID',
+  'NEXT_PUBLIC_CUSTOMER_MENU_URL',
+  'NEXT_PUBLIC_CUSTOMER_MENU_HOST',
+  'NEXT_PUBLIC_CLIENT_PWA_URL',
+  'PAYHERE_MERCHANT_ID',
+  'PAYHERE_MERCHANT_SECRET',
+  'PAYHERE_SANDBOX',
 ];
 
 /** Default café company for local customer menu (see .env.example). */
@@ -106,6 +120,12 @@ function pick(env, keys) {
     }
     if (key === 'NEXT_PUBLIC_SM_PWA_URL' && !value) {
       value = 'http://127.0.0.1:3003';
+    }
+    if (key === 'NEXT_PUBLIC_DEV_TENANT_SLUG' && !value) {
+      value = 'cvs';
+      console.warn(
+        '  NEXT_PUBLIC_DEV_TENANT_SLUG not in source files — using cvs for local PWA tenant scope.',
+      );
     }
     if (key === 'FIELD_PWA_AUTH_EMAIL_TEMPLATE' && !value) {
       value = '{{epfNo}}@pearzen.local';

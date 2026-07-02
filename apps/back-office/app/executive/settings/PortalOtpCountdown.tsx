@@ -4,11 +4,19 @@ import { useEffect, useState } from 'react';
 
 import { HO_PORTAL_OTP_LIFETIME_MS } from '../../../lib/head-office-portal-password';
 
+function formatCountdownLabel(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
 export default function PortalOtpCountdown({
   expiresAt,
+  lifetimeMs = HO_PORTAL_OTP_LIFETIME_MS,
   onExpired,
 }: {
   expiresAt: number;
+  lifetimeMs?: number;
   onExpired?: () => void;
 }) {
   const [remainingMs, setRemainingMs] = useState(() =>
@@ -30,7 +38,7 @@ export default function PortalOtpCountdown({
   const totalSeconds = Math.ceil(remainingMs / 1000);
   const pct = Math.max(
     0,
-    Math.min(100, (remainingMs / HO_PORTAL_OTP_LIFETIME_MS) * 100),
+    Math.min(100, (remainingMs / lifetimeMs) * 100),
   );
   const expired = remainingMs <= 0;
 
@@ -43,7 +51,7 @@ export default function PortalOtpCountdown({
         <span
           className={`font-mono text-sm ${expired ? 'text-rose-700' : 'text-violet-900'}`}
         >
-          {expired ? '0:00' : `0:${String(totalSeconds).padStart(2, '0')}`}
+          {expired ? '0:00' : formatCountdownLabel(totalSeconds)}
         </span>
       </div>
       <div className="h-2 overflow-hidden rounded-full bg-violet-200/80">

@@ -1,0 +1,146 @@
+.bulk-editor-grid.rdg-light {
+  --rdg-color-scheme: light;
+  --rdg-border-color: #e2e8f0;
+  --rdg-header-background-color: #f8fafc;
+  --rdg-row-hover-background-color: #f0f9ff;
+  --rdg-selection-color: #0284c7;
+  block-size: 100%;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+.bulk-editor-grid .rdg-cell {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.bulk-editor-grid .rdg-header-row {
+  font-weight: 700;
+}
+
+.bulk-editor-grid .bulk-editor-col-header {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 2px;
+  block-size: 100%;
+  padding: 4px 6px;
+}
+
+.bulk-editor-grid .bulk-editor-col-header-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+  opacity: 0.95;
+}
+
+.bulk-editor-grid .bulk-editor-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  block-size: 100%;
+  padding: 0 8px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.bulk-editor-grid .bulk-editor-row-num {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.bulk-editor-grid .bulk-editor-readonly-cell {
+  background-color: #f8fafc;
+  color: #64748b;
+}
+
+.bulk-editor-grid .bulk-editor-cafe-group-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background-color: #7c3aed;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 2px 8px;
+  text-transform: uppercase;
+}
+
+.bulk-editor-grid .bulk-editor-guard-group-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background-color: #0284c7;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 2px 8px;
+  text-transform: uppercase;
+}
+
+.bulk-editor-grid .bulk-editor-sm-auto-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  background-color: #ecfdf5;
+  color: #047857;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  text-transform: uppercase;
+}
+
+.bulk-editor-grid .bulk-editor-rank-code-duplicate {
+  background-color: #fef2f2;
+  box-shadow: inset 0 0 0 1px #ef4444;
+  color: #991b1b;
+}
+
+.bulk-editor-grid .bulk-editor-rank-locked-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  background-color: #f1f5f9;
+  color: #64748b;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  text-transform: uppercase;
+}
+
+.bulk-editor-grid .bulk-editor-sector-inactive {
+  background-color: #f1f5f9;
+  color: #94a3b8;
+}
+
+.bulk-editor-grid .bulk-editor-site-code-duplicate {
+  background-color: #fef2f2;
+  box-shadow: inset 0 0 0 1px #ef4444;
+  color: #991b1b;
+}
+
+.bulk-editor-grid .bulk-editor-sector-pending {
+  background-color: #fffbeb;
+}
+
+.bulk-editor-grid .bulk-editor-sector-required {
+  background-color: #fef3c7;
+  box-shadow: inset 0 0 0 1px #f59e0b;
+}
+
+
+.bulk-editor-grid .rdg-cell[aria-selected='true'] {
+  outline: 2px solid #0284c7;
+  outline-offset: -2px;
+}

@@ -51,8 +51,13 @@ export default function Verify2faForm({
         <div className="w-full max-w-md space-y-8">
           <div className="space-y-4 text-center">
             <div className="mb-2 flex justify-center">
-              <div className="flex h-20 w-20 items-center justify-center rounded-2xl border border-slate-200 bg-white shadow-lg">
-                <Shield className="h-10 w-10 text-slate-700" />
+              <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-lg shadow-slate-900/10">
+                {logoUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={logoUrl} alt="" className="h-full w-full object-contain p-2" />
+                ) : (
+                  <Shield className="h-10 w-10 text-slate-700" strokeWidth={1.75} />
+                )}
               </div>
             </div>
             <div>

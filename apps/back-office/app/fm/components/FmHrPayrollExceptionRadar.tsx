@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
+import Link from 'next/link';
 import {
   BadgeAlert,
   Banknote,
@@ -17,6 +18,7 @@ import {
 
 import {
   approveFmSalaryOverride,
+  confirmFmOffboardingRecovery,
   rejectFmSalaryOverride,
   writeOffFmResignationDebt,
   type ResignationDebtRecord,
@@ -102,6 +104,8 @@ function AccordionCategory({
   isOpen,
   onToggle,
   onWriteOff,
+  onConfirmRecovery,
+  readOnly = false,
 }: {
   list: ResignationDebt[];
   label: string;
@@ -110,6 +114,8 @@ function AccordionCategory({
   isOpen: boolean;
   onToggle: () => void;
   onWriteOff: (id: string) => void;
+  onConfirmRecovery: (id: string) => void;
+  readOnly?: boolean;
 }) {
   const total = sumDebt(list);
   const count = list.length;
@@ -226,12 +232,21 @@ function AccordionCategory({
 
                       <div className="flex-shrink-0">
                         {isDone && <CheckCircle2 className="h-4 w-4 text-slate-300" />}
-                        {isLocked && (
-                          <span title="Confirm recovery in Payroll first">
+                        {isLocked && !readOnly && (
+                          <button
+                            type="button"
+                            onClick={() => onConfirmRecovery(d.id)}
+                            className="flex items-center gap-1 whitespace-nowrap rounded-xl bg-emerald-600 px-2.5 py-1 text-[9px] font-black uppercase tracking-wide text-white transition-all hover:bg-emerald-500"
+                          >
+                            Confirm recovery
+                          </button>
+                        )}
+                        {isLocked && readOnly && (
+                          <span title="Confirm recovery in FM Exceptions portal">
                             <Lock className="h-4 w-4 text-rose-300" />
                           </span>
                         )}
-                        {isPending && (
+                        {isPending && !readOnly && (
                           <button
                             type="button"
                             onClick={() => onWriteOff(d.id)}
@@ -256,9 +271,13 @@ function AccordionCategory({
 function PendingDebtPanel({
   allDebts,
   onWriteOff,
+  onConfirmRecovery,
+  readOnly = false,
 }: {
   allDebts: ResignationDebt[];
   onWriteOff: (id: string) => void;
+  onConfirmRecovery: (id: string) => void;
+  readOnly?: boolean;
 }) {
   const [expanded, setExpanded] = useState<DebtCategory | null>(null);
   const [periodFilter, setPeriodFilter] = useState<string>('ALL');
@@ -312,6 +331,8 @@ function PendingDebtPanel({
           isOpen={expanded === 'AWOL'}
           onToggle={() => toggle('AWOL')}
           onWriteOff={onWriteOff}
+          onConfirmRecovery={onConfirmRecovery}
+          readOnly={readOnly}
         />
         <AccordionCategory
           list={resignedList}
@@ -321,13 +342,23 @@ function PendingDebtPanel({
           isOpen={expanded === 'RESIGNED'}
           onToggle={() => toggle('RESIGNED')}
           onWriteOff={onWriteOff}
+          onConfirmRecovery={onConfirmRecovery}
+          readOnly={readOnly}
         />
       </div>
 
-      <div className="mt-auto border-t border-slate-200/60 bg-slate-50/60 px-5 py-2.5 text-[10px] text-slate-500">
-        <Lock className="mr-1 inline h-3 w-3" />
-        Confirm recovery in Payroll, then write off cleared balances here.
-      </div>
+      {!readOnly ? (
+        <div className="mt-auto border-t border-slate-200/60 bg-slate-50/60 px-5 py-2.5 text-[10px] text-slate-500">
+          <Lock className="mr-1 inline h-3 w-3" />
+          Confirm recovery in Payroll, then write off cleared balances here.
+        </div>
+      ) : (
+        <div className="mt-auto border-t border-slate-200/60 bg-slate-50/60 px-5 py-2.5 text-[10px] text-slate-500">
+          <Link href="/fm/exceptions" className="font-bold text-indigo-700 hover:text-indigo-900">
+            Open FM Exceptions portal →
+          </Link>
+        </div>
+      )}
     </div>
   );
 }
@@ -336,10 +367,12 @@ export default function FmHrPayrollExceptionRadar({
   overrides,
   debts,
   onRefresh,
+  readOnly = false,
 }: {
   overrides: SalaryOverride[];
   debts: ResignationDebt[];
   onRefresh: () => void;
+  readOnly?: boolean;
 }) {
   const pendingCount = overrides.filter((o) => o.status === 'PENDING').length;
   const lockedCount = debts.filter((d) => d.status === 'LOCKED').length;
@@ -363,6 +396,11 @@ export default function FmHrPayrollExceptionRadar({
       if (result.success) onRefresh();
     });
   };
+  const confirmRecovery = (id: string) => {
+    void confirmFmOffboardingRecovery(id).then((result) => {
+      if (result.success) onRefresh();
+    });
+  };
 
   return (
     <FmGlassCard className="overflow-hidden">
@@ -377,7 +415,9 @@ export default function FmHrPayrollExceptionRadar({
                 HR &amp; Payroll Exception Radar
               </h3>
               <p className="text-[10px] text-slate-500">
-                Salary overrides bypassing rank defaults · Termination debt pending clearance
+                {readOnly
+                  ? 'Read-only view — FM actions in Exceptions portal'
+                  : 'Salary overrides bypassing rank defaults · Termination debt pending clearance'}
               </p>
             </div>
           </div>
@@ -437,7 +477,9 @@ export default function FmHrPayrollExceptionRadar({
                     key={o.id}
                     className={`px-5 py-4 transition-colors ${
                       isPending
-                        ? 'hover:bg-amber-50/30'
+                        ? o.requiresMdFlag
+                          ? 'border-l-4 border-amber-400 bg-amber-50/40 hover:bg-amber-50/60'
+                          : 'hover:bg-amber-50/30'
                         : isApproved
                           ? 'bg-emerald-50/20'
                           : 'bg-slate-50/30 opacity-60'
@@ -515,7 +557,7 @@ export default function FmHrPayrollExceptionRadar({
                         <span className="font-semibold text-slate-600">{o.requestedBy}</span> ·{' '}
                         {o.date}
                       </p>
-                      {isPending && (
+                      {isPending && !readOnly && (
                         <div className="flex items-center gap-1.5">
                           <button
                             type="button"
@@ -535,6 +577,14 @@ export default function FmHrPayrollExceptionRadar({
                           </button>
                         </div>
                       )}
+                      {isPending && readOnly && (
+                        <Link
+                          href="/fm/exceptions"
+                          className="rounded-xl border border-indigo-200/80 bg-indigo-50/80 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-indigo-800 transition-all hover:bg-indigo-100/80"
+                        >
+                          Review in FM
+                        </Link>
+                      )}
                     </div>
                   </div>
                 );
@@ -543,7 +593,12 @@ export default function FmHrPayrollExceptionRadar({
           </div>
         </div>
 
-        <PendingDebtPanel allDebts={debts} onWriteOff={writeOffDebt} />
+        <PendingDebtPanel
+          allDebts={debts}
+          onWriteOff={writeOffDebt}
+          onConfirmRecovery={confirmRecovery}
+          readOnly={readOnly}
+        />
       </div>
     </FmGlassCard>
   );

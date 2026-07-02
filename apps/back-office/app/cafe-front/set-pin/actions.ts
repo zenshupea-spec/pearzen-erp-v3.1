@@ -54,6 +54,7 @@ export async function setCafeFrontPinAction(newPin: string) {
     .update({
       needs_pin_setup: false,
       current_otp: null,
+      otp_expires_at: null,
       updated_at: new Date().toISOString(),
     })
     .eq('epf_number', epf);

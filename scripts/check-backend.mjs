@@ -106,6 +106,18 @@ if (failed > 0) {
   process.exit(1);
 }
 
+const isProdLike =
+  process.env.NODE_ENV === 'production' ||
+  process.env.VERCEL_ENV === 'production' ||
+  env.VERCEL_ENV === 'production';
+
+if (isProdLike && !env.PORTAL_PIN_COOKIE_SECRET?.trim()) {
+  console.error(
+    '\n  ✗ PORTAL_PIN_COOKIE_SECRET — required in production (no service-role fallback for portal cookies).',
+  );
+  process.exit(1);
+}
+
 console.log('\nBackend reachable. Start apps: npm run dev');
 console.log('  Back-office http://127.0.0.1:3002  (Google sign-in → HR / OM)');
 console.log('  Field PWA    http://127.0.0.1:3001');

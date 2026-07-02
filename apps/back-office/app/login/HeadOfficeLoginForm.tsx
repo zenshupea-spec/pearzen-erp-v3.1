@@ -112,6 +112,8 @@ export default function HeadOfficeLoginForm({
 
   const isMdPortal = staffPortal === 'md';
   const isHqPortal = staffPortal === 'hq';
+  const isOmPortal = staffPortal === 'om';
+  const isTmPortal = staffPortal === 'tm';
   const passwordMinLength = isMdPortal
     ? EXECUTIVE_PORTAL_PASSWORD_MIN_LENGTH
     : isHqPortal
@@ -126,15 +128,7 @@ export default function HeadOfficeLoginForm({
 
   return (
     <div className="space-y-4">
-      {isHqPortal ? (
-        <div className="rounded-xl border border-sky-100 bg-sky-50/80 px-3 py-2.5 text-center text-[11px] font-semibold leading-relaxed text-sky-900">
-          HQ Staff sign in with your <strong>work email</strong> and the 6-digit OTP from HR, then
-          set a portal password (minimum <strong>{HQ_PORTAL_PASSWORD_MIN_LENGTH} characters</strong>
-          ).
-        </div>
-      ) : null}
-
-      {signInHint && !isMdPortal ? (
+      {signInHint && !isMdPortal && !isHqPortal && !isOmPortal && !isTmPortal ? (
         <p className="text-center text-xs font-medium text-slate-500">{signInHint}</p>
       ) : null}
 
@@ -174,7 +168,7 @@ export default function HeadOfficeLoginForm({
 
         <div>
           <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-600">
-            {isMdPortal ? 'Portal password' : 'OTP or portal PIN'}
+            {isMdPortal ? 'Access code or password' : 'OTP or portal PIN'}
           </label>
           <div className="relative">
             <input
@@ -184,9 +178,10 @@ export default function HeadOfficeLoginForm({
               onChange={(e) => setCredential(e.target.value)}
               placeholder={
                 isMdPortal
-                  ? `Portal password (min ${EXECUTIVE_PORTAL_PASSWORD_MIN_LENGTH} characters)`
+                  ? '6-digit email code (first sign-in) or portal password'
                   : '6-digit OTP or your portal PIN'
               }
+              inputMode={isMdPortal ? 'numeric' : undefined}
               required
               autoComplete="current-password"
               className="w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-4 py-4 pr-12 font-mono text-sm font-normal normal-case tracking-normal text-slate-900 shadow-inner transition-all placeholder:text-slate-400 focus:border-rose-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-rose-500/10"
@@ -199,13 +194,23 @@ export default function HeadOfficeLoginForm({
               {showCredential ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
             </button>
           </div>
-          {!isMdPortal ? (
+          {isMdPortal ? (
+            <p className="mt-2 text-[10px] font-semibold text-slate-500">
+              First time? Use the emailed code only. Returning? Use your portal password.{' '}
+              <a href="/login/md/request-code" className="text-violet-700 underline">
+                Request a new access code
+              </a>
+              .
+            </p>
+          ) : (
             <p className="mt-2 text-[10px] font-semibold text-slate-500">
               {isHqPortal
-                ? `First sign-in uses the 6-digit OTP from HR. After setup, use your portal password (minimum ${HQ_PORTAL_PASSWORD_MIN_LENGTH} characters).`
-                : 'First sign-in uses the 6-digit OTP from HR or OD. After setup, use your portal PIN.'}
+                ? `First sign-in: HR uses emailed code; FM/EA use OTP from HR in person. Then portal password (min ${HQ_PORTAL_PASSWORD_MIN_LENGTH} chars).`
+                : isOmPortal || isTmPortal
+                  ? 'First sign-in or reset: 6-digit OTP from HR/OD at the desk (not emailed).'
+                  : 'First sign-in uses the 6-digit OTP from HR or OD. After setup, use your portal PIN.'}
             </p>
-          ) : null}
+          )}
         </div>
 
         <button

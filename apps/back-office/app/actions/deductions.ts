@@ -6,7 +6,6 @@ import {
   createSupabaseServiceClient,
 } from '../../../../packages/supabase/server';
 import {
-  CLASSIC_VENTURE_COMPANY_ID,
   resolveCompanyIdForSession,
 } from '../../lib/company-context-server';
 
@@ -18,8 +17,8 @@ export type DeductionGuardOption = {
 
 export async function listGuardsForDeductions(): Promise<DeductionGuardOption[]> {
   const supabase = await createSupabaseServerClient();
-  let companyId = await resolveCompanyIdForSession(supabase);
-  if (!companyId) companyId = CLASSIC_VENTURE_COMPANY_ID;
+  const companyId = await resolveCompanyIdForSession(supabase);
+  if (!companyId) throw new Error('Tenant context is required.');
 
   let query = supabase
     .from('employees')
@@ -66,8 +65,8 @@ export async function submitManualDeduction(
   } = await supabase.auth.getUser();
   if (!user) throw new Error('Unauthorized');
 
-  let companyId = await resolveCompanyIdForSession(supabase);
-  if (!companyId) companyId = CLASSIC_VENTURE_COMPANY_ID;
+  const companyId = await resolveCompanyIdForSession(supabase);
+  if (!companyId) throw new Error('Tenant context is required.');
 
   const { error } = await supabase.from('payroll_deductions').insert({
     company_id: companyId,

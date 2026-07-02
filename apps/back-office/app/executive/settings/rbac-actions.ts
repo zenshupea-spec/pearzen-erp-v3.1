@@ -19,24 +19,28 @@ import {
   getHeadOfficePortalAuthStatusesForEmployees,
   type HeadOfficePortalAuthStatus,
 } from '../../../lib/head-office-portal-auth';
+import { fetchBackOfficeUserProfile } from '../../../lib/hr-portal-access-server';
 import { readPortalRbacMatrixForCompany } from '../../../lib/portal-rbac-store';
 import {
   isMissingColumnError,
   MD_SETTINGS_ENVELOPE_KEYS,
-  mergeSettingEnvelope,
 } from '../../../../../packages/supabase/md-settings-envelope';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import {
   getExecutiveMdSettingsContext,
   getMdSettingsDb,
   resolveExecutiveCompanyId,
+  assertExecutiveMdSettingsWrite,
+  upsertMdSettings,
 } from './lib/executive-md-settings-db';
-import { writeSettingsAuditLog } from './settings-audit';
+import { revalidateMdSettingsConsumers } from './lib/revalidate-md-settings-consumers';
+import { writeSettingsAuditLog, persistMdSettingEnvelopeWithAudit } from './settings-audit';
 
 export type RbacMatrixPayload = {
   staff: HeadOfficeRbacStaffRow[];
   matrix: PortalRbacMatrix;
   portalAuthByEmployeeId: Record<string, HeadOfficePortalAuthStatus>;
+  sessionEmployeeId: string | null;
 };
 
 async function loadHeadOfficeStaffBundle(): Promise<{
@@ -79,10 +83,24 @@ export async function getRbacMatrixPayload(): Promise<RbacMatrixPayload> {
     staff.map((person) => person.id),
   );
 
-  return { staff, matrix, portalAuthByEmployeeId };
+  const session = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await session.auth.getUser();
+  const profile = user ? await fetchBackOfficeUserProfile(session, user) : null;
+
+  return {
+    staff,
+    matrix,
+    portalAuthByEmployeeId,
+    sessionEmployeeId: profile?.employeeId ?? null,
+  };
 }
 
 export async function savePortalRbacMatrix(matrix: PortalRbacMatrix) {
+  const vaultGate = await assertExecutiveMdSettingsWrite();
+  if (!vaultGate.ok) return { success: false, error: vaultGate.error };
+
   const { companyId, staff } = await loadHeadOfficeStaffBundle();
   const supabase = getMdSettingsDb();
   const staffIds = new Set(staff.map((s) => s.id));
@@ -108,31 +126,40 @@ export async function savePortalRbacMatrix(matrix: PortalRbacMatrix) {
     }
   }
 
-  let { error } = await supabase
-    .from('md_settings')
-    .upsert({ company_id: companyId, portal_rbac_matrix: sanitized }, { onConflict: 'company_id' });
+  let { error } = await upsertMdSettings(supabase, companyId, { portal_rbac_matrix: sanitized });
 
   if (error && isMissingColumnError(error.message)) {
-    const res = await mergeSettingEnvelope(supabase, companyId, {
-      [MD_SETTINGS_ENVELOPE_KEYS.portalRbacMatrix]: sanitized,
-    });
+    const res = await persistMdSettingEnvelopeWithAudit(
+      supabase,
+      companyId,
+      { [MD_SETTINGS_ENVELOPE_KEYS.portalRbacMatrix]: sanitized },
+      'UPDATE_PORTAL_RBAC_MATRIX',
+      {
+        staffCount: staff.length,
+        configuredCount: Object.values(sanitized).filter((row) =>
+          Object.values(row).some((level) => level !== 'NONE'),
+        ).length,
+      },
+    );
     if (!res.success) return res;
-    revalidatePath('/executive/settings');
+    revalidateMdSettingsConsumers();
     revalidatePath('/fm/settings');
+    revalidatePath('/executive/audit');
     return { success: true };
   }
 
   if (error) return { success: false, error: error.message };
 
   const { session, companyId: auditCompanyId } = await getExecutiveMdSettingsContext();
-  await writeSettingsAuditLog(session, auditCompanyId, 'UPDATE_PORTAL_RBAC_MATRIX', {
+  const audit = await writeSettingsAuditLog(session, auditCompanyId, 'UPDATE_PORTAL_RBAC_MATRIX', {
     staffCount: staff.length,
     configuredCount: Object.values(sanitized).filter((row) =>
       Object.values(row).some((level) => level !== 'NONE'),
     ).length,
   });
+  if (!audit.ok) return { success: false, error: audit.error };
 
-  revalidatePath('/executive/settings');
+  revalidateMdSettingsConsumers();
   revalidatePath('/fm/settings');
   return { success: true };
 }

@@ -14,7 +14,8 @@ export type PortalLoginEventType =
   | 'otp_emailed'
   | 'otp_email_failed'
   | 'otp_self_service_requested'
-  | 'executive_login_notification';
+  | 'executive_login_notification'
+  | 'after_hours_login_alert';
 
 export async function recordPortalLoginEvent(input: {
   employeeId?: string | null;
@@ -86,42 +87,11 @@ export type CompanyPortalLoginEvent = {
   createdAt: string;
 };
 
-export async function listPortalLoginEventsForCompany(
-  companyId: string,
-  limit = 80,
-): Promise<CompanyPortalLoginEvent[]> {
-  const service = createSupabaseServiceClient();
-  const { data: employees } = await service
-    .from('employees')
-    .select('id, full_name, rank')
-    .eq('company_id', companyId)
-    .ilike('group', 'HEAD_OFFICE');
-
-  if (!employees?.length) return [];
-
-  const employeeIds = employees.map((row) => String(row.id));
-  const employeeById = new Map(
-    employees.map((row) => [
-      String(row.id),
-      {
-        name: typeof row.full_name === 'string' ? row.full_name : null,
-        rank: typeof row.rank === 'string' ? row.rank : null,
-      },
-    ]),
-  );
-
-  const { data } = await service
-    .from('portal_login_events')
-    .select(
-      'id, employee_id, portal_auth_email, event_type, success, device_label, ip_address, detail, created_at',
-    )
-    .in('employee_id', employeeIds)
-    .order('created_at', { ascending: false })
-    .limit(limit);
-
-  if (!data?.length) return [];
-
-  return data.map((row) => {
+function mapCompanyPortalLoginEventRows(
+  rows: Array<Record<string, unknown>>,
+  employeeById: Map<string, { name: string | null; rank: string | null }>,
+): CompanyPortalLoginEvent[] {
+  return rows.map((row) => {
     const employeeId =
       typeof row.employee_id === 'string' ? row.employee_id : null;
     const meta = employeeId ? employeeById.get(employeeId) : undefined;
@@ -140,6 +110,91 @@ export async function listPortalLoginEventsForCompany(
       createdAt: String(row.created_at),
     };
   });
+}
+
+async function headOfficeEmployeeLookup(companyId: string) {
+  const service = createSupabaseServiceClient();
+  const { data: employees } = await service
+    .from('employees')
+    .select('id, full_name, rank')
+    .eq('company_id', companyId)
+    .ilike('group', 'HEAD_OFFICE');
+
+  if (!employees?.length) {
+    return { employeeIds: [] as string[], employeeById: new Map() };
+  }
+
+  const employeeIds = employees.map((row) => String(row.id));
+  const employeeById = new Map(
+    employees.map((row) => [
+      String(row.id),
+      {
+        name: typeof row.full_name === 'string' ? row.full_name : null,
+        rank: typeof row.rank === 'string' ? row.rank : null,
+      },
+    ]),
+  );
+
+  return { employeeIds, employeeById };
+}
+
+const PORTAL_LOGIN_EVENT_COLUMNS =
+  'id, employee_id, portal_auth_email, event_type, success, device_label, ip_address, detail, created_at';
+
+export async function listPortalLoginEventsForCompany(
+  companyId: string,
+  limit = 80,
+): Promise<CompanyPortalLoginEvent[]> {
+  const { employeeIds, employeeById } = await headOfficeEmployeeLookup(companyId);
+  if (!employeeIds.length) return [];
+
+  const service = createSupabaseServiceClient();
+  const { data } = await service
+    .from('portal_login_events')
+    .select(PORTAL_LOGIN_EVENT_COLUMNS)
+    .in('employee_id', employeeIds)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (!data?.length) return [];
+
+  return mapCompanyPortalLoginEventRows(data, employeeById);
+}
+
+export async function listPortalLoginEventsForCompanyPaged(
+  companyId: string,
+  page = 1,
+  pageSize = 10,
+): Promise<{
+  events: CompanyPortalLoginEvent[];
+  total: number;
+  page: number;
+  pageSize: number;
+}> {
+  const safePage = Math.max(1, Math.floor(page));
+  const safePageSize = Math.max(1, Math.min(50, Math.floor(pageSize)));
+  const from = (safePage - 1) * safePageSize;
+  const to = from + safePageSize - 1;
+
+  const { employeeIds, employeeById } = await headOfficeEmployeeLookup(companyId);
+  if (!employeeIds.length) {
+    return { events: [], total: 0, page: safePage, pageSize: safePageSize };
+  }
+
+  const service = createSupabaseServiceClient();
+  const { data, count } = await service
+    .from('portal_login_events')
+    .select(PORTAL_LOGIN_EVENT_COLUMNS, { count: 'exact' })
+    .in('employee_id', employeeIds)
+    .order('created_at', { ascending: false })
+    .range(from, to);
+
+  return {
+    events: data?.length ? mapCompanyPortalLoginEventRows(data, employeeById) : [],
+    total: count ?? 0,
+    page: safePage,
+    pageSize: safePageSize,
+  };
 }
 
 export async function recordHeadOfficeOtpProvisionEvents(input: {

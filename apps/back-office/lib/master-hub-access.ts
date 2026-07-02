@@ -30,6 +30,7 @@ export function masterHubRoutePortalId(route: string): PortalRbacPortalId | null
     case SHALOM_FRONT_PORTAL_ROUTE:
       return 'cafe';
     case '/security-website':
+    case '/shalom-public':
       return 'client_portal';
     case '/om':
       return 'om_command';
@@ -89,7 +90,9 @@ export function canSeeMasterHubModule(
   const normalized = normalizePortalRole(role) ?? role.trim().toUpperCase();
   if (isExecutiveRank(normalized)) return true;
 
-  if (route === '/security-website') return isExecutiveRank(normalized);
+  if (route === '/security-website' || route === '/shalom-public') {
+    return isExecutiveRank(normalized);
+  }
 
   if (route === '/hq/audit') {
     return canAccessHqAuditRoute({

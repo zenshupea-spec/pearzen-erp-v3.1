@@ -7,7 +7,7 @@ import {
   verifyForgeTotpLogin,
 } from '../../../../lib/forge-portal-auth';
 import { getAuthenticatedForgeSession } from '../../../../lib/forge-portal-session';
-import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
+import { createSupabaseServerClient } from '../../../../../../packages/supabase/server';
 
 export async function verifyForgeTotpAction(code: string) {
   const session = await getAuthenticatedForgeSession();
@@ -27,7 +27,7 @@ export async function verifyForgeTotpAction(code: string) {
 
   await setForgePinSessionCookies(session.user.email);
 
-  const { getForgePortalAuthRecord } = await import('../../../lib/forge-portal-auth');
+  const { getForgePortalAuthRecord } = await import('../../../../lib/forge-portal-auth');
   const record = await getForgePortalAuthRecord(session.user.email);
   if (!record?.unlock_code_hash) {
     redirect('/login/forge/set-unlock-code');

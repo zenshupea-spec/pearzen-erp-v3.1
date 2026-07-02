@@ -6,9 +6,20 @@ import {
   fetchWithRosterCompanyFallback,
   resolveCompanyIdForSession,
 } from '../../../lib/company-context-server';
-import { getOmServiceDb, normalizeSmEpf } from '../../../lib/om-service-db';
+import { getOmServiceDb } from '../../../lib/om-service-db';
+import { fetchActiveSectorManagerRecordsForCompany } from '../../../lib/sector-manager-roster';
+import { resolveActiveSmPortalAuth } from '../../../lib/sm-portal-access-server';
+import { normalizeSmEpf, sectorManagerEpfKey } from '../../../../../packages/supabase/sm-epf';
 import { resolveGeofenceRadiusM } from '../../../lib/site-geofence';
 import { auditStaffAction } from '../../../lib/staff-audit';
+import {
+  filterSectorManagersForOmScope,
+  filterSitesForOmScope,
+  isOmSectorScopeEmpty,
+  omScopeIncludesSite,
+  omScopeIncludesSmEpf,
+  resolveOmSectorScopeForSession,
+} from '../../../lib/om-sector-scope';
 import { siteNeedsGpsCapture } from '../lib/site-gps';
 
 export type OmSiteRecord = {
@@ -48,19 +59,6 @@ function mapSiteRow(row: Record<string, unknown>): OmSiteRecord {
   };
 }
 
-function sectorManagerEpfKey(row: {
-  emp_number?: string | null;
-  epf_no?: string | null;
-  epf_num?: string | number | null;
-}): string {
-  const emp = row.emp_number != null ? String(row.emp_number).trim() : '';
-  if (emp) return emp.toUpperCase();
-  const epf =
-    (row.epf_no != null ? String(row.epf_no).trim() : '') ||
-    (row.epf_num != null ? String(row.epf_num).trim() : '');
-  return epf.toUpperCase();
-}
-
 async function fetchSitesForCompanyId(companyId: string | null): Promise<OmSiteRecord[]> {
   const supabase = getOmServiceDb();
 
@@ -88,7 +86,11 @@ async function fetchSitesForCompanyId(companyId: string | null): Promise<OmSiteR
 async function fetchSitesForCompany(): Promise<OmSiteRecord[]> {
   const supabase = await createSupabaseServerClient();
   const sessionCompanyId = await resolveCompanyIdForSession(supabase);
-  return fetchWithRosterCompanyFallback(fetchSitesForCompanyId, sessionCompanyId);
+  const [sites, omScope] = await Promise.all([
+    fetchWithRosterCompanyFallback(fetchSitesForCompanyId, sessionCompanyId),
+    resolveOmSectorScopeForSession(),
+  ]);
+  return filterSitesForOmScope(sites, omScope);
 }
 
 export async function getSitesNeedingGpsCapture(): Promise<OmSiteRecord[]> {
@@ -105,29 +107,17 @@ async function fetchSectorManagersForCompanyId(
   companyId: string | null,
 ): Promise<{ emp_number: string; full_name: string | null; epf_no: string | null; epf_num: string | number | null }[]> {
   const supabase = getOmServiceDb();
-
-  let empQuery = supabase
-    .from('employees')
-    .select('emp_number, epf_no, epf_num, full_name')
-    .eq('group', 'SECTOR_MANAGER')
-    .eq('status', 'ACTIVE')
-    .order('full_name', { ascending: true });
-
-  if (companyId) {
-    empQuery = empQuery.eq('company_id', companyId);
-  }
-
-  const { data: managers, error } = await empQuery;
-  if (error) {
-    console.error('❌ SUPABASE ERROR (getSectorManagersForAssignment):', error.message);
-    return [];
-  }
-  return (managers ?? []) as {
-    emp_number: string;
-    full_name: string | null;
-    epf_no: string | null;
-    epf_num: string | number | null;
-  }[];
+  const managers = await fetchActiveSectorManagerRecordsForCompany(
+    supabase,
+    companyId,
+    'emp_number, epf_no, epf_num, full_name',
+  );
+  return managers.map((row) => ({
+    emp_number: String(row.emp_number ?? row.epf_no ?? ''),
+    full_name: row.full_name != null ? String(row.full_name) : null,
+    epf_no: row.epf_no != null ? String(row.epf_no) : null,
+    epf_num: row.epf_num ?? null,
+  }));
 }
 
 export async function getSectorManagersForAssignment(): Promise<SectorManagerOption[]> {
@@ -145,17 +135,20 @@ export async function getSectorManagersForAssignment(): Promise<SectorManagerOpt
     countByEpf.set(site.assigned_sm_epf, (countByEpf.get(site.assigned_sm_epf) ?? 0) + 1);
   }
 
-  return managers
-    .map((m) => {
-      const epfKey = sectorManagerEpfKey(m);
-      if (!epfKey) return null;
-      return {
-        emp_number: epfKey,
-        full_name: String(m.full_name ?? epfKey),
-        site_count: countByEpf.get(epfKey) ?? 0,
-      };
-    })
-    .filter((row): row is SectorManagerOption => row !== null);
+  return filterSectorManagersForOmScope(
+    managers
+      .map((m) => {
+        const epfKey = sectorManagerEpfKey(m);
+        if (!epfKey) return null;
+        return {
+          emp_number: epfKey,
+          full_name: String(m.full_name ?? epfKey),
+          site_count: countByEpf.get(epfKey) ?? 0,
+        };
+      })
+      .filter((row): row is SectorManagerOption => row !== null),
+    await resolveOmSectorScopeForSession(),
+  );
 }
 
 export async function getSitesPendingSmAssignment(): Promise<OmSiteRecord[]> {
@@ -181,36 +174,6 @@ function parseCoord(value: number, label: string): { ok: true; value: number } |
   return { ok: true, value };
 }
 
-async function findActiveSectorManager(
-  companyId: string | null,
-  smEpf: string,
-): Promise<{ emp_number: string | null; epf_no: string | null; epf_num: string | number | null } | null> {
-  const supabase = getOmServiceDb();
-  const key = smEpf.trim();
-  const columns = ['emp_number', 'epf_no', 'epf_num'] as const;
-
-  for (const column of columns) {
-    let query = supabase
-      .from('employees')
-      .select('emp_number, epf_no, epf_num')
-      .eq(column, key)
-      .eq('group', 'SECTOR_MANAGER')
-      .eq('status', 'ACTIVE');
-
-    if (companyId) {
-      query = query.eq('company_id', companyId);
-    }
-
-    const { data, error } = await query.maybeSingle();
-    if (error) throw error;
-    if (data) {
-      return data as { emp_number: string | null; epf_no: string | null; epf_num: string | number | null };
-    }
-  }
-
-  return null;
-}
-
 export async function updateSiteGpsCoordinates(input: {
   siteId: string;
   latitude: number;
@@ -232,6 +195,22 @@ export async function updateSiteGpsCoordinates(input: {
       'OM';
 
     const supabase = getOmServiceDb();
+    const { data: siteRow } = await supabase
+      .from('site_profiles')
+      .select('id, site_name, assigned_sm_epf')
+      .eq('id', input.siteId)
+      .maybeSingle();
+
+    const omScope = await resolveOmSectorScopeForSession();
+    if (omScope !== null) {
+      if (isOmSectorScopeEmpty(omScope)) {
+        return { success: false, error: 'No assigned sectors — cannot update site GPS.' };
+      }
+      if (!siteRow || !omScopeIncludesSite(omScope, siteRow)) {
+        return { success: false, error: 'This site is outside your assigned sectors.' };
+      }
+    }
+
     const { error } = await supabase
       .from('site_profiles')
       .update({
@@ -258,6 +237,7 @@ export async function updateSiteGpsCoordinates(input: {
     revalidatePath('/om/sites/guards');
     revalidatePath('/om/guards/sm-assignments');
     revalidatePath('/om');
+    revalidatePath('/tm');
 
     return { success: true };
   } catch (error: unknown) {
@@ -279,16 +259,34 @@ export async function assignSiteToSectorManager(input: {
   try {
     const session = await createSupabaseServerClient();
     const companyId = await resolveCompanyIdForSession(session);
-    const sm = await findActiveSectorManager(companyId, smEpf);
-    if (!sm) {
-      return { success: false, error: `${smEpf} is not an active Sector Manager.` };
+    const supabase = getOmServiceDb();
+    const { data: siteRow } = await supabase
+      .from('site_profiles')
+      .select('id, site_name, assigned_sm_epf')
+      .eq('id', input.siteId)
+      .maybeSingle();
+
+    const omScope = await resolveOmSectorScopeForSession();
+    if (omScope !== null) {
+      if (isOmSectorScopeEmpty(omScope)) {
+        return { success: false, error: 'No assigned sectors — cannot assign Sector Manager.' };
+      }
+      if (!siteRow || !omScopeIncludesSite(omScope, siteRow)) {
+        return { success: false, error: 'This site is outside your assigned sectors.' };
+      }
+      if (!omScopeIncludesSmEpf(omScope, smEpf)) {
+        return { success: false, error: 'This Sector Manager is outside your assigned sectors.' };
+      }
     }
 
-    const storedEpf = sectorManagerEpfKey(sm);
-    const supabase = getOmServiceDb();
+    const gate = await resolveActiveSmPortalAuth(supabase, companyId, smEpf);
+    if (!gate.ok) {
+      return { success: false, error: gate.error };
+    }
+
     const { error } = await supabase
       .from('site_profiles')
-      .update({ assigned_sm_epf: storedEpf, site_status: 'ACTIVE' })
+      .update({ assigned_sm_epf: gate.storedEpf, site_status: 'ACTIVE' })
       .eq('id', input.siteId);
 
     if (error) throw error;
@@ -297,13 +295,15 @@ export async function assignSiteToSectorManager(input: {
       supabase: session,
       portal: 'om',
       action: 'Assign Sector Manager',
-      targetEntity: `Site ${input.siteId} → SM ${storedEpf}`,
+      targetEntity: `Site ${input.siteId} → SM ${gate.storedEpf}`,
     });
 
     revalidatePath('/om/sites/assignments');
     revalidatePath('/om/sites/guards');
     revalidatePath('/om/guards/sm-assignments');
     revalidatePath('/om');
+    revalidatePath('/om/sm-visit-caps');
+    revalidatePath('/fm/sm-handler');
     revalidatePath('/executive/sites');
     revalidatePath('/fm/sites');
 
@@ -321,6 +321,23 @@ export async function clearSiteSectorManager(
   try {
     const session = await createSupabaseServerClient();
     const supabase = getOmServiceDb();
+
+    const { data: siteRow } = await supabase
+      .from('site_profiles')
+      .select('id, site_name, assigned_sm_epf')
+      .eq('id', siteId)
+      .maybeSingle();
+
+    const omScope = await resolveOmSectorScopeForSession();
+    if (omScope !== null) {
+      if (isOmSectorScopeEmpty(omScope)) {
+        return { success: false, error: 'No assigned sectors — cannot clear Sector Manager.' };
+      }
+      if (!siteRow || !omScopeIncludesSite(omScope, siteRow)) {
+        return { success: false, error: 'This site is outside your assigned sectors.' };
+      }
+    }
+
     const { error } = await supabase
       .from('site_profiles')
       .update({ assigned_sm_epf: null, site_status: 'PENDING' })

@@ -9,6 +9,7 @@ import {
   getHeadOfficePortalAuthByEmail,
   requiresHeadOfficePortalPin,
 } from './head-office-portal-auth';
+import { headOfficePortalDisplayEmail } from './head-office-portal-username';
 import { fetchBackOfficeUserProfile } from './hr-portal-access-server';
 import { normalizePortalRole } from './portal-role-utils';
 import { createSupabaseServerClient } from '../../../packages/supabase/server';
@@ -76,13 +77,14 @@ export async function loadHeadOfficeMfaEnrollmentAction(): Promise<
   const actor = await assertHeadOfficeMfaActor();
   if ('error' in actor) return { error: actor.error };
 
-  const { role, label, user, authRecord } = actor;
+  const { role, label, authRecord } = actor;
+  const displayEmail = headOfficePortalDisplayEmail(authRecord.work_email);
 
   if (authRecord.two_factor_enabled) {
     return {
       role,
       label,
-      email: user.email!,
+      email: displayEmail,
       twoFactorEnabled: true,
       secret: null,
       uri: null,
@@ -91,7 +93,7 @@ export async function loadHeadOfficeMfaEnrollmentAction(): Promise<
 
   const setup = await beginHeadOfficeTotpSetup(
     actor.profile.employeeId!,
-    user.email!,
+    displayEmail,
   );
   if (!setup.ok) {
     return { error: setup.error ?? 'Could not start MFA setup.' };
@@ -100,7 +102,7 @@ export async function loadHeadOfficeMfaEnrollmentAction(): Promise<
   return {
     role,
     label,
-    email: user.email!,
+    email: displayEmail,
     twoFactorEnabled: false,
     secret: setup.secret ?? null,
     uri: setup.uri ?? null,
@@ -163,7 +165,7 @@ export async function replaceHeadOfficeMfaAction(currentCode: string) {
 
   const setup = await beginHeadOfficeTotpSetup(
     actor.profile.employeeId!,
-    actor.user.email!,
+    headOfficePortalDisplayEmail(actor.authRecord.work_email),
   );
   if (!setup.ok) {
     return { error: setup.error ?? 'Could not start new MFA setup.' };

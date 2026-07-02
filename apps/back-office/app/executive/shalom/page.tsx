@@ -27,6 +27,7 @@ import {
   ShieldCheck,
   Trash2,
   Settings2,
+  Mail,
   Phone,
   Copy,
 } from 'lucide-react';
@@ -70,12 +71,14 @@ import {
   fetchShalomProperties,
   getShalomGuestIdSignedUrlAction,
   syncShalomPropertyFromOtas,
+  updateShalomPropertyBookingAlertEmailAction,
   upsertShalomProperty,
   upsertShalomBooking,
   updateShalomStayOpsSettingsAction,
   type ShalomPropertyRecord,
 } from '../shalom-actions';
 import { buildShalomIcalExportUrl } from './shalom-ical-url';
+import ShalomPublicListingEditorModal from '../../../components/executive/ShalomPublicListingEditorModal';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -123,6 +126,9 @@ interface Property {
   bookingIcalUrl: string;
   caretakerEpf: string | null;
   caretakerName: string | null;
+  bookingAlertEmail: string | null;
+  publicPublished: boolean;
+  publicSlug: string;
   bookings: Booking[];
 }
 
@@ -385,24 +391,40 @@ function OtaToast({ msg, onDone }: { msg: string; onDone: () => void }) {
 function CaretakerAssignPanel({
   property,
   saving,
+  savingAlertEmail,
   assignError,
+  alertEmailError,
   onAssign,
+  onSaveAlertEmail,
 }: {
   property: Property;
   saving: boolean;
+  savingAlertEmail: boolean;
   assignError?: string | null;
+  alertEmailError?: string | null;
   onAssign: (epf: string | null) => void | Promise<void>;
+  onSaveAlertEmail: (email: string | null) => void | Promise<void>;
 }) {
   const [epfDraft, setEpfDraft] = useState(property.caretakerEpf ?? '');
+  const [emailDraft, setEmailDraft] = useState(property.bookingAlertEmail ?? '');
 
   useEffect(() => {
     setEpfDraft(property.caretakerEpf ?? '');
   }, [property.id, property.caretakerEpf]);
 
+  useEffect(() => {
+    setEmailDraft(property.bookingAlertEmail ?? '');
+  }, [property.id, property.bookingAlertEmail]);
+
   const trimmed = epfDraft.trim();
   const assigned = property.caretakerEpf;
   const dirty = trimmed !== (assigned ?? '');
   const canSave = dirty && trimmed.length > 0;
+
+  const trimmedEmail = emailDraft.trim();
+  const savedEmail = property.bookingAlertEmail ?? '';
+  const emailDirty = trimmedEmail !== savedEmail;
+  const canSaveEmail = emailDirty;
 
   const handleSave = () => {
     if (!canSave || saving) return;
@@ -413,6 +435,17 @@ function CaretakerAssignPanel({
     if (!assigned || saving) return;
     setEpfDraft('');
     void onAssign(null);
+  };
+
+  const handleSaveEmail = () => {
+    if (!canSaveEmail || savingAlertEmail) return;
+    void onSaveAlertEmail(trimmedEmail || null);
+  };
+
+  const handleClearEmail = () => {
+    if (!savedEmail || savingAlertEmail) return;
+    setEmailDraft('');
+    void onSaveAlertEmail(null);
   };
 
   return (
@@ -471,9 +504,60 @@ function CaretakerAssignPanel({
           </span>
         ) : null}
       </div>
+
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-sky-100/90 bg-sky-50/60 px-4 py-3">
+        <div className="flex items-center gap-2 text-sky-900">
+          <Mail className="h-4 w-4 shrink-0" />
+          <span className="text-[10px] font-black uppercase tracking-widest">Booking alerts</span>
+        </div>
+        <input
+          type="email"
+          value={emailDraft}
+          disabled={savingAlertEmail}
+          onChange={(e) => setEmailDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleSaveEmail();
+          }}
+          placeholder="Email for instant booking alerts"
+          className="min-w-[min(100%,18rem)] flex-1 rounded-xl border border-sky-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm placeholder:font-medium placeholder:text-slate-400 focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-400/20 disabled:cursor-not-allowed disabled:opacity-60"
+        />
+        <button
+          type="button"
+          onClick={handleSaveEmail}
+          disabled={!canSaveEmail || savingAlertEmail}
+          className="rounded-xl bg-sky-700 px-3 py-2 text-xs font-bold uppercase tracking-wider text-white shadow-sm transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Save email
+        </button>
+        {savedEmail ? (
+          <button
+            type="button"
+            onClick={handleClearEmail}
+            disabled={savingAlertEmail}
+            className="rounded-xl border border-sky-200 bg-white px-3 py-2 text-xs font-bold uppercase tracking-wider text-sky-800 shadow-sm transition hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Clear
+          </button>
+        ) : null}
+        <p className="w-full text-xs font-semibold text-sky-900/80">
+          Instant email when Airbnb, Booking.com, or Shalom website bookings arrive for this
+          property.
+        </p>
+        {savingAlertEmail ? (
+          <span className="text-[10px] font-bold uppercase tracking-wider text-sky-700">
+            Saving…
+          </span>
+        ) : null}
+      </div>
+
       {assignError ? (
         <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-900">
           {assignError}
+        </p>
+      ) : null}
+      {alertEmailError ? (
+        <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-900">
+          {alertEmailError}
         </p>
       ) : null}
     </div>
@@ -489,6 +573,7 @@ function PropertySelector({
   onAdd,
   onRemove,
   onOpenSettings,
+  onOpenGuestWebsite,
 }: {
   properties: Property[];
   selected: Property;
@@ -496,6 +581,7 @@ function PropertySelector({
   onAdd: () => void;
   onRemove: () => void | Promise<void>;
   onOpenSettings: () => void;
+  onOpenGuestWebsite: () => void;
 }) {
   const [open,           setOpen]           = useState(false);
   const [confirmRemove,  setConfirmRemove]   = useState(false);
@@ -512,6 +598,11 @@ function PropertySelector({
           <Building2 className="h-4 w-4 text-slate-500" />
           <span className="uppercase">{selected.name}</span>
           <span className="text-[10px] font-semibold uppercase text-slate-400">{selected.location}</span>
+          {selected.publicPublished ? (
+            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-black uppercase tracking-wide text-emerald-800">
+              Live
+            </span>
+          ) : null}
           <ChevronDown className={`h-3.5 w-3.5 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
         </button>
 
@@ -575,6 +666,16 @@ function PropertySelector({
       >
         <Settings2 className="h-3.5 w-3.5" />
         Property Settings
+      </button>
+
+      {/* Guest website listing editor */}
+      <button
+        type="button"
+        onClick={onOpenGuestWebsite}
+        className="flex items-center gap-1.5 rounded-2xl border border-emerald-200/80 bg-emerald-50/70 px-3 py-2 text-xs font-bold text-emerald-800 shadow-sm backdrop-blur-xl hover:bg-emerald-50 hover:border-emerald-300 transition-all"
+      >
+        <Globe className="h-3.5 w-3.5" />
+        Guest Website
       </button>
 
       {/* Remove Property — inline confirmation */}
@@ -2443,6 +2544,9 @@ function recordToProperty(row: ShalomPropertyRecord): Property {
     bookingIcalUrl: row.bookingIcalUrl,
     caretakerEpf: row.caretakerEpf,
     caretakerName: row.caretakerName,
+    bookingAlertEmail: row.bookingAlertEmail,
+    publicPublished: row.publicPublished,
+    publicSlug: row.publicSlug,
     bookings: row.bookings.map((b) => ({
       id: b.id,
       guestName: b.guestName,
@@ -2488,11 +2592,14 @@ export default function ShalomPage() {
   const [propSettings,    setPropSettings]    = useState<Record<string, PropSettings>>({});
   const [addPropOpen,     setAddPropOpen]     = useState(false);
   const [propSettingsOpen, setPropSettingsOpen] = useState(false);
+  const [guestWebsiteOpen, setGuestWebsiteOpen] = useState(false);
   const [importingOta,   setImportingOta]    = useState(false);
   const [savingPricing, setSavingPricing] = useState(false);
   const [caretakerLoginDates, setCaretakerLoginDates] = useState<Set<string>>(new Set());
   const [savingCaretaker, setSavingCaretaker] = useState(false);
   const [caretakerAssignError, setCaretakerAssignError] = useState<string | null>(null);
+  const [savingAlertEmail, setSavingAlertEmail] = useState(false);
+  const [alertEmailError, setAlertEmailError] = useState<string | null>(null);
   const [toast, setToast]                    = useState<string | null>(null);
   const [collectPhoneDraft, setCollectPhoneDraft] = useState('');
   const [savingCollectPhone, setSavingCollectPhone] = useState(false);
@@ -2736,6 +2843,42 @@ export default function ShalomPage() {
     [applyPropertyRecords, selectedProp],
   );
 
+  const handleSaveBookingAlertEmail = useCallback(
+    async (bookingAlertEmail: string | null) => {
+      if (!selectedProp) return;
+      setAlertEmailError(null);
+      setSavingAlertEmail(true);
+      const result = await updateShalomPropertyBookingAlertEmailAction(
+        selectedProp.id,
+        bookingAlertEmail,
+      );
+      setSavingAlertEmail(false);
+      if (!result.success) {
+        const message = result.error ?? 'Failed to save booking alert email';
+        setAlertEmailError(message);
+        setToast(message);
+        return;
+      }
+
+      const refresh = await fetchShalomProperties();
+      if (refresh.properties.length > 0) {
+        applyPropertyRecords(refresh.properties, selectedProp.id);
+      } else {
+        setProperties((prev) =>
+          prev.map((p) =>
+            p.id === selectedProp.id ? { ...p, bookingAlertEmail } : p,
+          ),
+        );
+        setSelectedProp((prev) =>
+          prev && prev.id === selectedProp.id ? { ...prev, bookingAlertEmail } : prev,
+        );
+      }
+
+      setToast(bookingAlertEmail ? 'Booking alert email saved.' : 'Booking alert email cleared.');
+    },
+    [applyPropertyRecords, selectedProp],
+  );
+
   const handleSavePropSettings = useCallback(
     async (payload: {
       settings: PropSettings;
@@ -2855,6 +2998,9 @@ export default function ShalomPage() {
       bookingIcalUrl: input.bookingIcalUrl,
       caretakerEpf: null,
       caretakerName: null,
+      bookingAlertEmail: null,
+      publicPublished: false,
+      publicSlug: '',
       bookings: [],
     };
 
@@ -3271,6 +3417,33 @@ export default function ShalomPage() {
         settings={currentSettings}
         onSave={handleSavePropSettings}
       />
+      {selectedProp ? (
+        <ShalomPublicListingEditorModal
+          open={guestWebsiteOpen}
+          propertyId={selectedProp.id}
+          propertyName={selectedProp.name}
+          onClose={() => setGuestWebsiteOpen(false)}
+          onSaved={({ published, slug }) => {
+            setProperties((prev) =>
+              prev.map((property) =>
+                property.id === selectedProp.id
+                  ? { ...property, publicPublished: published, publicSlug: slug }
+                  : property,
+              ),
+            );
+            setSelectedProp((prev) =>
+              prev && prev.id === selectedProp.id
+                ? { ...prev, publicPublished: published, publicSlug: slug }
+                : prev,
+            );
+            setToast(
+              published
+                ? `Published "${selectedProp.name}" on the guest website.`
+                : `Saved guest website draft for "${selectedProp.name}".`,
+            );
+          }}
+        />
+      ) : null}
 
       <ExecutivePageShell>
         <ExecutivePageHeader
@@ -3288,6 +3461,7 @@ export default function ShalomPage() {
               onAdd={() => setAddPropOpen(true)}
               onRemove={handleRemoveProp}
               onOpenSettings={() => setPropSettingsOpen(true)}
+              onOpenGuestWebsite={() => setGuestWebsiteOpen(true)}
             />
           }
         />
@@ -3296,8 +3470,11 @@ export default function ShalomPage() {
           <CaretakerAssignPanel
             property={selectedProp}
             saving={savingCaretaker}
+            savingAlertEmail={savingAlertEmail}
             assignError={caretakerAssignError}
+            alertEmailError={alertEmailError}
             onAssign={handleAssignCaretaker}
+            onSaveAlertEmail={handleSaveBookingAlertEmail}
           />
 
           {loadError ? (

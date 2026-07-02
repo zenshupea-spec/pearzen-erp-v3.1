@@ -1,0 +1,7 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "cd ../.. && npm install",
+  "buildCommand": "cd ../.. && PEARZEN_DEPLOYMENT_MODE=forge npx turbo build --filter=pearzen-erp-back-office",
+  "framework": "nextjs",
+  "crons": []
+}

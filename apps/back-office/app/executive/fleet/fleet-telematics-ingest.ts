@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+import { validateFleetTelematicsCompanyId } from '../../../lib/fleet-telematics-webhook';
 import {
   appendRoutePoint,
   buildRoutePath,
@@ -21,7 +22,7 @@ export type FleetTelematicsPingInput = {
   speedKmh?: number;
   recordedAt?: string;
   locationLabel?: string;
-  companyId?: string;
+  companyId: string;
 };
 
 type FleetAssetRecord = {
@@ -68,19 +69,19 @@ function currentFuelPeriod() {
 async function findAssetByTag(
   db: SupabaseClient,
   tagId: string,
-  companyId?: string,
+  companyId: string,
 ): Promise<FleetAssetRecord | null> {
-  let query = db
+  const { data, error } = await db
     .from('fleet_assets')
     .select(
       'id, company_id, name, driver_name, gps_km_mtd, fuel_period_year, fuel_period_month, last_latitude, last_longitude',
     )
     .eq('is_active', true)
-    .ilike('tag_id', tagId.trim());
+    .eq('company_id', companyId)
+    .ilike('tag_id', tagId.trim())
+    .limit(1)
+    .maybeSingle();
 
-  if (companyId) query = query.eq('company_id', companyId);
-
-  const { data, error } = await query.limit(1).maybeSingle();
   if (error) throw new Error(error.message);
   return (data as FleetAssetRecord | null) ?? null;
 }
@@ -225,6 +226,12 @@ export async function processFleetTelematicsPing(
   const tagId = input.tagId?.trim();
   if (!tagId) return { success: false, error: 'tag_id is required.' };
 
+  const companyCheck = validateFleetTelematicsCompanyId(input.companyId);
+  if (!companyCheck.ok) {
+    return { success: false, error: companyCheck.error };
+  }
+  const companyId = companyCheck.companyId;
+
   const lat = parseCoord(input.latitude, 'lat');
   const lng = parseCoord(input.longitude, 'lng');
   if (lat == null || lng == null) {
@@ -237,7 +244,7 @@ export async function processFleetTelematicsPing(
     return { success: false, error: 'Invalid recorded_at timestamp.' };
   }
 
-  const asset = await findAssetByTag(db, tagId, input.companyId);
+  const asset = await findAssetByTag(db, tagId, companyId);
   if (!asset) {
     return { success: false, error: `No active fleet asset registered for tag "${tagId}".` };
   }

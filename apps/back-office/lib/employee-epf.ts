@@ -57,9 +57,17 @@ export async function assertEpfNoUnique(
   const norm = normalizeEpfNo(epfNo);
   if (!norm) return;
 
+  const raw = typeof epfNo === 'string' ? epfNo.trim() : String(epfNo ?? '').trim();
+  const candidates = [...new Set([raw, norm].filter(Boolean))];
+  const orParts = candidates.flatMap((candidate) => [
+    `epf_no.eq.${candidate}`,
+    `epf_num.eq.${candidate}`,
+  ]);
+
   let query = supabase
     .from('employees')
-    .select('id, full_name, epf_no, epf_num');
+    .select('id, full_name, epf_no, epf_num')
+    .or(orParts.join(','));
 
   if (options?.excludeEmployeeId) {
     query = query.neq('id', options.excludeEmployeeId);
@@ -68,7 +76,7 @@ export async function assertEpfNoUnique(
     query = query.eq('company_id', options.companyId);
   }
 
-  const { data, error } = await query;
+  const { data, error } = await query.limit(20);
   if (error) throw new Error(error.message);
 
   const conflict = (data ?? []).find(

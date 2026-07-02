@@ -10,7 +10,13 @@ import {
   fetchWithRosterCompanyFallback,
   resolveCompanyIdForSession,
 } from '../../../lib/company-context-server';
+import { resolveSecurityWebsiteCompanyId } from '../../../lib/security-website-data';
+import {
+  CVS_GUARD_OPS_ENABLED,
+  CVS_GUARD_OPS_PAUSED_NOTE,
+} from '../../../lib/cvs-workforce-phase';
 import { formatSiteLocalityLabel, resolveSiteLocalityFromCoords } from '../../../lib/site-locality';
+import { fetchActiveSectorManagersForCompany } from '../../../lib/sector-manager-roster';
 import type { CareersSiteLabels, SecurityWebsiteLocale } from '../../../lib/security-website-i18n';
 
 export type GuardRankKey = 'CSO' | 'OIC' | 'SSO' | 'JSO' | 'LSO';
@@ -41,6 +47,13 @@ export type GuardVacanciesPayload = {
   totalGuardsNeeded: number;
   totalClientSites: number;
   error?: string;
+};
+
+const GUARD_VACANCIES_PAUSED: GuardVacanciesPayload = {
+  sites: [],
+  totalGuardsNeeded: 0,
+  totalClientSites: 0,
+  error: CVS_GUARD_OPS_PAUSED_NOTE,
 };
 
 const RANKS: GuardRankKey[] = ['CSO', 'OIC', 'SSO', 'JSO', 'LSO'];
@@ -166,12 +179,6 @@ function buildSiteAliasIndex(sites: SiteProfileRow[]): Map<string, string> {
   return aliases;
 }
 
-function isSectorManagerRow(row: { emp_number?: string | null; rank?: string | null }) {
-  const epf = String(row.emp_number ?? '').toUpperCase();
-  const rank = String(row.rank ?? '').toUpperCase();
-  return epf.startsWith('SM-') || ['SM', 'OIC', 'SSO', 'CSO'].includes(rank);
-}
-
 async function fetchClientSites(companyId: string | null): Promise<SiteProfileRow[]> {
   const db = getVacanciesDb() ?? (await createSupabaseServerClient());
   let query = db
@@ -179,6 +186,7 @@ async function fetchClientSites(companyId: string | null): Promise<SiteProfileRo
     .select(
       'id, site_name, site_code, address, latitude, longitude, needs_om_gps_capture, required_guards, rate_matrix, assigned_sm_epf, site_status',
     )
+    .neq('site_status', 'ARCHIVED')
     .order('site_name', { ascending: true });
 
   if (companyId) {
@@ -220,18 +228,14 @@ async function fetchActiveGuards(companyId: string | null, db?: SupabaseClient) 
 
 async function fetchSectorManagers(companyId: string | null, db?: SupabaseClient) {
   const supabase = db ?? (await createSupabaseServerClient());
-  let query = supabase
-    .from('employees')
-    .select('emp_number, full_name, rank, status')
-    .eq('status', 'ACTIVE');
-
-  if (companyId) {
-    query = query.eq('company_id', companyId);
-  }
-
-  const { data, error } = await query;
-  if (error) return [];
-  return (data ?? []).filter((row) => isSectorManagerRow(row));
+  const managers = await fetchActiveSectorManagersForCompany(supabase, companyId);
+  return managers.map((row) => ({
+    emp_number: row.epf_number,
+    full_name: row.full_name,
+    rank: 'SM',
+    status: 'ACTIVE',
+    group: 'HEAD_OFFICE',
+  }));
 }
 
 function assembleGuardVacanciesPayload(
@@ -317,8 +321,14 @@ async function enrichPublicVacancySiteLabels(site: SiteVacancyCard): Promise<Sit
   };
 }
 
-export async function getPublicGuardVacancies(companyId: string): Promise<GuardVacanciesPayload> {
+/** Public careers vacancies — tenant resolved from request hostname (not client-supplied). */
+export async function getPublicGuardVacancies(): Promise<GuardVacanciesPayload> {
+  if (!CVS_GUARD_OPS_ENABLED) {
+    return GUARD_VACANCIES_PAUSED;
+  }
+
   try {
+    const companyId = await resolveSecurityWebsiteCompanyId();
     const db = getVacanciesDb();
     if (!db) {
       return {
@@ -351,6 +361,10 @@ export async function getPublicGuardVacancies(companyId: string): Promise<GuardV
 }
 
 export async function getGuardVacanciesDesk(): Promise<GuardVacanciesPayload> {
+  if (!CVS_GUARD_OPS_ENABLED) {
+    return GUARD_VACANCIES_PAUSED;
+  }
+
   try {
     const supabase = await createSupabaseServerClient();
     const sessionCompanyId = await resolveCompanyIdForSession(supabase);

@@ -1,6 +1,15 @@
 import { LOGO_STORAGE_KEY } from '../../../../../packages/supabase/branding-constants';
 import { DEFAULT_SUPPLIER_PROFILE } from '../../../lib/invoice-desk/types';
 import type { FmPayrollRosterRow, FmShiftTypeLine } from './fm-payroll-roster-data';
+import {
+  fixedSalaryCalendarShiftLines,
+  inferPayslipEmployeeKind,
+  payslipPeriodTitle,
+  resolveGuardPayslipEarnings,
+  resolvePayslipStatutory,
+  resolveSmPayslipEarnings,
+} from './fm-payslip-layout';
+import type { SmPayMode } from './sm-pay-settings';
 
 export type FmPayslipPrintOptions = {
   logoDataUrl?: string;
@@ -50,7 +59,6 @@ type ClassicPayslipModel = {
 const CLASSIC_COMPANY_NAME = 'CLASSIC VENTURE SECURITY (PVT) LTD.';
 const CLASSIC_COMPANY_ADDRESS = DEFAULT_SUPPLIER_PROFILE.headOffice;
 const CLASSIC_PV_NUMBER = `PV-${DEFAULT_SUPPLIER_PROFILE.pvNumber}`;
-const DEFAULT_STAMP_DUTY_LKR = 25;
 
 const PAYSLIP_SINHALA_NOTICE =
   'මෙම වැටුප් පත්‍රිකාව කම්පනයේ නිල වාර්තා පද්ධතියෙන් නිකුත් කරන ලද්දකි. ' +
@@ -277,9 +285,7 @@ function normalizeShiftTypeLines(row: FmPayrollRosterRow): FmShiftTypeLine[] {
 }
 
 function periodTitleFromLabel(periodLabel: string) {
-  const match = periodLabel.match(/([A-Za-z]+)\s+(\d{4})/);
-  if (!match) return `PAY SLIP ${periodLabel.toUpperCase()}`;
-  return `PAY SLIP ${match[1].toUpperCase()} - ${match[2]}`;
+  return payslipPeriodTitle(periodLabel);
 }
 
 function resolveClassicPayslipModel(
@@ -287,19 +293,66 @@ function resolveClassicPayslipModel(
   periodLabel: string,
   opts: FmPayslipPrintOptions = {},
 ): ClassicPayslipModel {
-  const basicSalaryLkr = row.salaryLkr;
-  const bra1Lkr = row.bra1Lkr ?? 0;
-  const bra2Lkr = row.bra2Lkr ?? 0;
+  const employeeKind = inferPayslipEmployeeKind(row);
+  const isFixedSalaryStaff = employeeKind === 'ho_fixed' || employeeKind === 'sm';
+  const statutory = resolvePayslipStatutory(row);
+
+  let basicSalaryLkr = row.salaryLkr;
+  let siteAllowanceLkr =
+    row.siteAllowanceLkr ?? Math.max(0, row.earningsLkr - (row.basicShiftPaidLkr ?? 0));
+  let totalEarningsLkr = row.earningsLkr;
+  let adjustedBasicTotalLkr = row.adjustedBasicTotalLkr ?? basicSalaryLkr;
+
+  if (employeeKind === 'sm' && row.smPayMode) {
+    const smSplit = resolveSmPayslipEarnings(row, row.smPayMode as SmPayMode);
+    basicSalaryLkr = smSplit.basicSalaryLkr;
+    siteAllowanceLkr = smSplit.siteAllowanceLkr;
+    totalEarningsLkr = smSplit.totalEarningsLkr;
+    adjustedBasicTotalLkr = smSplit.basicSalaryLkr;
+  } else if (employeeKind === 'guard') {
+    siteAllowanceLkr = resolveGuardPayslipEarnings(row).siteAllowanceLkr;
+  }
+
   const noPayRecoveryDays = row.noPayRecoveryDays ?? 0;
   const noPayRecoveryLkr = row.noPayRecoveryLkr ?? 0;
-  const adjustedBasicTotalLkr =
-    row.adjustedBasicTotalLkr ?? basicSalaryLkr + bra1Lkr + bra2Lkr + noPayRecoveryLkr;
+  if (!isFixedSalaryStaff) {
+    const bra1Lkr = row.bra1Lkr ?? 0;
+    const bra2Lkr = row.bra2Lkr ?? 0;
+    adjustedBasicTotalLkr =
+      row.adjustedBasicTotalLkr ?? basicSalaryLkr + bra1Lkr + bra2Lkr + noPayRecoveryLkr;
+  } else {
+    adjustedBasicTotalLkr = basicSalaryLkr + noPayRecoveryLkr;
+  }
 
-  const shiftTypeLines = normalizeShiftTypeLines(row);
-  const basicShiftPaidTotalLkr =
-    row.basicShiftPaidLkr ?? shiftTypeLines.reduce((sum, line) => sum + line.amountLkr, 0);
+  let shiftTypeLines: FmShiftTypeLine[];
+  let basicShiftPaidTotalLkr: number;
+  let totalShifts: number;
+  let daysWorked: number;
 
-  const siteAllowanceLkr = row.siteAllowanceLkr ?? Math.max(0, row.earningsLkr - basicShiftPaidTotalLkr);
+  if (isFixedSalaryStaff) {
+    shiftTypeLines = fixedSalaryCalendarShiftLines(periodLabel);
+    basicShiftPaidTotalLkr = 0;
+    totalShifts = shiftTypeLines.reduce((sum, line) => sum + line.shifts, 0);
+    daysWorked = shiftTypeLines.find((line) => line.label === 'Basic shift pay')?.shifts ?? 0;
+  } else if (employeeKind === 'guard') {
+    const guardSplit = resolveGuardPayslipEarnings(row);
+    shiftTypeLines = normalizeShiftTypeLines({
+      ...row,
+      shiftTypeLines:
+        guardSplit.shiftTypeLines.length > 0 ? guardSplit.shiftTypeLines : row.shiftTypeLines,
+    });
+    basicShiftPaidTotalLkr = guardSplit.basicShiftPaidTotalLkr;
+    totalShifts = guardSplit.totalShifts;
+    daysWorked = guardSplit.daysWorked;
+  } else {
+    shiftTypeLines = normalizeShiftTypeLines(row);
+    basicShiftPaidTotalLkr =
+      row.basicShiftPaidLkr ?? shiftTypeLines.reduce((sum, line) => sum + line.amountLkr, 0);
+    totalShifts = row.totalShifts ?? shiftTypeLines.reduce((sum, line) => sum + line.shifts, 0);
+    daysWorked = row.daysWorked ?? totalShifts;
+  }
+  const fixedAllowanceLkr = row.fixedAllowanceLkr ?? 0;
+  const specialAllowanceLkr = row.specialAllowanceLkr ?? 0;
   const attendanceAllowanceLkr = row.attendanceAllowanceLkr ?? 0;
   const mealAllowanceLkr = row.mealAllowanceLkr ?? 0;
   const transportAllowanceLkr = row.transportAllowanceLkr ?? 0;
@@ -308,7 +361,13 @@ function resolveClassicPayslipModel(
   const performanceIncentiveLkr = row.performanceIncentiveLkr ?? 0;
 
   const allowanceRows: PayslipAmountRow[] = [
-    { label: 'Site Allowance', amountLkr: siteAllowanceLkr },
+    { label: 'Fixed Allowance', amountLkr: fixedAllowanceLkr, muted: fixedAllowanceLkr === 0 },
+    { label: 'Special Allowance', amountLkr: specialAllowanceLkr, muted: specialAllowanceLkr === 0 },
+    {
+      label: 'Site Allowance',
+      amountLkr: siteAllowanceLkr,
+      muted: employeeKind !== 'sm' && employeeKind !== 'guard' && siteAllowanceLkr === 0,
+    },
     { label: 'Attendance Allowance', amountLkr: attendanceAllowanceLkr },
     { label: 'Meal Allowance', amountLkr: mealAllowanceLkr },
     { label: 'Transport Allowance', amountLkr: transportAllowanceLkr },
@@ -317,25 +376,27 @@ function resolveClassicPayslipModel(
     { label: 'Performance incentive', amountLkr: performanceIncentiveLkr },
   ];
 
-  const totalEarningsLkr =
-    row.earningsLkr > 0
-      ? row.earningsLkr
-      : adjustedBasicTotalLkr +
-        basicShiftPaidTotalLkr +
-        allowanceRows.reduce((sum, item) => sum + item.amountLkr, 0);
+  if (employeeKind === 'sm') {
+    totalEarningsLkr =
+      adjustedBasicTotalLkr +
+      allowanceRows.reduce((sum, item) => sum + item.amountLkr, 0);
+  } else if (totalEarningsLkr <= 0) {
+    totalEarningsLkr =
+      adjustedBasicTotalLkr +
+      basicShiftPaidTotalLkr +
+      allowanceRows.reduce((sum, item) => sum + item.amountLkr, 0);
+  }
 
   const salaryAdvanceLkr = row.advanceDeductionLkr || deductionAmountByType(row, 'Advance');
   const mealsLkr = row.mealsDeductionLkr ?? deductionAmountByType(row, 'Meals');
   const uniformsLkr = row.uniformsDeductionLkr ?? deductionAmountByType(row, 'Uniform');
-  const penaltyLkr = row.otherDeductionsLkr ?? deductionAmountByType(row, 'Penalty');
-  const stampDutyLkr = row.stampDutyLkr ?? DEFAULT_STAMP_DUTY_LKR;
+  const penaltyLkr = row.otherDeductionsLkr ?? deductionAmountByType(row, 'Other Deductions');
   const deathDonationsLkr = row.deathDonationsLkr ?? 0;
-  const epfEmployeeLkr =
-    row.epfEmployeeLkr ?? Math.round(Math.max(adjustedBasicTotalLkr, 0) * 0.08 * 100) / 100;
-  const epfEmployerLkr =
-    row.epfEmployerLkr ?? Math.round(Math.max(adjustedBasicTotalLkr, 0) * 0.12 * 100) / 100;
-  const etfEmployerLkr =
-    row.etfEmployerLkr ?? Math.round(Math.max(adjustedBasicTotalLkr, 0) * 0.03 * 100) / 100;
+  const epfEmployeeLkr = statutory.epfEmployeeLkr;
+  const epfEmployerLkr = statutory.epfEmployerLkr;
+  const etfEmployerLkr = statutory.etfEmployerLkr;
+  const payeeTaxLkr = statutory.payeeTaxLkr;
+  const stampDutyLkr = statutory.stampDutyLkr;
 
   const deductionRows: PayslipAmountRow[] = [
     { label: 'Salary Advance', amountLkr: salaryAdvanceLkr },
@@ -349,7 +410,7 @@ function resolveClassicPayslipModel(
     { label: 'Salary Loan', amountLkr: row.salaryLoanDeductionLkr ?? 0 },
     { label: 'Uniforms', amountLkr: uniformsLkr },
     { label: 'Other Deductions', amountLkr: penaltyLkr },
-    { label: 'PAYEE Tax', amountLkr: row.payeeTaxLkr ?? 0 },
+    { label: 'APIT (PAYE)', amountLkr: payeeTaxLkr },
     { label: 'Stamp Duty', amountLkr: stampDutyLkr },
     { label: 'E.P.F.', amountLkr: epfEmployeeLkr },
   ];
@@ -359,16 +420,8 @@ function resolveClassicPayslipModel(
     row.deductionsLkr > 0 ? row.deductionsLkr : computedDeductions;
   const netPayLkr = row.netPayLkr > 0 ? row.netPayLkr : Math.max(0, totalEarningsLkr - totalDeductionsLkr);
 
-  const totalShifts = row.totalShifts ?? shiftTypeLines.reduce((sum, line) => sum + line.shifts, 0);
-  const daysWorked = row.daysWorked ?? totalShifts;
-
   const earningsTop: PayslipAmountRow[] = [
     { label: 'Basic Salary', amountLkr: basicSalaryLkr },
-    {
-      label: 'BRA 1(1000) + BRA 2(2500)',
-      amountLkr: bra1Lkr + bra2Lkr,
-      muted: bra1Lkr + bra2Lkr === 0,
-    },
     {
       label: `No Pay Recovery Days ${noPayRecoveryDays}`,
       amountLkr: noPayRecoveryLkr,
@@ -870,6 +923,8 @@ export function payslipPreviewSections(
       value: `${shiftsDisplay(line.shifts)} · ${lkrDisplay(line.amountLkr)}`,
       mono: true,
     })),
+    { label: 'APIT (PAYE)', value: lkrDisplay(model.deductionRows.find((r) => r.label.startsWith('APIT'))?.amountLkr ?? 0), mono: true },
+    { label: 'Stamp Duty', value: lkrDisplay(model.deductionRows.find((r) => r.label === 'Stamp Duty')?.amountLkr ?? 0), mono: true },
     { label: 'Total earnings', value: lkrDisplay(model.totalEarningsLkr), highlight: true },
     { label: 'Total deductions', value: lkrDisplay(model.totalDeductionsLkr), danger: true },
     { label: 'Net to bank', value: lkrDisplay(model.netPayLkr), success: true },

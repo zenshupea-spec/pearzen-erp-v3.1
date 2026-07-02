@@ -417,13 +417,9 @@ function HistoryModal({
 function RecoveryPlanPanel({
   log,
   companyId,
-  adminId,
-  adminName,
 }: {
   log: Discrepancy;
   companyId: string;
-  adminId: string;
-  adminName: string;
 }) {
   const emp = employeeNames(log.employees);
   const fullName = `${emp.first_name} ${emp.last_name}`.trim();
@@ -631,8 +627,6 @@ function RecoveryPlanPanel({
         perShiftValueLkr: guardCalcs[0]?.perShiftValue ?? 0,
         guardConfigs: form.guards,
         notes: form.notes.trim() || undefined,
-        editorId: adminId,
-        editorName: adminName,
       });
       await loadPlan();
       setSaved(true);
@@ -1150,15 +1144,7 @@ function RecoveryPlanPanel({
 
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 
-export default function DiscrepancyDashboard({
-  companyId,
-  adminId,
-  adminName = 'Admin',
-}: {
-  companyId: string;
-  adminId: string;
-  adminName?: string;
-}) {
+export default function DiscrepancyDashboard({ companyId }: { companyId: string }) {
   const [logs, setLogs] = useState<Discrepancy[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [processingId, setProcessingId] = useState<string | null>(null);
@@ -1170,7 +1156,7 @@ export default function DiscrepancyDashboard({
     async function loadDiscrepancies() {
       setIsLoading(true);
       try {
-        const data = await getPendingDiscrepancies(companyId);
+        const data = await getPendingDiscrepancies();
         const rows = (data ?? []) as unknown as Discrepancy[];
         if (!cancelled) setLogs(rows);
       } catch (err) {
@@ -1185,7 +1171,7 @@ export default function DiscrepancyDashboard({
     return () => {
       cancelled = true;
     };
-  }, [companyId]);
+  }, []);
 
   const handleResolve = async (
     id: string,
@@ -1193,7 +1179,7 @@ export default function DiscrepancyDashboard({
   ) => {
     setProcessingId(id);
     try {
-      await resolveDiscrepancy(id, resolutionType, adminId);
+      await resolveDiscrepancy(id, resolutionType);
       setLogs((prev) => prev.filter((log) => log.id !== id));
     } catch {
       alert('Failed to process override. Check database connection.');
@@ -1330,8 +1316,6 @@ export default function DiscrepancyDashboard({
                       <RecoveryPlanPanel
                         log={log}
                         companyId={companyId}
-                        adminId={adminId}
-                        adminName={adminName}
                       />
                     </div>
                   )}

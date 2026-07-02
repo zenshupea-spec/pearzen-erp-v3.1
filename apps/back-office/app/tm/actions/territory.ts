@@ -3,6 +3,7 @@
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import { createSupabaseServiceClient } from '../../../../../packages/supabase/service';
 import { resolveCompanyIdForSession } from '../../../lib/company-context-server';
+import { getOmServiceDb } from '../../../lib/om-service-db';
 import { getSectorManagersForAssignment } from '../../om/actions/sites';
 
 export type TmSectorManagerRollup = {
@@ -15,8 +16,104 @@ export type TmSectorManagerRollup = {
   visitCompliancePct: number;
 };
 
+export type TmEscalationRow = {
+  id: string;
+  title: string;
+  site: string;
+  smName: string;
+  smEpf: string;
+  severity: 'HIGH' | 'MEDIUM' | 'LOW';
+  raisedAt: string;
+  omAck: boolean;
+  smAck: boolean;
+  mdAck: boolean;
+};
+
+export type TmTerritoryOversightPayload = {
+  rollup: TmSectorManagerRollup[];
+  escalations: TmEscalationRow[];
+  error?: string;
+};
+
 function normalizeSiteKey(name: string) {
   return name.trim().toLowerCase();
+}
+
+function mapEscalationSeverity(sev: string): 'HIGH' | 'MEDIUM' | 'LOW' {
+  const upper = String(sev ?? '').toUpperCase();
+  if (upper === 'CRITICAL' || upper === 'HIGH') return 'HIGH';
+  if (upper === 'LOW') return 'LOW';
+  return 'MEDIUM';
+}
+
+function escalationTitle(incidentType: string, description: string): string {
+  const type = String(incidentType ?? '').trim().replace(/_/g, ' ');
+  const detail = String(description ?? '').trim();
+  if (type && detail) return `${type} — ${detail.slice(0, 80)}`;
+  return type || detail || 'Field incident';
+}
+
+export async function getTmEscalationQueue(): Promise<TmEscalationRow[]> {
+  const managers = await getSectorManagersForAssignment();
+  const smNameByEpf = new Map(
+    managers.map((manager) => [manager.emp_number, manager.full_name]),
+  );
+
+  const supabase = await createSupabaseServerClient();
+  const companyId = await resolveCompanyIdForSession(supabase);
+
+  try {
+    const omDb = getOmServiceDb();
+    let query = omDb
+      .from('sm_incident_reports')
+      .select(
+        'id, sm_epf, site_name, severity, incident_type, description, created_at, ack_om, ack_sm, ack_md, company_id',
+      )
+      .in('status', ['OPEN', 'UNDER_REVIEW', 'ESCALATED'])
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (companyId) {
+      query = query.eq('company_id', companyId);
+    }
+
+    const { data, error } = await query;
+    if (error || !data) return [];
+
+    return data.map((row) => {
+      const smEpf = String(row.sm_epf ?? '');
+      return {
+        id: String(row.id),
+        title: escalationTitle(String(row.incident_type), String(row.description)),
+        site: String(row.site_name ?? 'Unknown site'),
+        smName: smNameByEpf.get(smEpf) ?? smEpf,
+        smEpf,
+        severity: mapEscalationSeverity(String(row.severity)),
+        raisedAt: String(row.created_at),
+        omAck: Boolean(row.ack_om),
+        smAck: Boolean(row.ack_sm),
+        mdAck: Boolean(row.ack_md),
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function getTmTerritoryOversight(): Promise<TmTerritoryOversightPayload> {
+  try {
+    const [rollup, escalations] = await Promise.all([
+      getTmSectorManagerRollup(),
+      getTmEscalationQueue(),
+    ]);
+    return { rollup, escalations };
+  } catch {
+    return {
+      rollup: [],
+      escalations: [],
+      error: 'Failed to load territory oversight data.',
+    };
+  }
 }
 
 export async function getTmSectorManagerRollup(): Promise<TmSectorManagerRollup[]> {

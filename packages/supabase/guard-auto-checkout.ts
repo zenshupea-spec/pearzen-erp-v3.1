@@ -38,6 +38,9 @@ type OpenCheckIn = {
   device_time: string;
   latitude: number | null;
   longitude: number | null;
+  guard_id: string | null;
+  site_profile_id: string | null;
+  shift_date: string | null;
 };
 
 function colomboTodayIso(now = new Date()): string {
@@ -359,7 +362,9 @@ export async function findOpenCheckIn(
 ): Promise<OpenCheckIn | null> {
   const { data: lastLog } = await supabase
     .from('attendance_logs')
-    .select('id, action_type, device_time, latitude, longitude')
+    .select(
+      'id, action_type, device_time, latitude, longitude, guard_id, site_profile_id, shift_date',
+    )
     .eq('emp_number', empNumber)
     .order('device_time', { ascending: false })
     .limit(1)
@@ -382,6 +387,9 @@ export async function findOpenCheckIn(
     device_time: String(lastLog.device_time),
     latitude: lastLog.latitude == null ? null : Number(lastLog.latitude),
     longitude: lastLog.longitude == null ? null : Number(lastLog.longitude),
+    guard_id: lastLog.guard_id ? String(lastLog.guard_id) : null,
+    site_profile_id: lastLog.site_profile_id ? String(lastLog.site_profile_id) : null,
+    shift_date: lastLog.shift_date ? String(lastLog.shift_date) : null,
   };
 }
 
@@ -400,24 +408,37 @@ export async function maybeAutoCheckoutGuard(
   const employee = await findActiveEmployeeByRosterKey(supabase, empNumber);
   if (!employee) return { applied: false };
 
+  const checkInMs = new Date(openCheckIn.device_time).getTime();
   const shift = await resolveShiftAtCheckIn(
     supabase,
     employee,
     new Date(openCheckIn.device_time),
   );
-  if (!shift) return { applied: false };
 
-  const autoDueAt = new Date(shift.plannedEndTime).getTime() + AUTO_CHECKOUT_DELAY_MS;
-  if (now.getTime() < autoDueAt) return { applied: false };
+  let checkoutTimeIso: string;
 
-  const startTimes = await fetchSecurityShiftTiming(supabase, employee.company_id);
-  const backToBackDeferUntil =
-    new Date(shift.plannedEndTime).getTime() + BACK_TO_BACK_DEFER_MS;
-  if (
-    now.getTime() < backToBackDeferUntil &&
-    (await hasBackToBackSmShiftOnSameSite(supabase, employee, shift, startTimes))
-  ) {
-    return { applied: false };
+  if (shift) {
+    const autoDueAt =
+      new Date(shift.plannedEndTime).getTime() + AUTO_CHECKOUT_DELAY_MS;
+    if (now.getTime() < autoDueAt) return { applied: false };
+
+    const startTimes = await fetchSecurityShiftTiming(supabase, employee.company_id);
+    const backToBackDeferUntil =
+      new Date(shift.plannedEndTime).getTime() + BACK_TO_BACK_DEFER_MS;
+    if (
+      now.getTime() < backToBackDeferUntil &&
+      (await hasBackToBackSmShiftOnSameSite(supabase, employee, shift, startTimes))
+    ) {
+      return { applied: false };
+    }
+
+    checkoutTimeIso = new Date(autoDueAt).toISOString();
+  } else {
+    // Roster anchor missing — safety valve so open check-ins cannot live forever.
+    const staleAfterMs =
+      AUTO_CHECKOUT_DELAY_MS + BACK_TO_BACK_DEFER_MS + 12 * 60 * 60 * 1000;
+    if (now.getTime() - checkInMs < staleAfterMs) return { applied: false };
+    checkoutTimeIso = now.toISOString();
   }
 
   const { data: existingAuto } = await supabase
@@ -431,17 +452,19 @@ export async function maybeAutoCheckoutGuard(
 
   if (existingAuto?.length) return { applied: false };
 
-  const checkoutTime = new Date(autoDueAt).toISOString();
   const { error } = await supabase.from('attendance_logs').insert({
     emp_number: empNumber,
     action_type: 'CHECK_OUT',
-    device_time: checkoutTime,
+    device_time: checkoutTimeIso,
     latitude: openCheckIn.latitude,
     longitude: openCheckIn.longitude,
     sync_type: AUTO_CHECKOUT_SYNC_TYPE,
     photo_url: null,
     status: 'FLAGGED',
     company_id: employee.company_id,
+    guard_id: openCheckIn.guard_id ?? employee.id,
+    shift_date: openCheckIn.shift_date ?? shift?.shiftDate ?? null,
+    site_profile_id: openCheckIn.site_profile_id,
   });
 
   if (error) {

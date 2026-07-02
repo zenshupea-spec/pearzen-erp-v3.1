@@ -13,13 +13,24 @@ import {
   setPortalPinSessionCookies,
   verifyHeadOfficeUnlockCode,
 } from '../../lib/head-office-portal-auth';
-import { clearVaultUnlockSessionCookiesStore } from '../../lib/executive-vault-session';
+import { grantExecutiveVaultUnlockOnPortalLogin } from '../../lib/executive-vault-session';
 import { clearHeadOfficePortalSession } from '../../lib/head-office-portal-sign-out';
 import { getAuthenticatedPortalSession } from '../../lib/head-office-portal-session';
 import { recordPortalLoginEvent } from '../../lib/portal-login-events';
 import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access-server';
-import { loginPathForRole } from '../../lib/portal-isolation';
+import { loginPathForRole, staffPortalIdForRole } from '../../lib/portal-isolation';
 import { isExecutiveRank } from '../../lib/portal-role-utils';
+import {
+  finalizePortalLoginNotifications,
+  readPortalLoginRequestMetadata,
+} from '../../lib/head-office-portal-login-notification';
+import {
+  getHeadOfficePortalAuthByEmployeeId,
+  getHeadOfficePortalAuthByEmail,
+  requiresHeadOfficePortalPin,
+} from '../../lib/head-office-portal-auth';
+import { resolveHeadOfficePasswordExpiryContext } from '../../lib/head-office-portal-password-expiry';
+import { resolveEmployeeCompanyId } from '../../lib/tenant-cookie-server';
 import {
   displaceOtherAuthSessionsAfterLogin,
   getActivePendingLoginForEmployee,
@@ -55,9 +66,31 @@ export async function saveHeadOfficeUnlockCodeAction(code: string) {
   );
   if (!result.ok) return { error: result.error ?? 'Could not save unlock code.' };
 
+  const authRecord = await getHeadOfficePortalAuthByEmployeeId(
+    session.profile.employeeId!,
+  );
+  const requestMeta = await readPortalLoginRequestMetadata();
+  await finalizePortalLoginNotifications({
+    employeeId: session.profile.employeeId!,
+    workEmail: authRecord?.work_email ?? session.user.email,
+    recoveryEmail: authRecord?.recovery_email,
+    portalAuthEmail: session.user.email,
+    rank: session.profile.role,
+    employeeName: session.profile.full_name,
+    companyId: await resolveEmployeeCompanyId(session.profile.employeeId!),
+    staffPortal: staffPortalIdForRole(session.profile.role, session.profile),
+    ipAddress: requestMeta.ipAddress,
+    deviceLabel: requestMeta.deviceLabel,
+  });
+
   await setPortalPinSessionCookies(
     session.profile.employeeId!,
     session.user.email,
+  );
+  await grantExecutiveVaultUnlockOnPortalLogin(
+    session.profile.employeeId!,
+    session.user.email,
+    session.profile.role,
   );
   redirect(session.landing);
 }
@@ -96,7 +129,6 @@ export async function verifyHeadOfficeUnlockCodeAction(code: string) {
 
 export async function invalidatePortalIdleLockAction() {
   await clearPortalPinSessionCookiesStore();
-  await clearVaultUnlockSessionCookiesStore();
   return { ok: true as const };
 }
 
@@ -140,13 +172,49 @@ export async function getHeadOfficePortalSessionContextAction() {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user?.email) {
-    return { signInPath: '/login' as const, isExecutive: false as const };
+    return {
+      signInPath: '/login' as const,
+      isExecutive: false as const,
+      passwordExpiry: null,
+    };
   }
 
   const profile = await fetchBackOfficeUserProfile(supabase, user);
+  const passwordExpiry =
+    profile.employeeId && requiresHeadOfficePortalPin(profile, user.email)
+      ? resolveHeadOfficePasswordExpiryContext(
+          (await getHeadOfficePortalAuthByEmail(user.email)) ?? {},
+        )
+      : null;
+
   return {
     signInPath: loginPathForRole(profile.role, profile),
     isExecutive: isExecutiveRank(profile.role),
+    passwordExpiry,
+  };
+}
+
+export async function getHeadOfficePortalPasswordExpiryAction() {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user?.email) {
+    return { error: 'Session expired. Sign in again.' as const };
+  }
+
+  const profile = await fetchBackOfficeUserProfile(supabase, user);
+  if (!profile.employeeId || !requiresHeadOfficePortalPin(profile, user.email)) {
+    return { passwordExpiry: null as const };
+  }
+
+  const authRecord = await getHeadOfficePortalAuthByEmail(user.email);
+  if (!authRecord || !authRecord.is_active) {
+    return { error: 'Portal access is not active.' as const };
+  }
+
+  return {
+    passwordExpiry: resolveHeadOfficePasswordExpiryContext(authRecord),
   };
 }
 

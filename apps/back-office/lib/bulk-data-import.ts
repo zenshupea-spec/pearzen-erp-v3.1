@@ -197,6 +197,8 @@ export type BulkImportSummary = {
   smLinksUpserted: number;
   debtBalancesUpdated: number;
   debtLedgersSeeded: number;
+  /** Rows with salary/penalty/loan/damage/other outstanding debt imported this run. */
+  employeesWithOutstandingDebt: number;
 };
 
 export type UnifiedRosterDebtPatch = {
@@ -235,6 +237,17 @@ export function rosterRowHasDebtLedgerSeeds(debts: UnifiedRosterDebtPatch): bool
     debts.other_deduction_outstanding_lkr > 0
   );
 }
+
+export function rosterRowHasOutstandingDebt(debts: UnifiedRosterDebtPatch): boolean {
+  return (
+    debts.uniform_outstanding_lkr > 0 ||
+    debts.meals_advance_other_outstanding_lkr > 0 ||
+    rosterRowHasDebtLedgerSeeds(debts)
+  );
+}
+
+export const BULK_IMPORT_INSTALMENT_PLAN_REMINDER =
+  'Outstanding debts were imported — open FM Payroll Register (/fm/roster) and set up instalment plans on each affected employee (Deductions modal on /fm). Debt notes appear in the register when provided.';
 
 export type UnifiedRosterEmployeeMapped = {
   employeeId: string | null;
@@ -276,6 +289,7 @@ export type UnifiedRosterEmployeeMapped = {
     resignation_type: string | null;
     resignation_notes: string | null;
     hr_memo: string | null;
+    debt_notes: string | null;
     nicPlain: string;
     phonePlain: string;
   };
@@ -1565,6 +1579,7 @@ export function mapUnifiedRosterRow(row: Record<string, unknown>): MappedUnified
         resignation_type: cellStr(normalized.resignation_type) || null,
         resignation_notes: cellStr(normalized.resignation_notes) || null,
         hr_memo: cellStr(normalized.hr_memo) || null,
+        debt_notes: mapDebts(normalized).debt_notes,
         nicPlain: cellStr(normalized.nic).toUpperCase(),
         phonePlain: cellStr(normalized.phone),
       },
@@ -1618,6 +1633,7 @@ const EMPLOYEE_UPSERT_MERGE_FIELDS = [
   { payloadKey: 'grama_niladari_expiry', rowKeys: ['grama_niladari_expiry'] },
   { payloadKey: 'maternity_leave', rowKeys: ['maternity_leave'] },
   { payloadKey: 'hr_memo', rowKeys: ['hr_memo'] },
+  { payloadKey: 'debt_notes', rowKeys: ['debt_notes'] },
   { payloadKey: 'temp_parent_id', rowKeys: ['temp_parent_epf'] },
   { payloadKey: 'nic', rowKeys: ['nic'] },
   { payloadKey: 'phone', rowKeys: ['phone'] },
@@ -1679,6 +1695,7 @@ export function employeeDbPayloadFromUnified(
     grama_niladari_expiry: payload.grama_niladari_expiry,
     maternity_leave: payload.maternity_leave,
     hr_memo: payload.hr_memo,
+    debt_notes: payload.debt_notes,
     company_id: companyId,
     nic: payload.nicPlain || null,
     phone: payload.phonePlain || null,

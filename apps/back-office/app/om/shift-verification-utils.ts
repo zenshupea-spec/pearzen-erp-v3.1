@@ -242,6 +242,54 @@ export function reconcileShiftCheckInOut<
   }
 }
 
+/**
+ * Pair synthetic AUTO_CHECKOUT rows with their open check-in when the
+ * check-out device_time falls on the next Colombo calendar day (night shifts).
+ */
+export function attachOrphanAutoCheckouts(
+  grouped: Map<string, ShiftVerificationRecord>,
+): void {
+  const orphans: ShiftVerificationRecord[] = [];
+
+  for (const [key, record] of grouped.entries()) {
+    if (
+      !record.checkIn &&
+      record.checkOut?.sync_type === AUTO_CHECKOUT_SYNC_TYPE
+    ) {
+      orphans.push(record);
+      grouped.delete(key);
+    }
+  }
+
+  for (const orphan of orphans) {
+    const checkout = orphan.checkOut!;
+    let best: ShiftVerificationRecord | null = null;
+
+    for (const record of grouped.values()) {
+      if (record.empNumber !== orphan.empNumber || !record.checkIn) continue;
+      if (record.checkIn.device_time > checkout.device_time) continue;
+      if (
+        record.checkOut &&
+        record.checkOut.device_time >= checkout.device_time
+      ) {
+        continue;
+      }
+      if (!best || record.checkIn.device_time > best.checkIn!.device_time) {
+        best = record;
+      }
+    }
+
+    if (best) {
+      best.checkOut = checkout;
+      if (checkout.status === 'FLAGGED') {
+        best.hasFlagged = true;
+      }
+    } else {
+      grouped.set(orphan.shiftKey, orphan);
+    }
+  }
+}
+
 /** On-hold panel — timing/missing-photo holds not already in the review grid. */
 export function isOnHoldPanelShift(shift: ShiftVerificationRecord) {
   if (!isOnHold(shift)) return false;

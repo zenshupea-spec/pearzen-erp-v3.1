@@ -9,25 +9,16 @@ export default function ForgeForgotPasswordPage() {
   const [email, setEmail] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
-  const [devPassword, setDevPassword] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     setErrorMsg('');
     setSuccessMsg('');
-    setDevPassword(null);
     startTransition(async () => {
       const result = await requestForgePasswordResetAction(email);
       if ('error' in result && result.error) {
         setErrorMsg(result.error);
-        return;
-      }
-      if (result.tempPassword) {
-        setDevPassword(result.tempPassword);
-        setSuccessMsg(
-          'RESEND_API_KEY is not configured — copy this one-time password now.',
-        );
         return;
       }
       setSuccessMsg('A 30-digit temporary password was emailed to your recovery address.');
@@ -49,11 +40,6 @@ export default function ForgeForgotPasswordPage() {
           ) : null}
           {successMsg ? (
             <p className="text-xs font-bold text-emerald-300">{successMsg}</p>
-          ) : null}
-          {devPassword ? (
-            <p className="break-all rounded-lg bg-slate-900 p-3 font-mono text-sm text-amber-200">
-              {devPassword}
-            </p>
           ) : null}
           <input
             type="email"

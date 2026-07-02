@@ -16,6 +16,13 @@ import {
 import { BANK_EXPORT_FORMAT_LABELS } from '../../../../../packages/bank-export-settings';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
 import {
+  ExecutivePageBody,
+  ExecutivePageHeader,
+  ExecutivePageLiveSubtitle,
+  ExecutivePageLoading,
+  ExecutivePageShell,
+} from '../../../components/executive/ExecutivePageChrome';
+import {
   advanceBankFilename,
   generateAdvanceBankCsv,
   generateAdvanceBankTxt,
@@ -87,7 +94,7 @@ function ConfirmModal({
           <button
             type="button"
             onClick={onConfirm}
-            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-black uppercase tracking-wider text-white"
+            className="rounded-xl bg-[color:var(--cvs-accent)] px-4 py-2 text-sm font-black uppercase tracking-wider text-white transition-all hover:bg-[color:var(--cvs-accent-hover)]"
           >
             Approve Batch
           </button>
@@ -219,7 +226,7 @@ function AdvanceBatchCard({
           <div
             className={`border-t-2 px-6 py-6 ${
               isPending
-                ? 'border-slate-900/10 bg-gradient-to-b from-slate-50/60 to-white/30'
+                ? 'border-[color:var(--cvs-accent-muted)]/30 bg-gradient-to-b from-[var(--cvs-accent-soft)]/40 to-white/30'
                 : 'border-emerald-200/60 bg-emerald-50/20'
             }`}
           >
@@ -231,19 +238,19 @@ function AdvanceBatchCard({
                     Enterprise Bank Lock
                   </p>
                 </div>
-                <div className="flex items-center gap-3 rounded-2xl border border-indigo-200/80 bg-indigo-50/60 px-4 py-3">
-                  <Lock className="h-4 w-4 text-indigo-700" />
+                <div className="flex items-center gap-3 rounded-2xl border border-[color:var(--cvs-accent-muted)] bg-[var(--cvs-accent-soft)] px-4 py-3">
+                  <Lock className="h-4 w-4 text-[color:var(--cvs-accent)]" />
                   <div>
-                    <p className="text-sm font-black uppercase tracking-widest text-indigo-700">
+                    <p className="text-sm font-black uppercase tracking-widest text-[color:var(--cvs-accent)]">
                       Format Locked by MD
                     </p>
-                    <p className="mt-0.5 text-sm font-black text-indigo-900">{exportLabel}</p>
+                    <p className="mt-0.5 text-sm font-black text-slate-900">{exportLabel}</p>
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => onApprove(batch)}
-                  className="flex w-full items-center justify-center gap-3 rounded-2xl bg-slate-900 px-8 py-5 text-sm font-black uppercase tracking-widest text-white shadow-xl"
+                  className="flex w-full items-center justify-center gap-3 rounded-2xl bg-[color:var(--cvs-accent)] px-8 py-5 text-sm font-black uppercase tracking-widest text-white shadow-xl shadow-[color:var(--cvs-glow)] transition-all hover:bg-[color:var(--cvs-accent-hover)]"
                 >
                   <Lock className="h-5 w-5" />
                   Approve Advance Batch
@@ -286,18 +293,24 @@ function AdvanceBatchCard({
 export default function ExecutiveAdvancePage() {
   const [payrollPeriod, setPayrollPeriod] = useState<PayrollPeriod>(FM_LIVE_PAYROLL_PERIOD);
   const [batches, setBatches] = useState<MdAdvanceBatch[]>([]);
+  const [batchesLoading, setBatchesLoading] = useState(true);
   const [confirmBatch, setConfirmBatch] = useState<MdAdvanceBatch | null>(null);
   const [approveError, setApproveError] = useState<string | null>(null);
+  const [tableNotReady, setTableNotReady] = useState(false);
   const [bankFormatId, setBankFormatId] = useState<'commercial_csv' | 'commercial_txt'>(
     'commercial_csv',
   );
   const periodLabel = formatPayrollPeriodLabel(payrollPeriod);
 
   const refreshBatches = useCallback(() => {
-    void getMdAdvanceBatches(payrollPeriod.year, payrollPeriod.month).then((payload) => {
-      setBatches(payload.batches);
-    });
-    getBankExportSettings().then((cfg) => setBankFormatId(cfg.masterFormatId));
+    setBatchesLoading(true);
+    void Promise.all([
+      getMdAdvanceBatches(payrollPeriod.year, payrollPeriod.month).then((payload) => {
+        setBatches(payload.batches);
+        setTableNotReady(!payload.tableReady);
+      }),
+      getBankExportSettings().then((cfg) => setBankFormatId(cfg.masterFormatId)),
+    ]).finally(() => setBatchesLoading(false));
   }, [payrollPeriod]);
 
   useEffect(() => {
@@ -363,17 +376,15 @@ export default function ExecutiveAdvancePage() {
         onCancel={() => setConfirmBatch(null)}
       />
 
-      <div className="min-h-0 pb-24 font-sans">
-        <header className="sticky top-0 z-40 border-b border-white/60 bg-white/45 px-6 py-4 shadow-[0_8px_32px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl backdrop-saturate-150">
-          <div className="flex w-full flex-wrap items-center justify-between gap-3">
-            <div>
-              <h1 className="text-xl font-black uppercase tracking-tight text-slate-900 sm:text-2xl">
-                Advance Salary Audit &amp; Bank Lock
-              </h1>
-              <p className="text-sm font-bold uppercase tracking-widest text-amber-700">
-                Maker / Checker · MD Approval · Bank File per MD Settings
-              </p>
-            </div>
+      <ExecutivePageShell>
+        <ExecutivePageHeader
+          title="Advance Salary Audit & Bank Lock"
+          subtitle={
+            <ExecutivePageLiveSubtitle>
+              Maker / Checker · MD Approval · Bank File per MD Settings
+            </ExecutivePageLiveSubtitle>
+          }
+          actions={
             <div className="flex flex-wrap items-center gap-3">
               <FmPayrollMonthSelector period={payrollPeriod} onChange={setPayrollPeriod} />
               <div className="flex items-center gap-2 rounded-2xl border border-amber-200/80 bg-amber-50/80 px-4 py-2">
@@ -383,16 +394,26 @@ export default function ExecutiveAdvancePage() {
                 </span>
               </div>
             </div>
-          </div>
-        </header>
+          }
+        />
 
-        <div className="w-full space-y-6 px-6 py-8 lg:px-12 2xl:px-24">
+        <ExecutivePageBody spacing="relaxed">
+          {tableNotReady ? (
+            <div className="rounded-2xl border border-amber-200/80 bg-amber-50/80 px-4 py-3 text-sm font-semibold text-amber-900">
+              Advance run tables are not available yet — apply Supabase migrations to load live batches.
+            </div>
+          ) : null}
+
           {approveError && (
             <div className="rounded-2xl border border-rose-200/80 bg-rose-50/80 px-4 py-3 text-sm font-semibold text-rose-800">
               {approveError}
             </div>
           )}
 
+          {batchesLoading ? (
+            <ExecutivePageLoading message="Loading advance batches…" />
+          ) : (
+          <>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <ExecutiveGlassCard className="bg-gradient-to-br from-amber-50/60 to-white/60 p-5">
               <div className="flex items-start justify-between">
@@ -483,8 +504,11 @@ export default function ExecutiveAdvancePage() {
               <span>→ MD downloads bank file (TXT/CSV per settings).</span>
             </span>
           </div>
-        </div>
-      </div>
+          </>
+          )}
+
+        </ExecutivePageBody>
+      </ExecutivePageShell>
     </>
   );
 }

@@ -15,6 +15,7 @@ import {
   type PayrollGroupId,
 } from '../../lib/payroll-run-types';
 import { formatPayrollPeriodLabel } from '../fm/lib/payroll-period';
+import { resolveAuthUserDisplayNames } from '../../lib/payroll-run-audit';
 import { getRankPayMatrix } from './settings/rank-matrix-actions';
 import { adjustedMonthlyBasicFromRank } from '../../../../packages/rank-pay-matrix';
 import { completedYearsOfService } from '../../../../packages/gratuity';
@@ -120,6 +121,9 @@ export async function getMdPayrollAuditBatches(
     const rankMatrix = await getRankPayMatrix();
     const periodEndIso = `${year}-${String(month).padStart(2, '0')}-28`;
     const periodLabel = formatPayrollPeriodLabel({ year, month });
+    const submitterNames = await resolveAuthUserDisplayNames(
+      submittedRuns.map((r) => (r.submitted_by != null ? String(r.submitted_by) : null)),
+    );
 
     const batches: MdPayrollBatch[] = [];
 
@@ -165,7 +169,10 @@ export async function getMdPayrollAuditBatches(
         id: String(run.batch_id),
         period: periodLabel,
         company: GROUP_LABELS[groupId] ?? groupId,
-        submittedBy: 'Finance Manager',
+        submittedBy:
+          run.submitted_by != null
+            ? (submitterNames.get(String(run.submitted_by)) ?? 'Unknown')
+            : 'Unknown',
         submittedAt: run.submitted_at ? String(run.submitted_at) : new Date().toISOString(),
         status: wf === 'APPROVED' ? 'APPROVED' : 'SUBMITTED_FOR_REVIEW',
         lines,

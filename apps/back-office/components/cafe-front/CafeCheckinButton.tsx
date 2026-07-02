@@ -281,7 +281,7 @@ export function CafeCheckinButton({ onCheckedIn }: { onCheckedIn?: () => void })
         disabled = true;
       } else {
         dynamicStyle =
-          'border-orange-300 bg-orange-500 text-white shadow-orange-500/40 hover:bg-orange-400';
+          'border-[color:var(--cvs-accent-muted)] bg-[color:var(--cvs-accent)] text-white shadow-[color:var(--cvs-glow)] hover:bg-[color:var(--cvs-accent-hover)]';
         buttonText = 'Check-in';
         subText = geoWatch?.inBounds
           ? 'On site · tap to selfie'
@@ -300,7 +300,7 @@ export function CafeCheckinButton({ onCheckedIn }: { onCheckedIn?: () => void })
             Today&apos;s deployment
           </p>
           <p className="mt-1 text-sm font-black uppercase text-slate-900">{context.siteName}</p>
-          <p className="mt-0.5 font-mono text-xs text-orange-600">
+          <p className="mt-0.5 font-mono text-xs text-[color:var(--cvs-accent-hover)]">
             {formatTime(context.cafeOpenStart)} – {formatTime(context.cafeOpenEnd)}
           </p>
           {context.shiftType === 'MORNING' || context.shiftType === 'EVENING' ? (

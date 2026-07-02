@@ -5,7 +5,6 @@ import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import {
   Coffee,
-  User,
   CheckCircle2,
   AlertTriangle,
   XCircle,
@@ -17,7 +16,6 @@ import {
   TrendingUp,
   Eye,
   ShieldAlert,
-  Zap,
   ChevronDown,
   ChevronUp,
   Package,
@@ -26,8 +24,6 @@ import {
   Gavel,
   CalendarDays,
   Info,
-  ChevronLeft,
-  ChevronRight,
   VideoOff,
   ChefHat,
   Utensils,
@@ -37,6 +33,8 @@ import {
   Plus,
 } from 'lucide-react';
 import { ExecutiveGlassCard } from '../../../components/executive/ExecutiveVaultShell';
+import { ExecutivePageLoading } from '../../../components/executive/ExecutivePageChrome';
+import { CVS_BRAND_CLASSES } from '../../../lib/cvs-brand-tokens';
 import { isCafeHubView } from '../../../lib/hq-hub';
 import {
   fetchExecutiveSessionProfile,
@@ -44,17 +42,11 @@ import {
 } from '../actions';
 import {
   getCafeDashboard,
-  getCafeLaborRoster,
-  getCafeStaffDayLogs,
+  getCafePayrollCostForPeriod,
   issueCafeFine,
   saveCafeDashboard,
-  updateCafeStaffDayLog,
   type CafeDashboardPayload,
-  type CafeLaborRosterMember,
-  type CafeStaffDayLog,
 } from './actions';
-import { calcPayrollCostLkr } from './cafe-cost-utils';
-import { formatPeriodMonthLabel, normalizePeriodMonth } from './period-month';
 import {
   getMenuKitchenTrackKind,
   reconcilePrepWithMenu,
@@ -85,7 +77,15 @@ import {
   type CafeMenuRecipeItem,
   type RecipeLine,
 } from './cafe-menu-sync';
-import { CAFE_MENU_PATH, cafePortalHref } from './cafe-portal-nav';
+import {
+  CAFE_INVENTORY_ANCHOR,
+  CAFE_MENU_PATH,
+  cafePortalHref,
+} from './cafe-portal-nav';
+import {
+  maxCafeDeductionsMtdLkr,
+  remainingCafeDeductionHeadroomLkr,
+} from '../../../lib/cafe-fine-compliance';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -96,16 +96,11 @@ interface StaffMember {
   dailyRate: number;
   daysWorked: number;
   deductionsMTD: number;
+  monthlyBasicLkr: number;
 }
 
 type TaskStatus = 'COMPLETE' | 'PENDING' | 'OVERDUE';
 type TaskFreq   = 'DAILY' | 'WEEKLY';
-
-const CAFE_TASK_ASSIGNEE_ROLES = [
-  'Morning Barista',
-  'Evening Barista',
-  'Pastry Chef',
-] as const;
 
 interface Task {
   id: string;
@@ -281,11 +276,13 @@ interface FineTarget {
 function DisciplinaryFineModal({
   target,
   staff,
+  maxDeductionPct,
   onConfirm,
   onClose,
 }: {
   target: FineTarget | null;
   staff: StaffMember[];
+  maxDeductionPct: number;
   onConfirm: (staffId: string, amount: number, reason: string) => void;
   onClose: () => void;
 }) {
@@ -312,6 +309,18 @@ function DisciplinaryFineModal({
   const currentNet = selectedStaff ? gross - selectedStaff.deductionsMTD : 0;
   const fineAmt = parseFloat(amount) || 0;
   const projectedNet = currentNet - fineAmt;
+  const monthlyBasic = selectedStaff?.monthlyBasicLkr ?? 0;
+  const maxDeductionsMtd = selectedStaff
+    ? maxCafeDeductionsMtdLkr(monthlyBasic, maxDeductionPct)
+    : 0;
+  const deductionHeadroom = selectedStaff
+    ? remainingCafeDeductionHeadroomLkr({
+        monthlyBasicLkr: monthlyBasic,
+        currentDeductionsMtd: selectedStaff.deductionsMTD,
+        maxDeductionPct,
+      })
+    : 0;
+  const exceedsCap = fineAmt > deductionHeadroom + 0.009;
 
   const inputCls = 'w-full rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-rose-500/40 transition-all';
   const labelCls = 'mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-600';
@@ -360,18 +369,32 @@ function DisciplinaryFineModal({
               </select>
 
               {selectedStaff && (
-                <div className="mt-3 grid grid-cols-3 gap-2">
-                  <div className="rounded-xl bg-white/60 p-2 text-center">
-                    <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">Gross MTD</p>
-                    <p className="mt-0.5 text-xs font-black tabular-nums text-slate-800">{lkr(gross)}</p>
+                <div className="mt-3 space-y-2">
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="rounded-xl bg-white/60 p-2 text-center">
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">Gross MTD</p>
+                      <p className="mt-0.5 text-xs font-black tabular-nums text-slate-800">{lkr(gross)}</p>
+                    </div>
+                    <div className="rounded-xl bg-white/60 p-2 text-center">
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">Current Net</p>
+                      <p className="mt-0.5 text-xs font-black tabular-nums text-emerald-800">{lkr(currentNet)}</p>
+                    </div>
+                    <div className={`rounded-xl p-2 text-center ${fineAmt > 0 ? 'bg-rose-50/80 ring-1 ring-rose-200/60' : 'bg-white/60'}`}>
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">After Fine</p>
+                      <p className={`mt-0.5 text-xs font-black tabular-nums ${fineAmt > 0 ? 'text-rose-800' : 'text-slate-800'}`}>{lkr(projectedNet)}</p>
+                    </div>
                   </div>
-                  <div className="rounded-xl bg-white/60 p-2 text-center">
-                    <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">Current Net</p>
-                    <p className="mt-0.5 text-xs font-black tabular-nums text-emerald-800">{lkr(currentNet)}</p>
-                  </div>
-                  <div className={`rounded-xl p-2 text-center ${fineAmt > 0 ? 'bg-rose-50/80 ring-1 ring-rose-200/60' : 'bg-white/60'}`}>
-                    <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">After Fine</p>
-                    <p className={`mt-0.5 text-xs font-black tabular-nums ${fineAmt > 0 ? 'text-rose-800' : 'text-slate-800'}`}>{lkr(projectedNet)}</p>
+                  <div className="rounded-xl border border-amber-200/70 bg-amber-50/60 px-3 py-2 text-[10px] text-amber-900">
+                    <p>
+                      MD cap: <strong>{maxDeductionPct}%</strong> of monthly basic ({lkr(monthlyBasic)}) ={' '}
+                      <strong>{lkr(maxDeductionsMtd)}</strong> max deductions this month.
+                    </p>
+                    <p className="mt-1">
+                      Remaining headroom: <strong>{lkr(deductionHeadroom)}</strong>
+                      {exceedsCap ? (
+                        <span className="font-bold text-rose-700"> — fine exceeds cap</span>
+                      ) : null}
+                    </p>
                   </div>
                 </div>
               )}
@@ -423,7 +446,7 @@ function DisciplinaryFineModal({
               <button type="button" onClick={onClose} className="flex-1 rounded-xl border border-slate-200 bg-white/70 py-3 text-sm font-bold text-slate-700 hover:bg-white/90 transition-all">Cancel</button>
               <button
                 type="button"
-                disabled={!confirmed || fineAmt <= 0}
+                disabled={!confirmed || fineAmt <= 0 || exceedsCap}
                 onClick={() => { onConfirm(staffId, fineAmt, reason); onClose(); }}
                 className="flex-[2] rounded-xl bg-rose-700 py-3 text-sm font-bold uppercase tracking-widest text-white shadow-lg shadow-rose-700/25 hover:bg-rose-600 transition-all disabled:cursor-not-allowed disabled:opacity-40"
               >
@@ -655,7 +678,7 @@ function StockVarianceRadar({
               onClick={() => setTab(key)}
               className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition-all ${
                 tab === key
-                  ? 'bg-slate-900 text-white shadow-sm'
+                  ? `${CVS_BRAND_CLASSES.mobileTabActive} border-transparent`
                   : 'text-slate-600 hover:bg-white/70'
               }`}
             >
@@ -1199,7 +1222,7 @@ function ProcurementReceiveModal({
               </p>
             </div>
             {usePriorityPreview != null ? (
-              <p className="rounded-xl border border-indigo-200/80 bg-indigo-50/80 px-4 py-3 text-center text-sm font-bold text-indigo-900">
+              <p className="rounded-xl border border-[color:var(--cvs-accent-muted)]/80 bg-[var(--cvs-accent-soft)]/80 px-4 py-3 text-center text-sm font-bold text-[color:var(--cvs-accent)]">
                 Write{' '}
                 <span className="font-mono text-lg tabular-nums">{usePriorityPreview}</span> on each
                 package (lower number = use first)
@@ -1242,7 +1265,7 @@ function ProcurementReceiveModal({
                 onConfirm(ingredient.id, packCount, expiresOn);
                 onClose();
               }}
-              className="flex-[2] rounded-xl bg-sky-700 py-3 text-sm font-bold uppercase tracking-widest text-white shadow-lg shadow-sky-700/25 hover:bg-sky-600 transition-all disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex-[2] rounded-xl bg-[color:var(--cvs-accent)] py-3 text-sm font-bold uppercase tracking-widest text-white shadow-lg shadow-[color:var(--cvs-glow)] hover:bg-[color:var(--cvs-accent-hover)] transition-all disabled:cursor-not-allowed disabled:opacity-40"
             >
               Add to stock
             </button>
@@ -1374,7 +1397,7 @@ function WeeklyProcurementPanel({
         </div>
         <div className="grid grid-cols-1 gap-6 p-5 lg:grid-cols-2">
           {renderList('Driver Buy List (Bought)', Truck, driverLines, 'text-emerald-600')}
-          {renderList('Supplier Order List (Delivered)', ShoppingCart, supplierLines, 'text-indigo-600')}
+          {renderList('Supplier Order List (Delivered)', ShoppingCart, supplierLines, 'text-[color:var(--cvs-accent)]')}
         </div>
       </ExecutiveGlassCard>
     </>
@@ -1806,412 +1829,6 @@ function PredictivePrepEngine({
 
 // ─── Menu Engineering Desk ────────────────────────────────────────────────────
 
-
-// ─── Labor Roster ───────────────────────────────────────────────────────────
-
-function shiftPeriodMonth(periodMonth: string, delta: number): string {
-  const d = new Date(`${normalizePeriodMonth(periodMonth)}T12:00:00`);
-  d.setMonth(d.getMonth() + delta);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
-}
-
-function daysInPeriodMonth(periodMonth: string): string[] {
-  const normalized = normalizePeriodMonth(periodMonth);
-  const [year, month] = normalized.split('-').map(Number);
-  const total = new Date(year, month, 0).getDate();
-  return Array.from({ length: total }, (_, i) => {
-    const day = i + 1;
-    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-  });
-}
-
-function LaborRosterPanel({
-  hubView,
-  editorName,
-  editorEmail,
-}: {
-  hubView: boolean;
-  editorName: string;
-  editorEmail: string;
-}) {
-  const [periodMonth, setPeriodMonth] = useState(normalizePeriodMonth());
-  const [panelExpanded, setPanelExpanded] = useState(true);
-  const [roster, setRoster] = useState<CafeLaborRosterMember[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [rosterError, setRosterError] = useState<string | null>(null);
-  const [selectedStaffId, setSelectedStaffId] = useState<string | null>(null);
-  const [dayLogs, setDayLogs] = useState<CafeStaffDayLog[]>([]);
-  const [dayLogsLoading, setDayLogsLoading] = useState(false);
-  const [savingDate, setSavingDate] = useState<string | null>(null);
-
-  const isCurrentMonth = periodMonth === normalizePeriodMonth();
-  const monthDays = useMemo(() => daysInPeriodMonth(periodMonth), [periodMonth]);
-  const dayLogByDate = useMemo(
-    () => new Map(dayLogs.map((log) => [log.workDate, log])),
-    [dayLogs],
-  );
-
-  const reloadRoster = useCallback(() => {
-    setLoading(true);
-    void getCafeLaborRoster(periodMonth).then((payload) => {
-      if (payload.error) setRosterError(payload.error);
-      else setRosterError(null);
-      setRoster(payload.staff);
-      setLoading(false);
-    });
-  }, [periodMonth]);
-
-  useEffect(() => {
-    reloadRoster();
-  }, [reloadRoster]);
-
-  useEffect(() => {
-    if (!selectedStaffId) {
-      setDayLogs([]);
-      return;
-    }
-    setDayLogsLoading(true);
-    void getCafeStaffDayLogs(selectedStaffId, periodMonth).then((result) => {
-      setDayLogs(result.logs);
-      setDayLogsLoading(false);
-    });
-  }, [selectedStaffId, periodMonth]);
-
-  const totalGross = roster.reduce(
-    (sum, s) => sum + s.dailyRate * s.daysWorked + s.otTotalLkr,
-    0,
-  );
-  const totalDeductions = roster.reduce((sum, s) => sum + s.deductionsMTD, 0);
-  const totalNet = totalGross - totalDeductions;
-  const colSpan = hubView ? 6 : 7;
-
-  const handleDayUpdate = async (
-    staffMember: CafeLaborRosterMember,
-    workDate: string,
-    patch: { worked: boolean; otHours: number; otLkr: number },
-  ) => {
-    setSavingDate(workDate);
-    const result = await updateCafeStaffDayLog({
-      employeeId: staffMember.id,
-      workDate,
-      worked: patch.worked,
-      otHours: patch.otHours,
-      otLkr: patch.otLkr,
-      periodMonth,
-      editorName,
-      editorEmail,
-    });
-    setSavingDate(null);
-    if (!result.ok || !result.log) return;
-
-    setDayLogs((prev) => {
-      const next = prev.filter((l) => l.workDate !== workDate);
-      return [...next, result.log!].sort((a, b) => a.workDate.localeCompare(b.workDate));
-    });
-    reloadRoster();
-  };
-
-  const selectedStaff = roster.find((s) => s.id === selectedStaffId) ?? null;
-
-  return (
-    <ExecutiveGlassCard className="overflow-hidden">
-      <div className="border-b border-slate-200/80 bg-slate-50/80 px-5 py-3.5 flex flex-wrap items-center gap-2">
-        <User className="h-4 w-4 text-slate-500" />
-        <h2 className="text-lg font-bold text-slate-800 uppercase">Labor Roster — MTD Salary Tracker</h2>
-
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1 rounded-xl border border-slate-200/80 bg-white/70 p-0.5">
-            <button
-              type="button"
-              onClick={() => setPeriodMonth((m) => shiftPeriodMonth(m, -1))}
-              className="rounded-lg p-1.5 text-slate-600 transition-all hover:bg-slate-100"
-              aria-label="Previous month"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            <span className="min-w-[9rem] px-2 text-center text-xs font-black uppercase tracking-wider text-slate-800">
-              {formatPeriodMonthLabel(periodMonth)}
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                if (!isCurrentMonth) setPeriodMonth((m) => shiftPeriodMonth(m, 1));
-              }}
-              disabled={isCurrentMonth}
-              className="rounded-lg p-1.5 text-slate-600 transition-all hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-30"
-              aria-label="Next month"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
-
-          {!isCurrentMonth ? (
-            <button
-              type="button"
-              onClick={() => setPeriodMonth(normalizePeriodMonth())}
-              className="rounded-xl border border-indigo-200/80 bg-indigo-50/70 px-2.5 py-1 text-[10px] font-bold text-indigo-800 hover:bg-indigo-100/70"
-            >
-              Current month
-            </button>
-          ) : null}
-
-          <button
-            type="button"
-            onClick={() => setPanelExpanded((v) => !v)}
-            className="flex items-center gap-1 rounded-xl border border-slate-200/80 bg-white/70 px-2.5 py-1 text-[10px] font-bold text-slate-700 hover:bg-white"
-          >
-            {panelExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-            {panelExpanded ? 'Collapse' : 'Expand'}
-          </button>
-        </div>
-      </div>
-
-      {rosterError ? (
-        <div className="border-b border-rose-200/80 bg-rose-50/50 px-5 py-2 text-xs font-semibold text-rose-800">
-          {rosterError}
-        </div>
-      ) : null}
-
-      {panelExpanded ? (
-        <div className="overflow-x-auto">
-          {loading ? (
-            <p className="px-5 py-10 text-center text-sm text-slate-500">Loading roster…</p>
-          ) : roster.length === 0 ? (
-            <p className="px-5 py-10 text-center text-sm text-slate-500">No active café staff on roster.</p>
-          ) : (
-            <table className="w-full text-left text-sm">
-              <thead className="border-b border-slate-200/80 bg-slate-50/60">
-                <tr>
-                  <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider">Staff Member</th>
-                  <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider">Role</th>
-                  <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider text-center">Daily Rate</th>
-                  <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider text-center">Days Worked</th>
-                  <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider text-center">OT (Month)</th>
-                  {!hubView ? (
-                    <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider text-right">Deductions</th>
-                  ) : null}
-                  <th className="px-5 py-3.5 text-xs font-bold text-slate-500 uppercase tracking-wider text-right">
-                    <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50/80 px-2.5 py-0.5 text-[10px] font-black text-emerald-800">
-                      <Zap className="h-2.5 w-2.5" />
-                      {hubView ? 'MTD Gross' : 'MTD Net'}
-                    </span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200/60">
-                {roster.map((s) => {
-                  const gross = s.dailyRate * s.daysWorked + s.otTotalLkr;
-                  const net = gross - s.deductionsMTD;
-                  const isOpen = selectedStaffId === s.id;
-                  return (
-                    <React.Fragment key={s.id}>
-                      <tr
-                        className={`cursor-pointer transition-colors ${isOpen ? 'bg-indigo-50/40' : 'hover:bg-white/40'}`}
-                        onClick={() => setSelectedStaffId(isOpen ? null : s.id)}
-                      >
-                        <td className="px-5 py-4 text-sm font-medium text-slate-800">
-                          <div className="flex items-center gap-2.5">
-                            <div className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200/80 bg-slate-100/80 text-xs font-black text-slate-600">
-                              {s.name.charAt(0)}
-                            </div>
-                            <div>
-                              <p className="font-bold text-slate-900">{s.name}</p>
-                              <p className="text-[10px] font-semibold text-indigo-700">
-                                {isOpen ? 'Hide daily breakdown' : 'Click for days & OT'}
-                              </p>
-                            </div>
-                            {isOpen ? (
-                              <ChevronUp className="ml-1 h-4 w-4 text-indigo-600" />
-                            ) : (
-                              <ChevronDown className="ml-1 h-4 w-4 text-slate-400" />
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-5 py-4 text-sm font-medium text-slate-800">{s.role}</td>
-                        <td className="px-5 py-4 text-center font-mono text-sm text-slate-800">{lkr(s.dailyRate)}/day</td>
-                        <td className="px-5 py-4 text-sm text-slate-800">
-                          <div className="flex flex-col items-center gap-1">
-                            <span className="font-bold text-slate-900">{s.daysWorked}</span>
-                            <div className="h-1 w-16 overflow-hidden rounded-full bg-slate-200/80">
-                              <div
-                                className="h-full rounded-full bg-emerald-500"
-                                style={{ width: `${Math.min((s.daysWorked / 26) * 100, 100)}%` }}
-                              />
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-5 py-4 text-center font-mono text-sm font-bold text-amber-800">
-                          {s.otTotalLkr > 0 ? lkr(s.otTotalLkr) : '—'}
-                        </td>
-                        {!hubView ? (
-                          <td className="px-5 py-4 text-right font-mono text-sm text-slate-800">
-                            {s.deductionsMTD > 0 ? `−${lkr(s.deductionsMTD)}` : '—'}
-                          </td>
-                        ) : null}
-                        <td className="px-5 py-4 text-right">
-                          <span className="inline-block rounded-xl border border-emerald-200/80 bg-emerald-50/70 px-3 py-1 text-sm font-black tabular-nums text-emerald-900">
-                            {lkr(hubView ? gross : net)}
-                          </span>
-                        </td>
-                      </tr>
-
-                      {isOpen && selectedStaff ? (
-                        <tr className="bg-indigo-50/20">
-                          <td colSpan={colSpan} className="px-5 py-4">
-                            {dayLogsLoading ? (
-                              <p className="text-center text-xs text-slate-500">Loading daily log…</p>
-                            ) : (
-                              <div className="space-y-3">
-                                <p className="text-[10px] font-black uppercase tracking-widest text-indigo-900">
-                                  Daily attendance — {selectedStaff.name} · {formatPeriodMonthLabel(periodMonth)}
-                                </p>
-                                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
-                                  {monthDays.map((date) => {
-                                    const log = dayLogByDate.get(date);
-                                    const worked = log?.worked ?? false;
-                                    const otHours = log?.otHours ?? 0;
-                                    const otLkr = log?.otLkr ?? 0;
-                                    const dayNum = Number(date.slice(8, 10));
-                                    const isSaving = savingDate === date;
-                                    const wasEdited = Boolean(log?.editedAt);
-
-                                    return (
-                                      <div
-                                        key={date}
-                                        className={`rounded-xl border p-2.5 ${
-                                          worked
-                                            ? 'border-emerald-200/80 bg-emerald-50/50'
-                                            : 'border-slate-200/70 bg-white/60'
-                                        }`}
-                                      >
-                                        <div className="mb-2 flex items-center justify-between">
-                                          <span className="text-xs font-black text-slate-800">{dayNum}</span>
-                                          <label className="flex cursor-pointer items-center gap-1 text-[9px] font-bold text-slate-600">
-                                            <input
-                                              type="checkbox"
-                                              checked={worked}
-                                              disabled={isSaving}
-                                              onChange={(e) => {
-                                                e.stopPropagation();
-                                                void handleDayUpdate(selectedStaff, date, {
-                                                  worked: e.target.checked,
-                                                  otHours: e.target.checked ? otHours : 0,
-                                                  otLkr: e.target.checked ? otLkr : 0,
-                                                });
-                                              }}
-                                              onClick={(e) => e.stopPropagation()}
-                                              className="accent-emerald-600"
-                                            />
-                                            Day
-                                          </label>
-                                        </div>
-
-                                        {worked ? (
-                                          <div className="space-y-1.5" onClick={(e) => e.stopPropagation()}>
-                                            <div>
-                                              <label className="text-[8px] font-bold uppercase text-slate-500">OT hrs</label>
-                                              <input
-                                                type="number"
-                                                min={0}
-                                                step={0.5}
-                                                defaultValue={otHours || ''}
-                                                key={`${date}-hrs-${otHours}`}
-                                                disabled={isSaving}
-                                                onBlur={(e) => {
-                                                  const nextHours = Math.max(0, parseFloat(e.target.value) || 0);
-                                                  if (nextHours === otHours) return;
-                                                  const hourly = selectedStaff.dailyRate / 8;
-                                                  void handleDayUpdate(selectedStaff, date, {
-                                                    worked: true,
-                                                    otHours: nextHours,
-                                                    otLkr: nextHours > 0 ? Math.round(nextHours * hourly * 1.5) : otLkr,
-                                                  });
-                                                }}
-                                                className="w-full rounded-lg border border-slate-200/80 bg-white/90 px-1.5 py-1 text-center text-xs font-mono"
-                                              />
-                                            </div>
-                                            <div>
-                                              <label className="text-[8px] font-bold uppercase text-slate-500">OT LKR</label>
-                                              <input
-                                                type="number"
-                                                min={0}
-                                                step={1}
-                                                defaultValue={otLkr || ''}
-                                                key={`${date}-lkr-${otLkr}`}
-                                                disabled={isSaving}
-                                                onBlur={(e) => {
-                                                  const nextLkr = Math.max(0, parseFloat(e.target.value) || 0);
-                                                  if (nextLkr === otLkr) return;
-                                                  void handleDayUpdate(selectedStaff, date, {
-                                                    worked: true,
-                                                    otHours,
-                                                    otLkr: nextLkr,
-                                                  });
-                                                }}
-                                                className="w-full rounded-lg border border-slate-200/80 bg-white/90 px-1.5 py-1 text-center text-xs font-mono"
-                                              />
-                                            </div>
-                                          </div>
-                                        ) : (
-                                          <p className="text-[9px] text-slate-400">Off</p>
-                                        )}
-
-                                        {wasEdited && log ? (
-                                          <div className="mt-2 rounded-lg border border-amber-200/80 bg-amber-50/80 px-1.5 py-1 text-[8px] leading-snug text-amber-900">
-                                            <span className="font-black">Edited by {log.editedByName ?? 'staff'}</span>
-                                            <br />
-                                            Was: {log.prevWorked ? 'worked' : 'off'}
-                                            {log.prevOtHours ? ` · ${log.prevOtHours}h OT` : ''}
-                                            {log.prevOtLkr ? ` · ${lkr(log.prevOtLkr)}` : ''}
-                                          </div>
-                                        ) : null}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                      ) : null}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-              <tfoot className="border-t border-slate-200/80 bg-slate-50/60">
-                <tr>
-                  <td colSpan={hubView ? 4 : 4} className="px-5 py-3 text-xs font-bold text-slate-600">
-                    Total — {formatPeriodMonthLabel(periodMonth)}
-                  </td>
-                  <td className="px-5 py-3 text-center font-mono text-xs font-black text-amber-800">
-                    {roster.some((s) => s.otTotalLkr > 0)
-                      ? lkr(roster.reduce((sum, s) => sum + s.otTotalLkr, 0))
-                      : '—'}
-                  </td>
-                  {!hubView ? (
-                    <td className="px-5 py-3 text-right font-mono text-xs font-black text-rose-700">
-                      −{lkr(totalDeductions)}
-                    </td>
-                  ) : null}
-                  <td className="px-5 py-3 text-right">
-                    <span className="inline-block rounded-xl border border-emerald-200/80 bg-emerald-100/70 px-3 py-1 text-sm font-black tabular-nums text-emerald-900">
-                      {lkr(hubView ? totalGross : totalNet)}
-                    </span>
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
-          )}
-        </div>
-      ) : (
-        <div className="px-5 py-4 text-xs text-slate-500">
-          {roster.length} staff · {formatPeriodMonthLabel(periodMonth)} · click Expand to view roster
-        </div>
-      )}
-    </ExecutiveGlassCard>
-  );
-}
-
 // ─── Lookback Date Strip ──────────────────────────────────────────────────────
 
 function LookbackDateStrip({
@@ -2250,15 +1867,15 @@ function LookbackDateStrip({
             title={date}
             className={`flex flex-shrink-0 flex-col items-center rounded-xl border px-2.5 py-1.5 transition-all ${
               active
-                ? 'border-emerald-300/80 bg-emerald-600 text-white shadow-md shadow-emerald-600/25'
+                ? `${CVS_BRAND_CLASSES.mobileTabActive} border-transparent`
                 : purged
                 ? 'border-amber-200/70 bg-amber-50/60 text-amber-800 hover:bg-amber-100/60'
                 : 'border-slate-200/70 bg-white/50 text-slate-700 hover:bg-white/80'
             }`}
           >
-            <span className={`text-[8px] font-bold uppercase ${active ? 'text-emerald-100' : purged ? 'text-amber-600' : 'text-slate-500'}`}>{dayName}</span>
+            <span className={`text-[8px] font-bold uppercase ${active ? 'text-white/90' : purged ? 'text-amber-600' : 'text-slate-500'}`}>{dayName}</span>
             <span className={`text-sm font-black tabular-nums leading-tight ${active ? 'text-white' : ''}`}>{dayNum}</span>
-            {offset === 0 && <span className={`text-[7px] font-black uppercase leading-tight ${active ? 'text-emerald-100' : 'text-emerald-700'}`}>TODAY</span>}
+            {offset === 0 && <span className={`text-[7px] font-black uppercase leading-tight ${active ? 'text-white/90' : 'text-[color:var(--cvs-accent)]'}`}>TODAY</span>}
             {purged && offset > 0 && <span className="text-[7px] font-bold uppercase leading-tight text-amber-600">≈PURGE</span>}
           </button>
         );
@@ -2286,7 +1903,6 @@ export default function CafePage() {
   } = useCafeBranchScope(pathname);
   const [sessionProfile, setSessionProfile] = useState<ExecutiveSessionProfile | null>(null);
   const [mtdWastageCostLkr, setMtdWastageCostLkr] = useState(0);
-  const [laborRoster, setLaborRoster] = useState<CafeLaborRosterMember[]>([]);
   const [staff, setStaff]             = useState<StaffMember[]>([]);
   const [tasks, setTasks]             = useState<Task[]>([]);
   const [listA, setListA]               = useState<DailyStockItem[]>([]);
@@ -2307,13 +1923,43 @@ export default function CafePage() {
   const [loadError, setLoadError]       = useState<string | null>(null);
   const [photoTask, setPhotoTask]     = useState<Task | null>(null);
   const [fineTarget, setFineTarget]   = useState<FineTarget | null>(null);
+  const [fineError, setFineError]     = useState<string | null>(null);
+  const [maxDeductionPct, setMaxDeductionPct] = useState(20);
+  const [payrollGrossMtd, setPayrollGrossMtd] = useState(0);
+  const [payrollNetMtd, setPayrollNetMtd] = useState(0);
   const [lookbackDate, setLookbackDate] = useState(TODAY_STR);
   const [showVoids, setShowVoids]     = useState(false);
   const [showAddTask, setShowAddTask] = useState(false);
   const [newTaskName, setNewTaskName] = useState('');
   const [newTaskTime, setNewTaskTime] = useState('09:00');
   const [newTaskFreq, setNewTaskFreq] = useState<TaskFreq>('DAILY');
-  const [newTaskAssignee, setNewTaskAssignee] = useState<string>(CAFE_TASK_ASSIGNEE_ROLES[0]);
+  const [newTaskAssignee, setNewTaskAssignee] = useState('');
+
+  const taskAssigneeOptions = useMemo(() => {
+    const seen = new Set<string>();
+    return staff
+      .filter((member) => {
+        const name = member.name.trim();
+        if (!name || seen.has(name)) return false;
+        seen.add(name);
+        return true;
+      })
+      .map((member) => ({
+        value: member.name.trim(),
+        label: member.role
+          ? `${member.name.trim()} · ${member.role}`
+          : member.name.trim(),
+      }));
+  }, [staff]);
+
+  useEffect(() => {
+    if (!taskAssigneeOptions.length) return;
+    setNewTaskAssignee((current) =>
+      taskAssigneeOptions.some((option) => option.value === current)
+        ? current
+        : taskAssigneeOptions[0].value,
+    );
+  }, [taskAssigneeOptions]);
 
   useEffect(() => {
     fetchExecutiveSessionProfile().then(setSessionProfile);
@@ -2332,9 +1978,15 @@ export default function CafePage() {
       const loadedIngredients = (payload.ingredients ?? []).map((ing) =>
         normalizeIngredient(ing as Partial<Ingredient> & Pick<Ingredient, 'id' | 'name' | 'supplier'>),
       );
+      const salesMap = new Map(
+        Object.entries(payload.menuDailySales ?? {}) as Array<
+          [string, import('./cafe-menu-velocity').MenuDailySaleRecord[]]
+        >,
+      );
       const loadedMenu = syncMenuRecipeCosts(
         normalizeMenuItems(payload.menuItems ?? []),
         loadedIngredients,
+        salesMap,
       );
       const linkedPrep = reconcilePrepWithMenu(
         loadedMenu,
@@ -2354,10 +2006,16 @@ export default function CafePage() {
       setCustomerMenuUrl(payload.customerMenuUrl ?? 'https://tasha.lk');
       setLocationName(payload.locationName ?? null);
       setMtdWastageCostLkr(payload.mtdWastageCostLkr ?? 0);
+      setMaxDeductionPct(payload.fineCompliance?.maxDeductionPct ?? 20);
+      setPayrollGrossMtd(payload.payrollGrossMtd ?? 0);
+      setPayrollNetMtd(payload.payrollNetMtd ?? 0);
       setDashboardReady(true);
     });
-    void getCafeLaborRoster().then((result) => {
-      setLaborRoster(result.staff);
+    void getCafePayrollCostForPeriod().then((result) => {
+      setPayrollGrossMtd(result.totalGrossLkr);
+      setPayrollNetMtd(
+        result.totalGrossLkr - result.staff.reduce((sum, member) => sum + member.deductionsMTD, 0),
+      );
     });
   }, [locationId, setLocationName]);
 
@@ -2415,6 +2073,16 @@ export default function CafePage() {
     return () => window.clearTimeout(timer);
   }, [staff, tasks, listA, listB, voids, menuItems, menuCategories, ingredients, prepItems, displayItems, globalOverhead, cafeLogoUrl, cafeCoverUrl, cafeCoverTextColor, cafeCoverTintStrength, customerMenuUrl, dashboardReady, persistDashboard]);
 
+  useEffect(() => {
+    if (!dashboardReady) return;
+    const anchor = window.location.hash.replace('#', '');
+    if (!anchor) return;
+    const target = document.getElementById(anchor);
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [dashboardReady]);
+
   const lookbackOffset = dateToOffset(lookbackDate);
   const activeTasks    = getTasksForOffset(lookbackOffset, tasks);
   const dailyTasks     = activeTasks.filter((t) => t.freq === 'DAILY');
@@ -2425,12 +2093,9 @@ export default function CafePage() {
     ? Math.round((complete / activeTasks.length) * 100)
     : 0;
 
-  const grossPayroll    = staff.reduce((s, m) => s + m.dailyRate * m.daysWorked, 0);
-  const totalDeductions = staff.reduce((s, m) => s + m.deductionsMTD, 0);
-  const netPayroll      = grossPayroll - totalDeductions;
-  const payrollCost     = laborRoster.length
-    ? calcPayrollCostLkr(laborRoster)
-    : grossPayroll;
+  const grossPayroll    = payrollGrossMtd;
+  const netPayroll      = payrollNetMtd;
+  const payrollCost     = payrollGrossMtd;
   const payrollAndWastageCost = payrollCost + mtdWastageCostLkr;
 
   const flaggedA = listA.filter((i) => listAPct(i) < THEFT_THRESHOLD).length;
@@ -2441,14 +2106,15 @@ export default function CafePage() {
     setNewTaskName('');
     setNewTaskTime('09:00');
     setNewTaskFreq('DAILY');
-    setNewTaskAssignee(CAFE_TASK_ASSIGNEE_ROLES[0]);
+    setNewTaskAssignee(taskAssigneeOptions[0]?.value ?? '');
     setShowAddTask(false);
   };
 
   const handleAddTask = () => {
     const name = newTaskName.trim();
     if (!name) return;
-    const assignedTo = newTaskAssignee || CAFE_TASK_ASSIGNEE_ROLES[0];
+    const assignedTo =
+      newTaskAssignee.trim() || taskAssigneeOptions[0]?.value || 'Unassigned';
     setTasks((prev) => [
       ...prev,
       {
@@ -2468,16 +2134,22 @@ export default function CafePage() {
   };
 
   const handleIssueFine = (staffId: string, amount: number, reason: string) => {
+    setFineError(null);
     void issueCafeFine({ staffId, amount, reason }).then((result) => {
-      if (result.staff) {
-        setStaff(result.staff);
+      if (!result.ok) {
+        setFineError(result.error ?? 'Failed to issue fine.');
         return;
       }
-      setStaff((prev) =>
-        prev.map((s) =>
-          s.id === staffId ? { ...s, deductionsMTD: s.deductionsMTD + amount } : s,
-        ),
-      );
+      if (result.staff) {
+        setStaff(result.staff);
+        void getCafePayrollCostForPeriod().then((payload) => {
+          setPayrollGrossMtd(payload.totalGrossLkr);
+          setPayrollNetMtd(
+            payload.totalGrossLkr -
+              payload.staff.reduce((sum, member) => sum + member.deductionsMTD, 0),
+          );
+        });
+      }
     });
   };
 
@@ -2489,16 +2161,30 @@ export default function CafePage() {
       <DisciplinaryFineModal
         target={fineTarget}
         staff={staff}
+        maxDeductionPct={maxDeductionPct}
         onConfirm={handleIssueFine}
         onClose={() => setFineTarget(null)}
       />
+
+      {fineError ? (
+        <div className="fixed bottom-6 right-6 z-[110] max-w-sm rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-900 shadow-lg">
+          {fineError}
+          <button
+            type="button"
+            className="ml-3 text-xs font-bold uppercase tracking-widest text-rose-700"
+            onClick={() => setFineError(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
 
       <CafePortalShell
         hubView={hubView}
         subtitle={
           hubView
-            ? 'Labor roster · task proof lock · procurement & menu'
-            : 'Labor roster · task proof lock · stock variance & theft radar'
+            ? 'Task proof lock · procurement & menu'
+            : 'Task proof lock · stock variance & theft radar'
         }
         branches={branches}
         selectedBranchId={locationId}
@@ -2575,13 +2261,6 @@ export default function CafePage() {
             setMenuItems={setMenuItems}
           />
 
-          {/* ── Labor Roster & MTD Salary Tracker ── */}
-          <LaborRosterPanel
-            hubView={hubView}
-            editorName={sessionProfile?.fullName ?? 'Executive'}
-            editorEmail={sessionProfile?.email ?? ''}
-          />
-
           {/* ── Visual Task Auditor ── */}
           <ExecutiveGlassCard className="overflow-hidden">
             <div className="border-b border-slate-200/80 bg-slate-50/80 px-5 py-3.5 flex flex-wrap items-center gap-3">
@@ -2621,7 +2300,7 @@ export default function CafePage() {
                       value={newTaskName}
                       onChange={(e) => setNewTaskName(e.target.value)}
                       placeholder="e.g. Espresso machine purge"
-                      className="w-full rounded-xl border border-slate-200/80 bg-white/95 px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
+                      className={`w-full rounded-xl border border-slate-200/80 bg-white/95 px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 ${CVS_BRAND_CLASSES.focusRing}`}
                     />
                   </div>
                   <div>
@@ -2632,7 +2311,7 @@ export default function CafePage() {
                       type="time"
                       value={newTaskTime}
                       onChange={(e) => setNewTaskTime(e.target.value)}
-                      className="rounded-xl border border-slate-200/80 bg-white/95 px-3 py-2 text-sm font-mono font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
+                      className={`rounded-xl border border-slate-200/80 bg-white/95 px-3 py-2 text-sm font-mono font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 ${CVS_BRAND_CLASSES.focusRing}`}
                     />
                   </div>
                   <div>
@@ -2647,7 +2326,7 @@ export default function CafePage() {
                           onClick={() => setNewTaskFreq(freq)}
                           className={`rounded-lg px-2.5 py-1.5 transition-all ${
                             newTaskFreq === freq
-                              ? 'bg-slate-900 text-white shadow-sm'
+                              ? `${CVS_BRAND_CLASSES.mobileTabActive} border-transparent`
                               : 'text-slate-500 hover:text-slate-700'
                           }`}
                         >
@@ -2663,20 +2342,25 @@ export default function CafePage() {
                     <select
                       value={newTaskAssignee}
                       onChange={(e) => setNewTaskAssignee(e.target.value)}
-                      className="w-full rounded-xl border border-slate-200/80 bg-white/95 px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
+                      disabled={taskAssigneeOptions.length === 0}
+                      className={`w-full rounded-xl border border-slate-200/80 bg-white/95 px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 ${CVS_BRAND_CLASSES.focusRing} disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500`}
                     >
-                      {CAFE_TASK_ASSIGNEE_ROLES.map((role) => (
-                        <option key={role} value={role}>
-                          {role}
-                        </option>
-                      ))}
+                      {taskAssigneeOptions.length === 0 ? (
+                        <option value="">No café staff on roster</option>
+                      ) : (
+                        taskAssigneeOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))
+                      )}
                     </select>
                   </div>
                   <button
                     type="button"
                     onClick={handleAddTask}
-                    disabled={!newTaskName.trim()}
-                    className="rounded-xl border border-emerald-300/80 bg-emerald-600 px-4 py-2 text-xs font-black uppercase tracking-widest text-white hover:bg-emerald-500 transition-all disabled:cursor-not-allowed disabled:opacity-40"
+                    disabled={!newTaskName.trim() || taskAssigneeOptions.length === 0}
+                    className="rounded-xl bg-[color:var(--cvs-accent)] px-4 py-2 text-xs font-black uppercase tracking-widest text-white shadow-md shadow-[color:var(--cvs-glow)] hover:bg-[color:var(--cvs-accent-hover)] transition-all disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Save task
                   </button>
@@ -2688,10 +2372,10 @@ export default function CafePage() {
             <div className="border-b border-slate-200/60 bg-white/30 px-5 py-3">
               <LookbackDateStrip selected={lookbackDate} onSelect={setLookbackDate} />
               {lookbackOffset > 0 && (
-                <div className="mt-2 flex items-center gap-2 rounded-xl border border-indigo-200/70 bg-indigo-50/50 px-3 py-1.5 text-[10px] text-indigo-800">
+                <div className="mt-2 flex items-center gap-2 rounded-xl border border-[color:var(--cvs-accent-muted)]/70 bg-[var(--cvs-accent-soft)]/50 px-3 py-1.5 text-[10px] text-[color:var(--cvs-accent)]">
                   <Info className="h-3 w-3 flex-shrink-0" />
                   <span>Viewing archived compliance data for <strong>{lookbackDate}</strong> ({lookbackOffset} day{lookbackOffset > 1 ? 's' : ''} ago). Photo proofs auto-purge after 14 days.</span>
-                  <button type="button" onClick={() => setLookbackDate(TODAY_STR)} className="ml-auto rounded-lg border border-indigo-200 bg-white/70 px-2 py-0.5 font-bold text-indigo-700 hover:bg-indigo-50 transition-all">Back to Today</button>
+                  <button type="button" onClick={() => setLookbackDate(TODAY_STR)} className="ml-auto rounded-lg border border-[color:var(--cvs-accent-muted)] bg-white/70 px-2 py-0.5 font-bold text-[color:var(--cvs-accent)] hover:bg-[var(--cvs-accent-soft)] transition-all">Back to Today</button>
                 </div>
               )}
             </div>
@@ -2767,13 +2451,15 @@ export default function CafePage() {
 
           {/* ── Stock Variance & Theft Radar (executive vault only) ── */}
           {!hubView ? (
-            <StockVarianceRadar
-              staff={staff}
-              listA={listA}
-              listB={listB}
-              voids={voids}
-              onIssueFine={setFineTarget}
-            />
+            <div id={CAFE_INVENTORY_ANCHOR} className="scroll-mt-28">
+              <StockVarianceRadar
+                staff={staff}
+                listA={listA}
+                listB={listB}
+                voids={voids}
+                onIssueFine={setFineTarget}
+              />
+            </div>
           ) : null}
 
           {/* ── Predictive Prep & Wastage Control ── */}

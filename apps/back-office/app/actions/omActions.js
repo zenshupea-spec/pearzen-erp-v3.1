@@ -1,38 +1,10 @@
 "use server";
 
-import { createServerClient } from "@supabase/ssr";
-import { cookies } from "next/headers";
-
-// Helper to initialize Supabase server client securely in modern Next.js
-async function getSupabaseServerClient() {
-  // THE FIX: Must await cookies() here
-  const cookieStore = await cookies();
-
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-    {
-      cookies: {
-        getAll() {
-          return cookieStore.getAll();
-        },
-        setAll(cookiesToSet) {
-          try {
-            cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options)
-            );
-          } catch (error) {
-            // Ignored if called from a Server Component context
-          }
-        },
-      },
-    }
-  );
-}
+import { createSupabaseServerClient } from "../../../../packages/supabase/server";
 
 export async function getPendingVerifications() {
   try {
-    const supabase = await getSupabaseServerClient();
+    const supabase = await createSupabaseServerClient();
 
     // THE FIX: Exactly matching your Supabase table columns
     const { data, error } = await supabase
@@ -55,7 +27,7 @@ export async function getPendingVerifications() {
 
 export async function approveShift(shiftId) {
   try {
-    const supabase = await getSupabaseServerClient();
+    const supabase = await createSupabaseServerClient();
 
     const { error } = await supabase
       .from("shifts")

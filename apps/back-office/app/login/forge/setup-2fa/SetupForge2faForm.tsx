@@ -3,7 +3,7 @@
 import { useEffect, useState, useTransition } from 'react';
 
 import BackupCodesPanel from '../../../../components/portal/BackupCodesPanel';
-import { formatForgeBackupCode } from '../../../../lib/forge-portal-backup';
+import { formatForgeBackupCode } from '../../../../lib/forge-portal-backup-shared';
 import {
   confirmForgeTotpSetupAction,
   finishForgeTotpSetupAction,
@@ -69,7 +69,7 @@ export default function SetupForge2faForm() {
               await finishForgeTotpSetupAction();
             });
           }}
-          continueLabel={isFinishing ? 'Continuing…' : 'Continue'}
+          continueLabel={isFinishing ? 'Continuing…' : "I've saved these codes — continue"}
         />
       ) : (
         <>

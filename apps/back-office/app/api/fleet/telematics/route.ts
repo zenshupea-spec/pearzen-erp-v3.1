@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server';
 
 import { processFleetTelematicsPing } from '../../../executive/fleet/fleet-telematics-ingest';
+import {
+  readFleetTelematicsWebhookSecret,
+  validateFleetTelematicsCompanyId,
+  verifyFleetTelematicsWebhookSecret,
+} from '../../../../lib/fleet-telematics-webhook';
 
 type TelematicsPayload = {
   tag_id?: string;
@@ -21,13 +26,7 @@ function unauthorized() {
   return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
 }
 
-function readWebhookSecret(request: Request): string | null {
-  const header = request.headers.get('authorization');
-  if (header?.startsWith('Bearer ')) return header.slice(7).trim();
-  return request.headers.get('x-fleet-telematics-secret')?.trim() ?? null;
-}
-
-/** Tracker webhook — POST GPS pings by registered tag_id. */
+/** Tracker webhook — POST GPS pings by registered tag_id + company_id. */
 export async function POST(request: Request) {
   const expectedSecret = process.env.FLEET_TELEMATICS_WEBHOOK_SECRET?.trim();
   if (!expectedSecret) {
@@ -37,14 +36,19 @@ export async function POST(request: Request) {
     );
   }
 
-  const provided = readWebhookSecret(request);
-  if (!provided || provided !== expectedSecret) return unauthorized();
+  const provided = readFleetTelematicsWebhookSecret(request);
+  if (!verifyFleetTelematicsWebhookSecret(provided, expectedSecret)) return unauthorized();
 
   let body: TelematicsPayload;
   try {
     body = (await request.json()) as TelematicsPayload;
   } catch {
     return NextResponse.json({ success: false, error: 'Invalid JSON body.' }, { status: 400 });
+  }
+
+  const companyCheck = validateFleetTelematicsCompanyId(body.company_id ?? body.companyId);
+  if (!companyCheck.ok) {
+    return NextResponse.json({ success: false, error: companyCheck.error }, { status: 400 });
   }
 
   const tagId = body.tag_id ?? body.tagId;
@@ -55,7 +59,7 @@ export async function POST(request: Request) {
     speedKmh: Number(body.speed_kmh ?? body.speedKmh ?? 0),
     recordedAt: body.recorded_at ?? body.recordedAt,
     locationLabel: body.location_label ?? body.locationLabel,
-    companyId: body.company_id ?? body.companyId,
+    companyId: companyCheck.companyId,
   });
 
   if (!result.success) {

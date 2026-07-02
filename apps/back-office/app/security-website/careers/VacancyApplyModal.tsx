@@ -5,6 +5,12 @@ import { Camera, Loader2, Upload, X } from 'lucide-react';
 
 import { compressHrDocumentFileClient } from '../../../lib/hr-document-compress-client';
 import {
+  CAREERS_DOC_MAX_EDGE_PX,
+  CAREERS_DOC_TARGET_MAX_BYTES,
+  CAREERS_SELFIE_MAX_EDGE_PX,
+  CAREERS_SELFIE_TARGET_MAX_BYTES,
+} from '../../../lib/hr-document-compress';
+import {
   OfficeCopyWatermarkOverlay,
 } from '../../../lib/identity-document-watermark-client';
 import { shouldApplyOfficeCopyWatermark } from '../../../lib/identity-document-watermark';
@@ -130,7 +136,7 @@ export default function VacancyApplyModal({
     }
   };
 
-  const captureSelfie = () => {
+  const captureSelfie = async () => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas) return;
@@ -149,16 +155,37 @@ export default function VacancyApplyModal({
     if (!ctx) return;
 
     ctx.drawImage(video, sx, sy, side, side, 0, 0, side, side);
-    let dataUrl: string;
-    try {
-      dataUrl = canvas.toDataURL('image/webp', 0.82);
-    } catch {
-      dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-    }
 
-    stopCamera();
-    setSelfiePreview(dataUrl);
-    setSelfieBase64(dataUrl);
+    const captureBlob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) {
+            reject(new Error('Could not capture selfie.'));
+            return;
+          }
+          resolve(blob);
+        },
+        'image/jpeg',
+        0.85,
+      );
+    });
+
+    try {
+      const compressed = await compressHrDocumentFileClient(
+        new File([captureBlob], 'selfie.jpg', { type: 'image/jpeg' }),
+        {
+          targetMaxBytes: CAREERS_SELFIE_TARGET_MAX_BYTES,
+          maxEdgePx: CAREERS_SELFIE_MAX_EDGE_PX,
+          grayscale: false,
+        },
+      );
+      const dataUrl = await fileToDataUrl(compressed.file);
+      stopCamera();
+      setSelfiePreview(dataUrl);
+      setSelfieBase64(dataUrl);
+    } catch {
+      setError(careersUi.careersErrImage);
+    }
   };
 
   const handleDocUpload = async (field: DocField, file: File | null) => {
@@ -169,6 +196,8 @@ export default function VacancyApplyModal({
         officeCopyWatermark: shouldApplyOfficeCopyWatermark(
           field === 'idFront' ? 'id-front' : 'servicemen-cert',
         ),
+        targetMaxBytes: CAREERS_DOC_TARGET_MAX_BYTES,
+        maxEdgePx: CAREERS_DOC_MAX_EDGE_PX,
       });
       const dataUrl = await fileToDataUrl(compressed.file);
       setDocPreviews((prev) => ({ ...prev, [field]: compressed.previewUrl }));
@@ -196,25 +225,30 @@ export default function VacancyApplyModal({
     }
 
     setBusy(true);
-    const result = await submitGuardJobApplication({
-      siteProfileId: siteId,
-      siteLabel,
-      phonePrimary,
-      phoneSecondary: phoneSecondary.trim() || undefined,
-      weightKg: Number(weightKg),
-      heightFt: Number(heightFt),
-      idDocFrontBase64: docFiles.idFront,
-      servicemenCertBase64: docFiles.servicemenCert,
-      selfieBase64,
-    });
-    setBusy(false);
+    try {
+      const result = await submitGuardJobApplication({
+        siteProfileId: siteId,
+        siteLabel,
+        phonePrimary,
+        phoneSecondary: phoneSecondary.trim() || undefined,
+        weightKg: Number(weightKg),
+        heightFt: Number(heightFt),
+        idDocFrontBase64: docFiles.idFront,
+        servicemenCertBase64: docFiles.servicemenCert,
+        selfieBase64,
+      });
 
-    if (!result.success) {
-      setError(result.error ?? careersUi.careersErrSubmit);
-      return;
+      if (!result.success) {
+        setError(result.error ?? careersUi.careersErrSubmit);
+        return;
+      }
+
+      setSubmitted(true);
+    } catch {
+      setError(careersUi.careersErrSubmit);
+    } finally {
+      setBusy(false);
     }
-
-    setSubmitted(true);
   };
 
   const blockImplicitFormSubmit = (event: React.FormEvent | React.KeyboardEvent) => {
@@ -423,7 +457,7 @@ export default function VacancyApplyModal({
                     </div>
                     <button
                       type="button"
-                      onClick={captureSelfie}
+                      onClick={() => void captureSelfie()}
                       aria-label={careersUi.careersCaptureSelfie}
                       className="flex h-14 w-14 items-center justify-center rounded-full border-4 border-slate-200 bg-white text-slate-900 shadow-md transition-transform hover:scale-105 active:scale-95"
                     >

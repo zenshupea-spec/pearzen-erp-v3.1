@@ -157,8 +157,6 @@ export async function requestForgeEmailChange(input: {
   ok: boolean;
   error?: string;
   pendingId?: string;
-  devNewCode?: string;
-  devOldCode?: string;
   requiresOldCode?: boolean;
 }> {
   const operatorEmail = normalizeEmail(input.operatorEmail);
@@ -252,6 +250,12 @@ export async function requestForgeEmailChange(input: {
   if (!mailNew.ok) {
     return { ok: false, error: mailNew.error };
   }
+  if (!mailNew.emailed) {
+    return {
+      ok: false,
+      error: 'Email delivery is not configured. Set RESEND_API_KEY and FORGE_EMAIL_FROM.',
+    };
+  }
 
   if (notifyOld && notifyOld !== newEmail) {
     await sendEmailChangeCode({
@@ -273,17 +277,18 @@ export async function requestForgeEmailChange(input: {
     if (!mailOld.ok) {
       return { ok: false, error: mailOld.error };
     }
+    if (!mailOld.emailed) {
+      return {
+        ok: false,
+        error: 'Email delivery is not configured. Set RESEND_API_KEY and FORGE_EMAIL_FROM.',
+      };
+    }
   }
 
   return {
     ok: true,
     pendingId: String(data.id),
     requiresOldCode: input.field === 'sign_in',
-    devNewCode: mailNew.emailed ? undefined : newCode,
-    devOldCode:
-      input.field === 'sign_in' && !process.env.RESEND_API_KEY
-        ? oldCode ?? undefined
-        : undefined,
   };
 }
 

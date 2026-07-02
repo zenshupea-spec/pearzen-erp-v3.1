@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from 'react';
 import FmSubnav from '../components/FmSubnav';
+import StaffPortalLoading from '../../../components/portal/StaffPortalLoading';
 import {
   formatLkr,
   isInvoiceDueToday,
@@ -130,7 +131,7 @@ export default function FmPearzenPaymentPage() {
         </div>
 
         {loading ? (
-          <p className="text-slate-500 animate-pulse">Loading invoices…</p>
+          <StaffPortalLoading portal="fm" message="Loading invoices…" className="min-h-[16rem]" />
         ) : invoices.length === 0 ? (
           <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-slate-500">
             No Pearzen.tech invoices yet.

@@ -12,6 +12,7 @@ import {
   Settings,
   Banknote,
   Shield,
+  Grid3x3,
 } from 'lucide-react';
 
 export type ExecutiveNavItem = {
@@ -44,6 +45,12 @@ export const EXECUTIVE_NAV: ExecutiveNavItem[] = [
     label: 'Payroll',
     sub: 'Compensation Ledger',
     Icon: Banknote,
+  },
+  {
+    href: '/executive/matrix',
+    label: 'Compensation Matrix',
+    sub: 'Rank Defaults · Overrides',
+    Icon: Grid3x3,
   },
   {
     href: '/executive/advance',

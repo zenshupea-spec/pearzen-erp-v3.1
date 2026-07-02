@@ -1,6 +1,6 @@
-/** Public marketing site for Classic Venture Security — classicventuresecurity.com */
+/** Public marketing site for Classic Venture Security — classicventure.com */
 
-export const DEFAULT_SECURITY_WEBSITE_DOMAIN = 'classicventuresecurity.com';
+export const DEFAULT_SECURITY_WEBSITE_DOMAIN = 'classicventure.com';
 
 export const SECURITY_WEBSITE_PUBLIC_URL = `https://${DEFAULT_SECURITY_WEBSITE_DOMAIN}`;
 
@@ -9,6 +9,8 @@ export function securityWebsiteHosts(): string[] {
   const hosts = new Set<string>([
     DEFAULT_SECURITY_WEBSITE_DOMAIN,
     `www.${DEFAULT_SECURITY_WEBSITE_DOMAIN}`,
+    'classicventuresecurity.com',
+    'www.classicventuresecurity.com',
   ]);
   if (configured) {
     hosts.add(configured.replace(/^https?:\/\//, '').split('/')[0]);

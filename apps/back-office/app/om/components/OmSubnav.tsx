@@ -17,6 +17,8 @@ import {
   tabFromSearchParam,
   type CommandCenterTabKey,
 } from '../lib/command-center-tabs';
+import { CVS_BRAND_CLASSES } from '../../../lib/cvs-brand-tokens';
+import { CVS_INTERNAL_WORKFORCE_ONLY } from '../../../lib/cvs-workforce-phase';
 
 const COMMAND_CENTER_TABS: {
   key: CommandCenterTabKey;
@@ -75,8 +77,8 @@ const OPERATIONS_ROUTES = [
 const linkClass = (active: boolean) =>
   `inline-flex shrink-0 items-center gap-1.5 rounded-xl px-2.5 py-2 text-[9px] font-black uppercase tracking-widest transition-all sm:px-3 sm:text-[10px] ${
     active
-      ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
-      : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+      ? `${CVS_BRAND_CLASSES.mobileTabActive} border-transparent`
+      : 'text-slate-600 hover:bg-[var(--cvs-accent-soft)]/80 hover:text-[color:var(--cvs-accent)]'
   }`;
 
 function NavSection({
@@ -119,9 +121,17 @@ function OmSubnavInner({
   const guardCardsActive =
     activeCommandTab === 'guard-cards' ||
     pathname.startsWith('/om/guard-cards');
-  const tabs = commandCenterTabs
+  const hideGuardOps = CVS_INTERNAL_WORKFORCE_ONLY;
+  const tabs = (commandCenterTabs
     ? COMMAND_CENTER_TABS.filter((t) => commandCenterTabs.includes(t.key))
-    : COMMAND_CENTER_TABS;
+    : COMMAND_CENTER_TABS
+  )
+    .filter((t) => !hideGuardOps || t.key === 'tactical')
+    .map((t) =>
+      hideGuardOps && t.key === 'tactical'
+        ? { ...t, label: 'Internal workforce' }
+        : t,
+    );
 
   return (
     <nav
@@ -144,6 +154,7 @@ function OmSubnavInner({
             );
           })}
           {showOperationsRoutes &&
+            !hideGuardOps &&
             OPERATIONS_ROUTES.map((link) => {
               const Icon = link.icon;
               return (
@@ -159,7 +170,7 @@ function OmSubnavInner({
             })}
         </NavSection>
 
-        {showOperationsRoutes ? (
+        {showOperationsRoutes && !hideGuardOps ? (
           <NavSection label="Staffing">
             {STAFFING_ROUTES.map((link) => {
               const Icon = link.icon;

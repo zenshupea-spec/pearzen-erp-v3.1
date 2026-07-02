@@ -216,7 +216,9 @@ export default function UniformCourierWorkbench({
 
       {overview.isDemo && (
         <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
-          Preview data — apply migrations for live courier requests from field portals.
+          Courier queue table is not migrated. Run{' '}
+          <code className="text-xs">npm run db:apply-deductions-admin</code> for live field
+          uniform courier requests.
         </p>
       )}
 

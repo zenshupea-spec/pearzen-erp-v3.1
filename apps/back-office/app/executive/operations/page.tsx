@@ -1,13 +1,29 @@
 'use client';
 
 import React, { Suspense, useState, useMemo, useRef, useCallback, useEffect } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import OmCommandShellLayout from '../../om/components/OmCommandShellLayout';
 import OmSubnav from '../../om/components/OmSubnav';
 import GuardCardsTab from '../../om/guard-cards/GuardCardsTab';
-import SiteAllocationTab from '../../om/components/SiteAllocationTab';
+import InternalWorkforceDesk from './InternalWorkforceDesk';
 import { getLiveFieldRadar } from '../../om/actions/field-radar';
+import { CVS_INTERNAL_WORKFORCE_ONLY } from '../../../lib/cvs-workforce-phase';
+import { isFromHqHub } from '../../../lib/hq-hub';
+import { formatSmPhoneDisplay } from '../../../lib/site-welfare';
+import {
+  acknowledgeGuardVoiceIncident,
+  acknowledgeSmFieldIncident,
+  resolveSessionFieldIncidentAckRole,
+} from '../../om/actions/field-incidents';
+import { formatOmCandidateLabel } from '../../../lib/om-sector-assignment-spec';
 import { fetchOffDutyGuardsForSector } from '../actions';
+import {
+  ExecutivePageBody,
+  ExecutivePageHeader,
+  ExecutivePageLiveSubtitle,
+  ExecutivePageLoading,
+  ExecutivePageShell,
+} from '../../../components/executive/ExecutivePageChrome';
 import {
   COMMAND_CENTER_REFRESH_MS,
   tabFromSearchParam,
@@ -34,7 +50,6 @@ import {
   TrendingDown,
   Radio,
   Phone,
-  Building2,
   Sun,
   Moon,
   Gavel,
@@ -97,10 +112,12 @@ interface ContinuationShift {
 
 interface SectorCard {
   id: string;
+  smEpf: string;
   name: string;
   region: string;
   sm: string;
   smPhone: string;
+  assignedOm: { employeeId: string; fullName: string; epfNo: string | null } | null;
   guardsOnShift: number;
   guardsTotal: number;
   sitesToday: number;
@@ -132,7 +149,8 @@ type IncidentType =
   | 'CLIENT_COMPLAINT'
   | 'THEFT'
   | 'UNIFORM_VIOLATION'
-  | 'UNAUTHORIZED_ABSENCE';
+  | 'UNAUTHORIZED_ABSENCE'
+  | 'GUARD_VOICE_REPORT';
 
 interface FieldIncident {
   id: string;
@@ -143,249 +161,9 @@ interface FieldIncident {
   guardEmpNo: string;
   severity: 'HIGH' | 'MEDIUM' | 'LOW';
   ack: TriRoleAck;
+  source?: 'sm_report' | 'guard_voice';
 }
 
-// ─── Sector Data (executive preview only — OM portal uses live/empty data) ─────
-
-const EXECUTIVE_PREVIEW_SECTORS: SectorCard[] = [
-  {
-    id: 'S01',
-    name: 'Colombo North',
-    region: 'Western Province',
-    sm: 'Suresh Karunaratne',
-    smPhone: '+94 77 234 5678',
-    guardsOnShift: 48,
-    guardsTotal: 52,
-    sitesToday: 14,
-    sitesTotal: 15,
-    openIncidents: 1,
-    deficits: 4,
-    status: 'ATTENTION',
-    lastUpdate: '08:42 AM',
-    incidents: [
-      { id: 'INC-001', what: 'Guard found asleep on post', where: 'Lanka Hospitals — Gate 3', siteCode: 'SIT-014', who: 'Ruwan Dissanayake', time: '03:20 AM', penalty: 'LKR 5,000', penaltyReason: 'Sleeping on post — per penalty catalog' },
-    ],
-    penalties: [
-      { id: 'PEN-001', guard: 'Ruwan Dissanayake', site: 'Lanka Hospitals', siteCode: 'SIT-014', amount: 'LKR 5,000', reason: 'Sleeping on post — per penalty catalog', time: '03:20 AM' },
-    ],
-    clientComplaints: [
-      { id: 'CC-001', what: 'Guard was rude to hospital visitor', site: 'Lanka Hospitals', siteCode: 'SIT-014', who: 'Kamal Perera', client: 'Lanka Hospitals Management', time: '09:15 AM', note: 'I am writing to formally complain about the behaviour of the security guard stationed at Gate 3 this morning. When my elderly mother arrived as an outpatient, the guard — without any apparent reason — raised his voice and spoke to her in a dismissive and disrespectful manner, causing her visible distress. This is entirely unacceptable given the nature of a hospital environment. We expect security personnel to be professional and compassionate, especially with patients and their families. I request that this incident be investigated and appropriate action taken.' },
-    ],
-    dayShiftShorts: [
-      { site: 'Lanka Hospitals', siteCode: 'SIT-014', missingCount: 2, missingGuards: ['Ruwan Dissanayake', 'Nishantha Kumara'] },
-      { site: 'Cargills Colombo 7', siteCode: 'SIT-007', missingCount: 1, missingGuards: ['Pradeep Jayalath'] },
-    ],
-    nightShiftShorts: [
-      { site: 'BOC Headquarters', siteCode: 'SIT-003', missingCount: 1, missingGuards: ['Samith Rathnayake'] },
-    ],
-    continuationShifts: [
-      { hours: 24, guard: 'Kamal Perera', site: 'Lanka Hospitals', siteCode: 'SIT-014' },
-      { hours: 36, guard: 'Nimal Silva', site: 'Dialog Axiata HQ', siteCode: 'SIT-022' },
-      { hours: 48, guard: 'Pradeep Gunathilake', site: 'Colombo 7 Apartment', siteCode: 'SIT-031' },
-    ],
-  },
-  {
-    id: 'S02',
-    name: 'Colombo South',
-    region: 'Western Province',
-    sm: 'Priyantha Wickramasinghe',
-    smPhone: '+94 71 345 6789',
-    guardsOnShift: 59,
-    guardsTotal: 61,
-    sitesToday: 18,
-    sitesTotal: 18,
-    openIncidents: 0,
-    deficits: 2,
-    status: 'NOMINAL',
-    lastUpdate: '08:55 AM',
-    incidents: [],
-    penalties: [],
-    clientComplaints: [],
-    dayShiftShorts: [{ site: 'Dehiwala Municipal Council', siteCode: 'SIT-032', missingCount: 1, missingGuards: ['Lasantha Perera'] }],
-    nightShiftShorts: [{ site: 'Mt. Lavinia Beach Hotel', siteCode: 'SIT-038', missingCount: 1, missingGuards: ['Asanka Fernando'] }],
-    continuationShifts: [{ hours: 24, guard: 'Sisira Rathnayake', site: 'Dehiwala Municipal Council', siteCode: 'SIT-032' }],
-  },
-  {
-    id: 'S03',
-    name: 'Colombo Central',
-    region: 'Western Province',
-    sm: 'Nalaka Jayasuriya',
-    smPhone: '+94 76 456 7890',
-    guardsOnShift: 31,
-    guardsTotal: 34,
-    sitesToday: 10,
-    sitesTotal: 11,
-    openIncidents: 2,
-    deficits: 3,
-    status: 'CRITICAL',
-    lastUpdate: '08:30 AM',
-    incidents: [
-      { id: 'INC-011', what: 'Unauthorized entry attempt allowed', where: 'BOC Headquarters — Main Lobby', siteCode: 'SIT-003', who: 'Tilan Jayawardena', time: '02:45 AM', penalty: 'LKR 3,000', penaltyReason: 'Failure to follow access protocol' },
-      { id: 'INC-012', what: 'Patrol log not submitted', where: 'Ceylinco Tower — Floor 12', siteCode: 'SIT-009', who: 'Aruna Kumara', time: '06:00 AM', penalty: 'LKR 2,500', penaltyReason: 'Failure to log patrol visit' },
-    ],
-    penalties: [
-      { id: 'PEN-011', guard: 'Tilan Jayawardena', site: 'BOC Headquarters', siteCode: 'SIT-003', amount: 'LKR 3,000', reason: 'Failure to follow access protocol', time: '02:45 AM' },
-      { id: 'PEN-012', guard: 'Aruna Kumara', site: 'Ceylinco Tower', siteCode: 'SIT-009', amount: 'LKR 2,500', reason: 'Failure to log patrol visit', time: '06:00 AM' },
-    ],
-    clientComplaints: [
-      { id: 'CC-011', what: 'Visitor allowed through without sign-in', site: 'BOC Headquarters', siteCode: 'SIT-003', who: 'Tilan Jayawardena', client: 'BOC Borella Branch Manager', time: '08:10 AM', note: 'At approximately 2:40 AM we observed through our internal camera system that an unidentified individual entered the main lobby without presenting any ID or signing the visitor register. The guard on duty at that hour failed to intercept or challenge this person. This is a serious security breach, particularly given the sensitive financial data maintained on our premises. We have preserved the CCTV footage and are prepared to share it. We expect a full incident report and confirmation of the corrective measures being taken.' },
-    ],
-    dayShiftShorts: [
-      { site: 'BOC Headquarters', siteCode: 'SIT-003', missingCount: 2, missingGuards: ['Tilan Jayawardena', 'Nalin Kumara'] },
-      { site: 'Ceylinco Tower', siteCode: 'SIT-009', missingCount: 1, missingGuards: ['Aruna Kumara'] },
-    ],
-    nightShiftShorts: [{ site: 'National Museum', siteCode: 'SIT-016', missingCount: 1, missingGuards: ['Mahinda Rathnasiri'] }],
-    continuationShifts: [
-      { hours: 36, guard: 'Hemantha Rathnasiri', site: 'BOC Headquarters', siteCode: 'SIT-003' },
-      { hours: 60, guard: 'Sampath Wijesinghe', site: 'Ceylinco Tower', siteCode: 'SIT-009' },
-    ],
-  },
-  {
-    id: 'S04',
-    name: 'Gampaha',
-    region: 'Western Province',
-    sm: 'Roshan Jayawardena',
-    smPhone: '+94 77 567 8901',
-    guardsOnShift: 43,
-    guardsTotal: 44,
-    sitesToday: 12,
-    sitesTotal: 12,
-    openIncidents: 0,
-    deficits: 1,
-    status: 'NOMINAL',
-    lastUpdate: '09:01 AM',
-    incidents: [],
-    penalties: [],
-    clientComplaints: [],
-    dayShiftShorts: [],
-    nightShiftShorts: [{ site: 'Gampaha Hospital', siteCode: 'SIT-044', missingCount: 1, missingGuards: ['Chathura Bandara'] }],
-    continuationShifts: [],
-  },
-  {
-    id: 'S05',
-    name: 'Negombo',
-    region: 'Western Province',
-    sm: 'Chaminda Perera',
-    smPhone: '+94 71 678 9012',
-    guardsOnShift: 26,
-    guardsTotal: 29,
-    sitesToday: 8,
-    sitesTotal: 9,
-    openIncidents: 1,
-    deficits: 3,
-    status: 'ATTENTION',
-    lastUpdate: '08:48 AM',
-    incidents: [
-      { id: 'INC-021', what: 'Uniform non-compliance on post', where: 'Negombo Fish Market', siteCode: 'SIT-051', who: 'Kapila Fernando', time: '07:15 AM', penalty: 'LKR 1,500', penaltyReason: 'Uniform Non-Compliance — per penalty catalog' },
-    ],
-    penalties: [
-      { id: 'PEN-021', guard: 'Kapila Fernando', site: 'Negombo Fish Market', siteCode: 'SIT-051', amount: 'LKR 1,500', reason: 'Uniform Non-Compliance — per penalty catalog', time: '07:15 AM' },
-    ],
-    clientComplaints: [],
-    dayShiftShorts: [{ site: 'Negombo Fish Market', siteCode: 'SIT-051', missingCount: 2, missingGuards: ['Kapila Fernando', 'Indika Pathirana'] }],
-    nightShiftShorts: [{ site: 'Browns Beach Hotel', siteCode: 'SIT-053', missingCount: 1, missingGuards: ['Janaka Silva'] }],
-    continuationShifts: [{ hours: 48, guard: 'Indika Pathirana', site: 'Browns Beach Hotel', siteCode: 'SIT-053' }],
-  },
-  {
-    id: 'S06',
-    name: 'Kandy',
-    region: 'Central Province',
-    sm: 'Mahesh Dissanayake',
-    smPhone: '+94 76 789 0123',
-    guardsOnShift: 36,
-    guardsTotal: 38,
-    sitesToday: 11,
-    sitesTotal: 11,
-    openIncidents: 0,
-    deficits: 2,
-    status: 'NOMINAL',
-    lastUpdate: '09:05 AM',
-    incidents: [],
-    penalties: [],
-    clientComplaints: [
-      { id: 'CC-061', what: 'Guard refused to assist elderly patient', site: 'Kandy Hospital', siteCode: 'SIT-061', who: 'Bandara Wijewickrama', client: 'Kandy Hospital Head of Security', time: '10:30 AM', note: 'An elderly patient in a wheelchair required assistance reaching the ward on the second floor. The lift was temporarily out of service and the patient requested help from the guard at the front desk. The guard flatly refused, stating that "it is not my job." A nurse had to leave her station to assist instead. This kind of response is deeply troubling and reflects poor training and attitude. We have documented this incident and request that immediate retraining be arranged for this individual. Future breaches of this nature will be escalated through formal channels under our SLA terms.' },
-    ],
-    dayShiftShorts: [{ site: 'Kandy Hospital', siteCode: 'SIT-061', missingCount: 1, missingGuards: ['Bandara Wijewickrama'] }],
-    nightShiftShorts: [{ site: 'Temple of Tooth', siteCode: 'SIT-063', missingCount: 1, missingGuards: ['Rajitha Perera'] }],
-    continuationShifts: [{ hours: 24, guard: 'Bandara Wijewickrama', site: 'Kandy Hospital', siteCode: 'SIT-061' }],
-  },
-  {
-    id: 'S07',
-    name: 'Kurunegala',
-    region: 'North Western Province',
-    sm: 'Asitha Fernando',
-    smPhone: '+94 77 890 1234',
-    guardsOnShift: 20,
-    guardsTotal: 22,
-    sitesToday: 7,
-    sitesTotal: 7,
-    openIncidents: 0,
-    deficits: 2,
-    status: 'NOMINAL',
-    lastUpdate: '08:58 AM',
-    incidents: [],
-    penalties: [],
-    clientComplaints: [],
-    dayShiftShorts: [],
-    nightShiftShorts: [{ site: 'Kurunegala Teaching Hospital', siteCode: 'SIT-071', missingCount: 2, missingGuards: ['Nuwan Jayalath', 'Kasun Fernando'] }],
-    continuationShifts: [],
-  },
-  {
-    id: 'S08',
-    name: 'Ratnapura',
-    region: 'Sabaragamuwa Province',
-    sm: 'Tharaka Bandara',
-    smPhone: '+94 71 901 2345',
-    guardsOnShift: 14,
-    guardsTotal: 18,
-    sitesToday: 5,
-    sitesTotal: 6,
-    openIncidents: 1,
-    deficits: 4,
-    status: 'CRITICAL',
-    lastUpdate: '08:21 AM',
-    incidents: [
-      { id: 'INC-031', what: 'Guard abandoned post mid-shift', where: 'Ratnapura Gem Exchange', siteCode: 'SIT-081', who: 'Lasith Pradeep', time: '04:00 AM', penalty: 'LKR 8,000', penaltyReason: 'Abandoning Post — per penalty catalog' },
-    ],
-    penalties: [
-      { id: 'PEN-031', guard: 'Lasith Pradeep', site: 'Ratnapura Gem Exchange', siteCode: 'SIT-081', amount: 'LKR 8,000', reason: 'Abandoning Post — per penalty catalog', time: '04:00 AM' },
-    ],
-    clientComplaints: [
-      { id: 'CC-031', what: 'Post left unattended for 2+ hours', site: 'Ratnapura Gem Exchange', siteCode: 'SIT-081', who: 'Lasith Pradeep', client: 'Ratnapura Gem Exchange Director', time: '06:00 AM', note: 'Between 1:45 AM and 4:00 AM, the main entrance post of our premises was left entirely unattended. We store high-value gem inventory on site and the absence of a guard during these hours is a grave contractual failure. When we reviewed our internal cameras, there was no sign of the assigned guard during this window. We are formally putting your company on notice. If this is not resolved with a full explanation and documented disciplinary action within 48 hours, we will be reviewing our contract arrangement and will consider pursuing a claim for breach of security services.' },
-      { id: 'CC-032', what: 'Guard seen sleeping during rounds', site: 'Rathna Prefab', siteCode: 'SIT-082', who: 'Dinesh Kumara', client: 'Rathna Prefab Site Manager', time: '08:45 AM', note: 'During my morning inspection at approximately 8:30 AM I found the assigned guard asleep on a chair in the storage area, with his phone playing music loudly. When I woke him he appeared disoriented and claimed he had "just closed his eyes for a moment." This is the second time in this month we have encountered this issue with staff from your agency. I have photographed the incident and will be sending it to your head office. Please ensure this guard is replaced immediately and do not reassign him to our site.' },
-    ],
-    dayShiftShorts: [
-      { site: 'Ratnapura Gem Exchange', siteCode: 'SIT-081', missingCount: 2, missingGuards: ['Lasith Pradeep', 'Nuwan Seneviratne'] },
-      { site: 'Rathna Prefab', siteCode: 'SIT-082', missingCount: 2, missingGuards: ['Dinesh Kumara', 'Manjula Perera'] },
-    ],
-    nightShiftShorts: [{ site: 'Ratnapura Teaching Hospital', siteCode: 'SIT-083', missingCount: 1, missingGuards: ['Chamara Gunawardena'] }],
-    continuationShifts: [
-      { hours: 36, guard: 'Dinesh Kumara', site: 'Ratnapura Gem Exchange', siteCode: 'SIT-081' },
-      { hours: 48, guard: 'Janaka Seneviratne', site: 'Rathna Prefab', siteCode: 'SIT-082' },
-    ],
-  },
-  {
-    id: 'S09',
-    name: 'Matara',
-    region: 'Southern Province',
-    sm: 'Saman Weerasekara',
-    smPhone: '+94 76 012 3456',
-    guardsOnShift: 17,
-    guardsTotal: 19,
-    sitesToday: 6,
-    sitesTotal: 6,
-    openIncidents: 0,
-    deficits: 2,
-    status: 'NOMINAL',
-    lastUpdate: '09:03 AM',
-    incidents: [],
-    penalties: [],
-    clientComplaints: [],
-    dayShiftShorts: [],
-    nightShiftShorts: [{ site: 'Matara District Hospital', siteCode: 'SIT-091', missingCount: 1, missingGuards: ['Rukshan Jayawardena'] }],
-    continuationShifts: [],
-  },
-];
 
 // ─── Derived summary ──────────────────────────────────────────────────────────
 
@@ -412,9 +190,15 @@ function getSectorVacancyStats(sectors: SectorCard[]) {
   return { totalVacancies, siteCount: siteCodes.size };
 }
 
-function getDateViewSectors(sectors: SectorCard[], dateView: DateView): SectorCard[] {
-  // Historical roster snapshots are not wired yet — always show live radar data.
-  if (dateView !== 'today') return sectors;
+function dateViewToShiftDate(dateView: DateView): string {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  if (dateView === 'yesterday') d.setUTCDate(d.getUTCDate() - 1);
+  if (dateView === 'day-before') d.setUTCDate(d.getUTCDate() - 2);
+  return d.toISOString().slice(0, 10);
+}
+
+function getDateViewSectors(sectors: SectorCard[]): SectorCard[] {
   return sectors;
 }
 
@@ -479,6 +263,14 @@ const SECTOR_STATUS_STYLES: Record<SectorStatus, {
 };
 
 const STATUS_ORDER: Record<SectorStatus, number> = { CRITICAL: 0, ATTENTION: 1, NOMINAL: 2 };
+
+function compareSectorTiles(a: SectorCard, b: SectorCard): number {
+  if (b.sitesTotal !== a.sitesTotal) return b.sitesTotal - a.sitesTotal;
+  if (b.sitesToday !== a.sitesToday) return b.sitesToday - a.sitesToday;
+  const statusDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
+  if (statusDiff !== 0) return statusDiff;
+  return a.name.localeCompare(b.name);
+}
 
 // ─── Summary KPI Card ─────────────────────────────────────────────────────────
 
@@ -588,20 +380,6 @@ function CoverageBar({ value, max }: { value: number; max: number }) {
 
 // ─── Field Incident Data & Helpers ───────────────────────────────────────────
 
-const INITIAL_FIELD_INCIDENTS: FieldIncident[] = [
-  // Week of 22–28 May 2026
-  { id: 'INC-2026-063', timestamp: '2026-05-27T14:20:00Z', site: 'Commercial Bank HQ',  incidentType: 'CLIENT_COMPLAINT',     guardName: 'Vimukthi Bandara',  guardEmpNo: 'EMP-1099', severity: 'MEDIUM', ack: { OM: false, SM: false, MD: false } },
-  { id: 'INC-2026-061', timestamp: '2026-05-23T02:14:00Z', site: 'Lanka Hospitals',     incidentType: 'SLEEPING_ON_POST',     guardName: 'Suresh Bandara',    guardEmpNo: 'EMP-1042', severity: 'HIGH',   ack: { OM: true,  SM: false, MD: false } },
-  { id: 'INC-2026-058', timestamp: '2026-05-22T19:45:00Z', site: 'Arpico Supercentre',  incidentType: 'CLIENT_COMPLAINT',     guardName: 'Ranjith Perera',    guardEmpNo: 'EMP-1087', severity: 'MEDIUM', ack: { OM: true,  SM: true,  MD: false } },
-  // Week of 15–21 May 2026
-  { id: 'INC-2026-055', timestamp: '2026-05-19T11:30:00Z', site: 'Dialog Axiata HQ',    incidentType: 'THEFT',                guardName: 'Chaminda Silva',    guardEmpNo: 'EMP-1103', severity: 'HIGH',   ack: { OM: true,  SM: true,  MD: false } },
-  { id: 'INC-2026-051', timestamp: '2026-05-17T08:00:00Z', site: 'BOC Borella Branch',  incidentType: 'UNIFORM_VIOLATION',    guardName: 'Kasun Fernando',    guardEmpNo: 'EMP-1024', severity: 'LOW',    ack: { OM: true,  SM: true,  MD: true  } },
-  { id: 'INC-2026-049', timestamp: '2026-05-15T22:00:00Z', site: 'Hemas Hospital',      incidentType: 'UNAUTHORIZED_ABSENCE', guardName: 'Pradeep Rajapaksa', guardEmpNo: 'EMP-1056', severity: 'HIGH',   ack: { OM: true,  SM: false, MD: false } },
-  // Week of 8–14 May 2026
-  { id: 'INC-2026-043', timestamp: '2026-05-13T06:30:00Z', site: 'Cargills Food City',  incidentType: 'CLIENT_COMPLAINT',     guardName: 'Nimal Jayawardena', guardEmpNo: 'EMP-1078', severity: 'MEDIUM', ack: { OM: true,  SM: true,  MD: true  } },
-  { id: 'INC-2026-041', timestamp: '2026-05-10T20:15:00Z', site: 'Lanka Hospitals',     incidentType: 'SLEEPING_ON_POST',     guardName: 'Roshan Dissanayake',guardEmpNo: 'EMP-1091', severity: 'HIGH',   ack: { OM: true,  SM: true,  MD: true  } },
-  { id: 'INC-2026-039', timestamp: '2026-05-08T03:45:00Z', site: 'Shalom Residence',    incidentType: 'UNAUTHORIZED_ABSENCE', guardName: 'Madhawa Seneviratne',guardEmpNo: 'EMP-1033',severity: 'MEDIUM', ack: { OM: true,  SM: true,  MD: true  } },
-];
 
 const INCIDENT_META: Record<IncidentType, { label: string; pill: string; Icon: React.FC<{ className?: string }> }> = {
   SLEEPING_ON_POST:     { label: 'Sleeping on Post',     pill: 'bg-amber-50 text-amber-700 border-amber-200',     Icon: ({ className }) => <Zap className={className} /> },
@@ -609,6 +387,7 @@ const INCIDENT_META: Record<IncidentType, { label: string; pill: string; Icon: R
   THEFT:                { label: 'Theft',                 pill: 'bg-red-50 text-red-700 border-red-200',            Icon: ({ className }) => <AlertTriangle className={className} /> },
   UNIFORM_VIOLATION:    { label: 'Uniform Violation',    pill: 'bg-slate-100 text-slate-600 border-slate-200',     Icon: ({ className }) => <BadgeAlert className={className} /> },
   UNAUTHORIZED_ABSENCE: { label: 'Unauthorized Absence', pill: 'bg-orange-50 text-orange-700 border-orange-200',   Icon: ({ className }) => <UserMinus className={className} /> },
+  GUARD_VOICE_REPORT:   { label: 'Guard Voice Report',   pill: 'bg-sky-50 text-sky-700 border-sky-200',           Icon: ({ className }) => <Radio className={className} /> },
 };
 
 const FIELD_SEVERITY_DOT: Record<string, string> = {
@@ -653,10 +432,12 @@ function IncidentDetailPanel({
   incident,
   currentRole,
   onAcknowledge,
+  acknowledging = false,
 }: {
   incident: FieldIncident;
   currentRole: RoleKey;
-  onAcknowledge: (id: string) => void;
+  onAcknowledge: (id: string) => void | Promise<void>;
+  acknowledging?: boolean;
 }) {
   const isUnread = !incident.ack[currentRole];
   const allRead  = incident.ack.OM && incident.ack.SM && incident.ack.MD;
@@ -730,11 +511,12 @@ function IncidentDetailPanel({
       {isUnread && (
         <button
           type="button"
-          onClick={() => onAcknowledge(incident.id)}
-          className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-black text-white shadow-md shadow-indigo-600/30 transition-all hover:bg-indigo-700 active:scale-[0.98]"
+          onClick={() => void onAcknowledge(incident.id)}
+          disabled={acknowledging}
+          className="flex w-full items-center justify-center gap-2 rounded-xl bg-[color:var(--cvs-accent)] px-4 py-3 text-sm font-black text-white shadow-md shadow-[color:var(--cvs-glow)] transition-all hover:bg-[color:var(--cvs-accent-hover)] active:scale-[0.98] disabled:opacity-60"
         >
           <Check className="h-4 w-4" />
-          Acknowledge as {currentRole}
+          {acknowledging ? 'Saving…' : `Acknowledge as ${currentRole}`}
         </button>
       )}
 
@@ -879,44 +661,78 @@ function IncidentCalendar({
 
 function IncidentCommandQueue({
   sectionRef,
-  seedIncidents = [],
+  incidents: incidentsProp = [],
   currentRole = 'MD',
 }: {
   sectionRef?: React.RefObject<HTMLElement | null>;
-  seedIncidents?: FieldIncident[];
+  incidents?: FieldIncident[];
   currentRole?: RoleKey;
 }) {
   const CURRENT_ROLE = currentRole;
   const today = new Date();
 
-  const [incidents, setIncidents] = useState<FieldIncident[]>(seedIncidents);
+  const [incidents, setIncidents] = useState<FieldIncident[]>(incidentsProp);
+  const [ackSubmitting, setAckSubmitting] = useState<string | null>(null);
 
-  const defaultDate = seedIncidents.length > 0
-    ? new Date(seedIncidents[0].timestamp.slice(0, 10) + 'T00:00:00Z')
+  const defaultDate = incidentsProp.length > 0
+    ? new Date(incidentsProp[0].timestamp.slice(0, 10) + 'T00:00:00Z')
     : today;
 
   const [selectedDate, setSelectedDate] = useState<Date>(defaultDate);
   const [calendarOpen, setCalendarOpen] = useState(false);
-  const [selectedId,   setSelectedId]   = useState<string>(seedIncidents[0]?.id ?? '');
+  const [selectedId,   setSelectedId]   = useState<string>(incidentsProp[0]?.id ?? '');
 
   useEffect(() => {
-    setIncidents(seedIncidents);
-    if (seedIncidents.length > 0) {
-      setSelectedDate(new Date(seedIncidents[0].timestamp.slice(0, 10) + 'T00:00:00Z'));
+    setIncidents(incidentsProp);
+    if (incidentsProp.length > 0) {
+      setSelectedDate(new Date(incidentsProp[0].timestamp.slice(0, 10) + 'T00:00:00Z'));
       setSelectedId((current) =>
-        seedIncidents.some((inc) => inc.id === current)
+        incidentsProp.some((inc) => inc.id === current)
           ? current
-          : seedIncidents[0].id,
+          : incidentsProp[0].id,
       );
     } else {
       setSelectedId('');
     }
-  }, [seedIncidents]);
+  }, [incidentsProp]);
 
-  const handleAcknowledge = (id: string) => {
+  const handleAcknowledge = async (id: string) => {
+    const incident = incidents.find((row) => row.id === id);
+    if (!incident || incident.ack[CURRENT_ROLE]) return;
+
+    if (incident.source === 'guard_voice' && CURRENT_ROLE !== 'OM' && CURRENT_ROLE !== 'MD') {
+      window.alert('Guard voice reports are acknowledged by OM or MD.');
+      return;
+    }
+
+    setAckSubmitting(id);
+    const prior = incidents;
     setIncidents((prev) =>
-      prev.map((inc) => inc.id === id ? { ...inc, ack: { ...inc.ack, [CURRENT_ROLE]: true } } : inc)
+      prev.map((inc) =>
+        inc.id === id ? { ...inc, ack: { ...inc.ack, [CURRENT_ROLE]: true } } : inc,
+      ),
     );
+
+    try {
+      const result =
+        incident.source === 'guard_voice'
+          ? await acknowledgeGuardVoiceIncident(id)
+          : CURRENT_ROLE === 'OM' || CURRENT_ROLE === 'SM' || CURRENT_ROLE === 'MD'
+            ? await acknowledgeSmFieldIncident(id, CURRENT_ROLE)
+            : { success: false, error: 'This role cannot acknowledge this incident.' };
+
+      if (!result.success) {
+        setIncidents(prior);
+        window.alert(result.error ?? 'Could not save acknowledgement.');
+        return;
+      }
+
+      void getLiveFieldRadar().then((radar) => {
+        setIncidents(radar.fieldIncidents as FieldIncident[]);
+      });
+    } finally {
+      setAckSubmitting(null);
+    }
   };
 
   const dayStart = new Date(selectedDate.toISOString().slice(0, 10) + 'T00:00:00Z');
@@ -1076,6 +892,7 @@ function IncidentCommandQueue({
               incident={selected}
               currentRole={CURRENT_ROLE}
               onAcknowledge={handleAcknowledge}
+              acknowledging={ackSubmitting === selected.id}
             />
           )}
         </DarkGlassCard>
@@ -1605,7 +1422,12 @@ function NearestGuardPopup({
         </div>
         <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
           {loading && (
-            <div className="px-4 py-6 text-center text-xs text-slate-400">Loading off-duty guards…</div>
+            <div className="px-4 py-4">
+              <ExecutivePageLoading
+                message="Loading off-duty guards…"
+                className="min-h-[6rem] py-4"
+              />
+            </div>
           )}
           {!loading && guards.length === 0 && (
             <div className="px-4 py-6 text-center text-xs text-slate-400">No guards found within 15 km.</div>
@@ -1971,7 +1793,13 @@ type SectorModal =
   | { kind: 'continuation'; hour?: 24 | 36 | 48 | 60 }
   | { kind: 'deficits' };
 
-function SectorTile({ sector, dateView }: { sector: SectorCard; dateView: DateView }) {
+function SectorTile({
+  sector,
+  dateView,
+}: {
+  sector: SectorCard;
+  dateView: DateView;
+}) {
   const s = SECTOR_STATUS_STYLES[sector.status];
   const shortfallMeta = DATE_VIEW_SHORTFALL_META[dateView];
   const [modal, setModal] = useState<SectorModal | null>(null);
@@ -1986,6 +1814,12 @@ function SectorTile({ sector, dateView }: { sector: SectorCard; dateView: DateVi
   const totalCont = sector.continuationShifts.length;
 
   const close = () => setModal(null);
+  const smName = sector.sm !== '—' ? sector.sm : sector.name;
+  const sectorName =
+    sector.region === 'Unassigned portfolio'
+      ? sector.region
+      : sector.region.trim() || '—';
+  const smPhone = formatSmPhoneDisplay(sector.smPhone);
 
   return (
     <>
@@ -2004,23 +1838,60 @@ function SectorTile({ sector, dateView }: { sector: SectorCard; dateView: DateVi
 
         <div className="flex flex-1 flex-col pl-5 pr-5 pt-4 pb-4 gap-3">
 
-          {/* ── Header ── */}
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 mb-0.5">
-                <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${s.dot}`} />
-                <h3 className="text-[14px] font-black leading-tight text-slate-900 truncate">{sector.name}</h3>
+          {/* ── Header: SM identity ── */}
+          <div className="flex items-start justify-between gap-2.5">
+            <div className="min-w-0 flex-1 overflow-hidden rounded-xl border border-white/70 bg-gradient-to-br from-white/95 via-slate-50/80 to-slate-100/40 px-3.5 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.95)] ring-1 ring-slate-200/45">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className={`h-2 w-2 flex-shrink-0 rounded-full ${s.dot}`} />
+                <h3 className="min-w-0 truncate text-[15px] font-black leading-tight tracking-tight text-slate-900">
+                  {smName}
+                </h3>
               </div>
-              <p className="flex min-w-0 items-center gap-1 text-[10px] text-slate-500 pl-3.5">
-                <Building2 className="h-2.5 w-2.5 flex-shrink-0 text-slate-400" />
-                <span className="font-semibold text-slate-700 truncate">{sector.sm}</span>
-                <span className="text-slate-300 flex-shrink-0">·</span>
-                <span className="flex-shrink-0 font-mono">{sector.smPhone}</span>
+              <p
+                className={`mt-1.5 truncate pl-4 text-[11px] font-semibold leading-snug ${
+                  sectorName === '—' ? 'text-slate-400' : 'text-slate-600'
+                }`}
+              >
+                {sectorName}
               </p>
+              {smPhone !== '—' ? (
+                <a
+                  href={`tel:${smPhone.replace(/\s/g, '')}`}
+                  className="mt-1 flex min-w-0 items-center gap-1.5 pl-4 text-[11px] font-mono font-semibold leading-snug text-indigo-700 transition-colors hover:text-indigo-900"
+                >
+                  <Phone className="h-3 w-3 flex-shrink-0 text-indigo-500/90" />
+                  <span className="truncate">{smPhone}</span>
+                </a>
+              ) : (
+                <p className="mt-1 pl-4 text-[11px] font-medium leading-snug text-slate-400">—</p>
+              )}
             </div>
-            <span className={`flex-shrink-0 rounded-full border px-2.5 py-0.5 text-[9px] font-black uppercase tracking-widest ${s.badge}`}>
-              {s.badgeText}
-            </span>
+            <div className="flex flex-shrink-0 flex-col items-end gap-1.5">
+              <span className={`rounded-full border px-2.5 py-0.5 text-[9px] font-black uppercase tracking-widest ${s.badge}`}>
+                {s.badgeText}
+              </span>
+              {sector.smEpf !== '__unassigned__' ? (
+                <p
+                  className="max-w-[196px] truncate text-right text-[8px] font-semibold uppercase tracking-wide text-indigo-700/90"
+                  title={
+                    sector.assignedOm
+                      ? formatOmCandidateLabel(
+                          sector.assignedOm.fullName,
+                          sector.assignedOm.epfNo,
+                        )
+                      : 'No OM assigned'
+                  }
+                >
+                  OM ·{' '}
+                  {sector.assignedOm
+                    ? formatOmCandidateLabel(
+                        sector.assignedOm.fullName,
+                        sector.assignedOm.epfNo,
+                      )
+                    : 'Unassigned'}
+                </p>
+              ) : null}
+            </div>
           </div>
 
           {/* ── Stats strip ── */}
@@ -2184,12 +2055,60 @@ function SectorTile({ sector, dateView }: { sector: SectorCard; dateView: DateVi
 
 export type OperationsPortal = 'executive' | 'om';
 
+function InternalWorkforceOperationsPage({ portal }: { portal: OperationsPortal }) {
+  const omPortal = portal === 'om';
+  const searchParams = useSearchParams();
+  const fromHub = isFromHqHub(searchParams);
+  const now = new Date();
+  const timeLabel = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  const dateLabel = now.toLocaleDateString('en-US', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
+  const rosterSubtitle = `Head Office & café roster — guard field ops paused · ${dateLabel} · ${timeLabel}`;
+  const desk = <InternalWorkforceDesk fromHub={fromHub} />;
+
+  if (omPortal) {
+    return (
+      <OmCommandShellLayout
+        title="Internal workforce"
+        subtitle={rosterSubtitle}
+        icon={Users}
+        accent="indigo"
+        maxWidth="wide"
+        showSubnav={false}
+      >
+        {desk}
+      </OmCommandShellLayout>
+    );
+  }
+
+  return (
+    <ExecutivePageShell>
+      <ExecutivePageHeader
+        title="CV Operations"
+        subtitle={
+          <ExecutivePageLiveSubtitle>{rosterSubtitle}</ExecutivePageLiveSubtitle>
+        }
+      />
+      <ExecutivePageBody spacing="relaxed">{desk}</ExecutivePageBody>
+    </ExecutivePageShell>
+  );
+}
+
 function OperationsPageInner({ portal = 'executive' }: { portal?: OperationsPortal }) {
+  if (CVS_INTERNAL_WORKFORCE_ONLY) {
+    return <InternalWorkforceOperationsPage portal={portal} />;
+  }
   const omPortal = portal === 'om';
   const router = useRouter();
+  const pathname = usePathname() ?? '';
   const searchParams = useSearchParams();
   const activeTab = tabFromSearchParam(searchParams.get('tab'));
   const [dateView, setDateView] = useState<DateView>('today');
+  const [incidentAckRole, setIncidentAckRole] = useState<RoleKey>(omPortal ? 'OM' : 'MD');
   const [tacticalDeficitsOpen, setTacticalDeficitsOpen] = useState(false);
   const [vacanciesOpen, setVacanciesOpen] = useState(false);
   const [coverageOpen, setCoverageOpen] = useState(false);
@@ -2200,17 +2119,50 @@ function OperationsPageInner({ portal = 'executive' }: { portal?: OperationsPort
   const incidentQueueRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
-    if (omPortal && activeTab === 'site-allocation') {
-      router.replace('/om/sites/guards');
-    }
-  }, [omPortal, activeTab, router]);
+    let cancelled = false;
+    void resolveSessionFieldIncidentAckRole().then((role) => {
+      if (!cancelled && role) setIncidentAckRole(role);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== 'site-allocation') return;
+
+    const onCommandCenter = omPortal
+      ? pathname === '/om' || pathname.startsWith('/om/')
+      : pathname === '/executive/operations' ||
+        pathname.startsWith('/executive/operations/');
+    if (!onCommandCenter) return;
+
+    let cancelled = false;
+    const timerId = window.setTimeout(() => {
+      if (cancelled) return;
+      const currentPath = window.location.pathname;
+      if (omPortal) {
+        if (!currentPath.startsWith('/om')) return;
+        router.replace('/om/sites/guards');
+        return;
+      }
+      if (currentPath !== '/executive/operations') return;
+      router.replace('/executive/operations?tab=tactical');
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timerId);
+    };
+  }, [omPortal, activeTab, pathname, router]);
 
   useEffect(() => {
     let cancelled = false;
+    const shiftDate = dateViewToShiftDate(dateView);
 
     const run = async (silent: boolean) => {
       if (!silent) setRadarLoading(true);
-      const radar = await getLiveFieldRadar();
+      const radar = await getLiveFieldRadar({ shiftDate });
       if (cancelled) return;
       setLiveSectors(radar.sectors as SectorCard[]);
       setLiveIncidents(radar.fieldIncidents as FieldIncident[]);
@@ -2227,9 +2179,9 @@ function OperationsPageInner({ portal = 'executive' }: { portal?: OperationsPort
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, []);
+  }, [dateView]);
 
-  const activeSectors = getDateViewSectors(liveSectors, dateView);
+  const activeSectors = getDateViewSectors(liveSectors);
   const summary = getSummary(activeSectors);
   const vacancyStats = getSectorVacancyStats(activeSectors);
 
@@ -2275,16 +2227,16 @@ function OperationsPageInner({ portal = 'executive' }: { portal?: OperationsPort
                 {radarError}
               </p>
             ) : null}
+            {dateView !== 'today' && !radarLoading ? (
+              <p className="rounded-xl border border-slate-200/80 bg-white/80 px-4 py-3 text-sm font-semibold text-slate-600">
+                Showing SM roster attendance for{' '}
+                <strong className="text-slate-800">{DATE_VIEW_SHORTFALL_META[dateView].chip}</strong>.
+                Coverage and shift gaps reflect that date; open incidents and continuation
+                guards are shown on <strong className="text-slate-800">Today</strong> only.
+              </p>
+            ) : null}
             {radarLoading ? (
-              <div className="space-y-4 animate-pulse">
-                <div className="h-20 rounded-2xl bg-slate-100" />
-                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                  {Array.from({ length: 4 }).map((_, i) => (
-                    <div key={i} className="h-28 rounded-2xl bg-slate-100" />
-                  ))}
-                </div>
-                <div className="h-64 rounded-2xl bg-slate-100" />
-              </div>
+              <ExecutivePageLoading message="Loading live field radar…" />
             ) : (
             <>
             <div className="flex flex-col gap-4 rounded-2xl border border-slate-200/80 bg-white/80 p-4 shadow-sm backdrop-blur-xl sm:flex-row sm:items-center sm:justify-between">
@@ -2306,7 +2258,7 @@ function OperationsPageInner({ portal = 'executive' }: { portal?: OperationsPort
                     onClick={() => setDateView(d.id)}
                     className={`flex-1 rounded-xl px-2 py-2 text-[10px] font-black transition-all sm:flex-none sm:px-4 sm:text-xs ${
                       dateView === d.id
-                        ? 'bg-white text-indigo-700 shadow-sm ring-1 ring-indigo-100'
+                        ? 'bg-white text-[color:var(--cvs-accent)] shadow-sm ring-1 ring-[color:var(--cvs-accent-muted)]'
                         : 'text-slate-500 hover:text-slate-700'
                     }`}
                   >
@@ -2375,7 +2327,7 @@ function OperationsPageInner({ portal = 'executive' }: { portal?: OperationsPort
                 </span>
               </div>
 
-              {activeSectors.length === 0 ? (
+              {liveSectors.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-slate-200/80 bg-white/60 px-6 py-16 text-center">
                   <MapPin className="mx-auto h-8 w-8 text-slate-300" />
                   <p className="mt-3 text-sm font-bold text-slate-700">No sector activity yet</p>
@@ -2388,9 +2340,13 @@ function OperationsPageInner({ portal = 'executive' }: { portal?: OperationsPort
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                   {activeSectors
                     .slice()
-                    .sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status])
+                    .sort(compareSectorTiles)
                     .map((sector) => (
-                      <SectorTile key={sector.id} sector={sector} dateView={dateView} />
+                      <SectorTile
+                        key={sector.id}
+                        sector={sector}
+                        dateView={dateView}
+                      />
                     ))}
                 </div>
               )}
@@ -2398,15 +2354,13 @@ function OperationsPageInner({ portal = 'executive' }: { portal?: OperationsPort
 
             <IncidentCommandQueue
               sectionRef={incidentQueueRef}
-              seedIncidents={liveIncidents}
-              currentRole={omPortal ? 'OM' : 'MD'}
+              incidents={liveIncidents}
+              currentRole={incidentAckRole}
             />
             </>
             )}
           </div>
         )}
-
-        {activeTab === 'site-allocation' && <SiteAllocationTab />}
 
         {activeTab === 'guard-cards' && <GuardCardsTab />}
     </>
@@ -2432,33 +2386,28 @@ function OperationsPageInner({ portal = 'executive' }: { portal?: OperationsPort
   }
 
   return (
-    <div className="min-h-0 pb-24 font-sans">
+    <ExecutivePageShell>
       {modals}
 
-      <header className="sticky top-0 z-50 border-b border-white/60 bg-white/45 px-4 py-4 shadow-[0_8px_32px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl backdrop-saturate-150 sm:px-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="text-xl font-black uppercase tracking-tight text-slate-900 sm:text-2xl">
-              CV Operations
-            </h1>
-            <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-indigo-700">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.9)]" />
-              Live Field Radar · {dateLabel} · {timeLabel}
-            </p>
-          </div>
-          {dateChip}
-        </div>
-      </header>
+      <ExecutivePageHeader
+        title="CV Operations"
+        subtitle={
+          <ExecutivePageLiveSubtitle>
+            Live Field Radar · {dateLabel} · {timeLabel}
+          </ExecutivePageLiveSubtitle>
+        }
+        actions={dateChip}
+      />
 
-      <div className="w-full space-y-8 px-6 py-8 lg:px-12 2xl:px-24">
+      <ExecutivePageBody spacing="relaxed">
         <OmSubnav
           commandCenterBase="/executive/operations"
           commandCenterTabs={['tactical', 'guard-cards']}
           showOperationsRoutes={false}
         />
         {tabContent}
-      </div>
-    </div>
+      </ExecutivePageBody>
+    </ExecutivePageShell>
   );
 }
 
@@ -2466,10 +2415,11 @@ export default function OperationsPage({ portal = 'executive' }: { portal?: Oper
   return (
     <Suspense
       fallback={
-        <div className="min-h-[40vh] animate-pulse px-6 py-8 lg:px-12 2xl:px-24">
-          <div className="mb-8 h-12 rounded-2xl bg-slate-100" />
-          <div className="h-[4.5rem] rounded-2xl bg-slate-100" />
-        </div>
+        <ExecutivePageShell>
+          <ExecutivePageBody>
+            <ExecutivePageLoading message="Loading CV Operations…" />
+          </ExecutivePageBody>
+        </ExecutivePageShell>
       }
     >
       <OperationsPageInner portal={portal} />

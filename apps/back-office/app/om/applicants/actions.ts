@@ -7,6 +7,11 @@ import {
   resolveCompanyIdForSession,
 } from '../../../lib/company-context-server';
 import { getOmServiceDb } from '../../../lib/om-service-db';
+import {
+  isOmSectorScopeEmpty,
+  omScopeIncludesSiteLabel,
+  resolveOmSectorScopeForSession,
+} from '../../../lib/om-sector-scope';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 
 export type GuardJobApplicantStatus = 'new' | 'reviewed' | 'contacted' | 'hired' | 'rejected';
@@ -73,7 +78,18 @@ export async function getGuardJobApplicants(): Promise<{
   try {
     const supabase = await createSupabaseServerClient();
     const companyId = await resolveCompanyIdForSession(supabase);
-    const applicants = await fetchWithRosterCompanyFallback(fetchApplicantsForCompany, companyId);
+    const [applicantsRaw, omScope] = await Promise.all([
+      fetchWithRosterCompanyFallback(fetchApplicantsForCompany, companyId),
+      resolveOmSectorScopeForSession(),
+    ]);
+
+    const applicants =
+      omScope === null
+        ? applicantsRaw
+        : isOmSectorScopeEmpty(omScope)
+          ? []
+          : applicantsRaw.filter((row) => omScopeIncludesSiteLabel(omScope, row.siteLabel));
+
     return { applicants };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to load applicants.';
@@ -99,6 +115,26 @@ export async function updateGuardJobApplicantStatus(input: {
       user.id.slice(0, 8);
 
     const db = getOmServiceDb();
+    const { data: application, error: fetchError } = await db
+      .from('guard_job_applications')
+      .select('id, site_label')
+      .eq('id', input.applicationId)
+      .maybeSingle();
+
+    if (fetchError || !application) {
+      return { success: false, error: 'Application not found.' };
+    }
+
+    const omScope = await resolveOmSectorScopeForSession();
+    if (omScope !== null) {
+      if (isOmSectorScopeEmpty(omScope)) {
+        return { success: false, error: 'No assigned sectors — cannot update applicants.' };
+      }
+      if (!omScopeIncludesSiteLabel(omScope, String(application.site_label ?? ''))) {
+        return { success: false, error: 'This application is outside your assigned sectors.' };
+      }
+    }
+
     const { error } = await db
       .from('guard_job_applications')
       .update({

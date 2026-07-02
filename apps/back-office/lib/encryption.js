@@ -3,22 +3,36 @@ import crypto from "crypto";
 const IV_LENGTH = 16;
 
 function encryptionKey() {
-  return process.env.ENCRYPTION_KEY;
+  return process.env.ENCRYPTION_KEY?.trim();
+}
+
+export function isEncryptionKeyConfigured() {
+  const key = encryptionKey();
+  return Boolean(key && key.length === 32);
+}
+
+export function assertEncryptionKeyConfigured() {
+  if (!isEncryptionKeyConfigured()) {
+    throw new Error("ENCRYPTION_KEY must be exactly 32 characters long.");
+  }
 }
 
 function assertEncryptionKey() {
   const key = encryptionKey();
-  if (!key || key.length !== 32) {
-    const isRuntime =
-      process.env.NODE_ENV !== "production" ||
-      process.env.NEXT_PHASE === "phase-production-build";
-    if (!isRuntime) {
-      throw new Error("ENCRYPTION_KEY must be exactly 32 characters long.");
-    }
-    console.warn("[encryption] ENCRYPTION_KEY missing or invalid — encrypt disabled in dev.");
-    return null;
+  if (key && key.length === 32) return key;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("ENCRYPTION_KEY must be exactly 32 characters long.");
   }
-  return key;
+  console.warn("[encryption] ENCRYPTION_KEY missing or invalid — encrypt disabled in dev.");
+  return null;
+}
+
+export function looksEncrypted(text) {
+  if (!text || typeof text !== "string") return false;
+  const parts = text.split(":");
+  if (parts.length < 2) return false;
+  const ivHex = parts[0];
+  return ivHex.length === IV_LENGTH * 2 && /^[0-9a-f]+$/i.test(ivHex);
 }
 
 export function encrypt(text) {
@@ -34,13 +48,6 @@ export function encrypt(text) {
   let encrypted = cipher.update(text);
   encrypted = Buffer.concat([encrypted, cipher.final()]);
   return iv.toString("hex") + ":" + encrypted.toString("hex");
-}
-
-function looksEncrypted(text) {
-  const parts = text.split(":");
-  if (parts.length < 2) return false;
-  const ivHex = parts[0];
-  return ivHex.length === IV_LENGTH * 2 && /^[0-9a-f]+$/i.test(ivHex);
 }
 
 export function decrypt(text) {
@@ -63,4 +70,3 @@ export function decrypt(text) {
     return text;
   }
 }
-

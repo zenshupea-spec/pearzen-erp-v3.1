@@ -35,7 +35,7 @@ export default function FmRetentionListTable({
         </thead>
         <tbody className="divide-y divide-slate-100">
           {rows.map((g) => (
-            <tr key={g.empNo} className="hover:bg-slate-50">
+            <tr key={g.employeeId} className="hover:bg-slate-50">
               <td className="px-4 py-3 text-xs">
                 <span className="font-bold text-slate-900">{g.name}</span>
                 <span className="mt-0.5 block font-mono text-[11px] text-slate-400">{g.empNo}</span>

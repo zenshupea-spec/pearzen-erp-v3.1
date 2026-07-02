@@ -1,17 +1,25 @@
 'use client';
 
-import React, { useEffect, useMemo, useState, useTransition } from 'react';
+import React, { useCallback, useEffect, useMemo, useState, useTransition } from 'react';
 import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { formatLkr } from '../../../lib/saas-billing';
 import {
+  fetchForgeBillingCompanies,
   fetchSaasBillingDashboard,
   generateSaasInvoice,
   markSaasInvoicePaid,
   saveSaasBillingSettings,
+  type ForgeBillingCompany,
 } from './actions';
 
 export default function SaasBillingPage() {
-  const [companyName, setCompanyName] = useState('Classic Venture');
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [companies, setCompanies] = useState<ForgeBillingCompany[]>([]);
+  const [companyId, setCompanyId] = useState('');
+  const [companyName, setCompanyName] = useState('');
+  const [companySlug, setCompanySlug] = useState<string | null>(null);
   const [databaseCost, setDatabaseCost] = useState('0');
   const [frontendCost, setFrontendCost] = useState('0');
   const [perEmployeePrice, setPerEmployeePrice] = useState('0');
@@ -30,31 +38,98 @@ export default function SaasBillingPage() {
     return db + fe + employeeCount * per;
   }, [databaseCost, frontendCost, perEmployeePrice, employeeCount]);
 
-  const load = async () => {
-    setIsLoading(true);
-    const result = await fetchSaasBillingDashboard();
-    if (result.success) {
-      setLoadError(null);
-      setCompanyName(result.company?.name ?? 'Classic Venture');
-      setDatabaseCost(String(result.settings.databaseCostLkr));
-      setFrontendCost(String(result.settings.frontendCostLkr));
-      setPerEmployeePrice(String(result.settings.perEmployeePriceLkr));
-      setBillingStartDate(result.settings.billingStartDate);
-      setEmployeeCount(result.employeeCount);
-      setInvoices(result.invoices);
-    } else {
+  const syncCompanyQuery = useCallback(
+    (nextCompanyId: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (nextCompanyId) params.set('company', nextCompanyId);
+      else params.delete('company');
+      const query = params.toString();
+      router.replace(query ? `/forge/billing?${query}` : '/forge/billing', { scroll: false });
+    },
+    [router, searchParams],
+  );
+
+  const applyDashboard = (result: Awaited<ReturnType<typeof fetchSaasBillingDashboard>>) => {
+    if (!result.success) {
       setLoadError(result.error ?? 'Failed to load billing');
+      return;
     }
-    setIsLoading(false);
+    setLoadError(null);
+    setCompanyId(result.companyId);
+    setCompanyName(result.company?.name ?? 'Tenant');
+    setCompanySlug(result.company?.slug ?? null);
+    setDatabaseCost(String(result.settings.databaseCostLkr));
+    setFrontendCost(String(result.settings.frontendCostLkr));
+    setPerEmployeePrice(String(result.settings.perEmployeePriceLkr));
+    setBillingStartDate(result.settings.billingStartDate);
+    setEmployeeCount(result.employeeCount);
+    setInvoices(result.invoices);
   };
 
-  useEffect(() => {
-    load();
+  const loadDashboard = useCallback(async (scopedCompanyId?: string) => {
+    setIsLoading(true);
+    const result = await fetchSaasBillingDashboard(scopedCompanyId);
+    applyDashboard(result);
+    setIsLoading(false);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      setIsLoading(true);
+      const companyListResult = await fetchForgeBillingCompanies();
+      if (cancelled) return;
+
+      if (companyListResult.success) {
+        setCompanies(companyListResult.companies);
+      }
+
+      const queryCompanyId = searchParams.get('company');
+      const initialCompanyId = queryCompanyId || '';
+
+      if (initialCompanyId) {
+        const result = await fetchSaasBillingDashboard(initialCompanyId);
+        if (cancelled) return;
+
+        applyDashboard(result);
+        if (result.success && result.companyId !== queryCompanyId) {
+          syncCompanyQuery(result.companyId);
+        }
+      } else {
+        setLoadError(null);
+        setCompanyId('');
+        setCompanyName('');
+        setCompanySlug(null);
+        setInvoices([]);
+      }
+      setIsLoading(false);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams, syncCompanyQuery]);
+
+  const handleCompanyChange = (nextCompanyId: string) => {
+    setSaveMessage(null);
+    if (!nextCompanyId) {
+      setLoadError(null);
+      setCompanyId('');
+      setCompanyName('');
+      setCompanySlug(null);
+      setInvoices([]);
+      syncCompanyQuery('');
+      return;
+    }
+    syncCompanyQuery(nextCompanyId);
+    void loadDashboard(nextCompanyId);
+  };
 
   const handleSave = () => {
     startTransition(async () => {
       const result = await saveSaasBillingSettings({
+        companyId,
         databaseCostLkr: Number(databaseCost) || 0,
         frontendCostLkr: Number(frontendCost) || 0,
         perEmployeePriceLkr: Number(perEmployeePrice) || 0,
@@ -65,29 +140,29 @@ export default function SaasBillingPage() {
         return;
       }
       setSaveMessage('Pricing saved.');
-      await load();
+      await loadDashboard(companyId);
     });
   };
 
   const handleGenerate = () => {
     startTransition(async () => {
-      const result = await generateSaasInvoice();
+      const result = await generateSaasInvoice(companyId);
       if (!result.success) {
         alert(result.error ?? 'Failed to generate invoice');
         return;
       }
-      await load();
+      await loadDashboard(companyId);
     });
   };
 
   const handleMarkPaid = (invoiceId: string) => {
     startTransition(async () => {
-      const result = await markSaasInvoicePaid(invoiceId);
+      const result = await markSaasInvoicePaid(invoiceId, companyId);
       if (!result.success) {
         alert(result.error ?? 'Failed to update');
         return;
       }
-      await load();
+      await loadDashboard(companyId);
     });
   };
 
@@ -99,10 +174,11 @@ export default function SaasBillingPage() {
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
           </svg>
         </Link>
-        <div>
+        <div className="min-w-0 flex-1">
           <h1 className="text-xl font-black text-white tracking-tight uppercase">Platform Billing</h1>
-          <p className="text-[10px] text-rose-400 font-mono font-bold uppercase tracking-widest mt-0.5">
-            {companyName} · Pearzen.tech
+          <p className="text-[10px] text-rose-400 font-mono font-bold uppercase tracking-widest mt-0.5 truncate">
+            {companyName}
+            {companySlug ? ` · ${companySlug}.pearzen.tech` : ' · Pearzen.tech'}
           </p>
         </div>
       </div>
@@ -119,15 +195,44 @@ export default function SaasBillingPage() {
           </div>
         ) : null}
 
+        <div className="bg-[#111118] border border-slate-800 rounded-2xl p-6">
+          <label className="block space-y-1">
+            <span className="text-xs font-bold text-slate-500 uppercase">Tenant</span>
+            <select
+              value={companyId}
+              onChange={(e) => handleCompanyChange(e.target.value)}
+              disabled={isLoading || companies.length === 0}
+              className="w-full rounded-lg border border-slate-700 bg-[#0a0a0e] px-3 py-2 text-white disabled:opacity-50"
+            >
+              <option value="">Select a tenant…</option>
+              {companies.length === 0 ? (
+                <option value="" disabled>
+                  {isLoading ? 'Loading tenants…' : 'No tenants found'}
+                </option>
+              ) : (
+                companies.map((company) => (
+                  <option key={company.id} value={company.id}>
+                    {company.name}
+                    {company.slug ? ` (${company.slug})` : ''}
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
+        </div>
+
         <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl p-4 text-sm text-indigo-200">
-          Single-tenant billing. Invoices appear in FM → <strong>Pearzen.tech payment</strong>.
+          Per-tenant ERP subscription billing. Invoices for the selected tenant appear in that tenant&apos;s FM →{' '}
+          <strong>Pearzen.tech payment</strong>.
           On the due date (and while overdue), FM sees a payment notice and the invoice card flashes — no advance reminders on other portals.
           Portals stay online until you mark the invoice paid in Forge.
         </div>
 
         <div className="bg-[#111118] border border-slate-800 rounded-2xl p-6 space-y-5">
           <h2 className="text-sm font-bold text-slate-400 uppercase tracking-widest">Pricing</h2>
-          {isLoading ? (
+          {!companyId ? (
+            <p className="text-slate-500 text-sm">Select a tenant above to configure pricing and invoices.</p>
+          ) : isLoading ? (
             <p className="text-slate-500 animate-pulse font-mono text-sm">Loading…</p>
           ) : (
             <>
@@ -190,7 +295,7 @@ export default function SaasBillingPage() {
                 <button
                   type="button"
                   onClick={handleSave}
-                  disabled={isPending}
+                  disabled={isPending || !companyId}
                   className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-indigo-500 disabled:opacity-50"
                 >
                   Save pricing
@@ -198,7 +303,7 @@ export default function SaasBillingPage() {
                 <button
                   type="button"
                   onClick={handleGenerate}
-                  disabled={isPending}
+                  disabled={isPending || !companyId}
                   className="rounded-lg bg-rose-600 px-4 py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-rose-500 disabled:opacity-50"
                 >
                   Generate invoice

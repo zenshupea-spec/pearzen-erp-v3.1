@@ -1,9 +1,18 @@
 import { pbkdf2Sync, randomInt, timingSafeEqual } from 'crypto';
 
-export const FORGE_BACKUP_CODE_LENGTH = 20;
-export const FORGE_BACKUP_CODE_COUNT = 5;
+import {
+  FORGE_BACKUP_CODE_COUNT,
+  FORGE_BACKUP_CODE_LENGTH,
+  normalizeForgeBackupCode,
+} from './forge-portal-backup-shared';
 
-const BACKUP_ITERATIONS = 100_000;
+export {
+  FORGE_BACKUP_CODE_COUNT,
+  FORGE_BACKUP_CODE_LENGTH,
+  formatForgeBackupCode,
+  isForgeBackupCodeInput,
+  normalizeForgeBackupCode,
+} from './forge-portal-backup-shared';
 
 function generateForgeBackupCode(): string {
   const digits = '0123456789';
@@ -12,24 +21,6 @@ function generateForgeBackupCode(): string {
     out += digits[randomInt(0, digits.length)];
   }
   return out;
-}
-
-export function normalizeForgeBackupCode(code: string): string {
-  return code.replace(/\D/g, '');
-}
-
-export function isForgeBackupCodeInput(code: string): boolean {
-  return normalizeForgeBackupCode(code).length === FORGE_BACKUP_CODE_LENGTH;
-}
-
-export function formatForgeBackupCode(code: string): string {
-  const digits = normalizeForgeBackupCode(code);
-  if (digits.length !== FORGE_BACKUP_CODE_LENGTH) return digits;
-  const chunks: string[] = [];
-  for (let i = 0; i < digits.length; i += 5) {
-    chunks.push(digits.slice(i, i + 5));
-  }
-  return chunks.join('-');
 }
 
 export function generateForgeBackupCodes(
@@ -48,7 +39,7 @@ export function hashForgeBackupCode(code: string): string {
     throw new Error('Invalid backup code.');
   }
   const salt = randomInt(0, 2 ** 32).toString(16).padStart(8, '0');
-  const hash = pbkdf2Sync(normalized, salt, BACKUP_ITERATIONS, 32, 'sha256').toString(
+  const hash = pbkdf2Sync(normalized, salt, 100_000, 32, 'sha256').toString(
     'hex',
   );
   return `${salt}:${hash}`;
@@ -67,7 +58,7 @@ export function verifyForgeBackupCode(
     const stored = hashes[index];
     const [salt, hash] = stored.split(':');
     if (!salt || !hash) continue;
-    const derived = pbkdf2Sync(normalized, salt, BACKUP_ITERATIONS, 32, 'sha256').toString(
+    const derived = pbkdf2Sync(normalized, salt, 100_000, 32, 'sha256').toString(
       'hex',
     );
     try {

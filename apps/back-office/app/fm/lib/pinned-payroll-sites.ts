@@ -1,3 +1,4 @@
+import { CVS_GUARD_OPS_ENABLED } from '../../../lib/cvs-workforce-phase';
 import {
   GUARD_COHORT_META,
   GUARD_COHORT_ORDER,
@@ -108,9 +109,11 @@ export function ensurePinnedPayrollSites<T extends PinnedPayrollSiteShell>(
       (cohort) =>
         (byId.get(STAFF_NO_BANK_SITE_IDS[cohort]) ?? emptyStaffNoBankSite(cohort)) as T,
     ),
-    ...GUARD_COHORT_ORDER.map(
-      (cohort) =>
-        (byId.get(GUARD_COHORT_SITE_IDS[cohort]) ?? emptyGuardCohortSite(cohort)) as T,
-    ),
+    ...(CVS_GUARD_OPS_ENABLED
+      ? GUARD_COHORT_ORDER.map(
+          (cohort) =>
+            (byId.get(GUARD_COHORT_SITE_IDS[cohort]) ?? emptyGuardCohortSite(cohort)) as T,
+        )
+      : []),
   ];
 }

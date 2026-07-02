@@ -40,7 +40,7 @@ function penaltyRowsToBatch(rows: PenaltyDeductionRow[]): BatchDeductionRow[] {
     rank: r.rank,
     site: r.site,
     amountLkr: r.amountLkr,
-    detail: r.category,
+    detail: r.catalogLabel ?? r.category,
     supplier: r.supplier,
   }));
 }
@@ -211,8 +211,8 @@ export function deductionReportMeta(kind: BatchDeductionKind) {
     },
     penalty: {
       title: 'Penalty Deductions Report',
-      subtitle: 'Disciplinary fines & client pass-through recoveries',
-      detailColumn: 'Category',
+      subtitle: 'Disciplinary fines from SM penalty catalog',
+      detailColumn: 'Offense',
       amountColumn: 'Penalty (LKR)',
       filenameSlug: 'penalty-deductions',
       accent: 'rose' as const,

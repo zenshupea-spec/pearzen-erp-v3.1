@@ -15,9 +15,12 @@ import {
 export default function SetupHeadOffice2faForm({
   logoUrl,
   companyName,
+  awaitingBackupAck = false,
 }: {
   logoUrl: string | null;
   companyName?: string | null;
+  /** Server: TOTP enrolled but unlock code not set — user must continue setup. */
+  awaitingBackupAck?: boolean;
 }) {
   const [isPending, startTransition] = useTransition();
   const [errorMsg, setErrorMsg] = useState('');
@@ -28,6 +31,7 @@ export default function SetupHeadOffice2faForm({
   const [isFinishing, startFinish] = useTransition();
 
   useEffect(() => {
+    if (awaitingBackupAck) return;
     let cancelled = false;
     (async () => {
       const result = await loadHeadOfficeTotpSetupAction();
@@ -44,7 +48,7 @@ export default function SetupHeadOffice2faForm({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [awaitingBackupAck]);
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -84,8 +88,13 @@ export default function SetupHeadOffice2faForm({
         <div className="w-full max-w-md space-y-8">
           <div className="space-y-4 text-center">
             <div className="mb-2 flex justify-center">
-              <div className="flex h-20 w-20 items-center justify-center rounded-2xl border border-slate-200 bg-white shadow-lg">
-                <Shield className="h-10 w-10 text-slate-700" />
+              <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-lg shadow-slate-900/10">
+                {logoUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={logoUrl} alt="" className="h-full w-full object-contain p-2" />
+                ) : (
+                  <Shield className="h-10 w-10 text-slate-700" strokeWidth={1.75} />
+                )}
               </div>
             </div>
             <div>
@@ -113,6 +122,23 @@ export default function SetupHeadOffice2faForm({
                   isFinishing ? 'Continuing…' : "I've saved these codes — continue"
                 }
               />
+            ) : awaitingBackupAck ? (
+              <div className="space-y-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+                <p className="font-bold uppercase tracking-wider">2FA is active</p>
+                <p>
+                  Your authenticator is enrolled. Backup codes are shown only once — if you
+                  did not save them, ask an administrator to reset your portal 2FA from
+                  account security.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleFinish}
+                  disabled={isFinishing}
+                  className="w-full rounded-xl bg-emerald-600 py-4 text-sm font-black uppercase tracking-[0.2em] text-white disabled:opacity-50"
+                >
+                  {isFinishing ? 'Continuing…' : 'Continue to unlock code setup'}
+                </button>
+              </div>
             ) : (
               <>
                 {errorMsg ? (

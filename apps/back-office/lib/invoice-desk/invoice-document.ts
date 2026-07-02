@@ -1,5 +1,6 @@
 import type { InvoiceBillingClient, SupplierInvoiceProfile } from './types';
 import { formatInvoicePrintDate, lkrAmountInWords } from './tax-invoice';
+import { formatInvoiceDueDateLabel } from '../ar-invoicing/month-window';
 
 /** A4 at 96 CSS px/in — used for screen preview and PDF capture. */
 export const INVOICE_A4_WIDTH_PX = 794;
@@ -117,6 +118,7 @@ export function buildTaxInvoiceHtml(input: TaxInvoiceDocumentInput, autoPrint = 
     creditNotes,
     rolloverDebt,
     rolloverFromMonth,
+    dueDate,
     companyLogoUrl,
     copyLabel = 'CUSTOMER COPY',
   } = input;
@@ -307,6 +309,11 @@ export function buildTaxInvoiceHtml(input: TaxInvoiceDocumentInput, autoPrint = 
     <div class="field-box"><span class="lbl">Date of Invoice :</span> ${esc(invoiceDate)}</div>
     <div class="field-box"><span class="lbl">Tax Invoice No :</span> ${esc(taxInvoiceNo)}</div>
   </div>
+  ${
+    dueDate
+      ? `<div class="pair"><div class="field-box"><span class="lbl">Payment Due Date :</span> ${esc(formatInvoiceDueDateLabel(dueDate))}</div><div class="field-box"></div></div>`
+      : ''
+  }
 
   <div class="tin-pair">
     <div class="tin-box">

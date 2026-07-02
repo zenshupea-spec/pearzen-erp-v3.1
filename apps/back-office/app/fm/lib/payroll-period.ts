@@ -1,7 +1,15 @@
-/** Live payroll month seeded in FM mock data (May 2026). */
-export const FM_LIVE_PAYROLL_PERIOD = { year: 2026, month: 5 } as const;
+import { colomboTodayIso } from '../../../lib/guard-verification-dates';
 
 export type PayrollPeriod = { year: number; month: number };
+
+/** Current open payroll month (calendar month in Asia/Colombo). */
+export function getFmLivePayrollPeriod(now = new Date()): PayrollPeriod {
+  const [year, month] = colomboTodayIso(now).split('-').map(Number);
+  return { year, month };
+}
+
+/** Default period for FM desk initial state (resolved at import). */
+export const FM_LIVE_PAYROLL_PERIOD: PayrollPeriod = getFmLivePayrollPeriod();
 
 const MONTH_NAMES = [
   'Jan',
@@ -42,13 +50,14 @@ export function isSamePayrollPeriod(a: PayrollPeriod, b: PayrollPeriod) {
   return a.year === b.year && a.month === b.month;
 }
 
-export function isLivePayrollPeriod(period: PayrollPeriod) {
-  return isSamePayrollPeriod(period, FM_LIVE_PAYROLL_PERIOD);
+export function isLivePayrollPeriod(period: PayrollPeriod, now = new Date()) {
+  return isSamePayrollPeriod(period, getFmLivePayrollPeriod(now));
 }
 
 /** Month offset from live period; 0 = live, negative = earlier, positive = later. */
-export function monthsFromLivePeriod(period: PayrollPeriod) {
-  return (period.year - FM_LIVE_PAYROLL_PERIOD.year) * 12 + (period.month - FM_LIVE_PAYROLL_PERIOD.month);
+export function monthsFromLivePeriod(period: PayrollPeriod, now = new Date()) {
+  const live = getFmLivePayrollPeriod(now);
+  return (period.year - live.year) * 12 + (period.month - live.month);
 }
 
 export function addPayrollMonths(period: PayrollPeriod, delta: number): PayrollPeriod {

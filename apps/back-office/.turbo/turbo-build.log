@@ -1,0 +1,255 @@
+
+> pearzen-erp-back-office@0.0.0 build
+> next build
+
+▲ Next.js 16.2.6 (Turbopack)
+- Environments: .env.local, .env.production
+- Experiments (use with caution):
+  · serverActions
+
+⚠ The "middleware" file convention is deprecated. Please use "proxy" instead. Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+  Creating an optimized production build ...
+✓ Compiled successfully in 15.9s
+  Skipping validation of types
+  Finished TypeScript config validation in 10ms ...
+  Collecting page data using 7 workers ...
+  Generating static pages using 7 workers (0/17) ...
+  Generating static pages using 7 workers (4/17) 
+  Generating static pages using 7 workers (8/17) 
+  Generating static pages using 7 workers (12/17) 
+✓ Generating static pages using 7 workers (17/17) in 208ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ƒ /
+├ ƒ /_not-found
+├ ƒ /account/change-password
+├ ƒ /account/security
+├ ƒ /api/cron/purge-cafe-task-proofs
+├ ƒ /api/cron/purge-opex-receipts
+├ ƒ /api/cron/purge-shalom-handover-photos
+├ ƒ /api/cron/purge-verification-photos
+├ ƒ /api/executive/bulk-migration-workbook
+├ ƒ /api/fleet/telematics
+├ ƒ /api/ical/export/[filename]
+├ ƒ /api/maps-key
+├ ƒ /api/resend/inbound
+├ ƒ /api/shalom-public/payhere-checkout
+├ ƒ /api/shalom-public/payhere-notify
+├ ƒ /api/superapp/v1/export-jobs/[jobId]
+├ ƒ /api/superapp/v1/inventory/[companyId]
+├ ƒ /api/superapp/v1/store-profile/[companyId]
+├ ƒ /ar-collections
+├ ƒ /auth/callback
+├ ƒ /auth/portal-reset
+├ ƒ /cafe-front
+├ ƒ /cafe-front/check-in
+├ ƒ /cafe-front/expiry
+├ ƒ /cafe-front/menu
+├ ƒ /cafe-front/orders
+├ ƒ /cafe-front/roster
+├ ƒ /cafe-front/set-pin
+├ ƒ /clientlogin
+├ ƒ /dashboard
+├ ƒ /deductions
+├ ƒ /executive
+├ ƒ /executive/access
+├ ƒ /executive/advance
+├ ƒ /executive/audit
+├ ƒ /executive/bills
+├ ƒ /executive/cafe
+├ ƒ /executive/cafe/customers
+├ ƒ /executive/cafe/expiry
+├ ƒ /executive/cafe/float
+├ ƒ /executive/cafe/ingredients
+├ ƒ /executive/cafe/inventory
+├ ƒ /executive/cafe/menu
+├ ƒ /executive/cafe/roster
+├ ƒ /executive/finance
+├ ƒ /executive/fleet
+├ ƒ /executive/invoices
+├ ƒ /executive/matrix
+├ ƒ /executive/operations
+├ ƒ /executive/payroll
+├ ƒ /executive/settings
+├ ƒ /executive/settings/bulk-editor
+├ ƒ /executive/shalom
+├ ƒ /executive/sites
+├ ƒ /fm
+├ ƒ /fm-dashboard
+├ ƒ /fm/advance
+├ ƒ /fm/advances
+├ ƒ /fm/batch
+├ ƒ /fm/batch/timesheets
+├ ƒ /fm/dashboard
+├ ƒ /fm/discrepancy-queue
+├ ƒ /fm/exceptions
+├ ƒ /fm/export
+├ ƒ /fm/hold-list
+├ ƒ /fm/pearzen-payment
+├ ƒ /fm/roster
+├ ƒ /fm/settings
+├ ƒ /fm/sites
+├ ƒ /fm/sm-handler
+├ ƒ /fm/stop-list
+├ ƒ /forge
+├ ƒ /forge/billing
+├ ƒ /forge/clients
+├ ƒ /forge/commerce/catalog
+├ ƒ /forge/commerce/invoices
+├ ƒ /forge/commerce/pricing
+├ ƒ /forge/commerce/purchases
+├ ƒ /forge/companies/new
+├ ƒ /forge/create
+├ ƒ /forge/health
+├ ƒ /forge/health/partners
+├ ƒ /forge/health/tenants
+├ ƒ /forge/inbox
+├ ƒ /forge/modules
+├ ƒ /forge/partners
+├ ƒ /forge/partners/[partnerId]
+├ ƒ /forge/partners/assist
+├ ƒ /forge/partners/payouts
+├ ƒ /forge/settings
+├ ƒ /forge/settings/pricing
+├ ƒ /forge/superapp/exports
+├ ƒ /forge/templates
+├ ƒ /forge/templates/[slug]
+├ ƒ /forge/tenants
+├ ƒ /forge/tenants/[companyId]/domains
+├ ƒ /forge/tenants/[companyId]/websites
+├ ƒ /forge/tenants/new
+├ ƒ /hq
+├ ƒ /hq/audit
+├ ƒ /hq/deductions
+├ ƒ /hq/deductions/issue-vo-stock
+├ ƒ /hq/deductions/site-suppliers
+├ ƒ /hq/deductions/suppliers
+├ ƒ /hq/deductions/uniform-collecting
+├ ƒ /hq/deductions/uniform-courier
+├ ƒ /hq/deductions/uniform-issue
+├ ƒ /hq/deductions/uniform-suppliers
+├ ƒ /hq/finance
+├ ƒ /hq/guard-proxy
+├ ƒ /hq/hr
+├ ƒ /hq/invoices
+├ ƒ /hq/recruitment
+├ ƒ /hq/sm-proxy
+├ ƒ /hr
+├ ƒ /hr/advances
+├ ƒ /hr/cafe-portal
+├ ƒ /hr/cafe-roster
+├ ƒ /hr/clearance
+├ ƒ /hr/head-office-portal
+├ ƒ /hr/mnr
+├ ƒ /hr/onboarding
+├ ƒ /hr/shalom-portal
+├ ƒ /hr/sm-portal
+├ ƒ /hr/temp-roster
+├ ƒ /hr/vacancies
+├ ƒ /ical/export/[filename]
+├ ƒ /invoice-desk
+├ ƒ /login
+├ ƒ /login/await-session
+├ ƒ /login/cafe-front
+├ ƒ /login/forge
+├ ƒ /login/forge/await-session
+├ ƒ /login/forge/forgot-password
+├ ƒ /login/forge/recover-2fa
+├ ƒ /login/forge/reset-unlock-code
+├ ƒ /login/forge/set-pin
+├ ƒ /login/forge/set-unlock-code
+├ ƒ /login/forge/setup-2fa
+├ ƒ /login/forge/verify-2fa
+├ ƒ /login/forge/verify-pin
+├ ƒ /login/head-office
+├ ƒ /login/hq
+├ ƒ /login/hr
+├ ƒ /login/md
+├ ƒ /login/md/request-code
+├ ƒ /login/om
+├ ƒ /login/partners
+├ ƒ /login/pears
+├ ƒ /login/recover-2fa
+├ ƒ /login/reset-unlock-code
+├ ƒ /login/set-pin
+├ ƒ /login/set-unlock-code
+├ ƒ /login/setup-2fa
+├ ƒ /login/shalom-front
+├ ƒ /login/tm
+├ ƒ /login/verify-2fa
+├ ƒ /login/verify-pin
+├ ƒ /om
+├ ƒ /om/applicants
+├ ƒ /om/discrepancies
+├ ƒ /om/guard-cards
+├ ƒ /om/guard-cards/blacklist-vault
+├ ƒ /om/guard-cards/blacklisted
+├ ƒ /om/guards/sm-assignments
+├ ƒ /om/roster
+├ ƒ /om/sites/assignments
+├ ƒ /om/sites/guards
+├ ƒ /om/sites/location
+├ ƒ /om/sm-visit-caps
+├ ƒ /om/uniform
+├ ƒ /partners
+├ ƒ /partners/clients/[companyId]/setup
+├ ƒ /partners/payouts
+├ ƒ /partners/portfolio
+├ ƒ /partners/portfolio/[companyId]
+├ ƒ /pears/profile
+├ ƒ /pearzen-website
+├ ƒ /public-website
+├ ƒ /retail
+├ ƒ /retail/checkout
+├ ƒ /retail/inventory
+├ ƒ /retail/orders
+├ ƒ /salon
+├ ƒ /salon/bookings
+├ ƒ /salon/catalog
+├ ƒ /salon/pos
+├ ƒ /security-website
+├ ƒ /security-website/careers
+├ ƒ /security-website/compliance
+├ ƒ /security-website/contact
+├ ƒ /security-website/industries
+├ ƒ /security-website/industries/[slug]
+├ ƒ /security-website/offerings
+├ ƒ /security-website/pricing
+├ ƒ /security-website/quote
+├ ƒ /security-website/services
+├ ƒ /security-website/services/[slug]
+├ ƒ /security-website/solutions
+├ ƒ /security-website/technology
+├ ƒ /select-tenant
+├ ƒ /settings/public-website
+├ ƒ /settings/superapp
+├ ƒ /shalom-front
+├ ƒ /shalom-front/set-pin
+├ ƒ /shalom-public
+├ ○ /shalom-public/apple-icon
+├ ƒ /shalom-public/book/[slug]
+├ ƒ /shalom-public/confirmation/[bookingId]
+├ ƒ /shalom-public/contact
+├ ○ /shalom-public/icon
+├ ƒ /shalom-public/privacy-policy
+├ ƒ /shalom-public/properties
+├ ƒ /shalom-public/properties/[slug]
+├ ƒ /shalom-public/refund-policy
+├ ƒ /shalom-public/terms-and-conditions
+├ ƒ /super-admin/companies/[id]
+├ ƒ /super-admin/companies/new
+├ ƒ /super-admin/dashboard
+├ ƒ /super-admin/security
+├ ƒ /tm
+├ ƒ /tm/mnr-photos
+├ ƒ /tm/site-gps
+├ ƒ /tm/uniform
+└ ƒ /wfm
+
+
+ƒ Proxy (Middleware)
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

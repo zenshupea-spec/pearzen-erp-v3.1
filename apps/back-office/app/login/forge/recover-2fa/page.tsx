@@ -9,23 +9,16 @@ export default function ForgeRecover2faPage() {
   const [email, setEmail] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
-  const [devCode, setDevCode] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     setErrorMsg('');
     setSuccessMsg('');
-    setDevCode(null);
     startTransition(async () => {
       const result = await requestForge2faRecoveryAction(email);
       if ('error' in result && result.error) {
         setErrorMsg(result.error);
-        return;
-      }
-      if (result.recoveryCode) {
-        setDevCode(result.recoveryCode);
-        setSuccessMsg('Email not configured — use this recovery code, then set up 2FA again.');
         return;
       }
       setSuccessMsg('Recovery email sent. Sign in and complete 2FA setup again.');
@@ -45,9 +38,6 @@ export default function ForgeRecover2faPage() {
           {errorMsg ? <p className="text-xs font-bold text-rose-300">{errorMsg}</p> : null}
           {successMsg ? (
             <p className="text-xs font-bold text-emerald-300">{successMsg}</p>
-          ) : null}
-          {devCode ? (
-            <p className="rounded-lg bg-slate-900 p-3 font-mono text-lg text-amber-200">{devCode}</p>
           ) : null}
           <input
             type="email"

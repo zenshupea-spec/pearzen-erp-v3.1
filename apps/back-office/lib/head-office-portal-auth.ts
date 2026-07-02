@@ -21,12 +21,22 @@ import {
   otpExpiresMinutesForRank,
   otpLifetimeMsForRank,
   validateHeadOfficePortalPasswordForRank,
+  receivesWorkEmailOtpOnProvision,
 } from "./executive-portal-auth-policy";
 import {
   hasExecutiveRecoveryEmailOnRecord,
   requiresExecutiveRecoveryEmail,
   validateExecutiveRecoveryEmail,
 } from "./head-office-portal-recovery-email";
+import { validateHeadOfficePortalPasswordRotation } from "./portal-password-rotation";
+import {
+  computePasswordExpiresAt,
+  fetchPortalPasswordHistoryHashes,
+  recordPasswordHistory,
+  clearPortalPasswordHistory,
+} from "../../../packages/supabase/portal-password-rotation";
+import { resolveHeadOfficePasswordExpiryContext } from "./head-office-portal-password-expiry";
+import { isHeadOfficePasswordChangePath, HEAD_OFFICE_PASSWORD_CHANGE_PATH } from "./head-office-portal-gate-paths";
 import { sendHeadOfficePortalOtpEmail, headOfficePortalOtpLabel } from "./head-office-portal-email";
 import {
   generateHeadOfficeBackupCodes,
@@ -114,6 +124,9 @@ export type HeadOfficePortalAuthRecord = {
   last_otp_provisioned_location_label: string | null;
   recovery_email: string | null;
   recovery_email_verified_at: string | null;
+  password_changed_at: string | null;
+  password_expires_at: string | null;
+  must_change_password: boolean;
 };
 
 export type HeadOfficePortalAuthStatus = {
@@ -152,9 +165,12 @@ async function resolvePortalAccessGateForPathname(
   if (authRecord.needs_pin_setup) {
     if (pathname === "/login/set-pin") {
       const otpOk = await readers.hasOtpSetupSession();
-      return otpOk ? "ok" : "verify_pin";
+      return otpOk ? "ok" : "setup_sign_in";
     }
-    return "verify_pin";
+    if (await readers.hasOtpSetupSession()) {
+      return "set_pin";
+    }
+    return "setup_sign_in";
   }
 
   if (!authRecord.two_factor_enabled) {
@@ -192,6 +208,19 @@ async function resolvePortalAccessGateForPathname(
       return "ok";
     }
     return "setup_unlock_code";
+  }
+
+  if (!authRecord.needs_pin_setup) {
+    const passwordExpiry = resolveHeadOfficePasswordExpiryContext(authRecord);
+    if (passwordExpiry.isPasswordExpired) {
+      if (isHeadOfficePasswordChangePath(pathname)) {
+        return (await readers.hasPinSession()) ? "ok" : "verify_pin";
+      }
+      if (!(await readers.hasPinSession())) {
+        return "verify_pin";
+      }
+      return "change_password";
+    }
   }
 
   if (await readers.hasPinSession()) {
@@ -241,7 +270,7 @@ export function normalizeWorkEmail(email: string): string {
 }
 
 const HEAD_OFFICE_PORTAL_AUTH_SELECT =
-  "employee_id, work_email, login_username, portal_auth_email, pin_hash, unlock_code_hash, current_otp, otp_expires_at, needs_pin_setup, is_active, two_factor_enabled, is_username_locked, locked_until, last_otp_provisioned_at, last_otp_provisioned_by_name, last_otp_provisioned_location_label, recovery_email, recovery_email_verified_at";
+  "employee_id, work_email, login_username, portal_auth_email, pin_hash, unlock_code_hash, current_otp, otp_expires_at, needs_pin_setup, is_active, two_factor_enabled, is_username_locked, locked_until, last_otp_provisioned_at, last_otp_provisioned_by_name, last_otp_provisioned_location_label, recovery_email, recovery_email_verified_at, password_changed_at, password_expires_at, must_change_password";
 
 function mapHeadOfficePortalAuthRow(data: Record<string, unknown>): HeadOfficePortalAuthRecord {
   return {
@@ -281,6 +310,15 @@ function mapHeadOfficePortalAuthRow(data: Record<string, unknown>): HeadOfficePo
       typeof data.recovery_email_verified_at === "string"
         ? data.recovery_email_verified_at
         : null,
+    password_changed_at:
+      typeof data.password_changed_at === "string"
+        ? data.password_changed_at
+        : null,
+    password_expires_at:
+      typeof data.password_expires_at === "string"
+        ? data.password_expires_at
+        : null,
+    must_change_password: Boolean(data.must_change_password),
   };
 }
 
@@ -505,7 +543,7 @@ export async function resolveEmployeePortalNic(
   const service = createSupabaseServiceClient();
   const { data, error } = await service
     .from("employees")
-    .select("nic")
+    .select("epf_no, emp_number, nic")
     .eq("id", employeeId)
     .maybeSingle();
 
@@ -515,16 +553,19 @@ export async function resolveEmployeePortalNic(
 
   const decrypted = decryptEmployeePiiRecord(
     data as Record<string, unknown>,
-  ) as { nic?: unknown };
-  const nic = normalizePortalLoginUsername(decrypted.nic);
-  if (!nic) {
-    return {
-      ok: false,
-      error: "Set NIC on the MNR record before provisioning portal access.",
-    };
+  ) as { epf_no?: unknown; emp_number?: unknown; nic?: unknown };
+
+  for (const candidate of [decrypted.epf_no, decrypted.emp_number, decrypted.nic]) {
+    const loginKey = normalizePortalLoginUsername(candidate);
+    if (loginKey) {
+      return { ok: true, nic: loginKey };
+    }
   }
 
-  return { ok: true, nic };
+  return {
+    ok: false,
+    error: "Set EPF number on the MNR record before provisioning portal access.",
+  };
 }
 
 async function resolveEmployeePortalRank(
@@ -575,7 +616,7 @@ export async function backfillHeadOfficePortalNicFields(
 
   const nicResult = await resolveEmployeePortalNic(employeeId);
   if (!nicResult.ok || !nicResult.nic) {
-    return { ok: false, error: nicResult.error ?? "NIC is required." };
+    return { ok: false, error: nicResult.error ?? "EPF number is required." };
   }
 
   const loginUsername = nicResult.nic;
@@ -1119,7 +1160,15 @@ export async function resolveHeadOfficePortalEntryPath(
     return loginPathForRole(profile.role, profile);
   }
 
-  if (authRecord.needs_pin_setup) return "/login/set-pin";
+  if (authRecord.needs_pin_setup) {
+    if (!profile.employeeId) {
+      return loginPathForRole(profile.role, profile);
+    }
+    if (await hasValidOtpSetupSessionForUser(profile.employeeId, email)) {
+      return "/login/set-pin";
+    }
+    return `${loginPathForRole(profile.role, profile)}?error=setup_session`;
+  }
 
   if (!(await hasValidPortalPinSessionForUser(profile.employeeId!, email))) {
     return "/login/verify-pin";
@@ -1134,6 +1183,14 @@ export async function resolveHeadOfficePortalEntryPath(
   const authRecordAfter2fa = await getHeadOfficePortalAuthByEmployeeId(profile.employeeId!);
   if (authRecordAfter2fa && !authRecordAfter2fa.unlock_code_hash) {
     return "/login/set-unlock-code";
+  }
+
+  const authRecordFinal = await getHeadOfficePortalAuthByEmployeeId(profile.employeeId!);
+  if (
+    authRecordFinal &&
+    resolveHeadOfficePasswordExpiryContext(authRecordFinal).isPasswordExpired
+  ) {
+    return HEAD_OFFICE_PASSWORD_CHANGE_PATH;
   }
 
   return authenticatedLandingPath(profile.role, profile);
@@ -1166,17 +1223,30 @@ export async function upsertExecutivePortalRecoveryEmail(
 
   const service = createSupabaseServiceClient();
   const now = new Date().toISOString();
-  const { error } = await service.from("head_office_portal_auth").upsert(
-    {
-      employee_id: employeeId,
-      work_email: email,
-      recovery_email: validated.recoveryEmail,
-      is_active: false,
-      needs_pin_setup: true,
-      updated_at: now,
-    },
-    { onConflict: "employee_id" },
-  );
+  const existing = await getHeadOfficePortalAuthByEmployeeId(employeeId);
+
+  if (existing) {
+    const { error } = await service
+      .from("head_office_portal_auth")
+      .update({
+        work_email: email,
+        recovery_email: validated.recoveryEmail,
+        updated_at: now,
+      })
+      .eq("employee_id", employeeId);
+
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  }
+
+  const { error } = await service.from("head_office_portal_auth").insert({
+    employee_id: employeeId,
+    work_email: email,
+    recovery_email: validated.recoveryEmail,
+    is_active: false,
+    needs_pin_setup: true,
+    updated_at: now,
+  });
 
   if (error) return { ok: false, error: error.message };
   return { ok: true };
@@ -1195,6 +1265,8 @@ export async function provisionHeadOfficePortalOtp(
   loginUsername?: string;
   emailed?: boolean;
   emailError?: string;
+  /** HR-desk delivery only — never returned when OTP is emailed. */
+  displayOtp?: string;
   error?: string;
 }> {
   const email = normalizeWorkEmail(workEmail);
@@ -1202,7 +1274,7 @@ export async function provisionHeadOfficePortalOtp(
 
   const nicResult = await resolveEmployeePortalNic(employeeId);
   if (!nicResult.ok || !nicResult.nic) {
-    return { ok: false, error: nicResult.error ?? "NIC is required." };
+    return { ok: false, error: nicResult.error ?? "EPF number is required." };
   }
 
   const loginUsername = nicResult.nic;
@@ -1249,6 +1321,7 @@ export async function provisionHeadOfficePortalOtp(
       two_factor_enabled: false,
       totp_backup_code_hashes: [],
       needs_pin_setup: true,
+      must_change_password: false,
       is_active: true,
       failed_password_attempts: 0,
       failed_2fa_attempts: 0,
@@ -1268,33 +1341,25 @@ export async function provisionHeadOfficePortalOtp(
 
   if (error) return { ok: false, error: error.message };
 
+  await clearPortalPasswordHistory(service, employeeId, "head_office");
+
   let emailed = false;
   let emailError: string | undefined;
+  const shouldEmailOtp = receivesWorkEmailOtpOnProvision(subjectRank);
 
-  if (isExecutivePortalRank(subjectRank)) {
+  if (shouldEmailOtp) {
+    const portalForEmail = isExecutivePortalRank(subjectRank)
+      ? "md"
+      : staffPortalIdForRole(subjectRank) ?? "hq";
     const mail = await sendHeadOfficePortalOtpEmail({
       to: email,
       otp,
       staffName: audit?.subjectName ?? metadata?.fullName ?? "Staff",
-      portalLabel: "MD Portal",
+      portalLabel: isExecutivePortalRank(subjectRank)
+        ? "MD Portal"
+        : headOfficePortalOtpLabel(portalForEmail),
       expiresMinutes: otpExpiresMinutesForRank(subjectRank),
-      portal: "md",
-    });
-
-    if (mail.emailed) {
-      emailed = true;
-    } else if (!mail.ok && mail.error) {
-      emailError = mail.error;
-    }
-  } else if (subjectRank) {
-    const signInPortal = staffPortalIdForRole(subjectRank) ?? "hq";
-    const mail = await sendHeadOfficePortalOtpEmail({
-      to: email,
-      otp,
-      staffName: audit?.subjectName ?? metadata?.fullName ?? "Staff",
-      portalLabel: headOfficePortalOtpLabel(signInPortal),
-      expiresMinutes: otpExpiresMinutesForRank(subjectRank),
-      portal: signInPortal,
+      portal: portalForEmail,
     });
 
     if (mail.emailed) {
@@ -1331,6 +1396,7 @@ export async function provisionHeadOfficePortalOtp(
     loginUsername,
     emailed,
     emailError,
+    displayOtp: !shouldEmailOtp ? otp : undefined,
   };
 }
 
@@ -1347,6 +1413,7 @@ export async function resetHeadOfficePortalAccess(
   }
 
   const service = createSupabaseServiceClient();
+  await clearPortalPasswordHistory(service, employeeId, "head_office");
   const { error } = await service
     .from("head_office_portal_auth")
     .update({
@@ -1385,16 +1452,48 @@ export async function invalidatePortalPasswordAfterRejectedLogin(
   });
 
   const service = createSupabaseServiceClient();
+  await clearPortalPasswordHistory(service, employeeId, "head_office");
   await service
     .from("head_office_portal_auth")
     .update({
       pin_hash: null,
       needs_pin_setup: true,
+      must_change_password: false,
       current_otp: null,
       otp_expires_at: null,
       updated_at: new Date().toISOString(),
     })
     .eq("employee_id", employeeId);
+}
+
+/** Force password rotation on next portal sign-in (HR/MD desk reset without OTP). */
+export async function markHeadOfficePortalPasswordRotationRequired(
+  employeeId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const authRecord = await getHeadOfficePortalAuthByEmployeeId(employeeId);
+  if (!authRecord || !authRecord.is_active) {
+    return { ok: false, error: "Portal access is not active." };
+  }
+  if (authRecord.needs_pin_setup) {
+    return { ok: false, error: "Complete OTP setup before forcing rotation." };
+  }
+
+  const service = createSupabaseServiceClient();
+  const cleared = await clearPortalPasswordHistory(service, employeeId, "head_office");
+  if (!cleared.ok) {
+    return { ok: false, error: cleared.error ?? "Could not clear password history." };
+  }
+
+  const { error } = await service
+    .from("head_office_portal_auth")
+    .update({
+      must_change_password: true,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("employee_id", employeeId);
+
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
 }
 
 export async function verifyHeadOfficePortalCode(
@@ -1511,6 +1610,7 @@ export async function setHeadOfficePortalPin(
   }
 
   const { hashPortalPin } = await import("./head-office-portal-pin");
+  const changedAt = new Date();
   const service = createSupabaseServiceClient();
   const { error } = await service
     .from("head_office_portal_auth")
@@ -1519,7 +1619,112 @@ export async function setHeadOfficePortalPin(
       current_otp: null,
       otp_expires_at: null,
       needs_pin_setup: false,
-      updated_at: new Date().toISOString(),
+      password_changed_at: changedAt.toISOString(),
+      password_expires_at: computePasswordExpiresAt(changedAt).toISOString(),
+      must_change_password: false,
+      updated_at: changedAt.toISOString(),
+    })
+    .eq("employee_id", employeeId);
+
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+export async function changeHeadOfficePortalPassword(
+  employeeId: string,
+  email: string,
+  currentPassword: string,
+  newPassword: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const trimmedCurrent = currentPassword.trim();
+  const trimmedNew = newPassword.trim();
+  if (!trimmedCurrent) {
+    return { ok: false, error: "Enter your current password." };
+  }
+  if (!trimmedNew) {
+    return { ok: false, error: "Enter a new password." };
+  }
+
+  const authRecord = await getHeadOfficePortalAuthByEmployeeId(employeeId);
+  if (!authRecord || !authRecord.is_active) {
+    return { ok: false, error: "Portal access is not active." };
+  }
+  if (authRecord.needs_pin_setup) {
+    return { ok: false, error: "Finish initial password setup before changing it." };
+  }
+  if (!portalSessionEmailMatches(authRecord, email)) {
+    return {
+      ok: false,
+      error: "Your sign-in session does not match this account. Sign out and sign in again.",
+    };
+  }
+
+  const { verifyPortalPin } = await import("./head-office-portal-pin");
+  if (!authRecord.pin_hash || !verifyPortalPin(trimmedCurrent, authRecord.pin_hash)) {
+    return { ok: false, error: "Current password is incorrect." };
+  }
+
+  const passwordPolicy = await resolvePortalPasswordPolicyContext(employeeId);
+  const passwordCheck = validateHeadOfficePortalPasswordForRank(
+    trimmedNew,
+    passwordPolicy.rank,
+    { rbacGated: passwordPolicy.rbacGated },
+  );
+  if (!passwordCheck.ok) {
+    return { ok: false, error: passwordCheck.error };
+  }
+
+  const service = createSupabaseServiceClient();
+  let historyHashes: string[] = [];
+  try {
+    historyHashes = await fetchPortalPasswordHistoryHashes(
+      service,
+      employeeId,
+      "head_office",
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not load password history.";
+    return { ok: false, error: message };
+  }
+
+  const reuseCheck = validateHeadOfficePortalPasswordRotation(trimmedNew, {
+    currentHash: authRecord.pin_hash,
+    historyHashes,
+  });
+  if (!reuseCheck.ok) {
+    return { ok: false, error: reuseCheck.error };
+  }
+
+  if (authRecord.pin_hash) {
+    const historyResult = await recordPasswordHistory(service, {
+      employeeId,
+      portalKind: "head_office",
+      previousCredentialHash: authRecord.pin_hash,
+    });
+    if (!historyResult.ok) {
+      return { ok: false, error: historyResult.error ?? "Could not save password history." };
+    }
+  }
+
+  const authSync = await syncHeadOfficeSupabaseAuthPassword(
+    resolvePortalAuthEmail(authRecord),
+    trimmedNew,
+    { employeeId },
+  );
+  if (!authSync.ok) {
+    return { ok: false, error: authSync.error ?? "Failed to save portal login." };
+  }
+
+  const { hashPortalPin } = await import("./head-office-portal-pin");
+  const changedAt = new Date();
+  const { error } = await service
+    .from("head_office_portal_auth")
+    .update({
+      pin_hash: hashPortalPin(trimmedNew),
+      password_changed_at: changedAt.toISOString(),
+      password_expires_at: computePasswordExpiresAt(changedAt).toISOString(),
+      must_change_password: false,
+      updated_at: changedAt.toISOString(),
     })
     .eq("employee_id", employeeId);
 
@@ -1879,7 +2084,7 @@ export async function disableHeadOfficeTotp(
   return { ok: true };
 }
 
-export const PORTAL_IDLE_LOCK_MINUTES = 15;
+export { PORTAL_IDLE_LOCK_MINUTES } from './portal-idle-lock';
 
 export async function setHeadOfficeUnlockCode(
   employeeId: string,

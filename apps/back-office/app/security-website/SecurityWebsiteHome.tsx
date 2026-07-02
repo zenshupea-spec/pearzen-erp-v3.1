@@ -28,7 +28,7 @@ import {
   resolveImageFrame,
   type SecurityWebsiteImageFrame,
 } from '../../lib/security-website-image-frame';
-import type { SecurityWebsiteImageSlot } from '../../lib/security-website-images';
+import type { SecurityWebsiteImageSlot } from '../../lib/security-website-image-utils';
 import { pickLocalizedHero } from '../../lib/security-website-i18n';
 
 const HEADING_CLASS = 'uppercase';

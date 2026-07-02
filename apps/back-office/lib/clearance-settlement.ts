@@ -23,59 +23,32 @@ export function computeClearanceSettlement(
 
 export type HrResignationGate = {
   ok: boolean;
-  requiresFmPaymentConfirm: boolean;
-  requiresDebtClearance: boolean;
   message: string;
 };
 
-/** Whether HR may confirm resignation after FM / debt rules */
+/** Whether HR may confirm clearance and resignation from the MNR modal. */
 export function evaluateHrResignationGate(input: {
-  settlement: ClearanceSettlement;
-  fmOffboardingPaymentConfirmed: boolean;
+  uniformCollectionOk?: boolean;
+  uniformCollectionPending?: boolean;
 }): HrResignationGate {
-  const { settlement, fmOffboardingPaymentConfirmed } = input;
-  const { finalPayLkr, gratuityLkr, recoveryLkr, netSettlementLkr } = settlement;
-  const totalPayableToEmployee = finalPayLkr + gratuityLkr;
+  const { uniformCollectionOk = true, uniformCollectionPending = false } = input;
 
-  if (netSettlementLkr < 0 || (recoveryLkr > 0 && totalPayableToEmployee < recoveryLkr)) {
+  if (uniformCollectionOk === false) {
     return {
       ok: false,
-      requiresFmPaymentConfirm: false,
-      requiresDebtClearance: true,
-      message: `Net balance owed to company (${formatSettlementAmount(Math.abs(netSettlementLkr))}). Recover all outstanding balances before HR confirms resignation.`,
-    };
-  }
-
-  if (totalPayableToEmployee > 0 && !fmOffboardingPaymentConfirmed) {
-    return {
-      ok: false,
-      requiresFmPaymentConfirm: true,
-      requiresDebtClearance: false,
-      message:
-        netSettlementLkr > 0
-          ? `Confirm final net payment of ${formatSettlementAmount(netSettlementLkr)} in this clearance screen before confirming resignation.`
-          : 'Confirm final salary release (netted against recoveries) in this clearance screen before confirming resignation.',
-    };
-  }
-
-  if (recoveryLkr > 0 && finalPayLkr === 0) {
-    return {
-      ok: false,
-      requiresFmPaymentConfirm: false,
-      requiresDebtClearance: true,
-      message: `Outstanding balance of ${formatSettlementAmount(recoveryLkr)} must be settled before HR confirms resignation.`,
+      message: uniformCollectionPending
+        ? 'Wait for Deductions Admin to confirm uniform collection, or request collection first.'
+        : 'Request uniform collection before confirming clearance.',
     };
   }
 
   return {
     ok: true,
-    requiresFmPaymentConfirm: false,
-    requiresDebtClearance: false,
-    message: 'Ready for HR to confirm resignation.',
+    message: 'Review the settlement below, then confirm clearance and resignation.',
   };
 }
 
-function formatSettlementAmount(n: number) {
+export function formatClearanceSettlementAmount(n: number) {
   return new Intl.NumberFormat('en-LK', {
     style: 'currency',
     currency: 'LKR',

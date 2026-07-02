@@ -1,6 +1,6 @@
 import { normalizeNic } from './employee-nic';
 
-/** Synthetic Supabase Auth email domain for NIC-based portal login. */
+/** Synthetic Supabase Auth email domain for EPF-based portal login. */
 export const PORTAL_AUTH_EMAIL_DOMAIN = 'portal.pearzen.local';
 
 export function normalizePortalLoginUsername(value: unknown): string {
@@ -18,11 +18,16 @@ export function portalAuthEmailFromUsername(username: string): string {
   return `${norm}@${PORTAL_AUTH_EMAIL_DOMAIN}`.toLowerCase();
 }
 
+/** Work email for portal UI — never the internal @portal.pearzen.local Supabase auth alias. */
+export function headOfficePortalDisplayEmail(workEmail: string): string {
+  return workEmail.trim().toLowerCase();
+}
+
 export type PortalLoginIdentifier =
   | { kind: 'email'; value: string }
   | { kind: 'username'; value: string };
 
-/** Head-office portals accept work email; legacy NIC username is still supported for dev. */
+/** Head-office portals accept work email; legacy EPF username is still supported for dev. */
 export function parsePortalLoginIdentifier(value: unknown): PortalLoginIdentifier | null {
   const trimmed = String(value ?? '').trim();
   if (!trimmed) return null;

@@ -20,20 +20,28 @@ export default function CafeCheckinVerificationPanel({
 
   const reload = () => {
     startTransition(async () => {
-      const data = await getCafeRosterDeskData();
-      setRows(data.pendingCheckinVerifications);
+      try {
+        const data = await getCafeRosterDeskData();
+        setRows(data.pendingCheckinVerifications);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to refresh check-ins.');
+      }
     });
   };
 
   const handleReview = (checkinId: string, decision: 'APPROVED' | 'FLAGGED') => {
     setError(null);
     startTransition(async () => {
-      const result = await reviewCafeCheckinVerification({ checkinId, decision });
-      if (!result.ok) {
-        setError(result.error ?? 'Failed to review check-in.');
-        return;
+      try {
+        const result = await reviewCafeCheckinVerification({ checkinId, decision });
+        if (!result.ok) {
+          setError(result.error ?? 'Failed to review check-in.');
+          return;
+        }
+        reload();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to review check-in.');
       }
-      reload();
     });
   };
 

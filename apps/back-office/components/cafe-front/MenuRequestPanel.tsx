@@ -3,6 +3,7 @@
 import { useEffect, useState, useTransition } from 'react';
 
 import { ExecutiveGlassCard } from '../executive/ExecutiveVaultShell';
+import { CVS_BRAND_CLASSES } from '../../lib/cvs-brand-tokens';
 import { getCafeFrontDashboard, submitCafeMenuRequest } from '../../app/cafe-front/actions';
 
 type Tab = 'change' | 'add';
@@ -89,8 +90,10 @@ export function MenuRequestPanel() {
               key={key}
               type="button"
               onClick={() => setTab(key)}
-              className={`rounded-lg px-3 py-1.5 text-[10px] font-black uppercase tracking-wider ${
-                tab === key ? 'bg-slate-900 text-white' : 'bg-white/70 text-slate-600'
+              className={`rounded-lg px-3 py-1.5 text-[10px] font-black uppercase tracking-wider transition-all ${
+                tab === key
+                  ? `${CVS_BRAND_CLASSES.mobileTabActive} border-transparent`
+                  : 'bg-white/70 text-slate-600 hover:bg-[var(--cvs-accent-soft)]/80 hover:text-[color:var(--cvs-accent)]'
               }`}
             >
               {key === 'change' ? 'Change on item' : 'Request to add item'}
@@ -179,7 +182,7 @@ export function MenuRequestPanel() {
           type="button"
           disabled={isPending}
           onClick={submit}
-          className="rounded-xl bg-orange-600 px-4 py-2 text-xs font-black uppercase tracking-wider text-white disabled:opacity-40"
+          className="rounded-xl bg-[color:var(--cvs-accent)] px-4 py-2 text-xs font-black uppercase tracking-wider text-white shadow-sm shadow-[color:var(--cvs-glow)] transition-all hover:bg-[color:var(--cvs-accent-hover)] disabled:opacity-40"
         >
           Submit request
         </button>

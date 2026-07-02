@@ -1,5 +1,5 @@
 import PortalLoadingScreen from '../../../../packages/pwa-shell/PortalLoadingScreen';
 
 export default function HqLoading() {
-  return <PortalLoadingScreen accent="emerald" />;
+  return <PortalLoadingScreen accent="emerald" fullscreen scrim />;
 }

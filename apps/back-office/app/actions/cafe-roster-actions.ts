@@ -1,6 +1,7 @@
 'use server';
 
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
+import { assertSessionCompanyId } from '../../lib/company-context-server';
 
 type CafeStaffRow = {
   guard_id: string;
@@ -45,6 +46,7 @@ export async function applyMasterLayoutAction(
   companyId: string,
   weekDates: string[]
 ) {
+  companyId = await assertSessionCompanyId(companyId);
   const supabase = await createSupabaseServerClient();
 
   // Retrieve the master template for this specific cafe

@@ -37,10 +37,15 @@ function parseCoord(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** Canonical branch label for MD Settings HO / café locations (stored uppercase). */
+export function formatInternalBranchLabel(name: string): string {
+  return name.trim().toUpperCase();
+}
+
 function parseLocation(raw: unknown, fallbackId?: string): InternalWorkLocation | null {
   if (!raw || typeof raw !== 'object') return null;
   const row = raw as Record<string, unknown>;
-  const name = String(row.name ?? '').trim();
+  const name = formatInternalBranchLabel(String(row.name ?? ''));
   const lat = parseCoord(row.latitude ?? row.lat);
   const lng = parseCoord(row.longitude ?? row.lng);
   if (!name || lat == null || lng == null) return null;
@@ -107,9 +112,9 @@ export function findInternalWorkLocation(
   kind: 'headOffice' | 'cafe',
   locationName: string,
 ): InternalWorkLocation | null {
-  const norm = locationName.trim().toLowerCase();
+  const norm = formatInternalBranchLabel(locationName);
   if (!norm) return null;
-  return settings[kind].find((loc) => loc.name.trim().toLowerCase() === norm) ?? null;
+  return settings[kind].find((loc) => formatInternalBranchLabel(loc.name) === norm) ?? null;
 }
 
 export function findInternalWorkLocationById(

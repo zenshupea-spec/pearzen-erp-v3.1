@@ -34,6 +34,11 @@ import {
 } from './forge-portal-backup';
 import { sendForgeTempPasswordEmail } from './forge-portal-email';
 import { isForgeOperatorEmail } from './forge-access';
+import {
+  forgeLocalDevSkipsSecurityGates,
+  isForgeLocalDevRequest,
+  isForgeLocalDevRequestFromReq,
+} from './forge-local-dev';
 
 export const FORGE_TEMP_PASSWORD_LENGTH = 30;
 export const FORGE_BACKUP_CODE_LENGTH = 20;
@@ -410,6 +415,17 @@ export async function hasValidForge2faSessionForUser(
   return forge2faSessionMatches(email, authSignInAt, parsed);
 }
 
+function forgeSessionCookieMatches(
+  parsed: { email: string; authSignInAt: string },
+  email: string,
+  authSignInAt: string | null | undefined,
+  relaxAuthSignInAt: boolean,
+): boolean {
+  if (normalizeEmail(parsed.email) !== normalizeEmail(email)) return false;
+  if (relaxAuthSignInAt) return true;
+  return forge2faSessionMatches(email, authSignInAt, parsed);
+}
+
 export async function hasValidForgeGoogleSession(
   req: NextRequest,
   email: string,
@@ -423,7 +439,8 @@ export async function hasValidForgeGoogleSession(
 
   const parsed = parseForge2faSessionPayload(payload);
   if (!parsed) return false;
-  return forge2faSessionMatches(email, authSignInAt, parsed);
+  const relax = isForgeLocalDevRequestFromReq(req);
+  return forgeSessionCookieMatches(parsed, email, authSignInAt, relax);
 }
 
 export async function hasValidForgeGoogleSessionForUser(
@@ -433,14 +450,17 @@ export async function hasValidForgeGoogleSessionForUser(
   const { cookies } = await import('next/headers');
   const cookieStore = await cookies();
   const token = cookieStore.get(FORGE_PORTAL_GOOGLE_COOKIE)?.value;
-  if (!token || !authSignInAt) return false;
+  if (!token) return false;
+
+  const localDev = await isForgeLocalDevRequest();
+  if (!authSignInAt && !localDev) return false;
 
   const { payload, valid } = await decodeSignedPortalCookie(token);
   if (!valid) return false;
 
   const parsed = parseForge2faSessionPayload(payload);
   if (!parsed) return false;
-  return forge2faSessionMatches(email, authSignInAt, parsed);
+  return forgeSessionCookieMatches(parsed, email, authSignInAt, localDev);
 }
 
 export async function hasValidForgePasswordSession(
@@ -456,7 +476,8 @@ export async function hasValidForgePasswordSession(
 
   const parsed = parseForge2faSessionPayload(payload);
   if (!parsed) return false;
-  return forge2faSessionMatches(email, authSignInAt, parsed);
+  const relax = isForgeLocalDevRequestFromReq(req);
+  return forgeSessionCookieMatches(parsed, email, authSignInAt, relax);
 }
 
 export async function hasValidForgePasswordSessionForUser(
@@ -466,14 +487,17 @@ export async function hasValidForgePasswordSessionForUser(
   const { cookies } = await import('next/headers');
   const cookieStore = await cookies();
   const token = cookieStore.get(FORGE_PORTAL_PASSWORD_COOKIE)?.value;
-  if (!token || !authSignInAt) return false;
+  if (!token) return false;
+
+  const localDev = await isForgeLocalDevRequest();
+  if (!authSignInAt && !localDev) return false;
 
   const { payload, valid } = await decodeSignedPortalCookie(token);
   if (!valid) return false;
 
   const parsed = parseForge2faSessionPayload(payload);
   if (!parsed) return false;
-  return forge2faSessionMatches(email, authSignInAt, parsed);
+  return forgeSessionCookieMatches(parsed, email, authSignInAt, localDev);
 }
 
 export async function setForgeGoogleSessionCookies(
@@ -616,9 +640,15 @@ export async function resolveForgeAccessGate(
 
   const hasGoogle = await hasValidForgeGoogleSession(req, email, authSignInAt);
   const hasPassword = await hasValidForgePasswordSession(req, email, authSignInAt);
-  if (!hasGoogle || !hasPassword) {
+  const localDevBypass = isForgeLocalDevRequestFromReq(req);
+  const credentialsOk = localDevBypass ? hasPassword : hasGoogle && hasPassword;
+  if (!credentialsOk) {
     if (pathname === '/login/forge') return 'ok';
     return 'verify_credentials';
+  }
+
+  if (localDevBypass && forgeLocalDevSkipsSecurityGates()) {
+    return 'ok';
   }
 
   if (record.needs_pin_setup || !record.pin_hash) {
@@ -647,7 +677,8 @@ export async function resolveForgeAccessGate(
   if (!record.unlock_code_hash) {
     if (
       pathname === '/login/forge/set-unlock-code' ||
-      pathname === '/login/forge/reset-unlock-code'
+      pathname === '/login/forge/reset-unlock-code' ||
+      pathname === '/login/forge/setup-2fa'
     ) {
       return 'ok';
     }
@@ -687,17 +718,27 @@ export async function resolveForgePortalEntryPath(
   authSignInAt: string | null | undefined,
 ): Promise<string> {
   const record = await ensureForgePortalAuthRecord(email);
+  const localDevBypass = await import('./forge-local-dev').then((mod) =>
+    mod.isForgeLocalDevRequest(),
+  );
 
   if (isForgeAccountLocked(record)) {
     return '/login/forge?error=forge_locked';
   }
 
-  if (!(await hasValidForgeGoogleSessionForUser(email, authSignInAt))) {
+  if (
+    !localDevBypass &&
+    !(await hasValidForgeGoogleSessionForUser(email, authSignInAt))
+  ) {
     return '/login/forge';
   }
 
   if (!(await hasValidForgePasswordSessionForUser(email, authSignInAt))) {
     return '/login/forge';
+  }
+
+  if (localDevBypass && forgeLocalDevSkipsSecurityGates()) {
+    return '/forge';
   }
 
   if (record.needs_pin_setup || !record.pin_hash) {
@@ -1119,7 +1160,6 @@ export async function issueForgeTempPasswordReset(
 ): Promise<{
   ok: boolean;
   emailed?: boolean;
-  tempPassword?: string;
   error?: string;
 }> {
   const normalized = normalizeEmail(email);
@@ -1163,11 +1203,16 @@ export async function issueForgeTempPasswordReset(
   if (!mail.ok) {
     return { ok: false, error: mail.error };
   }
+  if (!mail.emailed) {
+    return {
+      ok: false,
+      error: 'Email delivery is not configured. Set RESEND_API_KEY and FORGE_EMAIL_FROM.',
+    };
+  }
 
   return {
     ok: true,
-    emailed: mail.emailed,
-    tempPassword: mail.emailed ? undefined : tempPassword,
+    emailed: true,
   };
 }
 

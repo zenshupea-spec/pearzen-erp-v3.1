@@ -4,12 +4,12 @@ import { revalidatePath } from 'next/cache';
 
 import {
   getMdSettingsDb,
+  resolveExecutiveCompanyId,
 } from '../executive/settings/lib/executive-md-settings-db';
 import { fetchBackOfficeUserProfile } from '../../lib/hr-portal-access-server';
 import {
   MD_SETTINGS_ENVELOPE_KEYS,
   loadSettingEnvelope,
-  mergeSettingEnvelope,
 } from '../../../../packages/supabase/md-settings-envelope';
 import { createSupabaseServerClient } from '../../../../packages/supabase/server';
 import { isExecutiveRank } from '../../lib/portal-role-utils';
@@ -18,6 +18,10 @@ import {
   fetchSecurityWebsiteQuoteRecipientEmails,
   resolveSecurityWebsiteCompanyId,
 } from '../../lib/security-website-data';
+import {
+  fetchTenantPublicSiteRow,
+  upsertTenantPublicSiteDraft,
+} from '../../lib/tenant-public-site-data';
 import {
   ranksForCorporateGroup,
 } from '../../../../packages/rank-pay-matrix';
@@ -28,6 +32,7 @@ import {
   type SecurityWebsiteImageSlot,
 } from '../../lib/security-website-images';
 import { getRankPayMatrix } from '../executive/settings/rank-matrix-actions';
+import { persistMdSettingEnvelopeWithAudit } from '../executive/settings/settings-audit';
 import type { RankPayEntry } from '../../../../packages/rank-pay-matrix';
 import {
   mergeSecurityWebsiteContent,
@@ -68,6 +73,24 @@ async function requireWebsiteEditor(): Promise<
   return { ok: true, user, profile };
 }
 
+async function syncPublishedSecurityWebsiteIfLive(
+  companyId: string,
+  content: SecurityWebsiteContent,
+  publishedByEmail: string | null,
+): Promise<void> {
+  const publishedRow = await fetchTenantPublicSiteRow(companyId, 'security_marketing');
+  if (!publishedRow?.publishedAt) return;
+
+  await upsertTenantPublicSiteDraft({
+    companyId,
+    siteType: 'security_marketing',
+    hostname: publishedRow.hostname,
+    contentJson: content as unknown as Record<string, unknown>,
+    publish: true,
+    publishedByEmail,
+  });
+}
+
 export async function getSecurityWebsitePageData(): Promise<{
   content: SecurityWebsiteContent;
   canEdit: boolean;
@@ -105,20 +128,42 @@ export async function saveSecurityWebsiteContent(
 ): Promise<{ success: boolean; error?: string }> {
   const auth = await requireWebsiteEditor();
   if (!auth.ok) return { success: false, error: auth.error };
-  const companyId = await resolveSecurityWebsiteCompanyId();
-  const db = getMdSettingsDb();
-  const normalized = mergeSecurityWebsiteContent(content);
 
-  const result = await mergeSettingEnvelope(db, companyId, {
-    [MD_SETTINGS_ENVELOPE_KEYS.securityWebsite]: normalized,
-  });
+  try {
+    const supabase = await createSupabaseServerClient();
+    const companyId = await resolveExecutiveCompanyId(supabase);
+    const db = getMdSettingsDb();
+    const normalized = mergeSecurityWebsiteContent(content);
 
-  if (result.success) {
+    const result = await persistMdSettingEnvelopeWithAudit(
+      db,
+      companyId,
+      { [MD_SETTINGS_ENVELOPE_KEYS.securityWebsite]: normalized },
+      'UPDATE_SECURITY_WEBSITE_CONTENT',
+      {
+        fieldCount: Object.keys(normalized).length,
+        hasHero: Boolean(normalized.heroImageUrl),
+      },
+    );
+
+    if (!result.success) return result;
+
+    await syncPublishedSecurityWebsiteIfLive(
+      companyId,
+      normalized,
+      auth.user.email ?? null,
+    );
+
     revalidatePath('/security-website', 'layout');
     revalidatePath('/dashboard');
-  }
+    revalidatePath('/executive/audit');
 
-  return result;
+    return { success: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not save website content.';
+    console.error('saveSecurityWebsiteContent:', message);
+    return { success: false, error: message };
+  }
 }
 
 export async function submitSecurityWebsiteLead(
@@ -174,7 +219,8 @@ export async function uploadSecurityWebsiteSlotImage(
     const auth = await requireWebsiteEditor();
     if (!auth.ok) return { success: false, error: auth.error };
 
-    const companyId = await resolveSecurityWebsiteCompanyId();
+    const supabase = await createSupabaseServerClient();
+    const companyId = await resolveExecutiveCompanyId(supabase);
     const upload = await uploadSecurityWebsiteImage(companyId, slot, dataUrl);
     if (!upload.success || !upload.url) return upload;
 
@@ -196,16 +242,23 @@ export async function uploadSecurityWebsiteSlotImage(
     const persistedUrl = upload.url;
     const next = { ...current, [field]: persistedUrl };
 
-    const result = await mergeSettingEnvelope(db, companyId, {
-      [MD_SETTINGS_ENVELOPE_KEYS.securityWebsite]: next,
-    });
+    const result = await persistMdSettingEnvelopeWithAudit(
+      db,
+      companyId,
+      { [MD_SETTINGS_ENVELOPE_KEYS.securityWebsite]: next },
+      'UPDATE_SECURITY_WEBSITE_CONTENT',
+      { slot, field },
+    );
 
     if (!result.success) {
       return { success: false, error: result.error ?? 'Could not save image to settings.' };
     }
 
+    await syncPublishedSecurityWebsiteIfLive(companyId, next, auth.user.email ?? null);
+
     revalidatePath('/security-website');
     revalidatePath('/security-website', 'layout');
+    revalidatePath('/executive/audit');
     return upload;
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Upload failed';
@@ -223,7 +276,8 @@ export async function uploadSecurityWebsiteClientLogoAction(
 ): Promise<{ success: boolean; url?: string; error?: string }> {
   const auth = await requireWebsiteEditor();
   if (!auth.ok) return { success: false, error: auth.error };
-  const companyId = await resolveSecurityWebsiteCompanyId();
+  const supabase = await createSupabaseServerClient();
+  const companyId = await resolveExecutiveCompanyId(supabase);
   return uploadSecurityWebsiteClientLogo(companyId, clientId, dataUrl);
 }
 
@@ -234,7 +288,8 @@ export async function uploadSecurityWebsiteTrainingGalleryImageAction(
   try {
     const auth = await requireWebsiteEditor();
     if (!auth.ok) return { success: false, error: auth.error };
-    const companyId = await resolveSecurityWebsiteCompanyId();
+    const supabase = await createSupabaseServerClient();
+    const companyId = await resolveExecutiveCompanyId(supabase);
     return uploadSecurityWebsiteTrainingGalleryImage(companyId, imageId, dataUrl);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Upload failed';

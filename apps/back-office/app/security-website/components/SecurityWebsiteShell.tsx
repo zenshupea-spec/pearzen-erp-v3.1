@@ -185,7 +185,7 @@ export default function SecurityWebsiteShell({ children }: { children: ReactNode
                 {content.companyName}
               </p>
               <p className="mt-0.5 text-[11px] leading-snug text-red-600/90">
-                Established 7 March 2008
+                Established 7 March 2006
               </p>
             </div>
             <div className="min-w-0 md:hidden">

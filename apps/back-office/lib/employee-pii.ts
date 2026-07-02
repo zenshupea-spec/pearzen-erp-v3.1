@@ -1,6 +1,12 @@
-import { decrypt, encrypt } from './encryption';
+import { assertEncryptionKeyConfigured, decrypt, encrypt, looksEncrypted } from './encryption';
 
-/** Fields stored AES-256-CBC encrypted at rest in employees (Master Nominal Roll). */
+/**
+ * Master Nominal Roll PII at rest (AES-256-CBC, `ivHex:ciphertextHex`).
+ *
+ * Plaintext by design (portal login / roster lookup):
+ * - `epf_no`, `emp_number` — guard, SM, and HO portal authentication
+ * - `full_name`, `email`, `dob`, `gender`, `nationality`, `religion` — operational display
+ */
 export const ENCRYPTED_EMPLOYEE_PII_FIELDS = [
   'nic',
   'phone',
@@ -13,11 +19,43 @@ export const ENCRYPTED_EMPLOYEE_PII_FIELDS = [
 
 export type EncryptedEmployeePiiField = (typeof ENCRYPTED_EMPLOYEE_PII_FIELDS)[number];
 
+export function assertEmployeePiiEncryptionReady(): void {
+  if (process.env.NODE_ENV !== 'production') {
+    if (!process.env.ENCRYPTION_KEY?.trim()) {
+      console.warn(
+        '[employee-pii] ENCRYPTION_KEY not set — PII will be stored in plaintext during local dev.',
+      );
+    }
+    return;
+  }
+  assertEncryptionKeyConfigured();
+}
+
+export function getEmployeePiiEncryptionError(): string | null {
+  try {
+    assertEmployeePiiEncryptionReady();
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : 'Employee PII encryption is unavailable.';
+  }
+}
+
 export function encryptEmployeePiiValue(value: unknown): string | null {
   if (value == null || value === '') return null;
   const str = String(value).trim();
   if (!str) return null;
-  return encrypt(str);
+
+  if (process.env.NODE_ENV === 'production') {
+    assertEncryptionKeyConfigured();
+  }
+
+  const encrypted = encrypt(str);
+  if (process.env.NODE_ENV === 'production' && !looksEncrypted(encrypted)) {
+    throw new Error(
+      'Employee PII could not be encrypted. Configure ENCRYPTION_KEY to a 32-character value.',
+    );
+  }
+  return encrypted;
 }
 
 export function decryptEmployeePiiValue(value: unknown): string | null {
@@ -26,6 +64,7 @@ export function decryptEmployeePiiValue(value: unknown): string | null {
 }
 
 export function encryptEmployeePiiRecord<T extends Record<string, unknown>>(record: T): T {
+  assertEmployeePiiEncryptionReady();
   const out = { ...record };
   for (const field of ENCRYPTED_EMPLOYEE_PII_FIELDS) {
     if (!(field in out)) continue;

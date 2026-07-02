@@ -72,11 +72,11 @@ describe('head-office-geofence', () => {
 });
 
 describe('head-office-geofence-exempt', () => {
-  it('exempts MD and OD only', () => {
+  it('exempts all ranks when HQ geofence is disabled', () => {
     expect(isHeadOfficeGeofenceExempt('MD')).toBe(true);
     expect(isHeadOfficeGeofenceExempt('OD')).toBe(true);
-    expect(isHeadOfficeGeofenceExempt('HR')).toBe(false);
-    expect(isHeadOfficeGeofenceExempt('OM')).toBe(false);
-    expect(isHeadOfficeGeofenceExempt(null)).toBe(false);
+    expect(isHeadOfficeGeofenceExempt('HR')).toBe(true);
+    expect(isHeadOfficeGeofenceExempt('OM')).toBe(true);
+    expect(isHeadOfficeGeofenceExempt(null)).toBe(true);
   });
 });

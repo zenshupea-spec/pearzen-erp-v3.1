@@ -4,8 +4,10 @@ import { getCompanyLogoUrl } from '../../../../../packages/supabase/company-bran
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import {
   getHeadOfficePortalAuthByEmail,
+  hasValidPortal2faSessionForUser,
   hasValidPortalPinSessionForUser,
   requiresHeadOfficePortalPin,
+  resolveHeadOfficePortalEntryPath,
 } from '../../../lib/head-office-portal-auth';
 import { buildHeadOfficePortalResetPath } from '../../../lib/head-office-portal-reset-path';
 import {
@@ -39,16 +41,40 @@ export default async function Setup2faPage() {
 
   if (authRecord.needs_pin_setup) redirect('/login/set-pin');
 
-  if (authRecord.two_factor_enabled) redirect('/login/verify-2fa');
-
   if (!(await hasValidPortalPinSessionForUser(profile.employeeId!, user.email))) {
     redirect('/login/verify-pin');
+  }
+
+  let awaitingBackupAck = false;
+  if (authRecord.two_factor_enabled) {
+    const has2faSession = await hasValidPortal2faSessionForUser(
+      profile.employeeId!,
+      user.email,
+      user.last_sign_in_at,
+    );
+    if (authRecord.unlock_code_hash) {
+      const entryPath = await resolveHeadOfficePortalEntryPath(
+        profile,
+        user.email,
+        user.last_sign_in_at,
+      );
+      if (entryPath !== '/login/setup-2fa') redirect(entryPath);
+    } else if (!has2faSession) {
+      redirect('/login/verify-2fa');
+    } else {
+      // TOTP confirmed — stay on this page until backup codes are acknowledged.
+      awaitingBackupAck = true;
+    }
   }
 
   const tenant = await resolveTenantCompanyFromRequest();
   const logoUrl = await getCompanyLogoUrl(tenant?.id);
 
   return (
-    <SetupHeadOffice2faForm logoUrl={logoUrl} companyName={tenant?.name ?? null} />
+    <SetupHeadOffice2faForm
+      logoUrl={logoUrl}
+      companyName={tenant?.name ?? null}
+      awaitingBackupAck={awaitingBackupAck}
+    />
   );
 }

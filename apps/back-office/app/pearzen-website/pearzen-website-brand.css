@@ -1,0 +1,583 @@
+.pearzen-website {
+  /* Core brand — refined for premium tech */
+  scroll-behavior: smooth;
+  --pearzen-ink: #050a14;
+  --pearzen-midnight: #0a1224;
+  --pearzen-navy-deep: #0c1835;
+  --pearzen-navy: #152d5c;
+  --pearzen-navy-muted: #64748b;
+  --pearzen-gold: #d4a017;
+  --pearzen-gold-bright: #f0c040;
+  --pearzen-gold-soft: #fef3c7;
+  --pearzen-cyan: #0891b2;
+  --pearzen-cyan-bright: #22d3ee;
+  --pearzen-violet: #6366f1;
+  --pearzen-bg: #f8fafc;
+  --pearzen-surface: #eef2f7;
+  --pearzen-surface-alt: #e2e8f0;
+  --pearzen-text-on-dark: #f1f5f9;
+  --pearzen-text-muted-dark: #94a3b8;
+  font-feature-settings: 'kern' 1, 'liga' 1;
+}
+
+/* ── Hero fixed cover video ── */
+.pearzen-website .pearzen-hero {
+  background: transparent;
+}
+
+.pearzen-website .pearzen-hero-video-fixed {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  height: 100vh;
+  height: 100dvh;
+  width: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.pearzen-website .pearzen-hero-video-fixed video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform-origin: center center;
+  /* Locked hero crop — mobile */
+  object-position: 54% 50%;
+  transform: scale(1.04);
+}
+
+@media (min-width: 768px) {
+  .pearzen-website .pearzen-hero-video-fixed video {
+    /* Locked desktop crop — slight zoom-in keeps left edge inside frame */
+    object-position: 58% 50%;
+    transform: scale(1.08);
+  }
+}
+
+.pearzen-website .pearzen-hero-cover-overlay {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(
+      108deg,
+      rgb(5 10 20 / 0.2) 0%,
+      rgb(5 10 20 / 0.5) 32%,
+      rgb(5 10 20 / 0.78) 58%,
+      rgb(5 10 20 / 0.9) 78%,
+      rgb(5 10 20 / 0.95) 100%
+    ),
+    linear-gradient(
+      to top,
+      rgb(5 10 20 / 0.95) 0%,
+      rgb(5 10 20 / 0.55) 24%,
+      transparent 52%
+    ),
+    radial-gradient(
+      ellipse 70% 55% at 18% 40%,
+      rgb(8 145 178 / 0.14) 0%,
+      transparent 70%
+    ),
+    radial-gradient(
+      ellipse 50% 40% at 85% 20%,
+      rgb(212 160 23 / 0.1) 0%,
+      transparent 65%
+    );
+}
+
+.pearzen-website .pearzen-hero-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgb(34 211 238 / 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(34 211 238 / 0.035) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: linear-gradient(to right, black 0%, transparent 62%);
+}
+
+.pearzen-website .pearzen-hero-video-fade {
+  position: absolute;
+  inset: auto 0 0;
+  height: 28vh;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgb(248 250 252 / 0.55) 55%,
+    rgb(248 250 252 / 0.92) 100%
+  );
+}
+
+.pearzen-website .pearzen-hero-panel {
+  position: relative;
+  animation: pearzen-fade-up 0.85s cubic-bezier(0.22, 1, 0.36, 1) both;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  background:
+    linear-gradient(
+      145deg,
+      rgb(255 255 255 / 0.07) 0%,
+      rgb(255 255 255 / 0.03) 100%
+    );
+  box-shadow:
+    0 0 0 1px rgb(255 255 255 / 0.04) inset,
+    0 32px 64px -24px rgb(0 0 0 / 0.55),
+    0 0 80px -20px rgb(34 211 238 / 0.15);
+  backdrop-filter: blur(24px) saturate(140%);
+}
+
+.pearzen-website .pearzen-hero-panel-inner {
+  position: relative;
+}
+
+.pearzen-website .pearzen-hero-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    135deg,
+    rgb(34 211 238 / 0.35) 0%,
+    rgb(212 160 23 / 0.25) 40%,
+    transparent 70%
+  );
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.pearzen-website .pearzen-hero-tagline {
+  background: linear-gradient(90deg, var(--pearzen-cyan-bright), var(--pearzen-gold-bright));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.pearzen-website .pearzen-hero-headline {
+  text-wrap: balance;
+  color: var(--pearzen-text-on-dark);
+  text-shadow: 0 2px 24px rgb(0 0 0 / 0.35);
+}
+
+.pearzen-website .pearzen-scroll-indicator {
+  animation: pearzen-scroll-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes pearzen-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(28px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pearzen-scroll-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scaleY(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+}
+
+/* ── Stats rail (overlaps hero) ── */
+.pearzen-website .pearzen-stats-rail {
+  margin-top: -8rem;
+}
+
+@media (min-width: 768px) {
+  .pearzen-website .pearzen-stats-rail {
+    margin-top: -9.5rem;
+  }
+}
+
+.pearzen-website .pearzen-stat-card--display {
+  align-items: flex-start;
+  text-align: left;
+}
+
+.pearzen-website .pearzen-stat-card--display:hover {
+  transform: translateY(-4px);
+}
+
+.pearzen-website .pearzen-stat-card--display .pearzen-stat-value {
+  line-height: 1.1;
+}
+
+.pearzen-website .pearzen-stat-card {
+  position: relative;
+  overflow: hidden;
+  transform-style: preserve-3d;
+  perspective: 900px;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  background: linear-gradient(
+    160deg,
+    rgb(21 45 92 / 0.95) 0%,
+    rgb(10 18 36 / 0.98) 100%
+  );
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 0.08) inset,
+    0 20px 50px -20px rgb(0 0 0 / 0.6),
+    0 0 0 1px rgb(255 255 255 / 0.04);
+  transition:
+    transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.35s ease,
+    border-color 0.35s ease;
+}
+
+.pearzen-website .pearzen-stat-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: linear-gradient(
+    135deg,
+    rgb(34 211 238 / 0.14) 0%,
+    rgb(212 160 23 / 0.1) 50%,
+    transparent 80%
+  );
+  transition: opacity 0.35s ease;
+}
+
+.pearzen-website .pearzen-stat-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--pearzen-cyan-bright), var(--pearzen-gold-bright));
+  opacity: 0.7;
+}
+
+.pearzen-website .pearzen-stat-card:hover {
+  transform: translateY(-6px) rotateX(2deg);
+  border-color: rgb(34 211 238 / 0.35);
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 0.12) inset,
+    0 28px 60px -18px rgb(0 0 0 / 0.65),
+    0 0 40px -10px rgb(34 211 238 / 0.25);
+}
+
+.pearzen-website .pearzen-stat-card:hover::before {
+  opacity: 1;
+}
+
+.pearzen-website .pearzen-stat-value {
+  background: linear-gradient(135deg, #fff 30%, var(--pearzen-cyan-bright));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ── Buttons ── */
+.pearzen-website .pearzen-btn-primary {
+  background: linear-gradient(135deg, var(--pearzen-gold) 0%, var(--pearzen-gold-bright) 100%);
+  color: var(--pearzen-ink);
+  box-shadow:
+    0 12px 32px -8px rgb(212 160 23 / 0.55),
+    0 0 24px -6px rgb(212 160 23 / 0.35),
+    inset 0 1px 0 rgb(255 255 255 / 0.35);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    filter 0.2s ease;
+}
+
+.pearzen-website .pearzen-btn-primary:hover {
+  filter: brightness(1.06);
+  box-shadow:
+    0 16px 40px -10px rgb(212 160 23 / 0.65),
+    0 0 32px -4px rgb(212 160 23 / 0.45),
+    inset 0 1px 0 rgb(255 255 255 / 0.4);
+  transform: translateY(-2px);
+}
+
+.pearzen-website .pearzen-btn-secondary {
+  border: 1px solid rgb(255 255 255 / 0.2);
+  background: rgb(255 255 255 / 0.06);
+  color: var(--pearzen-text-on-dark);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 24px -12px rgb(0 0 0 / 0.4);
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease,
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.pearzen-website .pearzen-btn-secondary:hover {
+  border-color: rgb(34 211 238 / 0.5);
+  background: rgb(34 211 238 / 0.08);
+  box-shadow: 0 12px 32px -12px rgb(34 211 238 / 0.25);
+  transform: translateY(-2px);
+}
+
+.pearzen-website .pearzen-btn-ghost-light {
+  border: 1px solid rgb(21 45 92 / 0.15);
+  background: white;
+  color: var(--pearzen-navy);
+  box-shadow: 0 4px 16px -8px rgb(15 26 61 / 0.15);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.pearzen-website .pearzen-btn-ghost-light:hover {
+  border-color: var(--pearzen-cyan);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px -10px rgb(8 145 178 / 0.2);
+}
+
+/* ── Section utilities ── */
+.pearzen-website .pearzen-section-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--pearzen-cyan);
+}
+
+.pearzen-website .pearzen-section-label::before {
+  content: '';
+  display: block;
+  width: 2rem;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--pearzen-cyan-bright), transparent);
+}
+
+.pearzen-website .pearzen-section-title {
+  margin-top: 0.875rem;
+  font-size: clamp(1.75rem, 3vw, 2.5rem);
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  line-height: 1.08;
+  text-transform: uppercase;
+  color: var(--pearzen-navy-deep);
+  text-wrap: balance;
+}
+
+.pearzen-website .pearzen-section-dark {
+  background:
+    radial-gradient(ellipse 90% 55% at 50% -10%, rgb(34 211 238 / 0.08) 0%, transparent 58%),
+    radial-gradient(ellipse 60% 40% at 100% 50%, rgb(212 160 23 / 0.05) 0%, transparent 55%),
+    linear-gradient(180deg, var(--pearzen-midnight) 0%, var(--pearzen-ink) 100%);
+  color: var(--pearzen-text-on-dark);
+}
+
+.pearzen-website .pearzen-section-light {
+  border-bottom: 1px solid rgb(226 232 240 / 0.7);
+  background-color: var(--pearzen-bg);
+  background-image:
+    radial-gradient(ellipse 80% 50% at 0% 0%, rgb(34 211 238 / 0.06) 0%, transparent 55%),
+    radial-gradient(ellipse 60% 45% at 100% 20%, rgb(212 160 23 / 0.04) 0%, transparent 50%);
+}
+
+.pearzen-website .pearzen-section-surface {
+  border-bottom: 1px solid rgb(226 232 240 / 0.7);
+  background:
+    radial-gradient(ellipse 70% 50% at 80% 0%, rgb(99 102 241 / 0.04) 0%, transparent 50%),
+    linear-gradient(180deg, var(--pearzen-surface) 0%, rgb(241 245 249 / 1) 100%);
+}
+
+.pearzen-website .pearzen-section-contact {
+  background:
+    radial-gradient(ellipse 80% 60% at 50% 100%, rgb(34 211 238 / 0.06) 0%, transparent 55%),
+    linear-gradient(180deg, white 0%, var(--pearzen-surface) 100%);
+}
+
+.pearzen-website .pearzen-section-dark .pearzen-section-title {
+  color: var(--pearzen-text-on-dark);
+}
+
+/* ── Contact CTA card (dark inset) ── */
+.pearzen-website .pearzen-contact-card .pearzen-section-label {
+  color: var(--pearzen-gold-bright);
+}
+
+.pearzen-website .pearzen-contact-card .pearzen-section-label::before {
+  background: linear-gradient(90deg, var(--pearzen-gold-bright), transparent);
+}
+
+.pearzen-website .pearzen-contact-card .pearzen-section-title {
+  color: var(--pearzen-text-on-dark);
+}
+
+.pearzen-website .pearzen-contact-body {
+  color: rgb(203 213 225);
+}
+
+/* ── Content cards (3D glass) ── */
+.pearzen-website .pearzen-glass-card {
+  position: relative;
+  border: 1px solid rgb(255 255 255 / 0.85);
+  background: linear-gradient(
+    155deg,
+    rgb(255 255 255 / 0.98) 0%,
+    rgb(248 250 252 / 0.92) 100%
+  );
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 1) inset,
+    0 2px 0 rgb(226 232 240 / 0.8),
+    0 20px 50px -28px rgb(15 26 61 / 0.22);
+  backdrop-filter: blur(12px);
+  transition:
+    transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.35s ease,
+    border-color 0.35s ease;
+}
+
+.pearzen-website .pearzen-glass-card:hover {
+  transform: translateY(-6px) rotateX(1deg);
+  border-color: rgb(34 211 238 / 0.35);
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 1) inset,
+    0 28px 60px -24px rgb(8 145 178 / 0.18),
+    0 0 0 1px rgb(34 211 238 / 0.1);
+}
+
+.pearzen-website .pearzen-glass-card-dark {
+  border: 1px solid rgb(255 255 255 / 0.08);
+  background: linear-gradient(
+    155deg,
+    rgb(21 45 92 / 0.6) 0%,
+    rgb(10 18 36 / 0.85) 100%
+  );
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 0.06) inset,
+    0 24px 48px -24px rgb(0 0 0 / 0.5);
+  backdrop-filter: blur(16px);
+  color: var(--pearzen-text-on-dark);
+}
+
+.pearzen-website .pearzen-glass-card-dark:hover {
+  transform: translateY(-6px);
+  border-color: rgb(34 211 238 / 0.3);
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 0.1) inset,
+    0 28px 56px -20px rgb(34 211 238 / 0.15);
+}
+
+.pearzen-website .pearzen-product-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.pearzen-website .pearzen-product-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--pearzen-cyan-bright), var(--pearzen-gold-bright));
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.pearzen-website .pearzen-product-card:hover::after {
+  opacity: 1;
+}
+
+.pearzen-website .pearzen-icon-tile {
+  background: linear-gradient(135deg, rgb(34 211 238 / 0.15), rgb(99 102 241 / 0.12));
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 0.5) inset,
+    0 8px 20px -10px rgb(8 145 178 / 0.35);
+  color: var(--pearzen-navy-deep);
+}
+
+.pearzen-website .pearzen-icon-tile-gold {
+  background: linear-gradient(135deg, rgb(212 160 23 / 0.25), rgb(240 192 64 / 0.15));
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 0.5) inset,
+    0 8px 20px -10px rgb(212 160 23 / 0.35);
+  color: var(--pearzen-navy-deep);
+}
+
+/* ── Header & footer (light) ── */
+.pearzen-website .pearzen-site-header {
+  border-bottom: 1px solid rgb(226 232 240 / 0.65);
+  background: rgb(255 255 255 / 0.72);
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 0.8) inset,
+    0 12px 40px -16px rgb(15 26 61 / 0.1);
+  backdrop-filter: blur(24px) saturate(180%);
+}
+
+.pearzen-website .pearzen-site-footer {
+  position: relative;
+  z-index: 20;
+  border-top: 1px solid rgb(226 232 240 / 0.9);
+  background: linear-gradient(
+    180deg,
+    rgb(255 255 255 / 1) 0%,
+    rgb(248 250 252 / 1) 100%
+  );
+  box-shadow: 0 -1px 0 rgb(255 255 255 / 1) inset;
+}
+
+.pearzen-website .pearzen-nav-link {
+  color: var(--pearzen-navy-muted);
+  transition: color 0.2s ease;
+}
+
+.pearzen-website .pearzen-nav-link:hover {
+  color: var(--pearzen-navy-deep);
+}
+
+.pearzen-website .pearzen-nav-link::after {
+  background: linear-gradient(90deg, var(--pearzen-cyan), var(--pearzen-gold));
+}
+
+/* ── Scroll reveal animations ── */
+.pearzen-website .pearzen-reveal {
+  opacity: 0;
+  transition:
+    opacity 0.75s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.75s cubic-bezier(0.22, 1, 0.36, 1);
+  transition-delay: var(--pearzen-reveal-delay, 0ms);
+  will-change: opacity, transform;
+}
+
+.pearzen-website .pearzen-reveal--up {
+  transform: translate3d(0, 48px, 0);
+}
+
+.pearzen-website .pearzen-reveal--scale {
+  transform: translate3d(0, 32px, 0) scale(0.96);
+}
+
+.pearzen-website .pearzen-reveal--left {
+  transform: translate3d(-40px, 0, 0);
+}
+
+.pearzen-website .pearzen-reveal--right {
+  transform: translate3d(40px, 0, 0);
+}
+
+.pearzen-website .pearzen-reveal.is-visible {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pearzen-website .pearzen-reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+
+  .pearzen-website .pearzen-scroll-indicator {
+    animation: none;
+  }
+}

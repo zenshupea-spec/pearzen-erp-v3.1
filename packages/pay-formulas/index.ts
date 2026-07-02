@@ -30,9 +30,9 @@ export type PayFormulasSettings = {
 };
 
 export const DEFAULT_GUARD_PAY_FORMULAS: GuardPayFormulas = {
-  standardWorkingDay: '(B/26) + ((B/200) * 1.5 * 3)',
+  standardWorkingDay: '(B/26) + ((B/26) * (14/12) * (1/26)) + ((B/200) * 1.5 * 3)',
   otRatePerHour: '(B/200) * 1.5',
-  poyaDay: '(B/200) * (2 * 11)',
+  poyaDay: '((B/26) * 1.5) + ((B/200) * 1.5 * 3)',
   publicHoliday: '(B/26) + ((B/26) * (14/12) * (1/26)) + ((B/200) * 1.5 * 3)',
   statutory: '(B/26) + ((B/26) * (14/12) * (1/26)) + ((B/200) * 1.5 * 3)',
   weeklyHolidaySunday: '(B/200) * 1.5 * 11',
@@ -77,4 +77,42 @@ export function parsePayFormulasSettings(raw: unknown): PayFormulasSettings {
     guard: parseFormulaGroup(GUARD_FORMULA_KEYS, DEFAULT_GUARD_PAY_FORMULAS, row.guard),
     cafe: parseFormulaGroup(CAFE_FORMULA_KEYS, DEFAULT_CAFE_PAY_FORMULAS, row.cafe),
   };
+}
+
+export type PayFormulaContext = {
+  B: number;
+  HRS?: number;
+  wbWorkingDays?: number;
+  wbHours?: number;
+};
+
+export function evaluatePayFormula(formula: string, ctx: PayFormulaContext): number {
+  const B = ctx.B;
+  const HRS = ctx.HRS ?? 9;
+  const D = ctx.wbWorkingDays ?? 26;
+  const H = ctx.wbHours ?? 200;
+
+  try {
+    let parsed = formula.trim();
+    parsed = parsed.replace(/\[?B\]?/gi, String(B));
+    parsed = parsed.replace(/\[?HRS\]?/gi, String(HRS));
+    parsed = parsed.replace(/\(\s*B\s*\/\s*26\s*\)/gi, `(${B}/${D})`);
+    parsed = parsed.replace(/\(\s*B\s*\/\s*200\s*\)/gi, `(${B}/${H})`);
+    parsed = parsed.replace(/B\s*\/\s*26(?!\d)/gi, `${B}/${D}`);
+    parsed = parsed.replace(/B\s*\/\s*200(?!\d)/gi, `${B}/${H}`);
+    // eslint-disable-next-line no-new-func
+    const result = new Function(`return ${parsed}`)();
+    return Number.isFinite(result) ? Number(Number(result).toFixed(2)) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function evaluateGuardFormulaAtB(
+  key: GuardFormulaKey,
+  B: number,
+  formulas: GuardPayFormulas = DEFAULT_GUARD_PAY_FORMULAS,
+  ctx?: Omit<PayFormulaContext, 'B'>,
+): number {
+  return evaluatePayFormula(formulas[key], { B, ...ctx });
 }

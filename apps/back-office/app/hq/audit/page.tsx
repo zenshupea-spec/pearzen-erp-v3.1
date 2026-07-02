@@ -1,8 +1,9 @@
 import { redirect } from 'next/navigation';
 
 import AuditLedgerView from '../../../components/audit/AuditLedgerView';
+import { canAccessHqAuditRoute } from '../../../lib/audit-ledger-access';
 import {
-  canAccessPortalActivityLedger,
+  portalActivityTabsForRbacGated,
   portalActivityTabsForRole,
 } from '../../../lib/audit-portals';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
@@ -28,11 +29,17 @@ export default async function PortalActivityLedgerPage() {
     redirect('/login/head-office?error=no_portal_rank');
   }
 
-  if (!canAccessPortalActivityLedger(role)) {
+  if (!canAccessHqAuditRoute(profile)) {
     redirect('/dashboard');
   }
 
-  const allowedTabs = portalActivityTabsForRole(role);
+  const allowedTabs = profile.rbacGated
+    ? portalActivityTabsForRbacGated(profile.portalRbac)
+    : portalActivityTabsForRole(role);
+
+  if (!allowedTabs.length) {
+    redirect('/dashboard');
+  }
 
   return (
     <AuditLedgerView

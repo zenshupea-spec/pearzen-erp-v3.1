@@ -10,14 +10,13 @@ import {
 } from './forge-portal-auth';
 import { getAuthenticatedForgeSession } from './forge-portal-session';
 import {
-  autoApproveExpiredPendingLogins,
-  createPendingLoginChallengeForOperator,
+  displaceOtherAuthSessionsAfterLogin,
   decodeSupabaseAccessTokenSessionId,
-  getActivePendingLoginForOperator,
   getPendingLoginById,
   resolvePendingLoginChallenge,
   revokeSupabaseSession,
 } from './portal-pending-login';
+import { notifySignedInElsewhereSessionDisplacement } from './portal-session-displacement-email';
 import {
   createSupabaseServerClient,
   createSupabaseServiceClient,
@@ -28,24 +27,12 @@ export async function maybeCreateForgeSessionChallengeAfterLogin(
   userId: string,
   currentSessionId: string,
 ): Promise<string | null> {
-  const service = createSupabaseServiceClient();
-  const { data: incumbentId, error: incumbentError } = await service.rpc(
-    'first_other_auth_session_id',
-    {
-      p_user_id: userId,
-      p_current_session_id: currentSessionId,
-    },
-  );
-
-  if (incumbentError || !incumbentId) return null;
-
-  const pending = await createPendingLoginChallengeForOperator({
+  await displaceOtherAuthSessionsAfterLogin({
+    userId,
+    currentSessionId,
     operatorEmail,
-    challengerSessionId: currentSessionId,
-    incumbentSessionId: String(incumbentId),
   });
-
-  return pending?.id ?? null;
+  return null;
 }
 
 export async function continueForgeLoginAfterAuth(operatorEmail: string): Promise<void> {
@@ -62,14 +49,11 @@ export async function continueForgeLoginAfterAuth(operatorEmail: string): Promis
     : null;
 
   if (sessionId && user?.id) {
-    const pendingChallengeId = await maybeCreateForgeSessionChallengeAfterLogin(
+    await maybeCreateForgeSessionChallengeAfterLogin(
       operatorEmail,
       user.id,
       sessionId,
     );
-    if (pendingChallengeId) {
-      redirect(`/login/forge/await-session?pending=${pendingChallengeId}`);
-    }
   }
 
   const record = await import('./forge-portal-auth').then((mod) =>
@@ -88,40 +72,7 @@ export async function continueForgeLoginAfterAuth(operatorEmail: string): Promis
 }
 
 export async function pollForgeSessionChallengeAction() {
-  const session = await getAuthenticatedForgeSession();
-  if ('error' in session) return { pending: null as null };
-
-  await autoApproveExpiredPendingLogins();
-
-  const pending = await getActivePendingLoginForOperator(session.user.email);
-  if (!pending) return { pending: null as null };
-
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { session: authSession },
-  } = await supabase.auth.getSession();
-  const currentSessionId = authSession?.access_token
-    ? decodeSupabaseAccessTokenSessionId(authSession.access_token)
-    : null;
-
-  const isIncumbent =
-    pending.incumbentSessionId &&
-    currentSessionId &&
-    pending.incumbentSessionId === currentSessionId;
-  const isChallenger =
-    currentSessionId && pending.challengerSessionId === currentSessionId;
-
-  if (!isIncumbent && !isChallenger) {
-    return { pending: null as null };
-  }
-
-  return {
-    pending: {
-      id: pending.id,
-      role: isChallenger ? ('challenger' as const) : ('incumbent' as const),
-      expiresAt: pending.expiresAt,
-    },
-  };
+  return { pending: null as null };
 }
 
 export async function respondForgeSessionChallengeAction(
@@ -158,30 +109,18 @@ export async function respondForgeSessionChallengeAction(
 
   if (pending.incumbentSessionId) {
     await revokeSupabaseSession(pending.incumbentSessionId);
+    await notifySignedInElsewhereSessionDisplacement({
+      operatorEmail: pending.operatorEmail,
+      reason: 'approved_elsewhere',
+    });
   }
   await supabase.auth.signOut();
   await clearForgePortalSessionCookies();
   return { success: true, signedOut: true as const };
 }
 
-export async function awaitForgeSessionChallengeAction(pendingId: string) {
-  await autoApproveExpiredPendingLogins();
-  const pending = await getPendingLoginById(pendingId);
-  if (!pending) return { status: 'expired' as const };
-
-  if (pending.status === 'approved' || pending.status === 'rejected') {
-    return { status: pending.status };
-  }
-
-  if (pending.status === 'auto_approved') {
-    return { status: 'auto_approved' as const };
-  }
-
-  if (new Date(pending.expiresAt).getTime() <= Date.now()) {
-    return { status: 'expired' as const };
-  }
-
-  return { status: 'pending' as const, expiresAt: pending.expiresAt };
+export async function awaitForgeSessionChallengeAction(_pendingId: string) {
+  return { status: 'auto_approved' as const };
 }
 
 export async function resolveForgePostChallengeLandingAction(): Promise<string> {
@@ -197,8 +136,12 @@ export async function resolveForgePostChallengeLandingAction(): Promise<string> 
     hasValidForgePasswordSessionForUser,
     setForgeSetupSessionCookies,
   } = await import('./forge-portal-auth');
+  const localDevBypass = await import('./forge-local-dev').then((mod) =>
+    mod.isForgeLocalDevRequest(),
+  );
 
   if (
+    !localDevBypass &&
     !(await hasValidForgeGoogleSessionForUser(
       user.email,
       user.last_sign_in_at ?? null,

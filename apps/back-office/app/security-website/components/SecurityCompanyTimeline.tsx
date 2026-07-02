@@ -4,7 +4,7 @@ import type { CSSProperties } from 'react';
 import Image from 'next/image';
 
 import SecurityEditableImage from './SecurityEditableImage';
-import type { SecurityWebsiteImageSlot } from '../../../lib/security-website-images';
+import type { SecurityWebsiteImageSlot } from '../../../lib/security-website-image-utils';
 import type { SecurityWebsiteImageFrame } from '../../../lib/security-website-image-frame';
 import {
   CV_BROCHURE_ABOUT_IMAGE_CROP,
@@ -141,7 +141,7 @@ export default function SecurityCompanyTimeline({
 }: Props) {
   const milestones: TimelineItem[] = [
     {
-      year: '2008',
+      year: '2006',
       title: 'Founded in Colombo',
       description: shortenText(aboutBody),
       imageAlt: 'Classic Venture security team',

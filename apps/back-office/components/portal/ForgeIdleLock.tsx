@@ -7,8 +7,6 @@ import { KeyRound, Lock, LogOut } from 'lucide-react';
 
 import {
   getForgeIdleLockMinutesAction,
-  pollForgeSessionChallengeAction,
-  respondForgeSessionChallengeAction,
   verifyForgeUnlockCodeAction,
   forgeSignOutAction,
 } from '../../app/actions/forge-session-actions';
@@ -26,12 +24,6 @@ export default function ForgeIdleLock() {
   const [unlockCode, setUnlockCode] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [isPending, startTransition] = useTransition();
-
-  const [challenge, setChallenge] = useState<{
-    id: string;
-    role: 'incumbent' | 'challenger';
-    expiresAt: string;
-  } | null>(null);
 
   const deadlineRef = useRef(Date.now() + IDLE_MS_DEFAULT);
   const signingOutRef = useRef(false);
@@ -80,19 +72,6 @@ export default function ForgeIdleLock() {
     };
   }, [signedIn, locked, resetIdleDeadline]);
 
-  useEffect(() => {
-    if (!signedIn) return;
-
-    const poll = window.setInterval(async () => {
-      const result = await pollForgeSessionChallengeAction();
-      if (result.pending) {
-        setChallenge(result.pending);
-      }
-    }, 4000);
-
-    return () => window.clearInterval(poll);
-  }, [signedIn]);
-
   const handleSignOut = () => {
     if (signingOutRef.current) return;
     signingOutRef.current = true;
@@ -116,64 +95,10 @@ export default function ForgeIdleLock() {
     });
   };
 
-  const handleChallengeResponse = (action: 'approve' | 'reject') => {
-    if (!challenge) return;
-    startTransition(async () => {
-      const result = await respondForgeSessionChallengeAction(challenge.id, action);
-      if (result?.error) {
-        setErrorMsg(result.error);
-        return;
-      }
-      setChallenge(null);
-      if (result?.signedOut) {
-        signingOutRef.current = true;
-        router.replace('/login/forge');
-        router.refresh();
-      }
-    });
-  };
-
   if (!signedIn) return null;
 
   return (
     <>
-      {challenge?.role === 'incumbent' ? (
-        <div className="fixed inset-0 z-[350] flex items-center justify-center bg-slate-950/90 backdrop-blur-md px-6">
-          <div className="w-full max-w-md rounded-2xl border border-amber-300/40 bg-slate-900 p-8 shadow-2xl">
-            <p className="text-xs font-black uppercase tracking-[0.25em] text-amber-400">
-              New sign-in attempt
-            </p>
-            <h2 className="mt-2 text-lg font-bold text-white">Another device is signing in</h2>
-            <p className="mt-2 text-sm text-slate-400">
-              Allow the new device (you will be signed out here) or reject the other device. If you
-              do not respond within 90 seconds, the new device will continue and this session will
-              end.
-            </p>
-            {errorMsg ? (
-              <p className="mt-3 text-xs font-bold text-rose-400">{errorMsg}</p>
-            ) : null}
-            <div className="mt-6 flex flex-col gap-2">
-              <button
-                type="button"
-                disabled={isPending}
-                onClick={() => handleChallengeResponse('approve')}
-                className="rounded-xl bg-amber-500 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-amber-400 disabled:opacity-50"
-              >
-                Allow new device (sign out here)
-              </button>
-              <button
-                type="button"
-                disabled={isPending}
-                onClick={() => handleChallengeResponse('reject')}
-                className="rounded-xl border border-slate-600 px-4 py-3 text-sm font-bold text-white hover:bg-slate-800 disabled:opacity-50"
-              >
-                Reject other device
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
       {locked ? (
         <div className="fixed inset-0 z-[300] flex items-center justify-center bg-slate-950/95 px-6 backdrop-blur-md">
           <div className="w-full max-w-md rounded-2xl border border-indigo-500/30 bg-slate-900 p-8 shadow-2xl">

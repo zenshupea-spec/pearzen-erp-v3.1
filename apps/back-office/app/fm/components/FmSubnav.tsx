@@ -21,6 +21,7 @@ import {
   Users,
   Wallet,
 } from 'lucide-react';
+import { CVS_BRAND_CLASSES } from '../../../lib/cvs-brand-tokens';
 
 type FmNavItem = {
   label: string;
@@ -94,8 +95,8 @@ function isNavActive(pathname: string, href: string, exact?: boolean) {
 const linkClass = (active: boolean) =>
   `relative inline-flex shrink-0 items-center gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold leading-tight transition-all sm:px-3.5 sm:text-sm ${
     active
-      ? 'bg-blue-600 text-white shadow-md shadow-blue-600/25 ring-1 ring-blue-500/30'
-      : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+      ? `${CVS_BRAND_CLASSES.mobileTabActive} border-transparent`
+      : 'text-slate-600 hover:bg-[var(--cvs-accent-soft)]/80 hover:text-[color:var(--cvs-accent)]'
   }`;
 
 export type FmSubnavProps = {
@@ -112,16 +113,18 @@ export default function FmSubnav({
   const discrepancyCount = discrepancyCountProp ?? storedDiscrepancyCount;
 
   return (
-    <div className="sticky top-0 z-30 -mx-4 mb-6 border-b border-slate-200/80 bg-slate-50/95 px-4 pb-4 pt-2 backdrop-blur-md sm:-mx-6 sm:mb-8 sm:px-6 lg:-mx-8 lg:px-8">
+    <div className="sticky top-0 z-30 -mx-4 mb-6 border-b border-slate-200/80 bg-[#eef2f6]/95 px-4 pb-4 pt-2 backdrop-blur-md sm:-mx-6 sm:mb-8 sm:px-6 lg:-mx-8 lg:px-8">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <Link
           href="/dashboard"
-          className="inline-flex max-w-full items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm transition-all hover:border-slate-300 hover:bg-slate-50"
+          className="inline-flex max-w-full items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm transition-all hover:border-[color:var(--cvs-accent-muted)] hover:bg-[var(--cvs-accent-soft)]/60 hover:text-[color:var(--cvs-accent)]"
         >
           <ArrowLeft className="h-4 w-4 shrink-0" />
           <span className="truncate">HQ Hub</span>
         </Link>
-        <span className="hidden text-[10px] font-bold uppercase tracking-[0.2em] text-blue-600 sm:inline">
+        <span
+          className={`hidden text-[10px] font-bold uppercase tracking-[0.2em] sm:inline ${CVS_BRAND_CLASSES.portalEyebrow}`}
+        >
           Finance Manager
         </span>
       </div>

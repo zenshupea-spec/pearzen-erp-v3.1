@@ -1,40 +1,47 @@
 'use client'
 
-import { useEffect, useState, useTransition } from 'react';
+import { useCallback, useEffect, useState, useTransition } from 'react';
 import { clearProvisionFlashCookie, provisionSMPortalAccess } from './actions';
 import { KeyRound, RefreshCw, Copy, CheckCircle } from 'lucide-react';
+import PortalOtpCountdown from '../../executive/settings/PortalOtpCountdown';
+import { SM_PORTAL_OTP_LIFETIME_MS } from '../../../../../packages/supabase/portal-otp-lifetime';
 
 export interface SectorManagerRow {
   epf_number: string;
   full_name: string;
   site: string;
-  pending_otp?: string | null;
+  has_pending_otp?: boolean;
+  otp_expires_at?: string | null;
 }
 
 interface GeneratedOTP {
   otp: string;
   epf: string;
   smName: string;
+  otpExpiresAt?: string;
 }
+
+type OtpDisplay = {
+  otp: string;
+  expiresAt: number;
+};
 
 function normalizeEpf(epf: string) {
   return epf.toUpperCase().trim();
 }
 
-function buildInitialOtps(
-  managers: SectorManagerRow[],
-  initialOtp: GeneratedOTP | null | undefined,
-): Record<string, string> {
-  const otps: Record<string, string> = {};
-  for (const sm of managers) {
-    if (sm.pending_otp) {
-      otps[normalizeEpf(sm.epf_number)] = sm.pending_otp;
-    }
-  }
-  if (initialOtp) {
-    otps[normalizeEpf(initialOtp.epf)] = initialOtp.otp;
-  }
-  return otps;
+function buildInitialOtps(initialOtp: GeneratedOTP | null | undefined): Record<string, OtpDisplay> {
+  if (!initialOtp?.otp) return {};
+  const expiresAt = initialOtp.otpExpiresAt
+    ? Date.parse(initialOtp.otpExpiresAt)
+    : Date.now() + SM_PORTAL_OTP_LIFETIME_MS;
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return {};
+  return {
+    [normalizeEpf(initialOtp.epf)]: {
+      otp: initialOtp.otp,
+      expiresAt,
+    },
+  };
 }
 
 export default function SMPortalClient({
@@ -46,11 +53,21 @@ export default function SMPortalClient({
 }) {
   const [isPending, startTransition] = useTransition();
   const [generatingEpf, setGeneratingEpf] = useState<string | null>(null);
-  const [otpsByEpf, setOtpsByEpf] = useState<Record<string, string>>(() =>
-    buildInitialOtps(managers, initialOtp),
+  const [otpsByEpf, setOtpsByEpf] = useState<Record<string, OtpDisplay>>(() =>
+    buildInitialOtps(initialOtp),
   );
   const [errorMsg, setErrorMsg] = useState('');
   const [copiedEpf, setCopiedEpf] = useState<string | null>(null);
+
+  const clearOtp = useCallback((epf: string) => {
+    const normalized = normalizeEpf(epf);
+    setOtpsByEpf((prev) => {
+      if (!prev[normalized]) return prev;
+      const next = { ...prev };
+      delete next[normalized];
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     if (initialOtp) {
@@ -68,18 +85,24 @@ export default function SMPortalClient({
       if (result.error) {
         setErrorMsg(result.error);
       } else if (result.success && result.otp) {
+        const expiresAt = result.otpExpiresAt
+          ? Date.parse(result.otpExpiresAt)
+          : Date.now() + SM_PORTAL_OTP_LIFETIME_MS;
         setOtpsByEpf((prev) => ({
           ...prev,
-          [normalizeEpf(result.epf ?? epf)]: result.otp!,
+          [normalizeEpf(result.epf ?? epf)]: {
+            otp: result.otp!,
+            expiresAt,
+          },
         }));
       }
     });
   };
 
   const copyOTP = (epf: string) => {
-    const otp = otpsByEpf[normalizeEpf(epf)];
-    if (!otp) return;
-    navigator.clipboard.writeText(otp);
+    const entry = otpsByEpf[normalizeEpf(epf)];
+    if (!entry) return;
+    navigator.clipboard.writeText(entry.otp);
     setCopiedEpf(normalizeEpf(epf));
     setTimeout(() => setCopiedEpf(null), 2000);
   };
@@ -87,10 +110,9 @@ export default function SMPortalClient({
   return (
     <div className="space-y-6">
       <p className="text-sm font-semibold text-slate-600 leading-relaxed">
-        Generate a one-time password for a sector manager and share it with them. They use it on first
-        SM portal login to set their 6-digit PIN, or again if they forgot their PIN and need a reset. The
-        code appears in that manager&apos;s row and stays until they set their PIN or you generate a
-        new one.
+        Generate a one-time password for a sector manager and share it with them immediately. They use
+        it on first SM portal login to set their 6-digit PIN, or again if they forgot their PIN. Each
+        code expires after five minutes and can only be used once.
       </p>
 
       {errorMsg && (
@@ -130,20 +152,32 @@ export default function SMPortalClient({
                     {sm.site !== '—' && (
                       <p className="text-xs font-semibold text-slate-400 mt-0.5 uppercase">{sm.site}</p>
                     )}
+                    {sm.has_pending_otp && !rowOtp && (
+                      <p className="text-xs font-semibold text-amber-700 mt-1">
+                        Active OTP on file — regenerate if the SM did not receive it
+                      </p>
+                    )}
                   </div>
                   {rowOtp ? (
-                    <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
-                      <span className="font-mono text-xl font-black tracking-[0.2em] text-amber-700">
-                        {rowOtp}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => copyOTP(epf)}
-                        className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-100 px-2.5 py-1.5 text-xs font-bold text-amber-900 transition-all active:scale-95"
-                      >
-                        {isCopied ? <CheckCircle className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                        {isCopied ? 'Copied' : 'Copy'}
-                      </button>
+                    <div className="w-full min-w-[12rem] max-w-xs rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 sm:w-auto">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-xl font-black tracking-[0.2em] text-amber-700">
+                          {rowOtp.otp}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => copyOTP(epf)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-100 px-2.5 py-1.5 text-xs font-bold text-amber-900 transition-all active:scale-95"
+                        >
+                          {isCopied ? <CheckCircle className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                          {isCopied ? 'Copied' : 'Copy'}
+                        </button>
+                      </div>
+                      <PortalOtpCountdown
+                        expiresAt={rowOtp.expiresAt}
+                        lifetimeMs={SM_PORTAL_OTP_LIFETIME_MS}
+                        onExpired={() => clearOtp(epf)}
+                      />
                     </div>
                   ) : null}
                   <button

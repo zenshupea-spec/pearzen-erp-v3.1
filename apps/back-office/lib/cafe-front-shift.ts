@@ -1,6 +1,6 @@
 import { createSupabaseServerClient } from '../../../packages/supabase/server';
 import { createSupabaseServiceClient } from '../../../packages/supabase/service';
-import type { CafeEmployeeRow } from './cafe-front-auth';
+import type { CafeEmployeeRow } from './cafe-front-auth-shared';
 import {
   formatPortalGraceEndTime,
   isWithinPortalAccessWindow,

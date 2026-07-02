@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
+import StaffPortalLoading from '../../../components/portal/StaffPortalLoading';
 import {
   getBlacklistedGuards,
   getGuardCardLeaderboard,
@@ -46,12 +47,7 @@ export default function GuardCardsTab() {
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white py-24 shadow-sm">
-        <RefreshCw className="h-9 w-9 animate-spin text-amber-500" />
-        <p className="mt-4 text-xs font-black uppercase tracking-widest text-slate-500">
-          Loading guard cards…
-        </p>
-      </div>
+      <StaffPortalLoading portal="om" message="Loading guard cards…" className="min-h-[16rem] py-16" />
     );
   }
 

@@ -1,40 +1,39 @@
 import type { ReactNode } from 'react';
 
-/** Light canvas for Invoice Desk — soft sky, peach, and violet ambient washes. */
+/** Vault canvas for Invoice Desk — aligned with HQ / FM / HR portal family. */
 export function InvoiceDeskShell({ children }: { children: ReactNode }) {
   return (
-    <div className="relative min-h-screen overflow-x-hidden bg-[#f4f8fc] text-slate-900 antialiased">
+    <div className="relative min-h-screen overflow-x-hidden bg-[#eef2f6] text-slate-900 antialiased">
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-0 opacity-[0.42]"
+        className="pointer-events-none absolute inset-0 opacity-[0.48]"
         style={{
           backgroundImage:
-            'radial-gradient(rgb(125 211 252 / 0.45) 1px, transparent 1px)',
-          backgroundSize: '22px 22px',
+            'radial-gradient(rgb(148 163 184 / 0.42) 1.1px, transparent 1.1px)',
+          backgroundSize: '24px 24px',
         }}
       />
       <div
         aria-hidden
-        className="pointer-events-none absolute -top-32 right-[-6%] h-[min(480px,80vw)] w-[min(480px,80vw)] rounded-full bg-sky-300/35 blur-[96px]"
+        className="pointer-events-none absolute -top-40 right-[-8%] z-0 h-[min(480px,80vw)] w-[min(480px,80vw)] rounded-full blur-[100px]"
+        style={{ backgroundColor: 'var(--cvs-glow)' }}
       />
       <div
         aria-hidden
-        className="pointer-events-none absolute top-[18%] left-[-14%] h-[420px] w-[420px] rounded-full bg-violet-300/28 blur-[88px]"
+        className="pointer-events-none absolute top-[30%] left-[-15%] z-0 h-[400px] w-[400px] rounded-full blur-[92px]"
+        style={{ backgroundColor: 'var(--cvs-glow-teal)' }}
       />
       <div
         aria-hidden
-        className="pointer-events-none absolute bottom-[-8%] right-[12%] h-[380px] w-[380px] rounded-full bg-rose-200/40 blur-[84px]"
-      />
-      <div
-        aria-hidden
-        className="pointer-events-none absolute top-[48%] right-[-4%] h-[260px] w-[260px] rounded-full bg-amber-200/35 blur-[72px]"
+        className="pointer-events-none absolute bottom-[-8%] right-[20%] z-0 h-[360px] w-[360px] rounded-full blur-[88px]"
+        style={{ backgroundColor: 'var(--cvs-glow-lime)' }}
       />
       <div className="relative z-10 min-h-screen">{children}</div>
     </div>
   );
 }
 
-/** Frosted panel tuned for Invoice Desk (slightly warmer white). */
+/** Frosted panel for Invoice Desk — matches ExecutiveGlassCard weight. */
 export function InvoiceDeskCard({
   children,
   className = '',
@@ -46,7 +45,7 @@ export function InvoiceDeskCard({
 }) {
   return (
     <div
-      className={`rounded-2xl border border-white/90 bg-white/72 shadow-[0_14px_40px_-12px_rgba(56,189,248,0.18)] backdrop-blur-xl backdrop-saturate-[1.4] ring-1 ring-sky-100/80 ${className}`.trim()}
+      className={`rounded-2xl border border-white/55 bg-white/55 shadow-[0_14px_40px_-12px_rgba(15,23,42,0.12)] backdrop-blur-2xl ring-1 ring-slate-200/50 ${className}`.trim()}
       onClick={onClick}
     >
       {children}
@@ -66,7 +65,7 @@ export function InvoiceDeskModalCard({
 }) {
   return (
     <div
-      className={`rounded-2xl border border-sky-100 bg-white shadow-[0_8px_24px_-8px_rgba(56,189,248,0.2)] ${className}`.trim()}
+      className={`rounded-2xl border border-slate-200/90 bg-white shadow-[0_8px_24px_-8px_rgba(15,23,42,0.15)] ${className}`.trim()}
       onClick={onClick}
     >
       {children}

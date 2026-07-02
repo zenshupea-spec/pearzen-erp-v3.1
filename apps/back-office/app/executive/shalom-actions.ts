@@ -41,6 +41,9 @@ import {
   type ShalomPreHandoverPhoto,
   type ShalomRecordedDamage,
 } from '../../lib/shalom-stay-ops';
+import { normalizeShalomPublicSlug } from '../../lib/shalom-public-listings';
+import { normalizeShalomBookingAlertEmail } from '../../lib/shalom-direct-booking-alert';
+import { notifyShalomBookingReceived } from '../../lib/shalom-direct-booking-alert-server';
 
 export type ShalomCaretakerOption = {
   epf: string;
@@ -106,6 +109,9 @@ export type ShalomPropertyRecord = {
   handoverRooms: ShalomHandoverRoom[];
   caretakerEpf: string | null;
   caretakerName: string | null;
+  bookingAlertEmail: string | null;
+  publicPublished: boolean;
+  publicSlug: string;
   bookings: ShalomBookingRecord[];
 };
 
@@ -219,6 +225,13 @@ function rowToProperty(
     handoverRooms: stayOps.handoverRooms,
     caretakerEpf,
     caretakerName,
+    bookingAlertEmail:
+      typeof row.booking_alert_email === 'string'
+        ? normalizeShalomBookingAlertEmail(row.booking_alert_email)
+        : null,
+    publicPublished: Boolean(row.public_published),
+    publicSlug:
+      typeof row.public_slug === 'string' ? normalizeShalomPublicSlug(row.public_slug) : '',
     bookings,
   };
 }
@@ -576,6 +589,62 @@ export async function assignShalomCaretakerAction(
   }
 }
 
+export async function updateShalomPropertyBookingAlertEmailAction(
+  propertyId: string,
+  bookingAlertEmailInput: string | null,
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await requireExecutiveRole();
+    const companyId = await resolveCompanyId();
+    if (!companyId) return { success: false, error: 'No company context' };
+
+    const bookingAlertEmail = bookingAlertEmailInput?.trim()
+      ? normalizeShalomBookingAlertEmail(bookingAlertEmailInput)
+      : null;
+    if (bookingAlertEmailInput?.trim() && !bookingAlertEmail) {
+      return { success: false, error: 'Enter a valid email address for booking alerts.' };
+    }
+
+    const db = createSupabaseServiceClient();
+    const { data: property, error: propertyError } = await db
+      .from('shalom_properties')
+      .select('id')
+      .eq('id', propertyId)
+      .eq('company_id', companyId)
+      .maybeSingle();
+
+    if (propertyError) return { success: false, error: propertyError.message };
+    if (!property) return { success: false, error: 'Property not found.' };
+
+    const { error: updateError } = await db
+      .from('shalom_properties')
+      .update({
+        booking_alert_email: bookingAlertEmail,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', propertyId)
+      .eq('company_id', companyId);
+
+    if (updateError) {
+      if (/booking_alert_email/i.test(updateError.message ?? '')) {
+        return {
+          success: false,
+          error: 'Booking alert email column missing — apply Supabase migration 20260702170000_shalom_booking_alert_email.',
+        };
+      }
+      return { success: false, error: updateError.message };
+    }
+
+    revalidatePath(SHALOM_PATH);
+    return { success: true };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Failed to save booking alert email',
+    };
+  }
+}
+
 export async function upsertShalomProperty(input: {
   id?: string;
   name: string;
@@ -696,11 +765,19 @@ export async function upsertShalomBooking(input: {
       return { success: true, id: input.id };
     }
 
-    const { data, error } = await db.from('shalom_bookings').insert(row).select('id').single();
+    const { data, error } = await db.from('shalom_bookings').insert(row).select('id, channel').single();
     if (error) return { success: false, error: error.message };
+    const bookingId = String(data.id);
+    if (input.channel !== 'BLOCKED') {
+      void notifyShalomBookingReceived(bookingId).then((alertResult) => {
+        if (!alertResult.ok && alertResult.error) {
+          console.error('upsertShalomBooking alert:', alertResult.error);
+        }
+      });
+    }
     revalidatePath(SHALOM_PATH);
     revalidatePath(SHALOM_FRONT_PATH);
-    return { success: true, id: String(data.id) };
+    return { success: true, id: bookingId };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : 'Save failed' };
   }
@@ -987,7 +1064,11 @@ export async function syncShalomPropertyFromOtas(propertyId: string): Promise<{
             continue;
           }
 
-          const { error: insertError } = await db.from('shalom_bookings').insert(row);
+          const { data: inserted, error: insertError } = await db
+            .from('shalom_bookings')
+            .insert(row)
+            .select('id, channel')
+            .maybeSingle();
           if (insertError) {
             if (isMissingOtaColumn(insertError)) {
               errors.push('OTA sync columns missing — apply Supabase migration 20260615210000_shalom_bookings_ota_ical_uid.');
@@ -997,6 +1078,13 @@ export async function syncShalomPropertyFromOtas(propertyId: string): Promise<{
             continue;
           }
           imported += 1;
+          if (inserted?.id && String(inserted.channel ?? row.channel) !== 'BLOCKED') {
+            void notifyShalomBookingReceived(String(inserted.id)).then((alertResult) => {
+              if (!alertResult.ok && alertResult.error) {
+                console.error('syncShalomPropertyFromOtas alert:', alertResult.error);
+              }
+            });
+          }
         }
 
         const { data: staleRows, error: staleError } = await db

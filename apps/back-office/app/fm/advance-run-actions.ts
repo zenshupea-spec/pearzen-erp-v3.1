@@ -15,6 +15,10 @@ import {
 import { normalizePortalRole } from '../../lib/portal-role-utils';
 import { canAccessPathViaPortalRbac } from '../../../../packages/portal-rbac';
 import {
+  validateAdvanceRowsForPeriod,
+  validateSalaryAdvanceRecord,
+} from './lib/fm-advance-validation';
+import {
   buildAdvanceBatchId,
   dbStatusToAdvanceWorkflow,
   type AdvanceBatchStatusPayload,
@@ -23,8 +27,9 @@ import {
   type AdvanceRunDbStatus,
   ADVANCE_GROUP_LABELS,
 } from '../../lib/advance-run-types';
+import { writeAdvanceRunWorkflowAudit } from '../../lib/payroll-run-audit';
 
-const ADVANCE_PATHS = ['/fm/advance', '/executive/advance'] as const;
+const ADVANCE_PATHS = ['/fm/advance', '/executive/advance', '/executive/audit'] as const;
 
 function revalidateAdvancePaths() {
   for (const path of ADVANCE_PATHS) revalidatePath(path);
@@ -350,6 +355,29 @@ export async function submitAdvanceGroupForReview(
       return { success: false, error: 'No employees selected. Choose at least one advance recipient.' };
     }
 
+    const { data: advances } = await db
+      .from('salary_advances')
+      .select('profile_id, amount, payroll_group')
+      .eq('company_id', companyId!)
+      .eq('period_year', year)
+      .eq('period_month', month)
+      .eq('payroll_group', groupId)
+      .in('status', ['DRAFT', 'SUBMITTED']);
+
+    const validation = await validateAdvanceRowsForPeriod(
+      companyId!,
+      year,
+      month,
+      (advances ?? []).map((row) => ({
+        profileId: String(row.profile_id),
+        amount: Number(row.amount ?? 0),
+        payrollGroup: row.payroll_group != null ? String(row.payroll_group) : groupId,
+      })),
+    );
+    if (!validation.ok) {
+      return { success: false, error: validation.error };
+    }
+
     await updateAdvanceRunStatus(
       groupId,
       year,
@@ -459,6 +487,29 @@ export async function approveAdvanceGroupRun(
       return { success: false, error: 'Only submitted batches can be approved.' };
     }
 
+    const { data: advances } = await db
+      .from('salary_advances')
+      .select('profile_id, amount, payroll_group')
+      .eq('company_id', companyId)
+      .eq('period_year', year)
+      .eq('period_month', month)
+      .eq('payroll_group', groupId)
+      .in('status', ['SUBMITTED']);
+
+    const validation = await validateAdvanceRowsForPeriod(
+      companyId,
+      year,
+      month,
+      (advances ?? []).map((row) => ({
+        profileId: String(row.profile_id),
+        amount: Number(row.amount ?? 0),
+        payrollGroup: row.payroll_group != null ? String(row.payroll_group) : groupId,
+      })),
+    );
+    if (!validation.ok) {
+      return { success: false, error: validation.error };
+    }
+
     await updateAdvanceRunStatus(
       groupId,
       year,
@@ -469,7 +520,10 @@ export async function approveAdvanceGroupRun(
       user.id,
     );
 
-    revalidatePath('/fm');
+    const audit = await writeAdvanceRunWorkflowAudit(supabase, companyId, groupId, year, month);
+    if (!audit.ok) return { success: false, error: audit.error };
+
+    revalidateAdvancePaths();
     return { success: true };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : 'Approval failed' };

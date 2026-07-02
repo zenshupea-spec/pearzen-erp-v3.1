@@ -23,7 +23,12 @@ export default function HrPortalPasswordResetNotice({
         </li>
         <li>
           <strong>All other staff</strong> (HQ, SM, Café, Shalom front office, etc.) contact HR for
-          a one-time password when they forget their PIN or need first-time access.
+          a one-time password when they forget their PIN or need first-time access. Re-provisioning
+          OTP clears password/PIN history; staff must choose a new credential on next sign-in.
+        </li>
+        <li>
+          <strong>Require password change</strong> (HQ staff with an active portal password) clears
+          stored history and blocks portal routes until they set a new password at sign-in.
         </li>
         <li>
           <strong>Guards</strong> sign in with EPF only on the field check-in app — no HR password

@@ -11,12 +11,14 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "exceljs": "^4.4.0",
     "html2canvas": "^1.4.1",
     "html2pdf.js": "^0.14.0",
     "jspdf": "^4.2.1",
     "lucide-react": "^0.511.0",
     "next": "^16.2.5",
     "react": "^19.2.6",
+    "react-data-grid": "^7.0.0-beta.59",
     "react-dom": "^19.2.6",
     "sharp": "^0.34.5",
     "tailwindcss": "^3.4.19",

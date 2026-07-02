@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { ExecutiveGlassCard } from '../../../../components/executive/ExecutiveVaultShell';
+import { ExecutivePageLoading } from '../../../../components/executive/ExecutivePageChrome';
 import {
   fetchExecutiveSessionProfile,
   type ExecutiveSessionProfile,
@@ -13,7 +14,6 @@ import { normalizeIngredient } from '../cafe-ingredient-utils';
 import { ExpiryTrackingPanel } from '../cafe-ingredients-panels';
 import { isCafeHubView } from '../../../../lib/hq-hub';
 import { useCafeBranchScope } from '../use-cafe-branch';
-import PortalLoadingScreen from '../../../../../../packages/pwa-shell/PortalLoadingScreen';
 
 export default function CafeExpiryPage() {
   const pathname = usePathname();
@@ -66,7 +66,7 @@ export default function CafeExpiryPage() {
       ) : null}
 
       {loading ? (
-        <PortalLoadingScreen accent="amber" fullscreen={false} />
+        <ExecutivePageLoading message="Loading expiry tracking…" />
       ) : (
         <ExpiryTrackingPanel ingredients={ingredients} />
       )}

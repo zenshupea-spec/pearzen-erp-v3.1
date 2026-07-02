@@ -1,9 +1,27 @@
 /** Shared HR document compression helpers (client + server safe utilities). */
 
-export const HR_DOC_TARGET_MAX_BYTES = 1_500_000;
+/** Target stored size for HR vetting scans — hard cap is MAX_HR_DOC_BYTES (2 MB). */
+export const HR_DOC_TARGET_MAX_BYTES = 1_950_000;
 export const HR_DOC_MAX_EDGE_PX = 2400;
 export const HR_DOC_JPEG_QUALITY_START = 88;
 export const HR_DOC_JPEG_QUALITY_MIN = 72;
+
+/** MNR ID photo — keep under 2MB for storage and server actions. */
+export const ID_PHOTO_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
+export const ID_PHOTO_TARGET_MAX_BYTES = 1_950_000;
+export const ID_PHOTO_MAX_EDGE_PX = 1600;
+
+/** Smaller targets for public careers uploads (3 images in one server action). */
+export const CAREERS_DOC_TARGET_MAX_BYTES = 450_000;
+export const CAREERS_DOC_MAX_EDGE_PX = 1600;
+export const CAREERS_SELFIE_TARGET_MAX_BYTES = 350_000;
+export const CAREERS_SELFIE_MAX_EDGE_PX = 720;
+
+export type HrDocumentCompressProfile = {
+  targetMaxBytes: number;
+  maxEdgePx: number;
+  grayscale: boolean;
+};
 
 export type HrDocumentCompressionResult = {
   buffer: Buffer;

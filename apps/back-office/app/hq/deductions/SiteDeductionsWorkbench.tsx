@@ -101,6 +101,8 @@ function EmployeeRow({
           Uniform
           {row.uniformFromIssue ? (
             <span className="ml-1 text-[8px] font-black text-violet-500">· issued</span>
+          ) : row.uniformFromDefault ? (
+            <span className="ml-1 text-[8px] font-black text-emerald-600">· default</span>
           ) : null}
         </span>
         <input
@@ -113,7 +115,9 @@ function EmployeeRow({
           className={`w-full cursor-not-allowed rounded-lg border px-2 py-1.5 font-mono text-xs disabled:bg-slate-50 ${
             row.uniformFromIssue
               ? 'border-violet-300 bg-violet-50/80 text-violet-950'
-              : 'border-slate-200'
+              : row.uniformFromDefault
+                ? 'border-emerald-300 bg-emerald-50/80 text-emerald-950'
+                : 'border-slate-200'
           }`}
         />
       </label>
@@ -326,9 +330,9 @@ export default function SiteDeductionsWorkbench({
     <div className="space-y-4">
       {isDemo && (
         <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
-          Preview data from the FM batch ledger — run migration{' '}
-          <code className="text-xs">20260604250000_deductions_admin.sql</code> and seed guards to
-          edit live records.
+          Deductions tables are not migrated on this environment. Run{' '}
+          <code className="text-xs">npm run db:apply-deductions-admin</code>, then refresh to
+          edit live monthly entries.
         </p>
       )}
 

@@ -172,7 +172,9 @@ export default function IssueVoStockWorkbench({
 
       {(warehouseDemo || holdersDemo) && (
         <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
-          Preview data — connect live employees and warehouse stock after migrations.
+          Uniform VO stock tables are not migrated. Run{' '}
+          <code className="text-xs">npm run db:apply-deductions-admin</code> to issue live stock to
+          SM/TM/OM holders.
         </p>
       )}
 

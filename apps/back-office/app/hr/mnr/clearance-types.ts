@@ -2,6 +2,19 @@ import type { UnsettledBalanceLine } from '../../../lib/employee-clearance-ledge
 import type { SalaryReleaseAction } from '../../../lib/salary-retention';
 import type { ClearanceSettlement, HrResignationGate } from '../../../lib/clearance-settlement';
 import type { GratuityCalculation } from '../../../../../packages/gratuity';
+import type { UniformCollectionItemLine } from '../../../lib/uniform-collection/types';
+
+export type ClearanceUniformCollection = {
+  required: boolean;
+  isCollected: boolean;
+  isPending: boolean;
+  isDemo: boolean;
+  requestedAt: string | null;
+  confirmedAt: string | null;
+  issuedLines: UniformCollectionItemLine[];
+  returnedLines: UniformCollectionItemLine[];
+  shortfallLines: UniformCollectionItemLine[];
+};
 
 export type ClearanceShiftRow = {
   date: string;
@@ -39,4 +52,5 @@ export type EmployeeClearanceSnapshot = {
   hrOffboardingSentToFm: boolean;
   hrOffboardingSentToFmAt: string | null;
   gratuity: GratuityCalculation;
+  uniformCollection: ClearanceUniformCollection;
 };

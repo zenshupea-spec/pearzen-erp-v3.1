@@ -15,51 +15,25 @@ export {
 
 const HQ_MASTER_COMPANY_ID = '00000000-0000-0000-0000-000000000000';
 
-/** Company scope for roster / field ops (matches MNR `getEmployees`). */
-export function rosterCompanyId(sessionCompanyId: string | null): string | null {
-  if (!sessionCompanyId || sessionCompanyId === HQ_MASTER_COMPANY_ID) {
-    return CLASSIC_VENTURE_COMPANY_ID;
-  }
-  return sessionCompanyId;
-}
+export type ResolveCompanyIdOptions = {
+  /** Forge operators on /forge may scope via slug without employee membership. */
+  forgeOperatorSlugBypass?: boolean;
+};
 
-/**
- * Load tenant-scoped rows with the same fallback chain as Master Nominal Roll:
- * session company → Classic Venture → unscoped.
- */
-export async function fetchWithRosterCompanyFallback<T>(
-  fetcher: (companyId: string | null) => Promise<T[]>,
-  sessionCompanyId: string | null,
-): Promise<T[]> {
-  const preferred = rosterCompanyId(sessionCompanyId);
-  let rows = await fetcher(preferred);
-  if (!rows.length && preferred !== CLASSIC_VENTURE_COMPANY_ID) {
-    rows = await fetcher(CLASSIC_VENTURE_COMPANY_ID);
-  }
-  if (!rows.length) {
-    rows = await fetcher(null);
-  }
-  return rows;
-}
-
-/**
- * Resolve the active company for the signed-in back-office user.
- * Avoids `companies.limit(1)` (HQ_MASTER) when `users.company_id` is absent.
- */
-export async function resolveCompanyIdForSession(
+/** Signed-in user's tenant from employees / users / JWT metadata (no slug). */
+export async function resolveUserMembershipCompanyId(
   supabase: SupabaseClient,
-  tenantSlug?: string | null,
 ): Promise<string | null> {
-  if (tenantSlug) {
-    const tenant = await resolveTenantCompany(tenantSlug);
-    if (tenant?.id) return tenant.id;
-  }
-
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
   if (!user) return null;
+
+  const appCompanyId = user.app_metadata?.company_id;
+  if (typeof appCompanyId === 'string' && appCompanyId.length > 0) {
+    return appCompanyId;
+  }
 
   const metaCompanyId = user.user_metadata?.company_id;
   if (typeof metaCompanyId === 'string' && metaCompanyId.length > 0) {
@@ -75,12 +49,69 @@ export async function resolveCompanyIdForSession(
     if (emp?.company_id) return emp.company_id as string;
   }
 
-  const { data: cvs } = await supabase
-    .from('companies')
-    .select('id')
-    .eq('slug', CVS_TENANT_SLUG)
-    .maybeSingle();
-  if (cvs?.id) return cvs.id as string;
+  if (user.email) {
+    const { data: usr } = await supabase
+      .from('users')
+      .select('company_id')
+      .ilike('email', user.email)
+      .maybeSingle();
+    if (usr?.company_id) return usr.company_id as string;
+  }
 
-  return CVS_COMPANY_ID;
+  return null;
+}
+
+/** Company scope for roster / field ops — session tenant only (no platform default). */
+export function rosterCompanyId(sessionCompanyId: string | null): string | null {
+  if (!sessionCompanyId || sessionCompanyId === HQ_MASTER_COMPANY_ID) {
+    return null;
+  }
+  return sessionCompanyId;
+}
+
+/**
+ * Load tenant-scoped rows: session company first, then unscoped fetcher(null) if empty.
+ */
+export async function fetchWithRosterCompanyFallback<T>(
+  fetcher: (companyId: string | null) => Promise<T[]>,
+  sessionCompanyId: string | null,
+): Promise<T[]> {
+  const preferred = rosterCompanyId(sessionCompanyId);
+  if (preferred) {
+    const rows = await fetcher(preferred);
+    if (rows.length) return rows;
+  }
+  return fetcher(null);
+}
+
+/**
+ * Resolve the active company for the signed-in back-office user.
+ * Tenant slug (hostname / server cookie / header) must match employee membership
+ * when both are present — no slug-first override on platform / dev hosts.
+ */
+export async function resolveCompanyIdForSession(
+  supabase: SupabaseClient,
+  tenantSlug?: string | null,
+  options?: ResolveCompanyIdOptions,
+): Promise<string | null> {
+  const membershipId = await resolveUserMembershipCompanyId(supabase);
+
+  let slugCompanyId: string | null = null;
+  if (tenantSlug) {
+    const tenant = await resolveTenantCompany(tenantSlug);
+    slugCompanyId = tenant?.id ?? null;
+  }
+
+  if (options?.forgeOperatorSlugBypass && slugCompanyId) {
+    return slugCompanyId;
+  }
+
+  if (membershipId && slugCompanyId) {
+    return membershipId === slugCompanyId ? membershipId : null;
+  }
+
+  if (membershipId) return membershipId;
+  if (slugCompanyId) return slugCompanyId;
+
+  return null;
 }

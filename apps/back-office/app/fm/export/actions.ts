@@ -1,58 +1,38 @@
 'use server';
 
+import { assertPayrollBankExportAllowed } from '../../../lib/payroll-bank-export';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
-import { decryptEmployeePiiValue } from '../../../lib/employee-pii';
+import {
+  resolveCompanyIdForSession,
+  rosterCompanyId,
+} from '../../../lib/company-context-server';
 
 export async function fetchBankExportData() {
-  try {
-    const supabase = await createSupabaseServerClient();
-    
-    // 1. Fetch active employees and their bank details from the MNR
-    const { data: employees, error: empError } = await supabase
-      .from('employees')
-      .select('id, emp_number, full_name, bank_name, account_number, basic_salary')
-      .neq('status', 'TERMINATED')
-      .neq('status', 'RESIGNED');
+  return {
+    success: false as const,
+    data: [] as never[],
+    error:
+      'Bulk bank export is disabled. Generate payroll, obtain MD approval, then download from the FM Portfolio or Executive Payroll desk.',
+  };
+}
 
-    if (empError && empError.code !== '42P01') throw new Error(empError.message);
-    if (!employees || employees.length === 0) return { success: true, data: [] };
+/** @deprecated Kept for defense-in-depth if route is re-exposed. */
+export async function assertFmBulkExportBlocked() {
+  const supabase = await createSupabaseServerClient();
+  const sessionCompanyId = await resolveCompanyIdForSession(supabase);
+  const companyId = rosterCompanyId(sessionCompanyId);
+  if (!companyId) {
+    throw new Error('Bank export requires an MD-approved payroll batch.');
+  }
 
-    // 2. Fetch all APPROVED salary advances to deduct from this month's pay
-    const { data: advances, error: advError } = await supabase
-      .from('salary_advances')
-      .select('emp_number, amount')
-      .eq('status', 'APPROVED');
+  const { data: runs } = await supabase
+    .from('payroll_runs')
+    .select('status')
+    .eq('company_id', companyId)
+    .in('status', ['APPROVED', 'PAID'])
+    .limit(1);
 
-    if (advError && advError.code !== '42P01') throw new Error(advError.message);
-
-    // 3. Map the data and apply the Financial Engine math
-    const exportData = employees.map((emp) => {
-      // Calculate total approved advances for this specific employee
-      const totalAdvances = (advances || [])
-        .filter(a => a.emp_number === emp.emp_number)
-        .reduce((sum, a) => sum + Number(a.amount || 0), 0);
-
-      // Base pay logic (Hooking into the Compensation Engine logic later)
-      const grossPay = Number(emp.basic_salary || 0);
-      let netPay = grossPay - totalAdvances;
-      if (netPay < 0) netPay = 0; // Prevent negative payouts
-
-      const bankName = (emp.bank_name || 'UNKNOWN').toUpperCase();
-      
-      return {
-        emp_id: emp.emp_number || emp.id.substring(0,8).toUpperCase(),
-        beneficiary: (emp.full_name || 'UNNAMED EMPLOYEE').toUpperCase(),
-        bank_name: bankName,
-        account_number: decryptEmployeePiiValue(emp.account_number) || 'N/A',
-        net_pay: netPay,
-        is_commercial_bank: bankName.includes('COMMERCIAL') || bankName === 'COMBANK',
-        reference: `SALARY-${new Date().toISOString().slice(0,7).replace('-','')}`
-      };
-    });
-
-    return { success: true, data: exportData };
-  } catch (error: any) {
-    console.error("❌ SUPABASE ERROR (FM Export):", error.message);
-    return { success: false, data: [], error: error.message };
+  if (!runs?.length) {
+    assertPayrollBankExportAllowed('DRAFT');
   }
 }

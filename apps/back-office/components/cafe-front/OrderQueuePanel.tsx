@@ -3,6 +3,7 @@
 import { useEffect, useState, useTransition } from 'react';
 import { Check, CreditCard, Play, Timer } from 'lucide-react';
 
+import PwaPortalLoading from '../../../../packages/pwa-shell/PwaPortalLoading';
 import { ExecutiveGlassCard } from '../executive/ExecutiveVaultShell';
 import {
   getCafeFrontOrders,
@@ -63,13 +64,13 @@ export function OrderQueuePanel({ shiftGate }: { shiftGate: CafeShiftGate }) {
         <p className="text-sm font-bold text-amber-900">Orders locked until shift check-in</p>
         <p className="mt-2 text-xs text-amber-800">
           Complete a GPS + selfie check-in at the café site before accepting customer orders. HR verifies
-          your selfie after check-in.
+          your selfie after check-in. Check-in is the portal gate (header badge), not a bottom tab.
         </p>
         <Link
           href={CAFE_FRONT_CHECKIN_PATH}
           className="mt-4 inline-flex rounded-xl bg-amber-600 px-4 py-2 text-xs font-black uppercase tracking-wider text-white"
         >
-          Start shift check-in
+          Open shift check-in gate
         </Link>
       </ExecutiveGlassCard>
     );
@@ -87,7 +88,7 @@ export function OrderQueuePanel({ shiftGate }: { shiftGate: CafeShiftGate }) {
 
         <div className="space-y-3 p-5">
           {loading ? (
-            <p className="text-center text-sm text-slate-500">Loading orders…</p>
+            <PwaPortalLoading portal="cafe-front" message="Loading orders…" className="min-h-[10rem] py-8" />
           ) : orders.length === 0 ? (
             <p className="rounded-xl border border-dashed border-slate-200/80 px-4 py-8 text-center text-xs text-slate-500">
               No active orders — customer menu orders appear here in queue order.

@@ -1,8 +1,8 @@
-import { headers } from 'next/headers';
-
-import { createSupabaseServiceClient } from '../../../packages/supabase/service';
 import { isExecutivePortalRank } from './executive-portal-auth-policy';
-import { sendHeadOfficePortalLoginNotificationEmail } from './head-office-portal-email';
+import { sendHeadOfficePortalLoginNotificationEmail, headOfficePortalOtpLabel } from './head-office-portal-email';
+import { notifyIfAfterHoursPortalLogin } from './portal-after-hours-login-alerts';
+import type { StaffPortalId } from './portal-isolation';
+import { staffPortalIdForRole } from './portal-isolation';
 import { recordPortalLoginEvent } from './portal-login-events';
 
 export const EXECUTIVE_LOGIN_FAILURE_NOTIFICATION_COOLDOWN_MS = 60_000;
@@ -17,6 +17,20 @@ export type ExecutivePortalLoginNotificationInput = {
   kind?: 'login' | 'otp_request';
   ipAddress?: string | null;
   deviceLabel?: string | null;
+  staffPortal?: StaffPortalId | null;
+};
+
+export type FinalizePortalLoginNotificationsInput = {
+  employeeId: string;
+  workEmail: string;
+  recoveryEmail?: string | null;
+  portalAuthEmail: string;
+  rank: string | null | undefined;
+  employeeName?: string | null;
+  companyId: string | null;
+  staffPortal?: StaffPortalId | null;
+  ipAddress?: string | null;
+  deviceLabel?: string | null;
 };
 
 export async function readPortalLoginRequestMetadata(): Promise<{
@@ -24,6 +38,7 @@ export async function readPortalLoginRequestMetadata(): Promise<{
   deviceLabel: string | null;
 }> {
   try {
+    const { headers } = await import('next/headers');
     const headerStore = await headers();
     const ipAddress =
       headerStore.get('x-forwarded-for')?.split(',')[0]?.trim() ??
@@ -40,6 +55,7 @@ export async function readPortalLoginRequestMetadata(): Promise<{
 export async function wasExecutiveLoginFailureNotificationSentRecently(
   employeeId: string,
 ): Promise<boolean> {
+  const { createSupabaseServiceClient } = await import('../../../packages/supabase/service');
   const service = createSupabaseServiceClient();
   const since = new Date(
     Date.now() - EXECUTIVE_LOGIN_FAILURE_NOTIFICATION_COOLDOWN_MS,
@@ -81,15 +97,18 @@ export async function notifyExecutivePortalLoginAttempt(
     if (throttled) return;
   }
 
+  const portalLabel = input.staffPortal
+    ? headOfficePortalOtpLabel(input.staffPortal)
+    : 'MD Portal';
+
   const mail = await sendHeadOfficePortalLoginNotificationEmail({
     to: workEmail,
     workEmail,
-    recoveryEmail: input.recoveryEmail,
     success: input.success,
     kind: notificationKind,
     ip: input.ipAddress,
     deviceLabel: input.deviceLabel,
-    portalLabel: 'MD Portal',
+    portalLabel,
   });
 
   await recordPortalLoginEvent({
@@ -104,5 +123,37 @@ export async function notifyExecutivePortalLoginAttempt(
       emailed: Boolean(mail.emailed),
       error: mail.error ?? null,
     }),
+  });
+}
+
+/** Run once the employee has fully completed portal sign-in (post 2FA / setup). */
+export async function finalizePortalLoginNotifications(
+  input: FinalizePortalLoginNotificationsInput,
+): Promise<void> {
+  const staffPortal =
+    input.staffPortal ?? staffPortalIdForRole(input.rank, { rbacGated: false });
+
+  await notifyExecutivePortalLoginAttempt({
+    employeeId: input.employeeId,
+    workEmail: input.workEmail,
+    recoveryEmail: input.recoveryEmail,
+    portalAuthEmail: input.portalAuthEmail,
+    rank: input.rank,
+    success: true,
+    ipAddress: input.ipAddress,
+    deviceLabel: input.deviceLabel,
+    staffPortal,
+  });
+
+  await notifyIfAfterHoursPortalLogin({
+    companyId: input.companyId,
+    employeeId: input.employeeId,
+    employeeName: input.employeeName,
+    employeeRank: input.rank,
+    workEmail: input.workEmail,
+    portalAuthEmail: input.portalAuthEmail,
+    staffPortal,
+    ipAddress: input.ipAddress,
+    deviceLabel: input.deviceLabel,
   });
 }

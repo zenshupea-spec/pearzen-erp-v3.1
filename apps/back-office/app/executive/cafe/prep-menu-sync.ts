@@ -14,8 +14,8 @@ export function newPrepRowId(): string {
 
 export function getMenuKitchenTrackKind(
   menuItemId: string,
-  prepItems: CafePrepItem[],
-  displayItems: CafeDisplayItem[],
+  prepItems: Array<{ menuItemId: string }>,
+  displayItems: Array<{ menuItemId: string }>,
 ): KitchenTrackKind {
   if (displayItems.some((row) => row.menuItemId === menuItemId)) return 'display';
   if (prepItems.some((row) => row.menuItemId === menuItemId)) return 'prep';
@@ -42,7 +42,8 @@ export function setMenuKitchenTrack(
   const cleared = removeMenuFromKitchenTrack(menu.id, prepItems, displayItems);
   if (track === 'none') return cleared;
 
-  const effectiveDaily = calcEffectiveMenuDailyUnits(menu.minReadyStock, menu.rollingAvg14d);
+  const prepDaily = calcEffectiveMenuDailyUnits(menu.minReadyStock, menu.rollingAvg14d);
+  const displayDaily = menu.rollingAvg14d;
   if (track === 'prep') {
     return {
       prepItems: [
@@ -53,7 +54,7 @@ export function setMenuKitchenTrack(
           name: menu.name,
           unit: 'pcs',
           currentStock: 0,
-          rollingAvg14d: effectiveDaily,
+          rollingAvg14d: prepDaily,
           shelfLifeDays: 1,
         },
       ],
@@ -72,7 +73,7 @@ export function setMenuKitchenTrack(
         currentWhole: 0,
         currentSlices: 0,
         slicesPerWhole: 8,
-        rollingAvg14d: effectiveDaily,
+        rollingAvg14d: displayDaily,
         shelfLifeDays: 1,
       },
     ],
@@ -106,13 +107,12 @@ export function reconcilePrepWithMenu(
   for (const row of displayItems) {
     if (!row.menuItemId || !menuIds.has(row.menuItemId)) continue;
     const menu = menuById.get(row.menuItemId)!;
-    const effectiveDaily = calcEffectiveMenuDailyUnits(menu.minReadyStock, menu.rollingAvg14d);
     nextDisplay.push({
       ...row,
       id: row.id && UUID_RE.test(row.id) ? row.id : newPrepRowId(),
       menuItemId: menu.id,
       name: menu.name,
-      rollingAvg14d: effectiveDaily,
+      rollingAvg14d: menu.rollingAvg14d,
     });
   }
 

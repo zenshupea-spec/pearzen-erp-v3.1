@@ -119,7 +119,7 @@ export const PORTAL_RBAC_ROUTE_PREFIXES: Record<PortalRbacPortalId, string[]> = 
   om_command: ['/om'],
   tm_command: ['/tm'],
   sm_portal: [],
-  checkin_app: [],
+  checkin_app: ['/hq/guard-proxy'],
   finance: ['/fm', '/fm-dashboard', '/executive/finance'],
   deductions: ['/hq/deductions'],
   invoice_desk: ['/invoice-desk'],

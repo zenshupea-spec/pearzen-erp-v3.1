@@ -9,10 +9,14 @@ import {
   parseSettingEnvelope,
 } from '../../../../../packages/supabase/md-settings-envelope';
 import { revalidatePath } from 'next/cache';
+import { assertSessionCompanyId } from '../../../lib/company-context-server';
+import { revalidateMdSettingsConsumers } from './lib/revalidate-md-settings-consumers';
 import {
   getExecutiveMdSettingsContext,
   getMdSettingsDb,
   resolveExecutiveCompanyId,
+  assertExecutiveMdSettingsWrite,
+  upsertMdSettings,
 } from './lib/executive-md-settings-db';
 import {
   clampGeofenceRadiusM,
@@ -22,8 +26,10 @@ import {
 import {
   DEFAULT_APIT_SLABS,
   DEFAULT_STAMP_DUTY_LKR,
+  DEFAULT_STAMP_DUTY_THRESHOLD_LKR,
   parseApitSlabs,
   parseStampDutyLkr,
+  parseStampDutyThresholdLkr,
   type ApitSlab,
 } from '../../../../../packages/payroll-deductions';
 
@@ -49,7 +55,17 @@ async function writeAuditLog(supabase: any, companyId: string, actionType: strin
 }
 
 export async function updateGlobalSettings(companyId: string, formData: FormData) {
+  const vaultGate = await assertExecutiveMdSettingsWrite();
+  if (!vaultGate.ok) return { success: false, error: vaultGate.error };
+
+  try {
+    companyId = await assertSessionCompanyId(companyId);
+  } catch {
+    return { success: false, error: 'Forbidden' };
+  }
+
   const supabase = await createSupabaseServerClient();
+  const db = getMdSettingsDb();
 
   const payload = {
     company_id: companyId,
@@ -65,9 +81,7 @@ export async function updateGlobalSettings(companyId: string, formData: FormData
     max_deduction_pct: Number(formData.get('max_deduction_pct')) || 5,
   };
 
-  const { error } = await supabase
-    .from('md_settings')
-    .upsert(payload, { onConflict: 'company_id' });
+  const { error } = await upsertMdSettings(db, companyId, payload);
 
   if (error) {
     console.error("❌ SUPABASE ERROR (updateGlobalSettings):", error.message);
@@ -76,9 +90,8 @@ export async function updateGlobalSettings(companyId: string, formData: FormData
 
   await writeAuditLog(supabase, companyId, 'UPDATE_SETTINGS', 'MD_SETTINGS', payload);
 
-  revalidatePath('/executive/settings');
+  revalidateMdSettingsConsumers();
   revalidatePath('/executive/audit');
-  revalidatePath('/invoice-desk');
   return { success: true };
 }
 
@@ -194,6 +207,9 @@ export async function saveMdInvoiceConfig(payload: {
   supplierTin?: string;
   supplierAddress?: string;
 }) {
+  const vaultGate = await assertExecutiveMdSettingsWrite();
+  if (!vaultGate.ok) return { success: false, error: vaultGate.error };
+
   const { session, db, companyId } = await getExecutiveMdSettingsContext();
 
   const letterhead: InvoiceLetterheadJson = {};
@@ -234,8 +250,7 @@ export async function saveMdInvoiceConfig(payload: {
     ...letterhead,
   });
 
-  revalidatePath('/executive/settings');
-  revalidatePath('/invoice-desk');
+  revalidateMdSettingsConsumers();
   return { success: true };
 }
 
@@ -270,14 +285,17 @@ export async function updateShiftSettings(
   security_night_start: string,
   security_night_end: string,
 ) {
+  const vaultGate = await assertExecutiveMdSettingsWrite();
+  if (!vaultGate.ok) return { success: false, error: vaultGate.error };
+
   const { session, db, companyId } = await getExecutiveMdSettingsContext();
 
-  const { error } = await db
-    .from('md_settings')
-    .upsert(
-      { company_id: companyId, security_day_start, security_day_end, security_night_start, security_night_end },
-      { onConflict: 'company_id' },
-    );
+  const { error } = await upsertMdSettings(db, companyId, {
+    security_day_start,
+    security_day_end,
+    security_night_start,
+    security_night_end,
+  });
 
   if (error) return { success: false, error: error.message };
 
@@ -285,7 +303,7 @@ export async function updateShiftSettings(
     security_day_start, security_day_end, security_night_start, security_night_end,
   });
 
-  revalidatePath('/executive/settings');
+  revalidateMdSettingsConsumers();
   return { success: true };
 }
 
@@ -329,13 +347,14 @@ export async function getGeofenceSettings() {
 }
 
 export async function updateGeofenceSettings(defaultGeofenceRadiusM: number) {
+  const vaultGate = await assertExecutiveMdSettingsWrite();
+  if (!vaultGate.ok) return { success: false, error: vaultGate.error };
+
   const { session, db, companyId } = await getExecutiveMdSettingsContext();
 
   const radius = clampGeofenceRadiusM(defaultGeofenceRadiusM);
 
-  let { error } = await db
-    .from('md_settings')
-    .upsert({ company_id: companyId, default_geofence_radius_m: radius }, { onConflict: 'company_id' });
+  let { error } = await upsertMdSettings(db, companyId, { default_geofence_radius_m: radius });
 
   if (error && isMissingColumnError(error.message)) {
     const res = await mergeSettingEnvelope(db, companyId, {
@@ -351,7 +370,7 @@ export async function updateGeofenceSettings(defaultGeofenceRadiusM: number) {
     default_geofence_radius_m: radius,
   });
 
-  revalidatePath('/executive/settings');
+  revalidateMdSettingsConsumers();
   revalidatePath('/executive/sites');
   revalidatePath('/fm/sites');
   revalidatePath('/om/sites/location');
@@ -359,6 +378,15 @@ export async function updateGeofenceSettings(defaultGeofenceRadiusM: number) {
 }
 
 export async function updateRankBasicSalary(companyId: string, rank: string, formData: FormData) {
+  const vaultGate = await assertExecutiveMdSettingsWrite();
+  if (!vaultGate.ok) return { success: false, error: vaultGate.error };
+
+  try {
+    companyId = await assertSessionCompanyId(companyId);
+  } catch {
+    return { success: false, error: 'Forbidden' };
+  }
+
   const supabase = await createSupabaseServerClient();
   
   const newBasic = Number(formData.get('basic_salary'));
@@ -379,7 +407,7 @@ export async function updateRankBasicSalary(companyId: string, rank: string, for
 
   await writeAuditLog(supabase, companyId, 'UPDATE_RANK_SALARY', 'EMPLOYEES', { rank: rank.toUpperCase(), new_basic_salary: newBasic });
 
-  revalidatePath('/executive/settings');
+  revalidateMdSettingsConsumers();
   revalidatePath('/executive/audit');
   return { success: true };
 }
@@ -408,6 +436,9 @@ export async function getDivisionNames(): Promise<DivisionNames> {
 }
 
 export async function saveDivisionNames(names: DivisionNames) {
+  const vaultGate = await assertExecutiveMdSettingsWrite();
+  if (!vaultGate.ok) return { success: false, error: vaultGate.error };
+
   const { session, db, companyId } = await getExecutiveMdSettingsContext();
 
   const sanitized: DivisionNames = {
@@ -423,7 +454,7 @@ export async function saveDivisionNames(names: DivisionNames) {
 
   await writeAuditLog(session, companyId, 'UPDATE_DIVISION_NAMES', 'MD_SETTINGS', sanitized);
 
-  revalidatePath('/executive/settings');
+  revalidateMdSettingsConsumers();
   return { success: true };
 }
 
@@ -436,7 +467,66 @@ export type PayrollStatutorySettings = {
   monthlyDaysDivisor: number;
   apitSlabs: ApitSlab[];
   stampDutyLkr: number;
+  stampDutyThresholdLkr: number;
 };
+
+export type PayrollWorkingDaysSettings = {
+  wbWorkingDays: number;
+  wbHours: number;
+  soWorkingDays: number;
+};
+
+const DEFAULT_PAYROLL_WORKING_DAYS: PayrollWorkingDaysSettings = {
+  wbWorkingDays: 26,
+  wbHours: 200,
+  soWorkingDays: 20,
+};
+
+export async function getPayrollWorkingDaysSettings(): Promise<PayrollWorkingDaysSettings> {
+  const companyId = await resolveCompanyId();
+  const db = getMdSettingsDb();
+  const { data } = await db
+    .from('md_settings')
+    .select('wb_working_days, wb_hours, so_working_days')
+    .eq('company_id', companyId)
+    .maybeSingle();
+
+  const row = data as Record<string, unknown> | null;
+  return {
+    wbWorkingDays: num(row?.wb_working_days, DEFAULT_PAYROLL_WORKING_DAYS.wbWorkingDays),
+    wbHours: num(row?.wb_hours, DEFAULT_PAYROLL_WORKING_DAYS.wbHours),
+    soWorkingDays: num(row?.so_working_days, DEFAULT_PAYROLL_WORKING_DAYS.soWorkingDays),
+  };
+}
+
+export type PayrollComplianceSettings = {
+  maxDeductionPct: number;
+  statutoryTakehomeFloorPct: number;
+};
+
+const DEFAULT_PAYROLL_COMPLIANCE: PayrollComplianceSettings = {
+  maxDeductionPct: 20,
+  statutoryTakehomeFloorPct: 40,
+};
+
+export async function getPayrollComplianceSettings(): Promise<PayrollComplianceSettings> {
+  const companyId = await resolveCompanyId();
+  const db = getMdSettingsDb();
+  const { data } = await db
+    .from('md_settings')
+    .select('max_deduction_pct, statutory_takehome_floor')
+    .eq('company_id', companyId)
+    .maybeSingle();
+
+  const row = data as Record<string, unknown> | null;
+  return {
+    maxDeductionPct: num(row?.max_deduction_pct, DEFAULT_PAYROLL_COMPLIANCE.maxDeductionPct),
+    statutoryTakehomeFloorPct: num(
+      row?.statutory_takehome_floor,
+      DEFAULT_PAYROLL_COMPLIANCE.statutoryTakehomeFloorPct,
+    ),
+  };
+}
 
 const DEFAULT_PAYROLL_STATUTORY: PayrollStatutorySettings = {
   epfEmployeeRate: 8,
@@ -447,6 +537,7 @@ const DEFAULT_PAYROLL_STATUTORY: PayrollStatutorySettings = {
   monthlyDaysDivisor: 26,
   apitSlabs: DEFAULT_APIT_SLABS,
   stampDutyLkr: DEFAULT_STAMP_DUTY_LKR,
+  stampDutyThresholdLkr: DEFAULT_STAMP_DUTY_THRESHOLD_LKR,
 };
 
 export async function getPayrollStatutorySettings(): Promise<PayrollStatutorySettings> {
@@ -464,10 +555,17 @@ export async function getPayrollStatutorySettings(): Promise<PayrollStatutorySet
     stampDutyLkr: parseStampDutyLkr(
       raw?.stampDutyLkr ?? (raw as { stampDutyAmount?: unknown } | undefined)?.stampDutyAmount,
     ),
+    stampDutyThresholdLkr: parseStampDutyThresholdLkr(
+      raw?.stampDutyThresholdLkr ??
+        (raw as { stampDutyThreshold?: unknown } | undefined)?.stampDutyThreshold,
+    ),
   };
 }
 
 export async function savePayrollStatutorySettings(settings: PayrollStatutorySettings) {
+  const vaultGate = await assertExecutiveMdSettingsWrite();
+  if (!vaultGate.ok) return { success: false, error: vaultGate.error };
+
   const { session, db, companyId } = await getExecutiveMdSettingsContext();
 
   const sanitized: PayrollStatutorySettings = {
@@ -479,6 +577,7 @@ export async function savePayrollStatutorySettings(settings: PayrollStatutorySet
     monthlyDaysDivisor: Math.min(31, Math.max(20, Math.round(num(settings.monthlyDaysDivisor, 26)))),
     apitSlabs: parseApitSlabs(settings.apitSlabs),
     stampDutyLkr: parseStampDutyLkr(settings.stampDutyLkr),
+    stampDutyThresholdLkr: parseStampDutyThresholdLkr(settings.stampDutyThresholdLkr),
   };
 
   const res = await mergeSettingEnvelope(db, companyId, {
@@ -488,6 +587,7 @@ export async function savePayrollStatutorySettings(settings: PayrollStatutorySet
 
   await writeAuditLog(session, companyId, 'UPDATE_PAYROLL_STATUTORY_SETTINGS', 'MD_SETTINGS', sanitized);
 
-  revalidatePath('/executive/settings');
+  revalidateMdSettingsConsumers();
+  revalidatePath('/executive/payroll');
   return { success: true };
 }

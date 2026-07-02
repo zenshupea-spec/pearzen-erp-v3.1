@@ -9,9 +9,13 @@ HOSTS="/etc/hosts"
 BASE="${NEXT_PUBLIC_TENANT_BASE_DOMAIN:-pearzen.tech}"
 
 entries="
+127.0.0.1 ${BASE}
+127.0.0.1 www.${BASE}
 127.0.0.1 cvs.${BASE}
 127.0.0.1 forge.${BASE}
 127.0.0.1 erp.${BASE}
+127.0.0.1 shalom.${BASE}
+127.0.0.1 www.shalom.${BASE}
 "
 
 if grep -q "$MARK" "$HOSTS" 2>/dev/null; then

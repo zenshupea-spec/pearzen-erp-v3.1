@@ -3,18 +3,23 @@
 import { revalidatePath } from 'next/cache';
 
 import { fetchMasterSiteDirectory } from '../../actions/site-directory-actions';
-import { loadInternalWorkLocationsForCompany } from '../../../lib/internal-work-locations';
+import { loadInternalWorkLocationsForCompany, formatInternalBranchLabel } from '../../../lib/internal-work-locations';
 import { listCafeBranchOptions } from '../../../lib/cafe-front-checkin';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import { createSupabaseServiceClient } from '../../../../../packages/supabase/service';
+import {
+  ATTENDANCE_SELFIES_BUCKET,
+  signVerificationPhotoRef,
+} from '../../../../../packages/supabase/verification-photo-storage';
+import type { User } from '@supabase/supabase-js';
 import {
   resolveCompanyIdForSession,
   rosterCompanyId,
 } from '../../../lib/company-context-server';
 import {
-  assertHrPortalEditor,
   fetchBackOfficeUserProfile,
   formatHrPortalEditorLabel,
+  isHrPortalEditor,
 } from '../../../lib/hr-portal-access-server';
 import { normalizeEpfNo } from '../../../lib/cafe-front-auth';
 import { loadCafeOpenHours } from '../../../lib/cafe-front-checkin';
@@ -23,16 +28,20 @@ import {
   type CafeShiftWindows,
 } from '../../../lib/cafe-shift-hours';
 import { auditStaffAction } from '../../../lib/staff-audit';
+import { applyApprovedCafeCheckinToPayroll } from '../../executive/cafe/actions';
+import {
+  clearCafeRosterShiftForDay,
+  fetchCafeRosterShifts,
+  upsertCafeRosterShift,
+} from '../../../lib/cafe-roster-storage';
 import {
   buildRollingWindow,
-  cafeShiftLabel,
   formatCafeBranchLabel,
   normalizeCafeShiftType,
   rosterCellKey,
   type CafeShiftType,
 } from './utils';
 
-const CAFE_ROSTER_SHIFT_TYPES = ['MORNING', 'EVENING', 'DAY'] as const;
 const CAFE_ROSTER_PATH = '/hr/cafe-roster';
 
 export type CafeBranchSite = {
@@ -112,15 +121,35 @@ function employeeDisplayEpf(employee: EmployeeRow): string {
   return '—';
 }
 
-async function requireHrEditor() {
+type HrEditorContext = {
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>;
+  user: User;
+  profile: Awaited<ReturnType<typeof fetchBackOfficeUserProfile>>;
+};
+
+type HrEditorGate =
+  | { ok: true; ctx: HrEditorContext }
+  | { ok: false; error: string };
+
+const SESSION_EXPIRED_MESSAGE =
+  'Your session has expired. Sign in again and retry.';
+
+async function requireHrEditor(): Promise<HrEditorGate> {
   const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) throw new Error('You must be signed in.');
+  if (!user) {
+    return { ok: false, error: SESSION_EXPIRED_MESSAGE };
+  }
   const profile = await fetchBackOfficeUserProfile(supabase, user);
-  assertHrPortalEditor(profile.role);
-  return { supabase, user, profile };
+  if (!isHrPortalEditor(profile.role)) {
+    return {
+      ok: false,
+      error: 'Only HR, MD, OD, or FM can edit the café roster.',
+    };
+  }
+  return { ok: true, ctx: { supabase, user, profile } };
 }
 
 async function resolveCompanyScope() {
@@ -150,31 +179,38 @@ async function fetchPendingCafeCheckinVerifications(
     return [];
   }
 
-  return (data ?? []).map((row) => {
-    const employee = row.employees as
-      | {
-          full_name?: string | null;
-          epf_no?: string | null;
-          epf_num?: string | null;
-          emp_number?: string | null;
-        }
-      | null
-      | undefined;
-    const epfRaw =
-      employee?.epf_no ?? employee?.epf_num ?? employee?.emp_number ?? '';
-    return {
-      id: String(row.id),
-      employeeId: String(row.employee_id),
-      employeeName: String(employee?.full_name ?? 'Café Staff'),
-      employeeEpf: epfRaw ? normalizeEpfNo(String(epfRaw)) : '—',
-      checkinDate: String(row.checkin_date),
-      checkedInAt: String(row.checked_in_at ?? ''),
-      selfieUrl: row.selfie_url ? String(row.selfie_url) : null,
-      rosteredOnShift: Boolean(row.rostered_on_shift),
-      latitude: row.latitude == null ? null : Number(row.latitude),
-      longitude: row.longitude == null ? null : Number(row.longitude),
-    };
-  });
+  return Promise.all(
+    (data ?? []).map(async (row) => {
+      const employee = row.employees as
+        | {
+            full_name?: string | null;
+            epf_no?: string | null;
+            epf_num?: string | null;
+            emp_number?: string | null;
+          }
+        | null
+        | undefined;
+      const epfRaw =
+        employee?.epf_no ?? employee?.epf_num ?? employee?.emp_number ?? '';
+      const storedSelfie = row.selfie_url ? String(row.selfie_url) : null;
+      const selfieUrl = storedSelfie
+        ? (await signVerificationPhotoRef(db, ATTENDANCE_SELFIES_BUCKET, storedSelfie)) ??
+          storedSelfie
+        : null;
+      return {
+        id: String(row.id),
+        employeeId: String(row.employee_id),
+        employeeName: String(employee?.full_name ?? 'Café Staff'),
+        employeeEpf: epfRaw ? normalizeEpfNo(String(epfRaw)) : '—',
+        checkinDate: String(row.checkin_date),
+        checkedInAt: String(row.checked_in_at ?? ''),
+        selfieUrl,
+        rosteredOnShift: Boolean(row.rostered_on_shift),
+        latitude: row.latitude == null ? null : Number(row.latitude),
+        longitude: row.longitude == null ? null : Number(row.longitude),
+      };
+    }),
+  );
 }
 
 async function fetchCafeBranchSites(companyId: string | null): Promise<CafeBranchSite[]> {
@@ -305,14 +341,21 @@ async function fetchRosterAndLeave(
   const windowStart = days[0];
   const windowEnd = days[days.length - 1];
 
-  let shiftQuery = db
-    .from('rostered_shifts')
-    .select('guard_id, shift_date, shift_type')
-    .eq('sector_id', siteProfileId)
-    .in('guard_id', employeeIds)
-    .gte('shift_date', windowStart)
-    .lte('shift_date', windowEnd);
-  if (companyId) shiftQuery = shiftQuery.eq('company_id', companyId);
+  let shifts: Array<{ guard_id: string; shift_date: string; shift_type: string }> = [];
+  try {
+    shifts = await fetchCafeRosterShifts(db, {
+      branchId: siteProfileId,
+      employeeIds,
+      windowStart,
+      windowEnd,
+      companyId,
+    });
+  } catch (shiftError) {
+    console.error(
+      '[Cafe Roster] shift fetch failed:',
+      shiftError instanceof Error ? shiftError.message : shiftError,
+    );
+  }
 
   let leaveQuery = db
     .from('cafe_leave_requests')
@@ -322,18 +365,13 @@ async function fetchRosterAndLeave(
     .lte('leave_date', windowEnd);
   if (companyId) leaveQuery = leaveQuery.eq('company_id', companyId);
 
-  const [{ data: shifts, error: shiftError }, { data: leaves, error: leaveError }] =
-    await Promise.all([shiftQuery, leaveQuery]);
-
-  if (shiftError) {
-    console.error('[Cafe Roster] rostered_shifts fetch failed:', shiftError.message);
-  }
+  const [{ data: leaves, error: leaveError }] = await Promise.all([leaveQuery]);
   if (leaveError) {
     console.error('[Cafe Roster] cafe_leave_requests fetch failed:', leaveError.message);
   }
 
   const scheduledByKey: Record<string, CafeShiftType> = {};
-  for (const row of shifts ?? []) {
+  for (const row of shifts) {
     const shiftType = normalizeCafeShiftType(String(row.shift_type));
     if (!shiftType) continue;
     scheduledByKey[rosterCellKey(String(row.guard_id), String(row.shift_date))] = shiftType;
@@ -408,7 +446,7 @@ export async function getCafeRosterDeskData(input?: {
   const selectedSite = sites.find((site) => site.id === selectedSiteId);
   const staffEpfs = await fetchStaffForCafeBranch(
     selectedSiteId,
-    selectedSite?.label ?? selectedSite?.siteName ?? '',
+    formatInternalBranchLabel(selectedSite?.label ?? selectedSite?.siteName ?? ''),
     companyId,
   );
   const staff = await fetchEmployeesForStaffEpfs(staffEpfs, companyId);
@@ -442,7 +480,9 @@ export async function reviewCafeCheckinVerification(input: {
   decision: 'APPROVED' | 'FLAGGED';
 }): Promise<{ ok: boolean; error?: string }> {
   try {
-    const { profile, supabase } = await requireHrEditor();
+    const gate = await requireHrEditor();
+    if (!gate.ok) return { ok: false, error: gate.error };
+    const { profile, supabase } = gate.ctx;
     const companyId = await resolveCompanyScope();
     if (!companyId) return { ok: false, error: 'Could not resolve company for this session.' };
 
@@ -477,6 +517,33 @@ export async function reviewCafeCheckinVerification(input: {
 
     if (updateError) return { ok: false, error: updateError.message };
 
+    if (input.decision === 'APPROVED') {
+      try {
+        await applyApprovedCafeCheckinToPayroll(
+          companyId,
+          String(row.employee_id),
+          String(row.checkin_date),
+        );
+      } catch (payrollError) {
+        await db
+          .from('cafe_staff_checkins')
+          .update({
+            verification_status: 'PENDING',
+            verified_at: null,
+            verified_by: null,
+          })
+          .eq('id', input.checkinId)
+          .eq('company_id', companyId);
+        return {
+          ok: false,
+          error:
+            payrollError instanceof Error
+              ? payrollError.message
+              : 'Failed to sync approved check-in to payroll day log.',
+        };
+      }
+    }
+
     await auditStaffAction({
       supabase,
       portal: 'hr',
@@ -488,6 +555,7 @@ export async function reviewCafeCheckinVerification(input: {
     });
 
     revalidatePath(CAFE_ROSTER_PATH);
+    revalidatePath('/executive/cafe');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : 'Failed to review check-in.' };
@@ -500,12 +568,13 @@ export async function reviewCafeLeaveRequest(input: {
   siteProfileId: string;
 }): Promise<{ ok: boolean; error?: string }> {
   try {
-    const { profile } = await requireHrEditor();
+    const gate = await requireHrEditor();
+    if (!gate.ok) return { ok: false, error: gate.error };
+    const { profile, supabase } = gate.ctx;
     const companyId = await resolveCompanyScope();
     if (!companyId) return { ok: false, error: 'Could not resolve company for this session.' };
 
     const db = createSupabaseServiceClient();
-    assertHrPortalEditor(profile.role);
     const reviewer = profile.full_name
       ? formatHrPortalEditorLabel(profile.full_name, profile.role)
       : profile.role;
@@ -539,16 +608,14 @@ export async function reviewCafeLeaveRequest(input: {
     }
 
     if (input.decision === 'APPROVED') {
-      await db
-        .from('rostered_shifts')
-        .delete()
-        .eq('company_id', companyId)
-        .eq('sector_id', input.siteProfileId)
-        .eq('guard_id', requestRow.employee_id)
-        .eq('shift_date', requestRow.leave_date);
+      await clearCafeRosterShiftForDay(db, {
+        branchId: input.siteProfileId,
+        companyId,
+        employeeId: String(requestRow.employee_id),
+        shiftDate: String(requestRow.leave_date),
+      });
     }
 
-    const supabase = await createSupabaseServerClient();
     await auditStaffAction({
       supabase,
       portal: 'hr',
@@ -572,62 +639,101 @@ export async function setCafeRosterShift(input: {
   date: string;
   shiftType: CafeShiftType | null;
 }): Promise<{ ok: boolean; error?: string }> {
+  return saveCafeRosterShifts({
+    siteProfileId: input.siteProfileId,
+    changes: [
+      {
+        employeeId: input.employeeId,
+        date: input.date,
+        shiftType: input.shiftType,
+      },
+    ],
+  });
+}
+
+export async function saveCafeRosterShifts(input: {
+  siteProfileId: string;
+  changes: Array<{
+    employeeId: string;
+    date: string;
+    shiftType: CafeShiftType | null;
+  }>;
+}): Promise<{ ok: boolean; error?: string }> {
   try {
-    await requireHrEditor();
+    if (!input.changes.length) return { ok: true };
+
+    const gate = await requireHrEditor();
+    if (!gate.ok) return { ok: false, error: gate.error };
+    const { profile, supabase } = gate.ctx;
     const companyId = await resolveCompanyScope();
     if (!companyId) return { ok: false, error: 'Could not resolve company for this session.' };
 
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) {
-      return { ok: false, error: 'Invalid date.' };
-    }
-
     const db = createSupabaseServiceClient();
 
-    const { data: leaveRow } = await db
-      .from('cafe_leave_requests')
-      .select('status')
-      .eq('company_id', companyId)
-      .eq('employee_id', input.employeeId)
-      .eq('leave_date', input.date)
-      .maybeSingle();
+    for (const change of input.changes) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(change.date)) {
+        return { ok: false, error: 'Invalid date in roster changes.' };
+      }
 
-    if (leaveRow?.status === 'PENDING') {
-      return { ok: false, error: 'Resolve the pending leave request before changing this day.' };
+      const { data: leaveRow } = await db
+        .from('cafe_leave_requests')
+        .select('status')
+        .eq('company_id', companyId)
+        .eq('employee_id', change.employeeId)
+        .eq('leave_date', change.date)
+        .maybeSingle();
+
+      if (leaveRow?.status === 'PENDING') {
+        return {
+          ok: false,
+          error: 'Resolve pending leave requests before saving roster changes.',
+        };
+      }
+      if (leaveRow?.status === 'APPROVED') {
+        return { ok: false, error: 'Cannot schedule shifts on approved leave days.' };
+      }
+
+      try {
+        if (change.shiftType) {
+          await upsertCafeRosterShift(db, {
+            branchId: input.siteProfileId,
+            companyId,
+            employeeId: change.employeeId,
+            shiftDate: change.date,
+            shiftType: change.shiftType,
+          });
+        } else {
+          await clearCafeRosterShiftForDay(db, {
+            branchId: input.siteProfileId,
+            companyId,
+            employeeId: change.employeeId,
+            shiftDate: change.date,
+          });
+        }
+      } catch (shiftError) {
+        return {
+          ok: false,
+          error:
+            shiftError instanceof Error
+              ? shiftError.message
+              : shiftError &&
+                  typeof shiftError === 'object' &&
+                  'message' in shiftError &&
+                  String((shiftError as { message?: unknown }).message ?? '').trim()
+                ? String((shiftError as { message?: unknown }).message)
+                : 'Failed to update roster.',
+        };
+      }
     }
-    if (leaveRow?.status === 'APPROVED') {
-      return { ok: false, error: 'This day is approved leave.' };
-    }
 
-    const { error: clearError } = await db
-      .from('rostered_shifts')
-      .delete()
-      .eq('company_id', companyId)
-      .eq('sector_id', input.siteProfileId)
-      .eq('guard_id', input.employeeId)
-      .eq('shift_date', input.date)
-      .in('shift_type', [...CAFE_ROSTER_SHIFT_TYPES]);
-    if (clearError) return { ok: false, error: clearError.message };
-
-    if (input.shiftType) {
-      const { error } = await db.from('rostered_shifts').insert({
-        company_id: companyId,
-        sector_id: input.siteProfileId,
-        guard_id: input.employeeId,
-        shift_date: input.date,
-        shift_type: input.shiftType,
-      });
-      if (error) return { ok: false, error: error.message };
-    }
-
-    const supabase = await createSupabaseServerClient();
     await auditStaffAction({
       supabase,
       portal: 'hr',
-      action: input.shiftType
-        ? `Schedule Café ${cafeShiftLabel(input.shiftType)} Shift`
-        : 'Remove Café Shift',
-      targetEntity: `Employee ${input.employeeId} · ${input.date}`,
-      details: input,
+      action: `Save Café Roster (${input.changes.length} change${input.changes.length === 1 ? '' : 's'})`,
+      targetEntity: `Branch ${input.siteProfileId}`,
+      details: { changeCount: input.changes.length },
+    }).catch((auditError) => {
+      console.error('[Cafe Roster] audit log failed:', auditError);
     });
 
     revalidatePath(CAFE_ROSTER_PATH);

@@ -84,7 +84,7 @@ export function OmFieldDataProvider({ children }: { children: ReactNode }) {
         })
         .filter((row): row is { empNo: string; previousEmpNo: string | null } => {
           if (!row) return false;
-          return Boolean(row.empNo);
+          return Boolean(row.empNo) || Boolean(row.previousEmpNo);
         });
 
       if (!assignments.length) {

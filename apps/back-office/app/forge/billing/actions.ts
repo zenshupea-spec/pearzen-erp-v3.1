@@ -2,7 +2,12 @@
 
 import { revalidatePath } from 'next/cache';
 
-import { CVS_COMPANY_ID, CVS_TENANT_SLUG } from '../../../lib/company-ids';
+import { resolveCompanyIdForSession } from '../../../lib/company-context-server';
+import { syncTenantSubscriptionFromBilling } from '../../../lib/company-subscription-server';
+import {
+  recordPartnerPayoutForSaasInvoice,
+} from '../../../lib/forge-payout-ledger';
+import { assertForgeOperator } from '../../../lib/forge-operator-server';
 import {
   currentMonthlyDueDate,
   invoiceMonthForDueDate,
@@ -13,8 +18,18 @@ import {
 import { SAAS_RECEIPT_BUCKET, saasReceiptPublicUrl } from '../../../lib/saas-receipt-storage';
 import { createSupabaseServerClient } from '../../../../../packages/supabase/server';
 import { createSupabaseServiceClient } from '../../../../../packages/supabase/service';
+import { forgeBillingDefaultCompanyId, type ForgeBillingCompany } from './forge-billing-default';
 
-const SAAS_COMPANY_ID = CVS_COMPANY_ID;
+export type { ForgeBillingCompany } from './forge-billing-default';
+
+function assertServiceRoleConfigured() {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()) {
+    throw new Error(
+      'SUPABASE_SERVICE_ROLE_KEY is missing on the server. Add it in Vercel → Project → Environment Variables, then redeploy.',
+    );
+  }
+}
+
 const MAX_RECEIPT_BYTES = 10 * 1024 * 1024;
 const RECEIPT_MIME_TYPES = new Set([
   'image/jpeg',
@@ -24,12 +39,31 @@ const RECEIPT_MIME_TYPES = new Set([
   'application/pdf',
 ]);
 
-function assertServiceRoleConfigured() {
-  if (!process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()) {
-    throw new Error(
-      'SUPABASE_SERVICE_ROLE_KEY is missing on the server. Add it in Vercel → Project → Environment Variables, then redeploy.',
-    );
-  }
+const UUID_RE = /^[0-9a-f-]{36}$/i;
+
+function requireForgeBillingCompanyId(companyId?: string | null): string {
+  const trimmed = companyId?.trim();
+  if (trimmed && UUID_RE.test(trimmed)) return trimmed;
+  throw new Error('Select a tenant before continuing.');
+}
+
+async function resolveFmCompanyId(): Promise<string> {
+  const session = await createSupabaseServerClient();
+  const companyId = await resolveCompanyIdForSession(session);
+  if (!companyId) throw new Error('Tenant context is required.');
+  return companyId;
+}
+
+function revalidateSaasBillingPaths() {
+  revalidatePath('/forge');
+  revalidatePath('/forge/billing');
+  revalidatePath('/forge/tenants');
+  revalidatePath('/forge/partners/payouts');
+  revalidatePath('/partners/payouts');
+  revalidatePath('/partners');
+  revalidatePath('/fm/pearzen-payment');
+  revalidatePath('/executive', 'layout');
+  revalidatePath('/', 'layout');
 }
 
 function mapSettings(row: Record<string, unknown>): SaasBillingSettings {
@@ -93,28 +127,72 @@ async function countMnrEmployees(companyId: string): Promise<number> {
   return count ?? 0;
 }
 
-export async function fetchSaasBillingDashboard() {
+export async function fetchForgeBillingCompanies() {
   try {
+    await assertForgeOperator();
     assertServiceRoleConfigured();
+    const supabase = createSupabaseServiceClient();
+    const { data, error } = await supabase
+      .from('companies')
+      .select('id, name, slug')
+      .neq('name', 'HQ_MASTER_ACCOUNT')
+      .order('name', { ascending: true });
+
+    if (error) throw new Error(error.message);
+
+    const companies = (data ?? []).map(
+      (row): ForgeBillingCompany => ({
+        id: String(row.id),
+        name: String(row.name),
+        slug: row.slug != null ? String(row.slug) : null,
+      }),
+    );
+
+    return {
+      success: true as const,
+      companies,
+      defaultCompanyId: forgeBillingDefaultCompanyId(companies),
+    };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Failed to load companies';
+    return { success: false as const, error: message, companies: [], defaultCompanyId: null };
+  }
+}
+
+export async function fetchSaasBillingDashboard(companyId?: string | null) {
+  try {
+    await assertForgeOperator();
+    assertServiceRoleConfigured();
+    const trimmed = companyId?.trim();
+    if (!trimmed || !UUID_RE.test(trimmed)) {
+      return { success: false as const, error: 'Select a tenant to view billing.' };
+    }
+    const scopedCompanyId = trimmed;
     const supabase = createSupabaseServiceClient();
 
     const [{ data: company }, { data: settingsRow }, { data: invoices }] = await Promise.all([
-      supabase.from('companies').select('id, name, slug').eq('id', SAAS_COMPANY_ID).maybeSingle(),
-      supabase.from('saas_billing_settings').select('*').eq('company_id', SAAS_COMPANY_ID).maybeSingle(),
+      supabase.from('companies').select('id, name, slug').eq('id', scopedCompanyId).maybeSingle(),
+      supabase
+        .from('saas_billing_settings')
+        .select('*')
+        .eq('company_id', scopedCompanyId)
+        .maybeSingle(),
       supabase
         .from('saas_platform_invoices')
         .select('*')
-        .eq('company_id', SAAS_COMPANY_ID)
+        .eq('company_id', scopedCompanyId)
         .order('due_date', { ascending: false })
         .limit(12),
     ]);
 
-    const employeeCount = await countMnrEmployees(SAAS_COMPANY_ID);
+    const employeeCount = await countMnrEmployees(scopedCompanyId);
+
+    await syncTenantSubscriptionFromBilling(scopedCompanyId);
 
     const settings: SaasBillingSettings = settingsRow
       ? mapSettings(settingsRow as Record<string, unknown>)
       : {
-          companyId: SAAS_COMPANY_ID,
+          companyId: scopedCompanyId,
           databaseCostLkr: 0,
           frontendCostLkr: 0,
           perEmployeePriceLkr: 0,
@@ -123,10 +201,11 @@ export async function fetchSaasBillingDashboard() {
 
     return {
       success: true as const,
+      companyId: scopedCompanyId,
       company: company ?? {
-        id: SAAS_COMPANY_ID,
-        name: 'CLASSIC VENTURE SECURITY (PVT) LTD',
-        slug: CVS_TENANT_SLUG,
+        id: scopedCompanyId,
+        name: 'Unknown tenant',
+        slug: null,
       },
       settings,
       employeeCount,
@@ -139,17 +218,20 @@ export async function fetchSaasBillingDashboard() {
 }
 
 export async function saveSaasBillingSettings(input: {
+  companyId?: string | null;
   databaseCostLkr: number;
   frontendCostLkr: number;
   perEmployeePriceLkr: number;
   billingStartDate: string;
 }) {
   try {
+    await assertForgeOperator();
     assertServiceRoleConfigured();
+    const scopedCompanyId = requireForgeBillingCompanyId(input.companyId);
     const supabase = createSupabaseServiceClient();
     const { error } = await supabase.from('saas_billing_settings').upsert(
       {
-        company_id: SAAS_COMPANY_ID,
+        company_id: scopedCompanyId,
         database_cost_lkr: input.databaseCostLkr,
         frontend_cost_lkr: input.frontendCostLkr,
         per_employee_price_lkr: input.perEmployeePriceLkr,
@@ -161,11 +243,7 @@ export async function saveSaasBillingSettings(input: {
 
     if (error) throw new Error(error.message);
 
-    revalidatePath('/forge');
-    revalidatePath('/forge/billing');
-    revalidatePath('/fm/pearzen-payment');
-    revalidatePath('/executive', 'layout');
-    revalidatePath('/', 'layout');
+    revalidateSaasBillingPaths();
 
     return { success: true as const };
   } catch (error: unknown) {
@@ -174,14 +252,16 @@ export async function saveSaasBillingSettings(input: {
   }
 }
 
-export async function generateSaasInvoice() {
+export async function generateSaasInvoice(companyId?: string | null) {
   try {
+    await assertForgeOperator();
+    const scopedCompanyId = requireForgeBillingCompanyId(companyId);
     const supabase = createSupabaseServiceClient();
 
     const { data: settingsRow, error: settingsError } = await supabase
       .from('saas_billing_settings')
       .select('*')
-      .eq('company_id', SAAS_COMPANY_ID)
+      .eq('company_id', scopedCompanyId)
       .maybeSingle();
 
     if (settingsError) throw new Error(settingsError.message);
@@ -189,14 +269,14 @@ export async function generateSaasInvoice() {
     const settings = settingsRow
       ? mapSettings(settingsRow as Record<string, unknown>)
       : {
-          companyId: SAAS_COMPANY_ID,
+          companyId: scopedCompanyId,
           databaseCostLkr: 0,
           frontendCostLkr: 0,
           perEmployeePriceLkr: 0,
           billingStartDate: new Date().toISOString().slice(0, 10),
         };
 
-    const employeeCount = await countMnrEmployees(SAAS_COMPANY_ID);
+    const employeeCount = await countMnrEmployees(scopedCompanyId);
     const employeeCostLkr = employeeCount * settings.perEmployeePriceLkr;
     const totalLkr = settings.databaseCostLkr + settings.frontendCostLkr + employeeCostLkr;
     const dueDate = currentMonthlyDueDate(settings.billingStartDate);
@@ -204,7 +284,7 @@ export async function generateSaasInvoice() {
 
     const { error } = await supabase.from('saas_platform_invoices').upsert(
       {
-        company_id: SAAS_COMPANY_ID,
+        company_id: scopedCompanyId,
         invoice_month: invoiceMonth,
         due_date: dueDate,
         database_cost_lkr: settings.databaseCostLkr,
@@ -220,10 +300,8 @@ export async function generateSaasInvoice() {
 
     if (error) throw new Error(error.message);
 
-    revalidatePath('/forge/billing');
-    revalidatePath('/fm/pearzen-payment');
-    revalidatePath('/executive', 'layout');
-    revalidatePath('/', 'layout');
+    await syncTenantSubscriptionFromBilling(scopedCompanyId);
+    revalidateSaasBillingPaths();
 
     return { success: true as const };
   } catch (error: unknown) {
@@ -232,21 +310,22 @@ export async function generateSaasInvoice() {
   }
 }
 
-export async function markSaasInvoicePaid(invoiceId: string) {
+export async function markSaasInvoicePaid(invoiceId: string, companyId?: string | null) {
   try {
+    await assertForgeOperator();
+    const scopedCompanyId = requireForgeBillingCompanyId(companyId);
     const supabase = createSupabaseServiceClient();
     const { error } = await supabase
       .from('saas_platform_invoices')
       .update({ status: 'paid', paid_at: new Date().toISOString() })
       .eq('id', invoiceId)
-      .eq('company_id', SAAS_COMPANY_ID);
+      .eq('company_id', scopedCompanyId);
 
     if (error) throw new Error(error.message);
 
-    revalidatePath('/forge/billing');
-    revalidatePath('/fm/pearzen-payment');
-    revalidatePath('/executive', 'layout');
-    revalidatePath('/', 'layout');
+    await recordPartnerPayoutForSaasInvoice(invoiceId);
+    await syncTenantSubscriptionFromBilling(scopedCompanyId);
+    revalidateSaasBillingPaths();
 
     return { success: true as const };
   } catch (error: unknown) {
@@ -257,12 +336,13 @@ export async function markSaasInvoicePaid(invoiceId: string) {
 
 export async function fetchPendingSaasPayment() {
   try {
+    const scopedCompanyId = await resolveFmCompanyId();
     const supabase = createSupabaseServiceClient();
 
     const { data, error } = await supabase
       .from('saas_platform_invoices')
       .select('*')
-      .eq('company_id', SAAS_COMPANY_ID)
+      .eq('company_id', scopedCompanyId)
       .eq('status', 'unpaid')
       .order('due_date', { ascending: true });
 
@@ -297,12 +377,13 @@ export async function uploadSaasPaymentReceipt(formData: FormData) {
       throw new Error('Upload a JPG, PNG, WebP, GIF, or PDF receipt');
     }
 
+    const scopedCompanyId = await resolveFmCompanyId();
     const supabase = createSupabaseServiceClient();
     const { data: invoice, error: invoiceError } = await supabase
       .from('saas_platform_invoices')
       .select('id, company_id')
       .eq('id', invoiceId)
-      .eq('company_id', SAAS_COMPANY_ID)
+      .eq('company_id', scopedCompanyId)
       .maybeSingle();
 
     if (invoiceError) throw new Error(invoiceError.message);
@@ -314,7 +395,7 @@ export async function uploadSaasPaymentReceipt(formData: FormData) {
     } = await session.auth.getUser();
 
     const ext = receiptExtension(file.name, mime);
-    const storagePath = `${SAAS_COMPANY_ID}/${invoiceId}/receipt.${ext}`;
+    const storagePath = `${scopedCompanyId}/${invoiceId}/receipt.${ext}`;
     const buffer = Buffer.from(await file.arrayBuffer());
 
     const { error: uploadError } = await supabase.storage
@@ -335,7 +416,7 @@ export async function uploadSaasPaymentReceipt(formData: FormData) {
         receipt_uploaded_by: user?.email ?? null,
       })
       .eq('id', invoiceId)
-      .eq('company_id', SAAS_COMPANY_ID);
+      .eq('company_id', scopedCompanyId);
 
     if (updateError) throw new Error(updateError.message);
 
@@ -351,11 +432,12 @@ export async function uploadSaasPaymentReceipt(formData: FormData) {
 
 export async function fetchFmSaasInvoices() {
   try {
+    const scopedCompanyId = await resolveFmCompanyId();
     const supabase = createSupabaseServiceClient();
     const { data, error } = await supabase
       .from('saas_platform_invoices')
       .select('*')
-      .eq('company_id', SAAS_COMPANY_ID)
+      .eq('company_id', scopedCompanyId)
       .order('due_date', { ascending: false });
 
     if (error && error.code !== '42P01') throw new Error(error.message);

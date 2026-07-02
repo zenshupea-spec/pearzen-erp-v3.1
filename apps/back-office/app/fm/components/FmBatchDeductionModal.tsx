@@ -13,7 +13,6 @@ import {
   deductionLedgerTotal,
   deductionReportMeta,
   FM_BATCH_PERIOD,
-  getDeductionLedger,
   type BatchDeductionKind,
   type BatchDeductionRow,
 } from '../lib/batch-deductions-ledger';
@@ -79,7 +78,7 @@ export default function FmBatchDeductionModal({
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState<DeductionSortKey>('name');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
-  const ledger = rows ?? getDeductionLedger(kind);
+  const ledger = rows ?? [];
   const meta = deductionReportMeta(kind);
   const styles = accentStyles[meta.accent];
 
@@ -254,7 +253,9 @@ export default function FmBatchDeductionModal({
                       colSpan={tableColumns.length}
                       className="px-4 py-10 text-center text-sm font-semibold text-slate-500"
                     >
-                      No employees match your search.
+                      {ledger.length === 0
+                        ? 'No deductions recorded for this payroll month.'
+                        : 'No employees match your search.'}
                     </td>
                   </tr>
                 )}

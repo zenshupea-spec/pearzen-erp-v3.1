@@ -10,14 +10,15 @@ import {
 import {
   loadSettingEnvelope,
   MD_SETTINGS_ENVELOPE_KEYS,
-  mergeSettingEnvelope,
 } from '../../../../../packages/supabase/md-settings-envelope';
 import {
   getExecutiveMdSettingsContext,
   getMdSettingsDb,
   resolveExecutiveCompanyId,
+  assertExecutiveMdSettingsWrite,
 } from './lib/executive-md-settings-db';
-import { writeSettingsAuditLog } from './settings-audit';
+import { revalidateMdSettingsConsumers } from './lib/revalidate-md-settings-consumers';
+import { persistMdSettingEnvelopeWithAudit } from './settings-audit';
 
 export async function getInternalWorkLocations(): Promise<InternalWorkLocationsSettings> {
   const companyId = await resolveExecutiveCompanyId();
@@ -27,20 +28,25 @@ export async function getInternalWorkLocations(): Promise<InternalWorkLocationsS
 }
 
 export async function saveInternalWorkLocations(settings: InternalWorkLocationsSettings) {
-  const { session, db, companyId } = await getExecutiveMdSettingsContext();
+  const vaultGate = await assertExecutiveMdSettingsWrite();
+  if (!vaultGate.ok) return { success: false, error: vaultGate.error };
+
+  const { db, companyId } = await getExecutiveMdSettingsContext();
   const sanitized = sanitizeInternalWorkLocations(settings);
 
-  const res = await mergeSettingEnvelope(db, companyId, {
-    [MD_SETTINGS_ENVELOPE_KEYS.internalWorkLocations]: sanitized,
-  });
+  const res = await persistMdSettingEnvelopeWithAudit(
+    db,
+    companyId,
+    { [MD_SETTINGS_ENVELOPE_KEYS.internalWorkLocations]: sanitized },
+    'UPDATE_INTERNAL_WORK_LOCATIONS',
+    {
+      headOfficeCount: sanitized.headOffice.length,
+      cafeCount: sanitized.cafe.length,
+    },
+  );
   if (!res.success) return res;
 
-  await writeSettingsAuditLog(session, companyId, 'UPDATE_INTERNAL_WORK_LOCATIONS', {
-    headOfficeCount: sanitized.headOffice.length,
-    cafeCount: sanitized.cafe.length,
-  });
-
-  revalidatePath('/executive/settings');
+  revalidateMdSettingsConsumers();
   revalidatePath('/hr/mnr');
   revalidatePath('/hr/cafe-roster');
   revalidatePath('/cafe-front');

@@ -1,6 +1,7 @@
 'use server';
 
 import { createSupabaseServiceClient } from '../../../../../packages/supabase/service';
+import { countActiveSectorManagersForCompany } from '../../../lib/sector-manager-roster';
 
 export type SmVisitStreamRow = {
   id: string;
@@ -64,17 +65,13 @@ export async function getSmProxyDashboard(): Promise<SmProxyDashboard> {
 
   try {
     const [
-      { count: activeSmCount },
+      activeSmCount,
       { count: pendingRosters },
       { count: pendingVisitVerifications },
       { data: visits },
       { data: rosters },
     ] = await Promise.all([
-      service
-        .from('employees')
-        .select('id', { count: 'exact', head: true })
-        .eq('group', 'SECTOR_MANAGER')
-        .eq('status', 'ACTIVE'),
+      countActiveSectorManagersForCompany(service),
       service
         .from('sm_attendance_submissions')
         .select('id', { count: 'exact', head: true })

@@ -389,7 +389,8 @@ export default function FmAdvanceGroupRow({
               <span className="font-black text-amber-800">
                 {lkr(settings.otherEmployeeMaxAdvanceLkr)}
               </span>
-              .
+              . Advances are paid early; they are recovered on month-end payroll and are not
+              subject to the voluntary deduction cap.
             </p>
           )}
 

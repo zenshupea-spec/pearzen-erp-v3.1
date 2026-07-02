@@ -168,8 +168,9 @@ export default function SiteMealSupplierWorkbench({
     <div className="space-y-4">
       {isDemo && (
         <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
-          Preview sites from the FM ledger. Add meal suppliers on the Meal suppliers tab, then
-          assign here once migrations are applied.
+          Site assignment tables are not migrated. Run{' '}
+          <code className="text-xs">npm run db:apply-deductions-admin</code>, add meal suppliers,
+          then assign sites here.
         </p>
       )}
 

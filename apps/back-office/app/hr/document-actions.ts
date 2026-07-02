@@ -10,13 +10,14 @@ import {
   createSupabaseServerClient,
   createSupabaseServiceClient,
 } from '../../../../packages/supabase/server';
+import { assertMnrEditAllowed } from '../../lib/executive-rank-guard';
 import {
   assertHrPortalEditor,
   fetchBackOfficeUserProfile,
 } from '../../lib/hr-portal-access-server';
 import { uploadCompressedEmployeeHrDocument } from '../../lib/hr-document-upload';
 
-async function requireHrEditor() {
+async function requireHrEditorForEmployee(employeeId: string) {
   const supabase = await createSupabaseServerClient();
   const {
     data: { user },
@@ -29,6 +30,22 @@ async function requireHrEditor() {
 
   const profile = await fetchBackOfficeUserProfile(supabase, user);
   assertHrPortalEditor(profile.role);
+
+  const service = createSupabaseServiceClient();
+  const { data: employee, error: employeeError } = await service
+    .from('employees')
+    .select('rank')
+    .eq('id', employeeId)
+    .maybeSingle();
+
+  if (employeeError || !employee) {
+    throw new Error('Employee not found.');
+  }
+
+  assertMnrEditAllowed({
+    editorRole: profile.role,
+    employeeRank: typeof employee.rank === 'string' ? employee.rank : null,
+  });
 
   return supabase;
 }
@@ -54,7 +71,7 @@ export async function uploadEmployeeHrDocument(
   }
 
   try {
-    await requireHrEditor();
+    await requireHrEditorForEmployee(employeeId);
     const service = createSupabaseServiceClient();
     const result = await uploadCompressedEmployeeHrDocument(
       service,

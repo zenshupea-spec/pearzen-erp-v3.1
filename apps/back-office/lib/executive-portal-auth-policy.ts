@@ -3,7 +3,7 @@ import {
   HO_PORTAL_PASSWORD_MIN_LENGTH,
   validateHeadOfficePortalPassword,
 } from './head-office-portal-password';
-import { HQ_STAFF_RANKS } from './portal-isolation';
+import { HQ_STAFF_RANKS, staffPortalIdForRole } from './portal-isolation';
 import { isExecutiveRank, normalizePortalRole } from './portal-role-utils';
 
 /** MD/OD OTP validity — 5 minutes (see MD_PORTAL_IMPLEMENTATION_STEPS.md). */
@@ -30,6 +30,29 @@ export function isHqStaffPortalRank(rank: string | null | undefined): boolean {
   const normalized = normalizePortalRole(rank);
   if (!normalized) return false;
   return (HQ_STAFF_RANKS as readonly string[]).includes(normalized);
+}
+
+/**
+ * Work-email OTP on provision / HR reset — MD, OD, and HR only.
+ * FM, EA, OM, TM, and RBAC-gated HQ staff receive OTP on the HR desk screen.
+ */
+export function receivesWorkEmailOtpOnProvision(
+  rank: string | null | undefined,
+): boolean {
+  const normalized = normalizePortalRole(rank);
+  if (!normalized) return false;
+  if (isExecutivePortalRank(normalized)) return true;
+  return normalized === 'HR';
+}
+
+export function usesHrDeskOtpOnProvision(
+  rank: string | null | undefined,
+): boolean {
+  const normalized = normalizePortalRole(rank);
+  if (!normalized) return false;
+  if (isExecutivePortalRank(normalized)) return false;
+  if (normalized === 'HR') return false;
+  return staffPortalIdForRole(normalized) !== null;
 }
 
 export function usesHqPortalPasswordPolicy(
@@ -102,11 +125,8 @@ export function passwordMinLengthForRank(
   rank: string | null | undefined,
   options?: PortalPasswordPolicyOptions,
 ): number {
-  if (isExecutivePortalRank(rank)) {
+  if (staffPortalIdForRole(rank, options)) {
     return EXECUTIVE_PORTAL_PASSWORD_MIN_LENGTH;
-  }
-  if (usesHqPortalPasswordPolicy(rank, options)) {
-    return HQ_PORTAL_PASSWORD_MIN_LENGTH;
   }
   return HO_PORTAL_PASSWORD_MIN_LENGTH;
 }

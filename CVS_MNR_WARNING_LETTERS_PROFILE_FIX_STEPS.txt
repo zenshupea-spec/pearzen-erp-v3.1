@@ -1,0 +1,171 @@
+================================================================================
+CVS — MASTER HUB PROFILE MENU · BULK EDITOR MEMOS · WARNING LETTERS FIX + DEPLOY
+================================================================================
+STATUS: **IN PROGRESS** (8 / 9 steps done)
+
+Workflow:
+  · Say **go** in chat → agent executes **one step** (step 1, then step 2, …).
+  · Mark [x] when done; log blockers in ERROR LOG at bottom.
+  · Do **not** batch multiple steps unless operator explicitly asks.
+  · After each step, report: **N steps left**.
+
+Target tenant (dev):
+  Classic Venture Security · slug cvs
+  company_id: 29fbb2ff-6aa6-46c4-8b2d-d19eebb2874e
+
+Operator report (2026-07-02):
+  1. Master Hub top-right profile control (V S PERERA / VP avatar) — clicking it
+     shows **"This page couldn't load"** instead of opening the profile menu.
+  2. Bulk roster web editor — employee sheets need a **memos** row/column so HR
+     can write internal notes per employee (same data visible in MNR).
+  3. MNR EmployeeDrawer **Letters** tab should be renamed **Warning letters**
+     (tab label, section heading, dashboard reminder copy).
+  4. After a warning-letter sequence is **COMPLETED**, HR must be able to
+     **start sending again** (new sequence with a fresh start date).
+  5. Warning letter **upload does not save properly** — uploaded scans/PDFs do not
+     persist or "View uploaded document" does not work after mark sent.
+  6. **Deploy** fixes to production (remote Supabase migration + tenant Vercel).
+
+Screenshots (operator):
+  · Master Hub — profile top-right
+  · Bulk Roster Editor — Ranks tab (memos belong on Head Office / Café / Guards tabs)
+  · MNR EmployeeDrawer — Letters tab for CHATHU (sequence COMPLETED, no restart)
+
+================================================================================
+ROOT CAUSE SUMMARY (code review 2026-07-02)
+================================================================================
+
+  A. PROFILE MENU CRASH
+     · `StaffProfileMenu.tsx` — `MenuItems` references `changePasswordHref` at
+       line 145 but that variable is only defined later inside the parent
+       component (line ~292). TypeScript: TS2304 Cannot find name
+       'changePasswordHref'. Opening the dropdown throws a client error →
+       "This page couldn't load" in the browser.
+     · Entry: `/dashboard` → `MasterHubView` → `HqPortalSessionBar` →
+       `PortalSessionControls` → `StaffProfileMenu`.
+
+  B. BULK EDITOR MEMOS — NOT WIRED
+     · No `hr_memo` / `memos` column on `employees` or in bulk editor spec.
+     · `bulk-roster-web-editor-spec.ts` workforce columns stop at debts;
+       `bulk-data-workbook.ts` has `debt_notes` but no HR memo field.
+     · Need: migration + column in HO / Café / Guards tabs + import/export +
+       MNR drawer read/write.
+
+  C. "LETTERS" → "WARNING LETTERS" — LABEL ONLY
+     · `page.jsx` TABS constant: `{ key: "offboarding", label: "Letters" }`.
+     · `OffboardingLettersPanel.tsx` section title "Letters".
+     · Letter reminder card copy on MNR dashboard references "Letters tab".
+
+  D. CANNOT RESTART COMPLETED SEQUENCE — UI GAP
+     · `OffboardingLettersPanel.tsx`: `showStart = !track || (!isActive && !isCompleted)`
+       hides start UI when status is COMPLETED.
+     · Server `startOffboardingLetterTrack` already allows a new INSERT when no
+       ACTIVE track exists (COMPLETED is fine) — UI must expose "Start new
+       warning letter sequence" with date picker after completion.
+
+  E. LETTER UPLOAD NOT PERSISTING — INVESTIGATE
+     · Flow: `OffboardingLettersPanel` → `markOffboardingLetterSent` →
+       `uploadOffboardingLetterDocument` → storage bucket `employee-hr-documents`
+       path `{companyId}/offboarding-letters/{employeeId}/letter-{n}.{ext}`.
+     · Stores `getPublicUrl` in `letter_N_doc_url`. If bucket is private, link
+       breaks; if upload fails silently, doc_url stays null.
+     · Also verify: mark sent without file still saves sent_at; re-upload on
+       already-sent letter updates doc_url; service role upload + RLS on tracks.
+
+KEY FILES
+---------
+apps/back-office/components/portal/StaffProfileMenu.tsx
+apps/back-office/components/hq/MasterHubView.tsx
+apps/back-office/components/hq/HqPortalSessionBar.tsx
+apps/back-office/lib/bulk-roster-web-editor-spec.ts
+apps/back-office/lib/bulk-data-workbook.ts
+apps/back-office/lib/bulk-data-import.ts
+apps/back-office/app/executive/settings/bulk-editor-actions.ts
+apps/back-office/app/hr/mnr/page.jsx
+apps/back-office/app/hr/mnr/OffboardingLettersPanel.tsx
+apps/back-office/app/hr/mnr/offboarding-letter-actions.ts
+apps/back-office/lib/offboarding-letter-upload.ts
+packages/supabase/migrations/ (new hr_memo column)
+
+================================================================================
+STEPS
+================================================================================
+
+[x] STEP 1 — Fix Master Hub profile menu crash (top-right "V S PERERA")
+    · Pass `changePasswordHref` into `MenuItems` (or compute inside MenuItems
+      from `usePathname()`).
+    · Smoke: open http://127.0.0.1:3002/dashboard → click profile → menu opens
+      with Lock screen / Change password / Sign out (no crash).
+    · Run: `npx tsc --noEmit` in apps/back-office — no StaffProfileMenu error.
+
+[x] STEP 2 — Supabase migration: employees.hr_memo text column
+    · Add `hr_memo text` (nullable) on `employees` with comment
+      "HR internal memo — editable in MNR and bulk roster editor".
+    · Apply on remote Supabase for CVS tenant before step 4 save smoke test.
+
+[x] STEP 3 — Bulk editor: hr_memo column on employee workforce tabs
+    · Add `hr_memo` to migration workbook spec (new column group "memo" or under
+      employment) and to WEB_EDITOR_HEAD_OFFICE / CAFE / GUARD column lists.
+    · Wire snapshot load (`bulk-editor-actions.ts`), grid display, validate/save
+      (`bulk-data-import.ts` employee mapping).
+    · Smoke: open bulk editor → Guards tab → hr_memo column visible and editable.
+
+[x] STEP 4 — MNR: show and save hr_memo on employee drawer
+    · Add memo textarea on Employment tab (or dedicated row under employee
+      identity) — view + edit when canEdit.
+    · Persist via `mnrActions.js` updateEmployee (or existing save path).
+    · Smoke: edit memo in MNR → save → reload drawer → value persists.
+
+[x] STEP 5 — Rename "Letters" → "Warning letters" across MNR UI
+    · EmployeeDrawer tab label, OffboardingLettersPanel heading, meta ticks,
+      dashboard letter-reminder card/filter copy.
+    · Keep route keys (`offboarding`) unchanged — labels only.
+
+[x] STEP 6 — Allow restarting warning letter sequence after COMPLETED
+    · When track.status === 'COMPLETED', show "Start new warning letter sequence"
+      with start-date picker + confirm (canEdit only).
+    · Calls existing `startOffboardingLetterTrack` (creates new ACTIVE row).
+    · Smoke: complete sequence → restart → new day-0/+3/+7 schedule appears.
+
+[x] STEP 7 — Fix warning letter upload / save persistence
+    · Reproduce: mark letter sent with PDF/image → reload drawer → doc link works.
+    · Fix root cause (likely signed URL for private bucket, upload error surfacing,
+      or doc_url not written on re-upload).
+    · Ensure upload errors show in panel; sent_at + doc_url both persist.
+
+[x] STEP 8 — Local verification pass
+    · Profile menu on /dashboard and /hr/mnr.
+    · Bulk editor hr_memo round-trip.
+    · Warning letters: send, upload, view doc, complete, restart.
+    · Run targeted tests if present (offboarding-letters schedule tests, bulk
+      editor spec tests).
+
+Verified 2026-07-02:
+  · Unit tests: 32/32 pass (offboarding upload/schedule + bulk editor spec/snapshot/export)
+  · StaffProfileMenu TS2304 fixed (changePasswordHref prop)
+  · Dev routes respond: /dashboard, /hr/mnr, /bulk-editor (HTTP 307 → auth)
+  · Remote Supabase: employees.hr_memo column present
+  · scripts/verify-offboarding-letter-upload-smoke.mjs — PASS
+  · scripts/verify-offboarding-letters-e2e-smoke.mjs — PASS (send+doc, complete, reminders)
+  · Operator spot-check still recommended: click profile menu in browser, bulk editor
+    hr_memo save, warning letter PDF upload in MNR drawer UI
+
+[ ] STEP 9 — Deploy to production
+    · Push branch / merge to deploy branch per repo convention.
+    · Apply step 2 migration on remote Supabase (MCP or CLI).
+    · Confirm tenant Vercel project `pearzen-erp-v3-1-back-office` deploy green.
+    · Post-deploy smoke on production CVS hub + MNR warning letters.
+
+================================================================================
+ERROR LOG
+================================================================================
+(none yet)
+
+================================================================================
+STEPS REMAINING QUICK REF
+================================================================================
+Total: 9
+Done:  8
+Left:  1
+
+Say **go** to start step 1.

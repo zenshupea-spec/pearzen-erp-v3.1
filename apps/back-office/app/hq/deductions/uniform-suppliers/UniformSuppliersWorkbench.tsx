@@ -330,13 +330,29 @@ function StockItemForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    setSupplierId((current) => {
+      if (initial?.supplierId && activeSuppliers.some((s) => s.id === initial.supplierId)) {
+        return initial.supplierId;
+      }
+      if (current && activeSuppliers.some((s) => s.id === current)) {
+        return current;
+      }
+      return activeSuppliers[0]?.id ?? '';
+    });
+  }, [suppliers, initial?.supplierId]);
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!itemName.trim()) {
       setError('Item name is required.');
       return;
     }
-    if (!supplierId) {
+    const resolvedSupplierId =
+      supplierId && activeSuppliers.some((s) => s.id === supplierId)
+        ? supplierId
+        : activeSuppliers[0]?.id ?? '';
+    if (!resolvedSupplierId) {
       setError('Select a supplier first.');
       return;
     }
@@ -345,7 +361,7 @@ function StockItemForm({
     const res = await upsertUniformStockItem({
       id: initial?.id,
       itemName,
-      uniformSupplierId: supplierId,
+      uniformSupplierId: resolvedSupplierId,
       sku,
       quantityInStock: parseInt(qty, 10) || 0,
       unitCostLkr: unitCost ? parseFloat(unitCost) : undefined,
@@ -509,9 +525,9 @@ export default function UniformSuppliersWorkbench({
 
       {overview.isDemo && (
         <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
-          Preview data from the uniform catalog. Run{' '}
-          <code className="text-xs">20260604260000_uniform_suppliers_stock.sql</code> to persist
-          suppliers and stock.
+          Uniform stock tables are not migrated. Run{' '}
+          <code className="text-xs">npm run db:apply-deductions-admin</code> to manage warehouse
+          stock and suppliers.
         </p>
       )}
 

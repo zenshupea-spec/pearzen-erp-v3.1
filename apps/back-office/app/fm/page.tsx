@@ -2,10 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState, useTransition } from 'react';
 import FmSubnav from './components/FmSubnav';
-import FmCommandShellLayout from './components/FmCommandShellLayout';
-import { ExecutiveGlassCard } from '../../components/executive/ExecutiveVaultShell';
-import { CVS_BRAND_CLASSES } from '../../lib/cvs-brand-tokens';
-import { useFmHolidayCalendarIncomplete } from './use-fm-holiday-calendar-incomplete';
 import FmGranularDeductionsLedger from './components/FmGranularDeductionsLedger';
 import FmDeductionsModal from './components/FmDeductionsModal';
 import FmPayrollAllowancesPanel from './components/FmPayrollAllowancesPanel';
@@ -14,17 +10,15 @@ import FmPortfolioReportModal from './components/FmPortfolioReportModal';
 import ShiftAdjustmentsPanel from './components/ShiftAdjustmentsPanel';
 import type { FmPortfolioReportKind } from './lib/fm-portfolio-report-builders';
 import {
+  generateBankTransferTxt,
+  generateOtherBankTransferTxt,
+  triggerBankTxtDownload,
   type PayrollWorkflowStatus,
 } from '../../lib/payroll-batch-workflow';
 import { type PayrollGroupId, type PayrollGroupWorkflow } from '../../lib/payroll-run-types';
-import {
-  triggerPayrollBankDownload,
-  type PayrollBankExportCohort,
-} from '../../lib/payroll-bank-export';
 import { generateMonthEndPayroll } from './actions';
 import {
   getPayrollBatchStatus,
-  downloadPayrollBankFile,
   markPayrollGroupPaid,
   revertPayrollGroupToDraft,
   submitPayrollGroupForReview,
@@ -37,14 +31,12 @@ import {
 } from './lib/shift-adjustments';
 import {
   FM_LIVE_PAYROLL_PERIOD,
-  getFmLivePayrollPeriod,
   formatPayrollPeriodLabel,
   historicalPortfolioScale,
   isLivePayrollPeriod,
 } from './lib/payroll-period';
 import { getDeductionMonthLockStatus } from '../hq/deductions/actions';
 import { getMdEngineConstants } from '../executive/settings/engine-constants-actions';
-import { CVS_GUARD_OPS_ENABLED } from '../../lib/cvs-workforce-phase';
 import { ensurePinnedPayrollSites } from './lib/pinned-payroll-sites';
 import {
   getFmPortfolio,
@@ -55,6 +47,8 @@ import {
   payrollMonthFromFmPeriod,
 } from '../../lib/deduction-month-lock-storage';
 import {
+  FM_SM_COMPENSATION,
+  computeSmGrossLkr,
   smPayModeLabel,
   type SmPayMode,
 } from './lib/sm-pay-settings';
@@ -72,19 +66,24 @@ import {
   type VariablePayrollEarnings,
 } from './lib/payroll-earnings-display';
 import {
+  GUARD_COHORT_META,
+  GUARD_COHORT_ORDER,
+  GUARD_COHORT_SITE_IDS,
   bankExportLabel,
+  classifyGuardCohort,
+  hasBankOnFile,
   hasPinnedPayrollWorkflow,
   isCashPayrollGroup,
+  isCvsSectionPayrollGroup,
   isGuardPayrollCohort,
   isStaffNoBankCohort,
+  STAFF_NO_BANK_META,
+  STAFF_NO_BANK_SITE_IDS,
+  staffNoBankCohortForKind,
   usesCohortBankDownload,
   type GuardPayrollCohort,
+  type StaffPayrollKind,
 } from './lib/guard-payroll-cohorts';
-import {
-  ADVANCE_PAYROLL_SECTIONS,
-  payrollGroupTheme,
-  type AdvancePayrollSection,
-} from './lib/fm-payroll-group-theme';
 import { FmCashPaymentModal, FmCashPaymentTrigger } from './components/FmCashPaymentModal';
 import type { PayrollPeriod } from './lib/payroll-period';
 import {
@@ -207,7 +206,7 @@ type Site = {
   employees: Employee[];
 };
 
-// ─── Portfolio seed helpers ─────────────────────────────────────────────────
+// ─── Mock Data ────────────────────────────────────────────────────────────────
 
 function employeePayrollContext(employee: Employee) {
   const corporateGroup =
@@ -224,6 +223,937 @@ function employeePayrollContext(employee: Employee) {
   return { corporateGroup, earningsKind };
 }
 
+function smEarningsSeed(
+  patrolSites: string[],
+  visitsCompleted: number,
+  visitsTarget: number,
+  deductions: DeductionEntry[] = [],
+  totalDeductions = 0,
+): Pick<Employee, 'shiftsAtSite' | 'totalGross' | 'totalDeductions' | 'netTakeHome' | 'deductions' | 'earnings'> {
+  const { visitPayLkr, fixedBasicLkr, totalGrossLkr } = computeSmGrossLkr(visitsCompleted);
+  return {
+    shiftsAtSite: 0,
+    totalGross: totalGrossLkr,
+    totalDeductions,
+    netTakeHome: totalGrossLkr - totalDeductions,
+    deductions,
+    earnings: {
+      crossSiteDistribution: patrolSites.map((site) => ({ site, shifts: 0 })),
+      smPayData: {
+        payMode: FM_SM_COMPENSATION.payMode,
+        visitsCompleted,
+        visitsTarget,
+        perVisitRateLkr: FM_SM_COMPENSATION.perVisitRateLkr,
+        visitPayLkr,
+        fixedBasicLkr,
+      },
+      dayTypeBreakdown: minimalDayTypes(0, 0),
+    },
+  };
+}
+
+function minimalDayTypes(normalShifts: number, normalLkr: number): DayTypeBreakdown[] {
+  return [
+    { type: 'Normal Days', totalShifts: normalShifts, rateMultiplier: '1.0x', lkrEarned: normalLkr, dates: [] },
+    { type: 'Sundays', totalShifts: 0, rateMultiplier: '1.5x', lkrEarned: 0, dates: [] },
+    { type: 'Poya Days', totalShifts: 0, rateMultiplier: '2.0x', lkrEarned: 0, dates: [] },
+    { type: 'Public Holidays', totalShifts: 0, rateMultiplier: '2.0x', lkrEarned: 0, dates: [] },
+    { type: 'Saturdays', totalShifts: 0, rateMultiplier: '1.25x', lkrEarned: 0, dates: [] },
+  ];
+}
+
+const MOCK_CVS_SM_SITE_SEED: SiteSeed = {
+  id: 'group-cvs-sm',
+  name: 'SM CVS',
+  location: `SM group · sector managers · ${smPayModeLabel(FM_SM_COMPENSATION.payMode)} (MD settings)`,
+  clientBilled: 588_000,
+  payrollCost: 470_000,
+  payrollGroup: 'sm',
+  displayEmployeeCount: 6,
+  employees: [
+    {
+      id: 'sm-001',
+      empNumber: 'EMP-SM-001',
+      name: 'Dissanayake K.P.',
+      rank: 'Sector Manager',
+      corporateGroup: 'SECTOR_MANAGER',
+      ...smEarningsSeed(
+        [
+          'Lanka Hospitals Corporation',
+          'Sri Lanka Telecom HQ',
+          'John Keells Holdings Tower',
+          'Dialog Axiata HQ',
+        ],
+        56,
+        60,
+      ),
+    },
+    {
+      id: 'sm-002',
+      empNumber: 'EMP-SM-002',
+      name: 'Perera R.S.',
+      rank: 'Sector Manager',
+      ...smEarningsSeed(
+        ['Sri Lanka Telecom HQ', 'Bank of Ceylon Head Office', 'Dialog Axiata HQ'],
+        48,
+        52,
+      ),
+    },
+    {
+      id: 'sm-003',
+      empNumber: 'EMP-SM-003',
+      name: 'Fernando L.M.',
+      rank: 'Sector Manager',
+      ...smEarningsSeed(['John Keells Holdings Tower', 'Hemas Holdings'], 22, 28),
+    },
+    {
+      id: 'sm-004',
+      empNumber: 'EMP-SM-004',
+      name: 'Jayasuriya N.T.',
+      rank: 'Sector Manager',
+      ...smEarningsSeed(
+        ['Bank of Ceylon Head Office', 'Dialog Axiata HQ', 'Hemas Holdings'],
+        44,
+        48,
+        [
+          {
+            type: 'Advance',
+            totalLiability: 20_000,
+            installmentCurrent: 1,
+            installmentTotal: 4,
+            thisMonthAmount: 5_000,
+          },
+        ],
+        5_000,
+      ),
+    },
+    {
+      id: 'sm-005',
+      empNumber: 'EMP-SM-005',
+      name: 'Gunasekara C.B.',
+      rank: 'Sector Manager',
+      ...smEarningsSeed(['Hemas Holdings', 'Dialog Axiata HQ'], 18, 24),
+    },
+    {
+      id: 'sm-006',
+      empNumber: 'EMP-SM-006',
+      name: 'Bandara H.W.',
+      rank: 'Sector Manager',
+      ...smEarningsSeed(['Unassigned — bench'], 0, 0),
+    },
+  ],
+};
+
+/** Pinned above client sites — CVS (HO) · SM CVS · Café · guard bank cohorts. */
+const MOCK_PINNED_CORE_SITES_SEED: SiteSeed[] = [
+  {
+    id: 'group-cvs',
+    name: 'CVS',
+    location: 'Head office employees · all branches',
+    clientBilled: 2_650_000,
+    payrollCost: 2_180_000,
+    payrollGroup: 'ho',
+    displayEmployeeCount: 24,
+    employees: [
+      {
+      id: 'ho-001',
+      empNumber: 'HQ-0201',
+      name: 'Sanduni Wickramasinghe',
+      rank: 'Finance Executive',
+      corporateGroup: 'HEAD_OFFICE',
+      shiftsAtSite: 0,
+        totalGross: 118_000,
+        totalDeductions: 4_200,
+        netTakeHome: 113_800,
+        deductions: [
+          {
+            type: 'Advance',
+            totalLiability: 25_000,
+            installmentCurrent: 1,
+            installmentTotal: 1,
+            thisMonthAmount: 4_200,
+          },
+        ],
+        earnings: {
+          crossSiteDistribution: [{ site: 'CVS', shifts: 0 }],
+          hoFixedData: { mnrBaseSalaryLkr: 118_000 },
+          dayTypeBreakdown: minimalDayTypes(0, 0),
+        },
+      },
+      {
+        id: 'ho-002',
+        empNumber: 'HQ-0214',
+        name: 'Kasun Mendis',
+        rank: 'HR Manager',
+        shiftsAtSite: 0,
+        totalGross: 142_000,
+        totalDeductions: 0,
+        netTakeHome: 142_000,
+        deductions: [],
+        earnings: {
+          crossSiteDistribution: [{ site: 'CVS', shifts: 0 }],
+          hoFixedData: { mnrBaseSalaryLkr: 142_000 },
+          dayTypeBreakdown: minimalDayTypes(0, 0),
+        },
+      },
+      {
+        id: 'ho-003',
+        empNumber: 'HQ-0222',
+        name: 'Priya Rajapaksa',
+        rank: 'Payroll Officer',
+        shiftsAtSite: 0,
+        totalGross: 96_500,
+        totalDeductions: 1_800,
+        netTakeHome: 94_700,
+        deductions: [
+          {
+            type: 'Uniform',
+            totalLiability: 10_800,
+            installmentCurrent: 2,
+            installmentTotal: 6,
+            thisMonthAmount: 1_800,
+          },
+        ],
+        earnings: {
+          crossSiteDistribution: [{ site: 'CVS', shifts: 0 }],
+          hoFixedData: { mnrBaseSalaryLkr: 96_500 },
+          dayTypeBreakdown: minimalDayTypes(0, 0),
+        },
+      },
+      {
+        id: 'ho-004',
+        empNumber: 'HQ-0235',
+        name: 'Niroshan Bandara',
+        rank: 'Operations Coordinator',
+        shiftsAtSite: 0,
+        totalGross: 88_000,
+        totalDeductions: 0,
+        netTakeHome: 88_000,
+        deductions: [],
+        earnings: {
+          crossSiteDistribution: [{ site: 'CVS', shifts: 0 }],
+          hoFixedData: { mnrBaseSalaryLkr: 88_000 },
+          dayTypeBreakdown: minimalDayTypes(0, 0),
+        },
+      },
+    ],
+  },
+  MOCK_CVS_SM_SITE_SEED,
+  {
+    id: 'group-cafe',
+    name: 'Café',
+    location: 'Café operations · all branches',
+    clientBilled: 1_820_000,
+    payrollCost: 1_450_000,
+    payrollGroup: 'cafe',
+    displayEmployeeCount: 18,
+    employees: [
+      {
+      id: 'cafe-001',
+      empNumber: 'CT-0102',
+      name: 'Anuki Fernando',
+      rank: 'Barista',
+      corporateGroup: 'CAFE',
+      shiftsAtSite: 26,
+        totalGross: 82_400,
+        totalDeductions: 1_200,
+        netTakeHome: 81_200,
+        deductions: [],
+        earnings: {
+          crossSiteDistribution: [{ site: 'Café Tasha', shifts: 26 }],
+          cafeData: {
+            monthlyBasicLkr: 71_600,
+            daysWorked: 26,
+            totalOT: 12,
+            basePayLkr: 71_600,
+            otPayLkr: 10_800,
+          },
+          dayTypeBreakdown: minimalDayTypes(0, 0),
+        },
+      },
+      {
+        id: 'cafe-002',
+        empNumber: 'CT-0118',
+        name: 'Dilshan Perera',
+        rank: 'Counter Staff',
+        shiftsAtSite: 24,
+        totalGross: 76_800,
+        totalDeductions: 800,
+        netTakeHome: 76_000,
+        deductions: [],
+        earnings: {
+          crossSiteDistribution: [{ site: 'Café Tasha', shifts: 24 }],
+          cafeData: {
+            monthlyBasicLkr: 76_400,
+            daysWorked: 24,
+            totalOT: 8,
+            basePayLkr: 70_400,
+            otPayLkr: 6_400,
+          },
+          dayTypeBreakdown: minimalDayTypes(0, 0),
+        },
+      },
+      {
+        id: 'cafe-003',
+        empNumber: 'CT-0124',
+        name: 'Nethmi Jayawardena',
+        rank: 'Kitchen Staff',
+        shiftsAtSite: 22,
+        totalGross: 71_200,
+        totalDeductions: 0,
+        netTakeHome: 71_200,
+        deductions: [],
+        earnings: {
+          crossSiteDistribution: [{ site: 'Café Tasha', shifts: 22 }],
+          cafeData: {
+            monthlyBasicLkr: 78_500,
+            daysWorked: 22,
+            totalOT: 6,
+            basePayLkr: 66_400,
+            otPayLkr: 4_800,
+          },
+          dayTypeBreakdown: minimalDayTypes(0, 0),
+        },
+      },
+      {
+        id: 'cafe-004',
+        empNumber: 'CT-0131',
+        name: 'Ravindu Silva',
+        rank: 'Barista',
+        shiftsAtSite: 20,
+        totalGross: 68_500,
+        totalDeductions: 450,
+        netTakeHome: 68_050,
+        deductions: [
+          {
+            type: 'Meals',
+            totalLiability: 1_350,
+            installmentCurrent: 1,
+            installmentTotal: 1,
+            thisMonthAmount: 450,
+          },
+        ],
+        earnings: {
+          crossSiteDistribution: [{ site: 'Café Tasha', shifts: 20 }],
+          cafeData: {
+            monthlyBasicLkr: 85_150,
+            daysWorked: 20,
+            totalOT: 4,
+            basePayLkr: 65_500,
+            otPayLkr: 3_000,
+          },
+          dayTypeBreakdown: minimalDayTypes(0, 0),
+        },
+      },
+    ],
+  },
+];
+
+const MOCK_SITES_SEED: SiteSeed[] = [
+  {
+    id: 'site-001',
+    name: 'Lanka Hospitals Corporation',
+    location: 'Narahenpita, Colombo 05',
+    clientBilled: 1_108_500,
+    payrollCost: 780_400,
+    smCashAllocation: 45_000,
+    employees: [
+      {
+      id: 'emp-001',
+      empNumber: 'G-0041',
+      name: 'Chaminda Perera',
+      rank: 'Senior Security Officer',
+      corporateGroup: 'GUARD_FIELD',
+      shiftsAtSite: 26,
+        totalGross: 68_420,
+        totalDeductions: 9_250,
+        netTakeHome: 59_170,
+        deductions: [
+          {
+            type: 'Meals',
+            totalLiability: 18_000,
+            installmentCurrent: 2,
+            installmentTotal: 3,
+            thisMonthAmount: 6_000,
+          },
+          {
+            type: 'Advance',
+            totalLiability: 15_000,
+            installmentCurrent: 1,
+            installmentTotal: 3,
+            thisMonthAmount: 3_250,
+          },
+        ],
+        earnings: {
+          crossSiteDistribution: [
+            { site: 'Lanka Hospitals Corporation', shifts: 26 },
+            { site: 'BOC Head Office', shifts: 4 },
+          ],
+          dayTypeBreakdown: [
+            {
+              type: 'Normal Days',
+              totalShifts: 22,
+              rateMultiplier: '1.0x',
+              lkrEarned: 55_880,
+              dates: [
+                { date: '01 May 2026', shift: '06:00 – 18:00', premium: 0 },
+                { date: '02 May 2026', shift: '06:00 – 18:00', premium: 0 },
+                { date: '05 May 2026', shift: '06:00 – 18:00', premium: 0 },
+                { date: '06 May 2026', shift: '18:00 – 06:00', premium: 0 },
+                { date: '07 May 2026', shift: '06:00 – 18:00', premium: 0 },
+              ],
+            },
+            {
+              type: 'Sundays',
+              totalShifts: 2,
+              rateMultiplier: '1.5x',
+              lkrEarned: 4_200,
+              dates: [
+                { date: '04 May 2026', shift: '06:00 – 18:00', premium: 2_100 },
+                { date: '11 May 2026', shift: '06:00 – 18:00', premium: 2_100 },
+              ],
+            },
+            {
+              type: 'Poya Days',
+              totalShifts: 1,
+              rateMultiplier: '2.0x',
+              lkrEarned: 4_200,
+              dates: [{ date: '12 May 2026', shift: '06:00 – 18:00', premium: 4_200 }],
+            },
+            {
+              type: 'Public Holidays',
+              totalShifts: 1,
+              rateMultiplier: '2.0x',
+              lkrEarned: 4_140,
+              dates: [{ date: '22 May 2026', shift: '06:00 – 18:00', premium: 4_200 }],
+            },
+            { type: 'Saturdays', totalShifts: 0, rateMultiplier: '1.25x', lkrEarned: 0, dates: [] },
+          ],
+        },
+      },
+      {
+        id: 'emp-002',
+        empNumber: 'G-0088',
+        name: 'Priyantha Rajapaksa',
+        rank: 'Security Officer',
+        shiftsAtSite: 28,
+        totalGross: 58_800,
+        totalDeductions: 5_900,
+        netTakeHome: 52_900,
+        deductions: [
+          {
+            type: 'Meals',
+            totalLiability: 9_000,
+            installmentCurrent: 3,
+            installmentTotal: 3,
+            thisMonthAmount: 3_000,
+          },
+          {
+            type: 'Uniform',
+            totalLiability: 8_400,
+            installmentCurrent: 2,
+            installmentTotal: 6,
+            thisMonthAmount: 1_400,
+          },
+          {
+            type: 'Penalty',
+            totalLiability: 1_500,
+            installmentCurrent: 1,
+            installmentTotal: 1,
+            thisMonthAmount: 1_500,
+          },
+        ],
+        earnings: {
+          crossSiteDistribution: [{ site: 'Lanka Hospitals Corporation', shifts: 28 }],
+          dayTypeBreakdown: [
+            { type: 'Normal Days', totalShifts: 24, rateMultiplier: '1.0x', lkrEarned: 51_360, dates: [] },
+            {
+              type: 'Sundays',
+              totalShifts: 4,
+              rateMultiplier: '1.5x',
+              lkrEarned: 7_360,
+              dates: [
+                { date: '04 May 2026', shift: '18:00 – 06:00', premium: 1_840 },
+                { date: '11 May 2026', shift: '18:00 – 06:00', premium: 1_840 },
+                { date: '18 May 2026', shift: '18:00 – 06:00', premium: 1_840 },
+                { date: '25 May 2026', shift: '18:00 – 06:00', premium: 1_840 },
+              ],
+            },
+            { type: 'Poya Days', totalShifts: 0, rateMultiplier: '2.0x', lkrEarned: 0, dates: [] },
+            { type: 'Public Holidays', totalShifts: 0, rateMultiplier: '2.0x', lkrEarned: 0, dates: [] },
+            { type: 'Saturdays', totalShifts: 0, rateMultiplier: '1.25x', lkrEarned: 0, dates: [] },
+          ],
+        },
+      },
+      {
+        id: 'emp-003',
+        empNumber: 'G-0112',
+        name: 'Kapila Bandara',
+        rank: 'Security Guard',
+        shiftsAtSite: 24,
+        totalGross: 52_000,
+        totalDeductions: 31_200,
+        netTakeHome: 20_800,
+        deductions: [
+          {
+            type: 'Advance',
+            totalLiability: 60_000,
+            installmentCurrent: 1,
+            installmentTotal: 6,
+            thisMonthAmount: 20_000,
+          },
+          {
+            type: 'Uniform',
+            totalLiability: 8_400,
+            installmentCurrent: 1,
+            installmentTotal: 6,
+            thisMonthAmount: 8_400,
+          },
+          {
+            type: 'Meals',
+            totalLiability: 9_000,
+            installmentCurrent: 1,
+            installmentTotal: 3,
+            thisMonthAmount: 2_800,
+          },
+        ],
+        earnings: {
+          crossSiteDistribution: [{ site: 'Lanka Hospitals Corporation', shifts: 24 }],
+          dayTypeBreakdown: [
+            { type: 'Normal Days', totalShifts: 22, rateMultiplier: '1.0x', lkrEarned: 46_200, dates: [] },
+            {
+              type: 'Sundays',
+              totalShifts: 2,
+              rateMultiplier: '1.5x',
+              lkrEarned: 3_150,
+              dates: [
+                { date: '11 May 2026', shift: '06:00 – 18:00', premium: 1_575 },
+                { date: '25 May 2026', shift: '06:00 – 18:00', premium: 1_575 },
+              ],
+            },
+            {
+              type: 'Poya Days',
+              totalShifts: 1,
+              rateMultiplier: '2.0x',
+              lkrEarned: 2_650,
+              dates: [{ date: '12 May 2026', shift: '06:00 – 18:00', premium: 2_650 }],
+            },
+            { type: 'Public Holidays', totalShifts: 0, rateMultiplier: '2.0x', lkrEarned: 0, dates: [] },
+            { type: 'Saturdays', totalShifts: 0, rateMultiplier: '1.25x', lkrEarned: 0, dates: [] },
+          ],
+        },
+      },
+    ],
+  },
+  {
+    id: 'site-002',
+    name: 'Sri Lanka Telecom HQ',
+    location: 'Lotus Road, Colombo 01',
+    clientBilled: 872_000,
+    payrollCost: 641_800,
+    employees: [
+      {
+        id: 'emp-005',
+        empNumber: 'G-0155',
+        name: 'Ruwan Jayasinghe',
+        rank: 'Security Guard',
+        shiftsAtSite: 24,
+        totalGross: 44_200,
+        totalDeductions: 4_400,
+        netTakeHome: 39_800,
+        deductions: [
+          {
+            type: 'Meals',
+            totalLiability: 6_000,
+            installmentCurrent: 1,
+            installmentTotal: 2,
+            thisMonthAmount: 3_000,
+          },
+          {
+            type: 'Uniform',
+            totalLiability: 2_800,
+            installmentCurrent: 1,
+            installmentTotal: 2,
+            thisMonthAmount: 1_400,
+          },
+        ],
+        earnings: {
+          crossSiteDistribution: [{ site: 'Sri Lanka Telecom HQ', shifts: 24 }],
+          dayTypeBreakdown: [
+            { type: 'Normal Days', totalShifts: 20, rateMultiplier: '1.0x', lkrEarned: 36_600, dates: [] },
+            {
+              type: 'Sundays',
+              totalShifts: 3,
+              rateMultiplier: '1.5x',
+              lkrEarned: 4_140,
+              dates: [
+                { date: '04 May 2026', shift: '06:00 – 18:00', premium: 1_380 },
+                { date: '11 May 2026', shift: '06:00 – 18:00', premium: 1_380 },
+                { date: '18 May 2026', shift: '06:00 – 18:00', premium: 1_380 },
+              ],
+            },
+            {
+              type: 'Poya Days',
+              totalShifts: 1,
+              rateMultiplier: '2.0x',
+              lkrEarned: 2_760,
+              dates: [{ date: '12 May 2026', shift: '06:00 – 18:00', premium: 2_760 }],
+            },
+            { type: 'Public Holidays', totalShifts: 0, rateMultiplier: '2.0x', lkrEarned: 0, dates: [] },
+            { type: 'Saturdays', totalShifts: 0, rateMultiplier: '1.25x', lkrEarned: 0, dates: [] },
+          ],
+        },
+      },
+      {
+        id: 'emp-006',
+        empNumber: 'G-0162',
+        name: 'Dilshan Gunasekara',
+        rank: 'Assistant Security Officer',
+        shiftsAtSite: 26,
+        totalGross: 51_600,
+        totalDeductions: 5_000,
+        netTakeHome: 46_600,
+        deductions: [
+          {
+            type: 'Advance',
+            totalLiability: 25_000,
+            installmentCurrent: 1,
+            installmentTotal: 5,
+            thisMonthAmount: 5_000,
+          },
+        ],
+        earnings: {
+          crossSiteDistribution: [
+            { site: 'Sri Lanka Telecom HQ', shifts: 22 },
+            { site: 'Lanka Hospitals Corporation', shifts: 4 },
+          ],
+          dayTypeBreakdown: [
+            { type: 'Normal Days', totalShifts: 22, rateMultiplier: '1.0x', lkrEarned: 43_344, dates: [] },
+            {
+              type: 'Sundays',
+              totalShifts: 4,
+              rateMultiplier: '1.5x',
+              lkrEarned: 6_448,
+              dates: [
+                { date: '04 May 2026', shift: '18:00 – 06:00', premium: 1_612 },
+                { date: '11 May 2026', shift: '18:00 – 06:00', premium: 1_612 },
+                { date: '18 May 2026', shift: '18:00 – 06:00', premium: 1_612 },
+                { date: '25 May 2026', shift: '18:00 – 06:00', premium: 1_612 },
+              ],
+            },
+            { type: 'Poya Days', totalShifts: 0, rateMultiplier: '2.0x', lkrEarned: 0, dates: [] },
+            { type: 'Public Holidays', totalShifts: 0, rateMultiplier: '2.0x', lkrEarned: 0, dates: [] },
+            { type: 'Saturdays', totalShifts: 0, rateMultiplier: '1.25x', lkrEarned: 0, dates: [] },
+          ],
+        },
+      },
+    ],
+  },
+  {
+    id: 'site-003',
+    name: 'John Keells Holdings Tower',
+    location: 'Union Place, Colombo 02',
+    clientBilled: 1_540_000,
+    payrollCost: 1_102_600,
+    smCashAllocation: 55_000,
+    employees: [
+      {
+        id: 'emp-007',
+        empNumber: 'G-0207',
+        name: 'Lasantha Wickramasinghe',
+        rank: 'Senior Security Officer',
+        shiftsAtSite: 30,
+        totalGross: 74_800,
+        totalDeductions: 14_200,
+        netTakeHome: 60_600,
+        deductions: [
+          {
+            type: 'Advance',
+            totalLiability: 40_000,
+            installmentCurrent: 3,
+            installmentTotal: 4,
+            thisMonthAmount: 10_000,
+          },
+          {
+            type: 'Penalty',
+            totalLiability: 3_000,
+            installmentCurrent: 1,
+            installmentTotal: 1,
+            thisMonthAmount: 3_000,
+          },
+          {
+            type: 'Meals',
+            totalLiability: 3_600,
+            installmentCurrent: 2,
+            installmentTotal: 3,
+            thisMonthAmount: 1_200,
+          },
+        ],
+        earnings: {
+          crossSiteDistribution: [{ site: 'John Keells Holdings Tower', shifts: 30 }],
+          dayTypeBreakdown: [
+            { type: 'Normal Days', totalShifts: 24, rateMultiplier: '1.0x', lkrEarned: 59_840, dates: [] },
+            {
+              type: 'Sundays',
+              totalShifts: 4,
+              rateMultiplier: '1.5x',
+              lkrEarned: 9_360,
+              dates: [
+                { date: '04 May 2026', shift: '06:00 – 18:00', premium: 2_340 },
+                { date: '11 May 2026', shift: '06:00 – 18:00', premium: 2_340 },
+                { date: '18 May 2026', shift: '06:00 – 18:00', premium: 2_340 },
+                { date: '25 May 2026', shift: '06:00 – 18:00', premium: 2_340 },
+              ],
+            },
+            {
+              type: 'Poya Days',
+              totalShifts: 1,
+              rateMultiplier: '2.0x',
+              lkrEarned: 4_680,
+              dates: [{ date: '12 May 2026', shift: '06:00 – 18:00', premium: 4_680 }],
+            },
+            {
+              type: 'Public Holidays',
+              totalShifts: 1,
+              rateMultiplier: '2.0x',
+              lkrEarned: 4_680,
+              dates: [{ date: '22 May 2026', shift: '06:00 – 18:00', premium: 4_680 }],
+            },
+            { type: 'Saturdays', totalShifts: 0, rateMultiplier: '1.25x', lkrEarned: 0, dates: [] },
+          ],
+        },
+      },
+      {
+        id: 'emp-008',
+        empNumber: 'G-0219',
+        name: 'Kavindi Amarasinghe',
+        rank: 'Security Officer',
+        shiftsAtSite: 28,
+        totalGross: 57_200,
+        totalDeductions: 6_400,
+        netTakeHome: 50_800,
+        deductions: [
+          {
+            type: 'Uniform',
+            totalLiability: 16_800,
+            installmentCurrent: 4,
+            installmentTotal: 12,
+            thisMonthAmount: 1_400,
+          },
+          {
+            type: 'Advance',
+            totalLiability: 20_000,
+            installmentCurrent: 2,
+            installmentTotal: 4,
+            thisMonthAmount: 5_000,
+          },
+        ],
+        earnings: {
+          crossSiteDistribution: [{ site: 'John Keells Holdings Tower', shifts: 28 }],
+          dayTypeBreakdown: [
+            { type: 'Normal Days', totalShifts: 24, rateMultiplier: '1.0x', lkrEarned: 48_973, dates: [] },
+            {
+              type: 'Sundays',
+              totalShifts: 3,
+              rateMultiplier: '1.5x',
+              lkrEarned: 5_361,
+              dates: [
+                { date: '04 May 2026', shift: '18:00 – 06:00', premium: 1_787 },
+                { date: '11 May 2026', shift: '18:00 – 06:00', premium: 1_787 },
+                { date: '18 May 2026', shift: '18:00 – 06:00', premium: 1_787 },
+              ],
+            },
+            {
+              type: 'Poya Days',
+              totalShifts: 1,
+              rateMultiplier: '2.0x',
+              lkrEarned: 3_575,
+              dates: [{ date: '12 May 2026', shift: '18:00 – 06:00', premium: 3_575 }],
+            },
+            { type: 'Public Holidays', totalShifts: 0, rateMultiplier: '2.0x', lkrEarned: 0, dates: [] },
+            { type: 'Saturdays', totalShifts: 0, rateMultiplier: '1.25x', lkrEarned: 0, dates: [] },
+          ],
+        },
+      },
+    ],
+  },
+  {
+    id: 'site-004',
+    name: 'Bank of Ceylon Head Office',
+    location: 'BOC Square, Colombo 01',
+    clientBilled: 624_000,
+    payrollCost: 448_200,
+    employees: [
+      {
+        id: 'emp-009',
+        empNumber: 'G-0334',
+        name: 'Tharaka Fernando',
+        rank: 'Security Guard',
+        shiftsAtSite: 22,
+        totalGross: 41_800,
+        totalDeductions: 1_700,
+        netTakeHome: 40_100,
+        deductions: [
+          {
+            type: 'Meals',
+            totalLiability: 3_000,
+            installmentCurrent: 3,
+            installmentTotal: 3,
+            thisMonthAmount: 1_000,
+          },
+          {
+            type: 'Uniform',
+            totalLiability: 5_600,
+            installmentCurrent: 6,
+            installmentTotal: 12,
+            thisMonthAmount: 700,
+          },
+        ],
+        earnings: {
+          crossSiteDistribution: [
+            { site: 'Bank of Ceylon Head Office', shifts: 18 },
+            { site: 'Lanka Hospitals Corporation', shifts: 4 },
+          ],
+          dayTypeBreakdown: [
+            { type: 'Normal Days', totalShifts: 20, rateMultiplier: '1.0x', lkrEarned: 38_188, dates: [] },
+            {
+              type: 'Sundays',
+              totalShifts: 2,
+              rateMultiplier: '1.5x',
+              lkrEarned: 2_612,
+              dates: [
+                { date: '11 May 2026', shift: '06:00 – 18:00', premium: 1_306 },
+                { date: '25 May 2026', shift: '06:00 – 18:00', premium: 1_306 },
+              ],
+            },
+            { type: 'Poya Days', totalShifts: 0, rateMultiplier: '2.0x', lkrEarned: 0, dates: [] },
+            { type: 'Public Holidays', totalShifts: 0, rateMultiplier: '2.0x', lkrEarned: 0, dates: [] },
+            { type: 'Saturdays', totalShifts: 0, rateMultiplier: '1.25x', lkrEarned: 0, dates: [] },
+          ],
+        },
+      },
+    ],
+  },
+  {
+    id: 'site-005',
+    name: 'Dialog Axiata HQ',
+    location: 'Galle Road, Colombo 03',
+    clientBilled: 980_000,
+    payrollCost: 712_400,
+    employees: [
+      {
+        id: 'emp-010',
+        empNumber: 'G-0411',
+        name: 'Sampath Dissanayake',
+        rank: 'Senior Security Officer',
+        shiftsAtSite: 28,
+        totalGross: 71_400,
+        totalDeductions: 7_100,
+        netTakeHome: 64_300,
+        deductions: [
+          {
+            type: 'Advance',
+            totalLiability: 30_000,
+            installmentCurrent: 1,
+            installmentTotal: 6,
+            thisMonthAmount: 5_000,
+          },
+          {
+            type: 'Meals',
+            totalLiability: 2_100,
+            installmentCurrent: 1,
+            installmentTotal: 1,
+            thisMonthAmount: 2_100,
+          },
+        ],
+        earnings: {
+          crossSiteDistribution: [{ site: 'Dialog Axiata HQ', shifts: 28 }],
+          dayTypeBreakdown: [
+            { type: 'Normal Days', totalShifts: 23, rateMultiplier: '1.0x', lkrEarned: 58_477, dates: [] },
+            {
+              type: 'Sundays',
+              totalShifts: 3,
+              rateMultiplier: '1.5x',
+              lkrEarned: 6_693,
+              dates: [
+                { date: '04 May 2026', shift: '06:00 – 18:00', premium: 2_231 },
+                { date: '18 May 2026', shift: '06:00 – 18:00', premium: 2_231 },
+                { date: '25 May 2026', shift: '06:00 – 18:00', premium: 2_231 },
+              ],
+            },
+            {
+              type: 'Poya Days',
+              totalShifts: 1,
+              rateMultiplier: '2.0x',
+              lkrEarned: 4_462,
+              dates: [{ date: '12 May 2026', shift: '06:00 – 18:00', premium: 4_462 }],
+            },
+            {
+              type: 'Public Holidays',
+              totalShifts: 1,
+              rateMultiplier: '2.0x',
+              lkrEarned: 4_462,
+              dates: [{ date: '22 May 2026', shift: '06:00 – 18:00', premium: 4_462 }],
+            },
+            { type: 'Saturdays', totalShifts: 0, rateMultiplier: '1.25x', lkrEarned: 0, dates: [] },
+          ],
+        },
+      },
+      {
+        id: 'emp-011',
+        empNumber: 'G-0428',
+        name: 'Iresha Kumari',
+        rank: 'Security Officer',
+        shiftsAtSite: 24,
+        totalGross: 52_800,
+        totalDeductions: 3_900,
+        netTakeHome: 48_900,
+        deductions: [
+          {
+            type: 'Uniform',
+            totalLiability: 14_000,
+            installmentCurrent: 2,
+            installmentTotal: 10,
+            thisMonthAmount: 1_400,
+          },
+          {
+            type: 'Penalty',
+            totalLiability: 2_500,
+            installmentCurrent: 1,
+            installmentTotal: 1,
+            thisMonthAmount: 2_500,
+          },
+        ],
+        earnings: {
+          crossSiteDistribution: [{ site: 'Dialog Axiata HQ', shifts: 24 }],
+          dayTypeBreakdown: [
+            { type: 'Normal Days', totalShifts: 20, rateMultiplier: '1.0x', lkrEarned: 44_000, dates: [] },
+            {
+              type: 'Sundays',
+              totalShifts: 3,
+              rateMultiplier: '1.5x',
+              lkrEarned: 4_950,
+              dates: [
+                { date: '04 May 2026', shift: '18:00 – 06:00', premium: 1_650 },
+                { date: '11 May 2026', shift: '18:00 – 06:00', premium: 1_650 },
+                { date: '25 May 2026', shift: '18:00 – 06:00', premium: 1_650 },
+              ],
+            },
+            {
+              type: 'Poya Days',
+              totalShifts: 1,
+              rateMultiplier: '2.0x',
+              lkrEarned: 3_300,
+              dates: [{ date: '12 May 2026', shift: '18:00 – 06:00', premium: 3_300 }],
+            },
+            { type: 'Public Holidays', totalShifts: 0, rateMultiplier: '2.0x', lkrEarned: 0, dates: [] },
+            { type: 'Saturdays', totalShifts: 0, rateMultiplier: '1.25x', lkrEarned: 0, dates: [] },
+          ],
+        },
+      },
+    ],
+  },
+];
 
 type EmployeeSeed = Omit<
   Employee,
@@ -232,6 +1162,126 @@ type EmployeeSeed = Omit<
 
 type SiteSeed = Omit<Site, 'employees'> & { employees: EmployeeSeed[] };
 
+function mockBankNameForGuard(empNumber: string): string | null {
+  if (empNumber === 'G-0088' || empNumber === 'G-0162') return null;
+  if (empNumber === 'G-0120') return 'HATTON NATIONAL BANK';
+  if (empNumber.endsWith('1') || empNumber.endsWith('5')) return 'COMMERCIAL BANK';
+  return 'PEOPLES BANK';
+}
+
+function mockBankNameForStaff(empNumber: string, kind: StaffPayrollKind): string | null {
+  if (kind === 'ho' && empNumber === 'HQ-0235') return null;
+  if (kind === 'sm' && empNumber === 'EMP-SM-006') return null;
+  if (kind === 'cafe' && empNumber === 'CT-0124') return null;
+  return 'COMMERCIAL BANK';
+}
+
+function splitMockStaffPinnedSites(coreSites: SiteSeed[]): SiteSeed[] {
+  const split: SiteSeed[] = [];
+
+  coreSites.forEach((site) => {
+    if (site.payrollGroup !== 'ho' && site.payrollGroup !== 'sm' && site.payrollGroup !== 'cafe') {
+      split.push(site);
+      return;
+    }
+
+    const kind = site.payrollGroup;
+    const withBank: EmployeeSeed[] = [];
+    const noBank: EmployeeSeed[] = [];
+
+    site.employees.forEach((emp) => {
+      if (hasBankOnFile(mockBankNameForStaff(emp.empNumber, kind))) {
+        withBank.push(emp);
+      } else {
+        noBank.push(emp);
+      }
+    });
+
+    const bankPayrollCost = withBank.reduce((sum, emp) => sum + emp.totalGross, 0);
+    split.push({
+      ...site,
+      employees: withBank,
+      displayEmployeeCount: withBank.length,
+      payrollCost: bankPayrollCost,
+    });
+
+    const noBankCohort = staffNoBankCohortForKind(kind);
+    const noBankMeta = STAFF_NO_BANK_META[noBankCohort];
+    const noBankPayrollCost = noBank.reduce((sum, emp) => sum + emp.totalGross, 0);
+    split.push({
+      id: STAFF_NO_BANK_SITE_IDS[noBankCohort],
+      name: noBankMeta.name,
+      location: noBankMeta.location,
+      clientBilled: 0,
+      payrollCost: noBankPayrollCost,
+      payrollGroup: noBankCohort,
+      displayEmployeeCount: noBank.length,
+      employees: noBank,
+    });
+  });
+
+  return split;
+}
+
+function buildMockGuardCohortPinnedSites(): SiteSeed[] {
+  const guardsById = new Map<string, EmployeeSeed>();
+
+  MOCK_SITES_SEED.forEach((site) => {
+    if (site.payrollGroup === 'sm') return;
+    site.employees.forEach((emp) => {
+      if (emp.earnings.hoFixedData || emp.earnings.cafeData || emp.earnings.smPayData) return;
+      const existing = guardsById.get(emp.id);
+      if (!existing) {
+        guardsById.set(emp.id, { ...emp });
+        return;
+      }
+      guardsById.set(emp.id, {
+        ...existing,
+        shiftsAtSite: existing.shiftsAtSite + emp.shiftsAtSite,
+        totalGross: existing.totalGross + emp.totalGross,
+        totalDeductions: existing.totalDeductions + emp.totalDeductions,
+        netTakeHome: existing.netTakeHome + emp.netTakeHome,
+        earnings: {
+          ...existing.earnings,
+          crossSiteDistribution: [
+            ...existing.earnings.crossSiteDistribution,
+            ...emp.earnings.crossSiteDistribution,
+          ],
+        },
+      });
+    });
+  });
+
+  const cohortEmployees = new Map<GuardPayrollCohort, EmployeeSeed[]>();
+  guardsById.forEach((emp) => {
+    const cohort = classifyGuardCohort(emp.empNumber, mockBankNameForGuard(emp.empNumber));
+    const list = cohortEmployees.get(cohort) ?? [];
+    list.push(emp);
+    cohortEmployees.set(cohort, list);
+  });
+
+  return GUARD_COHORT_ORDER.map((cohort) => {
+    const employees = cohortEmployees.get(cohort) ?? [];
+    const meta = GUARD_COHORT_META[cohort];
+    const payrollCost = employees.reduce((sum, emp) => sum + emp.totalGross, 0);
+    return {
+      id: GUARD_COHORT_SITE_IDS[cohort],
+      name: meta.name,
+      location: meta.location,
+      clientBilled: 0,
+      payrollCost,
+      payrollGroup: cohort,
+      displayEmployeeCount: employees.length,
+      employees,
+    } satisfies SiteSeed;
+  });
+}
+
+/** Portfolio mock seeds — used only for historical scale math in FM dev previews. */
+const MOCK_PINNED_GROUP_SITES_SEED: SiteSeed[] = ensurePinnedPayrollSites<SiteSeed>([
+  ...splitMockStaffPinnedSites(MOCK_PINNED_CORE_SITES_SEED),
+  ...buildMockGuardCohortPinnedSites(),
+]);
 
 function initializeShiftState(seed: SiteSeed[]): Site[] {
   return seed.map((site) => ({
@@ -802,15 +1852,6 @@ function ShiftAtSiteCell({ employee }: { employee: Employee }) {
 
 // ─── Payroll group workflow (pinned ledger rows) ─────────────────────────────
 
-function fmSitePayrollCohort(site: Site): PayrollBankExportCohort | null {
-  if (site.payrollGroup === 'guard_commercial') return 'guard_commercial';
-  if (site.payrollGroup === 'guard_other_bank') return 'guard_other_bank';
-  if (site.payrollGroup === 'ho') return 'ho';
-  if (site.payrollGroup === 'sm') return 'sm';
-  if (site.payrollGroup === 'cafe') return 'cafe';
-  return null;
-}
-
 function pinnedSitePayrollGroupId(site: Site): PayrollGroupId | null {
   if (site.payrollGroup === 'cafe' || site.id === 'group-cafe') return 'cafe';
   if (
@@ -852,112 +1893,6 @@ function WorkflowStatusBadge({ status }: { status: PayrollWorkflowStatus }) {
       <Icon className="h-3 w-3" />
       {label}
     </span>
-  );
-}
-
-function KpiCardSkeleton() {
-  return (
-    <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm animate-pulse">
-      <div className="h-1 w-full bg-slate-200" />
-      <div className="p-6">
-        <div className="mb-4 flex items-start justify-between">
-          <div className="h-10 w-10 rounded-xl bg-slate-200" />
-          <div className="h-6 w-16 rounded-full bg-slate-200" />
-        </div>
-        <div className="space-y-2">
-          <div className="h-3 w-24 rounded bg-slate-200" />
-          <div className="h-8 w-32 rounded bg-slate-200" />
-          <div className="h-3 w-20 rounded bg-slate-100" />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PortfolioSiteRowSkeleton({ pinned = false }: { pinned?: boolean }) {
-  return (
-    <div
-      className={`rounded-2xl border bg-white shadow-sm animate-pulse ${
-        pinned ? 'border-indigo-200/80 ring-1 ring-indigo-100/80' : 'border-slate-200'
-      }`}
-    >
-      <div
-        className={`flex items-center gap-4 border-l-4 border-slate-200 p-4 ${
-          pinned ? 'min-h-[168px] flex-col items-stretch' : 'min-h-[88px]'
-        }`}
-      >
-        <div className="flex flex-1 items-center justify-between gap-3">
-          <div className="min-w-0 flex-1 space-y-2">
-            <div className="h-3 w-20 rounded bg-slate-200" />
-            <div className="h-4 w-36 rounded bg-slate-200" />
-            <div className="h-3 w-28 rounded bg-slate-100" />
-          </div>
-          <div className="hidden shrink-0 space-y-2 sm:block">
-            <div className="h-3 w-16 rounded bg-slate-100" />
-            <div className="h-5 w-24 rounded bg-slate-200" />
-          </div>
-        </div>
-        {pinned && (
-          <div className="flex gap-2 pt-1">
-            <div className="h-8 flex-1 rounded-xl bg-slate-200" />
-            <div className="h-8 flex-1 rounded-xl bg-slate-100" />
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function PortfolioLedgerSkeleton() {
-  const skeletonCounts: Record<AdvancePayrollSection['id'], number> = {
-    ho: 2,
-    sm: 2,
-    cafe: 2,
-    guards: 3,
-  };
-
-  return (
-    <div className="mb-4 space-y-5">
-      {ADVANCE_PAYROLL_SECTIONS.map((section) => (
-        <section
-          key={section.id}
-          className={`overflow-hidden rounded-2xl border shadow-sm ${section.border} ${section.bg}`}
-        >
-          <div className="flex items-start gap-3 border-b border-inherit px-4 py-3 sm:px-5">
-            <div
-              className={`mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl text-xs font-black ${section.iconBg}`}
-            >
-              {section.id === 'ho'
-                ? 'HO'
-                : section.id === 'sm'
-                  ? 'SM'
-                  : section.id === 'cafe'
-                    ? 'CF'
-                    : 'GD'}
-            </div>
-            <div className="min-w-0">
-              <p className={`text-[11px] font-black uppercase tracking-widest ${section.titleColor}`}>
-                {section.title}
-              </p>
-              <p className={`mt-0.5 text-[11px] font-medium ${section.subtitleColor}`}>
-                {section.subtitle}
-              </p>
-            </div>
-          </div>
-          <div
-            className={`grid gap-3 p-3 sm:p-4 ${
-              section.id === 'guards'
-                ? 'grid-cols-1 md:grid-cols-2 xl:grid-cols-3'
-                : 'grid-cols-1 sm:grid-cols-2'
-            }`}
-          >
-            {Array.from({ length: skeletonCounts[section.id] }, (_, i) => (
-              <PortfolioSiteRowSkeleton key={`${section.id}-${i}`} pinned />
-            ))}
-          </div>
-        </section>
-      ))}
-    </div>
   );
 }
 
@@ -1077,14 +2012,30 @@ function SiteRow({
     ? bankFileDownloaded
     : Boolean(groupWorkflow?.paidAt);
   const canLock = showWorkflow && isDraft && payrollGenerated && hqDeductionsLocked;
-  const canReedit = showWorkflow && isWithMd && !isPaid;
+  const canReedit = showWorkflow && (isWithMd || isApproved) && !isPaid;
   const canDownload = showWorkflow && isApproved && !isPaid;
   const bankHeadcount = usesCohortExport
     ? employeeCount
     : (groupWorkflow?.payslipCount ?? employeeCount);
   const bankExportHint = bankExportLabel(site.payrollGroup);
-  const theme = pinned ? payrollGroupTheme(site.payrollGroup) : null;
-  const groupAccent = theme?.card ?? 'border-slate-200';
+  const groupAccent =
+    site.payrollGroup === 'cafe'
+      ? 'border-violet-200/80 ring-violet-100/80'
+      : site.payrollGroup === 'cafe_no_bank'
+        ? 'border-violet-200/60 ring-violet-50/80'
+        : site.payrollGroup === 'sm'
+          ? 'border-sky-200/80 ring-sky-100/80'
+          : site.payrollGroup === 'sm_no_bank'
+            ? 'border-sky-200/60 ring-sky-50/80'
+            : site.payrollGroup === 'ho'
+              ? 'border-indigo-200/80 ring-indigo-100/80'
+              : site.payrollGroup === 'ho_no_bank'
+                ? 'border-indigo-200/60 ring-indigo-50/80'
+                : isGuardPayrollCohort(site.payrollGroup)
+                  ? 'border-emerald-200/80 ring-emerald-100/80'
+                  : isStaffNoBankCohort(site.payrollGroup)
+                    ? 'border-slate-200/80 ring-slate-100/80'
+                    : 'border-slate-200';
 
   return (
     <>
@@ -1138,161 +2089,98 @@ function SiteRow({
       )}
 
       <div
-        className={`${expanded ? 'overflow-visible' : 'overflow-hidden'} ${
-          pinned ? 'flex h-full flex-col' : ''
-        } rounded-2xl border bg-white shadow-sm ${
+        className={`${expanded ? 'overflow-visible' : 'overflow-hidden'} rounded-2xl border bg-white shadow-sm ${
           pinned ? `ring-1 ${groupAccent}` : 'border-slate-200'
         }`}
       >
-        {pinned && theme ? (
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            className={`flex min-h-[168px] flex-1 flex-col gap-3 border-l-4 p-4 text-left transition-colors ${theme.stripe} ${theme.headerBg} ${theme.headerHover}`}
+
+        {/* Site header button */}
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex w-full items-center gap-4 px-6 py-4 text-left transition-colors hover:bg-slate-50"
+        >
+          {/* Expand icon */}
+          <div
+            className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border transition-all ${
+              expanded ? 'border-blue-200 bg-blue-50' : 'border-slate-200 bg-slate-100'
+            }`}
           >
-            <div className="flex items-start justify-between gap-2">
-              <span
-                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-widest ${theme.badge}`}
-              >
-                <Pin className="h-2.5 w-2.5" />
-                {theme.label}
-              </span>
-              <div
-                className={`flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg border transition-all ${
-                  expanded ? theme.chevronExpanded : theme.chevronCollapsed
-                }`}
-              >
-                <ChevronDown
-                  className={`h-3.5 w-3.5 transition-transform duration-200 ${
-                    expanded ? 'rotate-180' : ''
-                  }`}
-                />
-              </div>
-            </div>
-
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-black leading-tight tracking-tight text-slate-900">
-                {site.name}
-              </p>
-              <p className="mt-1 text-[10px] leading-snug text-slate-500">{site.location}</p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              {showShiftsBilled && (
-                <div className="rounded-xl border border-white/80 bg-white/70 px-2.5 py-2">
-                  <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">
-                    {billedMetricLabel}
-                  </p>
-                  <p className="mt-0.5 font-mono text-xs font-bold text-slate-800">{billedMetric}</p>
-                </div>
-              )}
-              <div
-                className={`rounded-xl border border-white/80 bg-white/70 px-2.5 py-2 ${
-                  showShiftsBilled ? '' : 'col-span-2'
-                }`}
-              >
-                <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">
-                  Payroll cost
-                </p>
-                <p className={`mt-0.5 font-mono text-xs font-bold ${payrollCostClass}`}>
-                  {lkr(scaledPayrollCost)}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between gap-2">
-              <span className="inline-flex items-center gap-1 rounded-full border border-slate-200/80 bg-white/80 px-2 py-0.5 text-[10px] font-bold text-slate-600">
-                <Users className="h-3 w-3" />
-                {employeeCount}
-              </span>
-              {showWorkflow && <WorkflowStatusBadge status={workflowStatus} />}
-            </div>
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            className="flex w-full items-center gap-4 px-6 py-4 text-left transition-colors hover:bg-slate-50"
-          >
-            <div
-              className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border transition-all ${
-                expanded ? 'border-blue-200 bg-blue-50' : 'border-slate-200 bg-slate-100'
+            <ChevronDown
+              className={`h-4 w-4 transition-transform duration-200 ${
+                expanded ? 'rotate-180 text-blue-600' : 'text-slate-500'
               }`}
-            >
-              <ChevronDown
-                className={`h-4 w-4 transition-transform duration-200 ${
-                  expanded ? 'rotate-180 text-blue-600' : 'text-slate-500'
-                }`}
-              />
-            </div>
+            />
+          </div>
 
-            <div className="min-w-0 flex-1">
+          {/* Site identity */}
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
               <p className="text-sm font-black tracking-tight text-slate-900">{site.name}</p>
-              <p className="mt-0.5 text-[11px] text-slate-400">{site.location}</p>
-            </div>
-
-            <div className="hidden items-center gap-8 md:flex">
-              {showShiftsBilled && (
-                <div className="text-right">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                    {billedMetricLabel}
-                  </p>
-                  <p className="mt-0.5 font-mono text-xs font-bold text-slate-800">{billedMetric}</p>
-                </div>
+              {pinned && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-slate-600">
+                  <Pin className="h-2.5 w-2.5" />
+                  Payroll group
+                </span>
               )}
+            </div>
+            <p className="mt-0.5 text-[11px] text-slate-400">{site.location}</p>
+          </div>
+
+          {/* KPI columns (desktop) */}
+          <div className="hidden items-center gap-8 md:flex">
+            {showShiftsBilled && (
               <div className="text-right">
                 <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                  Payroll Cost
+                  {billedMetricLabel}
                 </p>
-                <p className={`mt-0.5 font-mono text-xs font-bold ${payrollCostClass}`}>
-                  {lkr(scaledPayrollCost)}
-                </p>
+                <p className="mt-0.5 font-mono text-xs font-bold text-slate-800">{billedMetric}</p>
               </div>
-              {showSiteEarnings && (
-                <div className="text-right">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-500">
-                    Site Earnings
-                  </p>
-                  <p className={`mt-0.5 font-mono text-xs font-black ${marginAmountClass}`}>
-                    {lkr(margin)}
-                  </p>
-                  <p className="text-[10px] font-bold text-emerald-500">{marginPctSite}%</p>
-                </div>
-              )}
+            )}
+            <div className="text-right">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                Payroll Cost
+              </p>
+              <p className={`mt-0.5 font-mono text-xs font-bold ${payrollCostClass}`}>
+                {lkr(scaledPayrollCost)}
+              </p>
             </div>
+            {showSiteEarnings && (
+              <div className="text-right">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-500">
+                  Site Earnings
+                </p>
+                <p className={`mt-0.5 font-mono text-xs font-black ${marginAmountClass}`}>
+                  {lkr(margin)}
+                </p>
+                <p className="text-[10px] font-bold text-emerald-500">{marginPctSite}%</p>
+              </div>
+            )}
+          </div>
 
-            <div className="ml-2 flex-shrink-0">
-              <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">
-                <Users className="h-3 w-3" />
-                {employeeCount}
-              </span>
-            </div>
-          </button>
-        )}
+          {/* Employee count */}
+          <div className="ml-2 flex-shrink-0">
+            <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">
+              <Users className="h-3 w-3" />
+              {employeeCount}
+            </span>
+          </div>
+        </button>
 
         {showWorkflow && (
           <div
-            className={`flex flex-col gap-3 border-t border-slate-100 bg-slate-50/80 px-4 py-3 ${
-              pinned ? '' : 'flex-wrap items-center justify-between sm:flex-row'
-            }`}
+            className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 bg-slate-50/80 px-6 py-3"
             onClick={(e) => e.stopPropagation()}
           >
-            {!pinned && (
-              <div className="flex flex-wrap items-center gap-2">
-                <WorkflowStatusBadge status={workflowStatus} />
-                {isPaid && (
-                  <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-widest text-slate-600">
-                    Bank file downloaded
-                  </span>
-                )}
-              </div>
-            )}
-            {pinned && isPaid && (
-              <span className="inline-flex w-fit items-center gap-1 rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-widest text-slate-600">
-                Bank file downloaded
-              </span>
-            )}
-            <div className={`flex flex-wrap items-center gap-2 ${pinned ? 'w-full' : ''}`}>
+            <div className="flex flex-wrap items-center gap-2">
+              <WorkflowStatusBadge status={workflowStatus} />
+              {isPaid && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-widest text-slate-600">
+                  Bank file downloaded
+                </span>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={onLockGroup}
@@ -1301,7 +2189,7 @@ function SiteRow({
                   !hqDeductionsLocked
                     ? 'Deductions pending admin lock — wait for Deductions Admin to lock the month and send to FM'
                     : !payrollGenerated
-                      ? 'Generate draft payslips first — use Generate on the workflow card above'
+                      ? 'Draft payslips are being prepared — lock unlocks once generation finishes'
                       : canLock
                         ? 'Lock batch and send to MD for approval'
                         : 'Batch already submitted or approved'
@@ -1355,24 +2243,17 @@ function SiteRow({
         )}
 
         {showWorkflow && isWithMd && (
-          <div className="border-t border-indigo-200/50 bg-indigo-50/40 px-4 py-2 text-[10px] font-semibold text-indigo-800">
+          <div className="border-t border-indigo-200/50 bg-indigo-50/40 px-6 py-2 text-[10px] font-semibold text-indigo-800">
             Locked and queued on the MD payroll audit desk — awaiting approval.
           </div>
         )}
         {showWorkflow && isApproved && !isPaid && (
-          <div className="border-t border-emerald-200/50 bg-emerald-50/40 px-4 py-2 text-[10px] font-semibold text-emerald-800">
+          <div className="border-t border-emerald-200/50 bg-emerald-50/40 px-6 py-2 text-[10px] font-semibold text-emerald-800">
             MD approved — bank transfer file is ready for one-time download.
           </div>
         )}
 
-        {!showWorkflow && pinned && isCashPayrollRow && (
-          <div className="border-t border-amber-200/50 bg-amber-50/40 px-4 py-2 text-[10px] font-semibold text-amber-900">
-            Cash cohort — pay staff in person and record payment in the expanded roster.
-          </div>
-        )}
-
-        {/* Mobile KPI strip (client guard sites only) */}
-        {!pinned && (
+        {/* Mobile KPI strip */}
         <div
           className={`grid divide-x divide-slate-100 border-t border-slate-100 bg-slate-50 px-4 py-2 md:hidden ${
             showShiftsBilled && showSiteEarnings
@@ -1407,7 +2288,6 @@ function SiteRow({
             </div>
           )}
         </div>
-        )}
 
         {/* Expanded employee roster */}
         {expanded && (
@@ -1648,7 +2528,7 @@ export default function FMPortalPage() {
   const isLivePeriod = isLivePayrollPeriod(payrollPeriod);
   const deductionsGateActive = requireDeductionMonthLock;
   const fmCanLockPayroll = !deductionsGateActive || hqDeductionsLocked;
-  const livePayrollMonth = payrollMonthFromFmPeriod(getFmLivePayrollPeriod());
+  const livePayrollMonth = payrollMonthFromFmPeriod(FM_LIVE_PAYROLL_PERIOD);
 
   const refreshHqDeductionLock = useCallback(async () => {
     if (!isLivePayrollPeriod(payrollPeriod)) {
@@ -1686,41 +2566,31 @@ export default function FMPortalPage() {
   useEffect(() => {
     let cancelled = false;
     setPortfolioLoading(true);
-    setPortfolioError(null);
-    void getFmPortfolio(payrollPeriod)
-      .then((payload) => {
-        if (cancelled) return;
-        if (payload.error) {
-          setPortfolioError(payload.error);
-          setPinnedSites([]);
-          setSites([]);
-        } else {
-          setPortfolioError(null);
-          setPinnedSites(
-            mergePortfolioAdjustments(
-              initializeShiftState(
-                ensurePinnedPayrollSites<SiteSeed>(payload.pinnedSites as SiteSeed[]),
-              ),
-              payload.shiftAdjustments,
-            ),
-          );
-          setSites(
-            mergePortfolioAdjustments(
-              initializeShiftState(payload.sites as SiteSeed[]),
-              payload.shiftAdjustments,
-            ),
-          );
-        }
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setPortfolioError(err instanceof Error ? err.message : 'Failed to load live portfolio.');
+    void getFmPortfolio(payrollPeriod).then((payload) => {
+      if (cancelled) return;
+      if (payload.error) {
+        setPortfolioError(payload.error);
         setPinnedSites([]);
         setSites([]);
-      })
-      .finally(() => {
-        if (!cancelled) setPortfolioLoading(false);
-      });
+      } else {
+        setPortfolioError(null);
+        setPinnedSites(
+          mergePortfolioAdjustments(
+            initializeShiftState(
+              ensurePinnedPayrollSites<SiteSeed>(payload.pinnedSites as SiteSeed[]),
+            ),
+            payload.shiftAdjustments,
+          ),
+        );
+        setSites(
+          mergePortfolioAdjustments(
+            initializeShiftState(payload.sites as SiteSeed[]),
+            payload.shiftAdjustments,
+          ),
+        );
+      }
+      setPortfolioLoading(false);
+    });
     return () => {
       cancelled = true;
     };
@@ -1808,7 +2678,7 @@ export default function FMPortalPage() {
     );
   };
 
-  const runGeneratePayroll = useCallback(() => {
+  const runAutoGeneratePayroll = useCallback(() => {
     if (!isLivePeriod) return;
     setGenerateMessage(null);
     startGenerateTransition(async () => {
@@ -1818,16 +2688,8 @@ export default function FMPortalPage() {
 
       const result = await generateMonthEndPayroll(formData);
       if (result.success) {
-        const skippedSuffix =
-          (result.skipped ?? 0) > 0
-            ? ` Skipped ${result.skipped} employee${result.skipped === 1 ? '' : 's'} pending MD salary approval${
-                result.skippedLabels?.length
-                  ? ` (${result.skippedLabels.join(', ')})`
-                  : ''
-              }. Their draft payslips for this period were removed.`
-            : '';
         setGenerateMessage(
-          `Generated ${result.count} draft payslip${result.count === 1 ? '' : 's'} for ${periodLabel}. Review each payroll group, then lock and send to MD.${skippedSuffix}`,
+          `Generated ${result.count} draft payslip${result.count === 1 ? '' : 's'} for ${periodLabel}. Review each payroll group, then lock and send to MD.`,
         );
         await refreshPayrollWorkflow();
       } else {
@@ -1849,7 +2711,7 @@ export default function FMPortalPage() {
         if (result.success) {
           setBankCohortDownloaded(new Set());
           await refreshPayrollWorkflow();
-          runGeneratePayroll();
+          runAutoGeneratePayroll();
         } else {
           setWorkflowMessage(result.error ?? 'Could not unlock batch for editing.');
         }
@@ -1859,29 +2721,28 @@ export default function FMPortalPage() {
 
   const handleDownloadBankFile = (site: Site, groupId: PayrollGroupId) => {
     if (!isLivePeriod) return;
-    const cohort = fmSitePayrollCohort(site);
-    const usesGuardCohort = usesCohortBankDownload(site.payrollGroup);
+    const headcount = site.displayEmployeeCount ?? site.employees.length;
+    const gross = site.payrollCost;
+    const periodSlug = `${payrollPeriod.year}${String(payrollPeriod.month).padStart(2, '0')}`;
 
-    void downloadPayrollBankFile(
-      groupId,
-      payrollPeriod.year,
-      payrollPeriod.month,
-      cohort,
-    ).then((result) => {
-      if (!result.success || !result.content || !result.filename || !result.mimeType) {
-        setWorkflowMessage(result.error ?? 'Could not generate bank file.');
-        return;
-      }
+    if (site.payrollGroup === 'guard_other_bank') {
+      const txt = generateOtherBankTransferTxt(site.name, gross, headcount);
+      triggerBankTxtDownload(`Other_Banks_${periodSlug}.txt`, txt);
+      setBankCohortDownloaded((prev) => new Set(prev).add(site.id));
+      return;
+    }
 
-      triggerPayrollBankDownload(result.filename, result.content, result.mimeType);
+    if (site.payrollGroup === 'guard_commercial') {
+      const txt = generateBankTransferTxt(site.name, gross, headcount);
+      triggerBankTxtDownload(`Commercial_Bank_Guards_${periodSlug}.txt`, txt);
+      setBankCohortDownloaded((prev) => new Set(prev).add(site.id));
+      return;
+    }
 
-      if (usesGuardCohort) {
-        setBankCohortDownloaded((prev) => new Set(prev).add(site.id));
-      }
-
-      void markPayrollGroupPaid(groupId, payrollPeriod.year, payrollPeriod.month).then(() => {
-        void refreshPayrollWorkflow();
-      });
+    const txt = generateBankTransferTxt(site.name, gross, headcount);
+    triggerBankTxtDownload(`Commercial_Bank_${groupId}_${periodSlug}.txt`, txt);
+    void markPayrollGroupPaid(groupId, payrollPeriod.year, payrollPeriod.month).then(() => {
+      void refreshPayrollWorkflow();
     });
   };
 
@@ -1985,74 +2846,37 @@ export default function FMPortalPage() {
     return updatedEmployee;
   };
 
-  const holidayCalendarIncomplete = useFmHolidayCalendarIncomplete();
+  // Simulate holiday calendar coverage check (in production this would read from DB)
+  // Incomplete = poya/statutory dates not configured at least 1 year ahead
+  const holidayCalendarIncomplete = true;
 
   const rosterCount =
     pinnedSites.reduce((s, site) => s + (site.displayEmployeeCount ?? site.employees.length), 0) +
     sites.reduce((s, site) => s + site.employees.length, 0);
 
-  const payrollSections = useMemo(
-    () =>
-      ADVANCE_PAYROLL_SECTIONS.map((section) => ({
-        ...section,
-        sites: pinnedSites.filter((site) => section.matches(site.payrollGroup)),
-      })).filter((section) => section.sites.length > 0),
-    [pinnedSites],
-  );
-
-  const renderPinnedSite = (site: Site) => {
-    const groupId = pinnedSitePayrollGroupId(site);
-    const groupWorkflow = groupId ? workflowForGroup(groupId) : undefined;
-    const groupLocked = groupWorkflow ? groupWorkflow.status !== 'DRAFT' : payrollLocked;
-    return (
-      <SiteRow
-        key={site.id}
-        site={site}
-        pinned
-        payrollLocked={groupLocked}
-        periodLabel={periodLabel}
-        payrollPeriod={payrollPeriod}
-        isLivePeriod={isLivePeriod}
-        portfolioScale={portfolioScale}
-        groupWorkflow={groupWorkflow}
-        payrollGenerated={payrollGenerated}
-        hqDeductionsLocked={fmCanLockPayroll}
-        locking={groupId != null && lockingGroup === groupId}
-        onLockGroup={groupId ? () => handleLockGroup(groupId) : undefined}
-        onReeditGroup={groupId ? () => handleReeditGroup(groupId) : undefined}
-        onDownloadBank={groupId ? () => handleDownloadBankFile(site, groupId) : undefined}
-        onShiftAdjust={(employeeId, delta, note) =>
-          handleShiftAdjust(site.id, employeeId, delta, note)
-        }
-        onVariableEarningsSaved={(employeeId, variableEarnings, totals, fixedAllowances) =>
-          handleVariableEarningsSaved(
-            site.id,
-            employeeId,
-            variableEarnings,
-            totals,
-            fixedAllowances,
-          )
-        }
-        onDeductionsSaved={refreshPortfolio}
-        bankFileDownloaded={bankCohortDownloaded.has(site.id)}
-      />
-    );
-  };
-
   return (
-    <FmCommandShellLayout>
+    <div className="min-h-screen bg-slate-50">
+      {/* Dot-grid texture */}
+      <div
+        aria-hidden
+        className="pointer-events-none fixed inset-0 z-0 opacity-25"
+        style={{
+          backgroundImage: 'radial-gradient(rgb(148 163 184 / 0.5) 1px, transparent 1px)',
+          backgroundSize: '20px 20px',
+        }}
+      />
+
+      <div className="relative z-10 mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
 
         <FmSubnav holidayCalendarIncomplete={holidayCalendarIncomplete} />
 
         {/* ── Page Header ──────────────────────────────────────────────────── */}
         <div className="mb-8">
           <div className="mb-3 flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-[color:var(--cvs-accent-muted)] bg-[var(--cvs-accent-soft)]">
-              <DollarSign className="h-4 w-4 text-[color:var(--cvs-accent)]" />
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-blue-200 bg-blue-50">
+              <DollarSign className="h-4 w-4 text-blue-700" />
             </div>
-            <span
-              className={`text-[10px] font-bold uppercase tracking-widest ${CVS_BRAND_CLASSES.portalEyebrow}`}
-            >
+            <span className="text-[10px] font-bold uppercase tracking-widest text-blue-600">
               Finance Manager Portal
             </span>
           </div>
@@ -2067,10 +2891,7 @@ export default function FMPortalPage() {
             <div className="flex flex-wrap items-center gap-3">
             {portfolioLoading && (
               <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 shadow-sm">
-                <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />
-                <span className="text-[10px] font-bold uppercase tracking-widest text-blue-800">
-                  Loading live portfolio…
-                </span>
+                <span className="text-[10px] font-semibold text-blue-700">Loading live portfolio…</span>
               </div>
             )}
             {portfolioError && !portfolioLoading && (
@@ -2146,62 +2967,49 @@ export default function FMPortalPage() {
           Portfolio Summary
         </p>
         <div className="mb-8 grid grid-cols-1 gap-5 sm:grid-cols-3">
-          {portfolioLoading ? (
-            <>
-              <KpiCardSkeleton />
-              <KpiCardSkeleton />
-              <KpiCardSkeleton />
-            </>
-          ) : (
-            <>
-              <KpiCard
-                label="Total Portfolio Cost"
-                sublabel="Payroll Cost"
-                value={lkr(portfolioTotals.totalPortfolioCost)}
-                icon={Receipt}
-                accentTop="bg-slate-300"
-                iconBg="bg-slate-100"
-                iconColor="text-slate-600"
-                onClick={() => setActiveReport('payroll-cost')}
-              />
-              <KpiCard
-                label="Total Portfolio Billed"
-                sublabel="Client Billing"
-                value={lkr(portfolioTotals.totalPortfolioBilled)}
-                badge={`${sites.length} sites`}
-                badgePositive
-                icon={FileText}
-                accentTop="bg-blue-500"
-                iconBg="bg-blue-50"
-                iconColor="text-blue-700"
-                onClick={() => setActiveReport('client-billing')}
-              />
-              <KpiCard
-                label="Total Statutory Cost"
-                sublabel="EPF · ETF · APIT"
-                value={lkr(portfolioTotals.totalStatutoryCost)}
-                badge={`${portfolioTotals.statutoryPctOfCost}%`}
-                icon={Landmark}
-                accentTop="bg-indigo-500"
-                iconBg="bg-indigo-50"
-                iconColor="text-indigo-700"
-                onClick={() => setActiveReport('statutory')}
-              />
-            </>
-          )}
+          <KpiCard
+            label="Total Portfolio Cost"
+            sublabel="Payroll Cost"
+            value={lkr(portfolioTotals.totalPortfolioCost)}
+            icon={Receipt}
+            accentTop="bg-slate-300"
+            iconBg="bg-slate-100"
+            iconColor="text-slate-600"
+            onClick={() => setActiveReport('payroll-cost')}
+          />
+          <KpiCard
+            label="Total Portfolio Billed"
+            sublabel="Client Billing"
+            value={lkr(portfolioTotals.totalPortfolioBilled)}
+            badge={`${sites.length} sites`}
+            badgePositive
+            icon={FileText}
+            accentTop="bg-blue-500"
+            iconBg="bg-blue-50"
+            iconColor="text-blue-700"
+            onClick={() => setActiveReport('client-billing')}
+          />
+          <KpiCard
+            label="Total Statutory Cost"
+            sublabel="EPF · ETF · APIT"
+            value={lkr(portfolioTotals.totalStatutoryCost)}
+            badge={`${portfolioTotals.statutoryPctOfCost}%`}
+            icon={Landmark}
+            accentTop="bg-indigo-500"
+            iconBg="bg-indigo-50"
+            iconColor="text-indigo-700"
+            onClick={() => setActiveReport('statutory')}
+          />
         </div>
 
-        {!portfolioLoading && (
-          <FmGranularDeductionsLedger headcount={rosterCount} defaultPeriod={payrollPeriod} />
-        )}
+        <FmGranularDeductionsLedger headcount={rosterCount} defaultPeriod={payrollPeriod} />
 
-        {activeReport && !portfolioLoading && (
+        {activeReport && (
           <FmPortfolioReportModal
             kind={activeReport}
             sites={sites}
             workflowStatus={workflowStatus}
             periodLabel={periodLabel}
-            payrollPeriod={payrollPeriod}
             isLivePeriod={isLivePeriod}
             onClose={() => setActiveReport(null)}
           />
@@ -2214,8 +3022,8 @@ export default function FMPortalPage() {
               Site-by-Site Payroll Ledger
             </p>
             <p className="mt-0.5 text-[10px] font-semibold text-slate-500">
-              Pinned payroll groups (CVS · SM group · SM CVS · Café) — generate drafts, then lock
-              &amp; send to MD
+              Pinned payroll groups (CVS · SM group · SM CVS · Café) — generate drafts, then
+              lock &amp; send to MD
             </p>
           </div>
           <div className="flex items-center gap-1.5">
@@ -2250,14 +3058,17 @@ export default function FMPortalPage() {
 
         {isLivePeriod &&
           payrollTableReady &&
-          !portfolioLoading &&
+          !payrollLockedForRegenerate &&
           !payrollGenerated &&
-          !payrollLockedForRegenerate && (
-            <div className="mb-4 rounded-xl border border-indigo-200/60 bg-indigo-50/60 px-4 py-3 text-[11px] font-semibold text-indigo-900">
-              <span className="font-black uppercase tracking-wider">Draft payslips not generated.</span>{' '}
-              Review the live portfolio below, then use{' '}
-              <span className="font-black">Generate draft payslips</span> when ready — generation no
-              longer runs automatically on page load.
+          !isGenerating && (
+            <div className="mb-4">
+              <button
+                type="button"
+                onClick={runAutoGeneratePayroll}
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-[11px] font-bold uppercase tracking-wider text-white hover:bg-indigo-700"
+              >
+                Generate draft payslips
+              </button>
             </div>
           )}
 
@@ -2280,147 +3091,93 @@ export default function FMPortalPage() {
           </div>
         )}
 
-        <ExecutiveGlassCard className="mb-5 border-slate-200/80 bg-gradient-to-br from-white to-slate-50/80 p-4 sm:p-5">
-          <div className="flex flex-wrap items-start gap-4">
-            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-indigo-200/80 bg-indigo-50/90">
-              <Landmark className="h-5 w-5 text-indigo-700" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-[10px] font-black uppercase tracking-widest text-indigo-700">
-                Payroll workflow
-              </p>
-              <ol className="mt-2 space-y-1.5 text-[11px] font-medium text-slate-600">
-                <li>
-                  <span className="font-black text-slate-800">1. Generate</span> — click{' '}
-                  <span className="font-black">Generate draft payslips</span> when the portfolio is
-                  ready for {periodLabel}.
-                </li>
-                <li>
-                  <span className="font-black text-slate-800">2. Lock &amp; send to MD</span> — on
-                  bank cohort cards only; locks the whole Security or Café batch for MD review.
-                </li>
-                <li>
-                  <span className="font-black text-slate-800">3. MD approves</span> — on the
-                  executive payroll desk; until then Bank .TXT stays disabled.
-                </li>
-                <li>
-                  <span className="font-black text-slate-800">4. Bank .TXT</span> — download one
-                  cohort file at a time (HO, SM, guards by bank). No-bank cards are paid in cash
-                  from the expanded roster.
-                </li>
-              </ol>
-            </div>
-            {isLivePeriod &&
-              payrollTableReady &&
-              !portfolioLoading &&
-              !payrollLockedForRegenerate && (
-                <button
-                  type="button"
-                  onClick={runGeneratePayroll}
-                  disabled={isGenerating || payrollGenerated}
-                  title={
-                    payrollGenerated
-                      ? 'Draft payslips already generated for this period'
-                      : 'Build draft payslips for the live payroll period'
+        <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+          Payroll groups — CVS · SM CVS · Café · no-bank cohorts · guard bank cohorts
+        </p>
+        <div className="mb-4 space-y-3">
+          {(() => {
+            const cvsPayrollSites = pinnedSites.filter((site) =>
+              isCvsSectionPayrollGroup(site.payrollGroup),
+            );
+            const otherPinnedSites = pinnedSites.filter(
+              (site) => !isCvsSectionPayrollGroup(site.payrollGroup),
+            );
+
+            const renderPinnedRow = (site: Site) => {
+              const groupId = pinnedSitePayrollGroupId(site);
+              const groupWorkflow = groupId ? workflowForGroup(groupId) : undefined;
+              const groupLocked = groupWorkflow ? groupWorkflow.status !== 'DRAFT' : payrollLocked;
+              return (
+                <SiteRow
+                  key={site.id}
+                  site={site}
+                  pinned
+                  payrollLocked={groupLocked}
+                  periodLabel={periodLabel}
+                  payrollPeriod={payrollPeriod}
+                  isLivePeriod={isLivePeriod}
+                  portfolioScale={portfolioScale}
+                  groupWorkflow={groupWorkflow}
+                  payrollGenerated={payrollGenerated}
+                  hqDeductionsLocked={fmCanLockPayroll}
+                  locking={groupId != null && lockingGroup === groupId}
+                  onLockGroup={groupId ? () => handleLockGroup(groupId) : undefined}
+                  onReeditGroup={groupId ? () => handleReeditGroup(groupId) : undefined}
+                  onDownloadBank={
+                    groupId ? () => handleDownloadBankFile(site, groupId) : undefined
                   }
-                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-xl px-4 py-2.5 text-[10px] font-black uppercase tracking-wider shadow-sm transition-all ${
-                    !isGenerating && !payrollGenerated
-                      ? 'border border-indigo-200/80 bg-indigo-600 text-white hover:bg-indigo-500'
-                      : 'cursor-not-allowed border border-slate-200/80 bg-slate-100/80 text-slate-400'
-                  }`}
-                >
-                  {isGenerating ? (
-                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                  ) : (
-                    <FileText className="h-3.5 w-3.5" />
-                  )}
-                  {isGenerating ? 'Generating…' : 'Generate draft payslips'}
-                </button>
-              )}
-          </div>
-        </ExecutiveGlassCard>
+                  onShiftAdjust={(employeeId, delta, note) =>
+                    handleShiftAdjust(site.id, employeeId, delta, note)
+                  }
+                  onVariableEarningsSaved={(employeeId, variableEarnings, totals, fixedAllowances) =>
+                    handleVariableEarningsSaved(site.id, employeeId, variableEarnings, totals, fixedAllowances)
+                  }
+                  onDeductionsSaved={refreshPortfolio}
+                  bankFileDownloaded={bankCohortDownloaded.has(site.id)}
+                />
+              );
+            };
 
-        {portfolioLoading ? (
-          <PortfolioLedgerSkeleton />
-        ) : (
-          <div className="mb-4 space-y-5">
-            {payrollSections.map((section) => (
-              <section
-                key={section.id}
-                className={`overflow-hidden rounded-2xl border shadow-sm ${section.border} ${section.bg}`}
-              >
-                <div className="flex items-start gap-3 border-b border-inherit px-4 py-3 sm:px-5">
-                  <div
-                    className={`mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl text-xs font-black ${section.iconBg}`}
-                  >
-                    {section.id === 'ho'
-                      ? 'HO'
-                      : section.id === 'sm'
-                        ? 'SM'
-                        : section.id === 'cafe'
-                          ? 'CF'
-                          : 'GD'}
-                  </div>
-                  <div className="min-w-0">
-                    <p
-                      className={`text-[11px] font-black uppercase tracking-widest ${section.titleColor}`}
-                    >
-                      {section.title}
+            return (
+              <>
+                {cvsPayrollSites.length > 0 && (
+                  <div className="space-y-3">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-indigo-600/90">
+                      CVS payroll group
                     </p>
-                    <p className={`mt-0.5 text-[11px] font-medium ${section.subtitleColor}`}>
-                      {section.subtitle}
-                    </p>
+                    {cvsPayrollSites.map(renderPinnedRow)}
                   </div>
-                </div>
-                <div
-                  className={`grid gap-3 p-3 sm:p-4 ${
-                    section.id === 'guards'
-                      ? 'grid-cols-1 md:grid-cols-2 xl:grid-cols-3'
-                      : 'grid-cols-1 sm:grid-cols-2'
-                  }`}
-                >
-                  {section.sites.map(renderPinnedSite)}
-                </div>
-              </section>
-            ))}
-          </div>
-        )}
+                )}
+                {otherPinnedSites.map(renderPinnedRow)}
+              </>
+            );
+          })()}
+        </div>
 
-        {CVS_GUARD_OPS_ENABLED ? (
-          <>
-            <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">
-              Client guard sites
-            </p>
-            <div className="space-y-3">
-              {portfolioLoading ? (
-                <>
-                  <PortfolioSiteRowSkeleton />
-                  <PortfolioSiteRowSkeleton />
-                  <PortfolioSiteRowSkeleton />
-                </>
-              ) : (
-                sites.map((site) => (
-                  <SiteRow
-                    key={site.id}
-                    site={site}
-                    payrollLocked={payrollLocked}
-                    periodLabel={periodLabel}
-                    payrollPeriod={payrollPeriod}
-                    isLivePeriod={isLivePeriod}
-                    portfolioScale={portfolioScale}
-                    onShiftAdjust={(employeeId, delta, note) =>
-                      handleShiftAdjust(site.id, employeeId, delta, note)
-                    }
-                    onVariableEarningsSaved={(employeeId, variableEarnings, totals, fixedAllowances) =>
-                      handleVariableEarningsSaved(site.id, employeeId, variableEarnings, totals, fixedAllowances)
-                    }
-                    onDeductionsSaved={refreshPortfolio}
-                  />
-                ))
-              )}
-            </div>
-          </>
-        ) : null}
-    </FmCommandShellLayout>
+        <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+          Client guard sites
+        </p>
+        <div className="space-y-3">
+          {sites.map((site) => (
+            <SiteRow
+              key={site.id}
+              site={site}
+              payrollLocked={payrollLocked}
+              periodLabel={periodLabel}
+              payrollPeriod={payrollPeriod}
+              isLivePeriod={isLivePeriod}
+              portfolioScale={portfolioScale}
+              onShiftAdjust={(employeeId, delta, note) =>
+                handleShiftAdjust(site.id, employeeId, delta, note)
+              }
+              onVariableEarningsSaved={(employeeId, variableEarnings, totals, fixedAllowances) =>
+                handleVariableEarningsSaved(site.id, employeeId, variableEarnings, totals, fixedAllowances)
+              }
+              onDeductionsSaved={refreshPortfolio}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }

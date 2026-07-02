@@ -1,6 +1,24 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "cd ../.. && npm install",
-  "buildCommand": "cd ../.. && npx turbo build --filter=pearzen-erp-back-office",
-  "framework": "nextjs"
+  "buildCommand": "cd ../.. && npm run build:tenant-erp-back-office",
+  "framework": "nextjs",
+  "crons": [
+    {
+      "path": "/api/cron/purge-verification-photos",
+      "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/purge-cafe-task-proofs",
+      "schedule": "15 3 * * *"
+    },
+    {
+      "path": "/api/cron/purge-opex-receipts",
+      "schedule": "30 3 * * *"
+    },
+    {
+      "path": "/api/cron/purge-shalom-handover-photos",
+      "schedule": "45 3 * * *"
+    }
+  ]
 }

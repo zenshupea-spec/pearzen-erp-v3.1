@@ -7,6 +7,7 @@ import {
   Clock,
   Calendar,
   User,
+  Car,
   Percent,
   Save,
   CheckCircle2,
@@ -82,29 +83,13 @@ import {
   parseGpsCoords,
 } from '../../../lib/site-geofence';
 import { fetchCompanyLogo, persistCompanyLogo, clearCompanyLogo } from './logo-actions';
-import { fetchExecutiveSessionProfile } from '../actions';
 import { getRankPayMatrix, saveRankPayMatrix } from './rank-matrix-actions';
-import RankPayLedgerSections, {
-  blankRankDraftForSection,
-  type RankPayDraft,
-} from './RankPayLedgerSections';
-import {
-  sanitizeRankPayMatrixEntries,
-  isLockedExecutiveLedgerRank,
-  isLockedSectorManagerLedgerRank,
-  type RankLedgerSectionId,
-} from '../../../../../packages/rank-pay-matrix';
 import { getGratuitySettings, saveGratuitySettings } from './gratuity-actions';
 import { getWelfareFundSettings, saveWelfareFundSettings } from './welfare-fund-actions';
 import { getMdEngineConstants, saveMdEngineConstants } from './engine-constants-actions';
 import type { CafeMonthPreviewQty, GuardMonthPreviewQty } from './engine-constants';
 import { getBankExportSettings, saveBankExportSettings } from './bank-export-actions';
 import { getPayFormulasSettings, savePayFormulasSettings } from './pay-formulas-actions';
-import { calculateCafeShift } from '../../../lib/compensation-engine';
-import {
-  computeGuardMonthSimulatorGross,
-  guardMonthPreviewRates,
-} from '../../../lib/guard-day-type-pay';
 import type { GratuitySettings } from '../../../../../packages/gratuity';
 import type { WelfareFundSettings } from '../../../../../packages/welfare-fund';
 import {
@@ -113,11 +98,8 @@ import {
 } from '../../../../../packages/bank-export-settings';
 import {
   calcApit,
-  calcStampDutyLkr,
   DEFAULT_APIT_SLABS,
   DEFAULT_STAMP_DUTY_LKR,
-  DEFAULT_STAMP_DUTY_THRESHOLD_LKR,
-  type ApitSlab,
 } from '../../../../../packages/payroll-deductions';
 import {
   DEFAULT_CAFE_PAY_FORMULAS,
@@ -129,7 +111,6 @@ import {
 } from '../../../../../packages/pay-formulas';
 import { LOGO_STORAGE_KEY } from '../../../../../packages/supabase/branding-constants';
 import BulkDataImportPanel from './BulkDataImportPanel';
-import AdvanceSalarySettingsCard from './AdvanceSalarySettingsCard';
 import { useExecutiveNavGuardRef } from '../executive-nav-guard';
 import { getSettingsAuditTrail, type SettingsSectionAudit } from './settings-traceability-actions';
 import type { SettingsSectionId } from './settings-section-types';
@@ -148,23 +129,6 @@ import {
   type InternalWorkLocation,
   type InternalWorkLocationsSettings,
 } from '../../../lib/internal-work-locations';
-import { useExecutiveVaultSessionOptional } from '../../../components/executive/ExecutiveVaultSession';
-import { isVaultLockSaveError } from '../../../lib/executive-vault-session-shared';
-import { CVS_BRAND_CLASSES } from '../../../lib/cvs-brand-tokens';
-import {
-  ExecutivePageBody,
-  ExecutivePageHeader,
-  ExecutivePageShell,
-  ExecutivePageToolbar,
-} from '../../../components/executive/ExecutivePageChrome';
-
-function failuresIncludeVaultLock(failures: string[]): boolean {
-  return failures.some((line) => isVaultLockSaveError(line));
-}
-
-function scrollToRankPaySection(sectionId: 'head-office' | 'guard' | 'cafe') {
-  document.getElementById(`rank-pay-${sectionId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -172,9 +136,16 @@ type SmPayMode = 'FIXED_ONLY' | 'PER_VISIT_ONLY' | 'FIXED_AND_PER_VISIT';
 
 type RankFormula = 'STATUTORY_HOURLY' | 'FLAT_MONTHLY' | 'HOSPITALITY_HYBRID';
 
-type OperationalGroup = 'GUARD_FIELD' | 'GUARD' | 'SECTOR_MANAGER' | 'HEAD_OFFICE' | 'CAFE';
+type OperationalGroup = 'GUARD_FIELD' | 'SECTOR_MANAGER' | 'HEAD_OFFICE' | 'CAFE';
 
 type RankSalaryType = 'BANK' | 'CASH';
+
+const OPERATIONAL_GROUPS: { id: OperationalGroup; label: string }[] = [
+  { id: 'HEAD_OFFICE',    label: 'Head Office (HO)' },
+  { id: 'GUARD_FIELD',    label: 'Guard (Field Operations)' },
+  { id: 'CAFE',           label: 'Café Operations' },
+  { id: 'SECTOR_MANAGER', label: 'Sector Manager (MD dictated)' },
+];
 
 interface RankPay {
   id: string;
@@ -205,8 +176,6 @@ interface SettingsState {
 
   // Fuel Surplus Correction
   fuelSurplusCorrection: boolean;
-  smFuelAdvanceLkr: number;
-  smFuelPerKmLkr: number;
 
   // Statutory
   vatRate: number;
@@ -229,7 +198,6 @@ interface SettingsState {
 
   // Café OT Threshold
   cafeOtMaxMonthlyHours: number;
-  cafeWeeklyOtThresholdHours: number;
 }
 
 // ─── Initial demo state ───────────────────────────────────────────────────────
@@ -254,8 +222,6 @@ const INITIAL: SettingsState = {
   smPerVisitBonus: 2500,
 
   fuelSurplusCorrection: true,
-  smFuelAdvanceLkr: 15_000,
-  smFuelPerKmLkr: 100,
 
   vatRate: 18,
   ssclRate: 2.5641,
@@ -275,7 +241,6 @@ const INITIAL: SettingsState = {
   rankFormulaMap: {},
 
   cafeOtMaxMonthlyHours: 20,
-  cafeWeeklyOtThresholdHours: 48,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -404,7 +369,7 @@ const GUARD_FORMULA_ROWS: {
   { key: 'publicHoliday', title: 'PUBLIC HOLIDAY', icon: Flag },
   { key: 'statutory', title: 'STATUTORY', icon: Scale },
   { key: 'weeklyHolidaySunday', title: 'WEEKLY HOLIDAY (SUNDAY)', icon: Moon },
-  { key: 'saturdayHalfDay', title: 'SATURDAY', icon: Calendar },
+  { key: 'saturdayHalfDay', title: 'SATURDAY (HALF-DAY BASELINE)', icon: Calendar },
 ];
 
 const CAFE_FORMULA_ROWS: {
@@ -424,8 +389,8 @@ const CAFE_FORMULA_ROWS: {
 type SettingsTab = 'GENERAL' | 'CATALOGS' | 'OPERATIONS';
 
 const SETTINGS_TABS: { id: SettingsTab; label: string; Icon: React.ElementType }[] = [
-  { id: 'CATALOGS',   label: 'Asset & Penalty Catalogs',  Icon: ListChecks  },
   { id: 'GENERAL',    label: 'Finance & Compensation',    Icon: Settings    },
+  { id: 'CATALOGS',   label: 'Asset & Penalty Catalogs',  Icon: ListChecks  },
   { id: 'OPERATIONS', label: 'Operations & Compliance',   Icon: UserCheck   },
 ];
 
@@ -460,7 +425,6 @@ type SettingsDirtySnapshot = {
   entities: EntityNames;
   apitSlabs: typeof DEFAULT_APIT_SLABS;
   stampDutyAmount: number;
-  stampDutyThresholdLkr: number;
   masterBankFormat: BankExportFormatId;
   enforceBankFormat: boolean;
   isolateExternalBank: boolean;
@@ -469,7 +433,6 @@ type SettingsDirtySnapshot = {
   enforceFlatSiteRate: boolean;
   allowPoyaOnFlatRate: boolean;
   requireDeductionMonthLock: boolean;
-  uniformMonthlyInstalmentLkr: number;
   smVisits: number;
   hoSalary: number;
   guardPreviewQty: GuardMonthPreviewQty;
@@ -511,6 +474,7 @@ const TRACKED_DIRTY_SECTIONS = [
   'rankPay',
   'gratuity',
   'welfareFund',
+  'fuelSurplus',
   'geofence',
   'internalWorkLocations',
   'shiftTimes',
@@ -531,6 +495,7 @@ const SETTINGS_SECTION_LABELS: Record<SettingsSectionId, string> = {
   rankPay: 'Rank Pay Matrix',
   gratuity: 'Gratuity Settings',
   welfareFund: 'Welfare Fund',
+  fuelSurplus: 'Fuel Surplus Correction',
   geofence: 'Default Geofence Radius',
   internalWorkLocations: 'Internal Work Locations',
   shiftTimes: 'Guard Shift Times',
@@ -570,7 +535,6 @@ function sectionSnapshotSlice(
         monthlyDaysDivisor: settings.monthlyDaysDivisor,
         apitSlabs: snap.apitSlabs,
         stampDutyAmount: snap.stampDutyAmount,
-        stampDutyThresholdLkr: snap.stampDutyThresholdLkr,
       };
     case 'payGroup':
       return {
@@ -595,7 +559,6 @@ function sectionSnapshotSlice(
       return {
         cafeFormulas: snap.cafeFormulas,
         cafeOtMaxMonthlyHours: settings.cafeOtMaxMonthlyHours,
-        cafeWeeklyOtThresholdHours: settings.cafeWeeklyOtThresholdHours,
       };
     case 'crossDeployment':
       return {
@@ -612,7 +575,6 @@ function sectionSnapshotSlice(
         payrollTargetDay: settings.payrollTargetDay,
         collectionWarningDay: settings.collectionWarningDay,
         requireDeductionMonthLock: snap.requireDeductionMonthLock,
-        uniformMonthlyInstalmentLkr: snap.uniformMonthlyInstalmentLkr,
       };
     case 'rankPay':
       return { rankPay: snap.rankPay, rankAddDraft: snap.rankAddDraft };
@@ -620,6 +582,8 @@ function sectionSnapshotSlice(
       return { gratuitySettings: snap.gratuitySettings };
     case 'welfareFund':
       return { welfareFundSettings: snap.welfareFundSettings };
+    case 'fuelSurplus':
+      return { fuelSurplusCorrection: settings.fuelSurplusCorrection };
     case 'geofence':
       return { defaultGeofenceRadiusM: snap.defaultGeofenceRadiusM };
     case 'internalWorkLocations':
@@ -682,29 +646,33 @@ function isInternalSettingsHref(href: string): boolean {
 // ─── Catalog Types & Initial Data ─────────────────────────────────────────────
 
 import { DEFAULT_PENALTY_CATALOG, type PenaltyCatalogEntry } from '../../../../../packages/penalty-catalog';
-import type { ReplacementCatalogEntry } from '../../../../../packages/replacement-catalog';
-import {
-  getPenaltyCatalog,
-  getReplacementCatalog,
-  savePenaltyCatalog,
-  saveReplacementCatalog,
-} from './catalog-actions';
+import { getPenaltyCatalog, savePenaltyCatalog } from './catalog-actions';
 
 interface PenaltyEntry extends PenaltyCatalogEntry {}
-interface ReplacementEntry extends ReplacementCatalogEntry {}
+interface ReplacementEntry { id: string; item: string; cost: number; }
+
+const INITIAL_REPLACEMENTS: ReplacementEntry[] = [
+  { id: 'r1', item: 'Broken TV — Main Lounge',            cost: 95000 },
+  { id: 'r2', item: 'Lost Master Keys',                    cost: 12000 },
+  { id: 'r3', item: 'Damaged Air Conditioner',             cost: 45000 },
+  { id: 'r4', item: 'Missing Remote Controls (Set)',       cost:  8000 },
+  { id: 'r5', item: 'Broken Window (Standard)',            cost: 25000 },
+  { id: 'r6', item: 'Lost Access Card / Door Fob',        cost:  3500 },
+  { id: 'r7', item: 'Damaged Bed Frame',                   cost: 38000 },
+  { id: 'r8', item: 'Stained / Torn Linen Set',           cost:  6500 },
+];
 
 // ─── Asset Catalogs Panel ─────────────────────────────────────────────────────
 
 function AssetCatalogsPanel() {
   const [penalties,     setPenalties]     = useState<PenaltyEntry[]>(DEFAULT_PENALTY_CATALOG);
-  const [replacements,  setReplacements]  = useState<ReplacementEntry[]>([]);
+  const [replacements,  setReplacements]  = useState<ReplacementEntry[]>(INITIAL_REPLACEMENTS);
   const [catalogSaved,  setCatalogSaved]  = useState(false);
   const [catalogSaving, setCatalogSaving] = useState(false);
   const [catalogError,  setCatalogError]  = useState('');
 
   useEffect(() => {
     getPenaltyCatalog().then(setPenalties).catch(() => setPenalties(DEFAULT_PENALTY_CATALOG));
-    getReplacementCatalog().then(setReplacements).catch(() => setReplacements([]));
   }, []);
 
   const showSaved = () => { setCatalogSaved(true); setTimeout(() => setCatalogSaved(false), 2500); };
@@ -712,19 +680,12 @@ function AssetCatalogsPanel() {
   const handleSaveCatalogs = async () => {
     setCatalogSaving(true);
     setCatalogError('');
-    const [penaltyResult, replacementResult] = await Promise.all([
-      savePenaltyCatalog(penalties),
-      saveReplacementCatalog(replacements),
-    ]);
+    const result = await savePenaltyCatalog(penalties);
     setCatalogSaving(false);
-    if (penaltyResult.success && replacementResult.success) {
+    if (result.success) {
       showSaved();
     } else {
-      setCatalogError(
-        penaltyResult.error
-          ?? replacementResult.error
-          ?? 'Failed to save asset catalogs.',
-      );
+      setCatalogError(result.error ?? 'Failed to save penalty catalog.');
     }
   };
 
@@ -779,7 +740,7 @@ function AssetCatalogsPanel() {
             saving={catalogSaving}
             saved={catalogSaved}
             onClick={() => void handleSaveCatalogs()}
-            label="Save Catalogs"
+            label="Save Penalties"
           />
         </div>
 
@@ -846,23 +807,15 @@ function AssetCatalogsPanel() {
 
       {/* ── Shalom Replacement Costs ── */}
       <ExecutiveGlassCard className="overflow-hidden">
-        <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-indigo-200/80 bg-indigo-50/80">
-              <Home className="h-5 w-5 text-indigo-700" />
-            </div>
-            <div>
-              <h3 className="text-lg font-bold text-slate-800">Shalom Replacement Costs</h3>
-              <p className="text-sm font-medium text-slate-600">Standard asset replacement values used to bill tenants or guests for damaged / missing items</p>
-              <SettingsTraceability />
-            </div>
+        <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4 flex items-center gap-3">
+          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-indigo-200/80 bg-indigo-50/80">
+            <Home className="h-5 w-5 text-indigo-700" />
           </div>
-          <SectionSaveButton
-            saving={catalogSaving}
-            saved={catalogSaved}
-            onClick={() => void handleSaveCatalogs()}
-            label="Save Catalogs"
-          />
+          <div>
+            <h3 className="text-lg font-bold text-slate-800">Shalom Replacement Costs</h3>
+            <p className="text-sm font-medium text-slate-600">Standard asset replacement values used to bill tenants or guests for damaged / missing items</p>
+            <SettingsTraceability />
+          </div>
         </div>
 
         <div className="overflow-x-auto">
@@ -963,189 +916,97 @@ const evaluateFormulaAtB = (formula: string, B: number, HRS = 9): number => {
 // ── Shared simulation helpers ─────────────────────────────────────────────────
 
 const SIM_EPF_EMP = 0.08;
+const SIM_STAMP   = 25;
 
-function monthSimStatutoryDeductions(
-  gross: number,
-  apitSlabs: ApitSlab[],
-  stampDutyAmount: number,
-  stampDutyThresholdLkr: number,
-) {
-  const epfEmp = Math.round(gross * SIM_EPF_EMP);
-  const apit = calcApit(gross, apitSlabs);
-  const stampDuty = calcStampDutyLkr(gross, stampDutyAmount, stampDutyThresholdLkr);
-  const net = Number((gross - epfEmp - apit - stampDuty).toFixed(2));
-  return { epfEmp, apit, stampDuty, net };
-}
-
-const MonthSimDeductions = ({
-  epfEmp,
-  apit,
-  stampDuty,
-}: {
-  epfEmp: number;
-  apit: number;
-  stampDuty: number;
-}) => (
-  <div className="mt-1.5 space-y-1">
-    <div className="flex items-center justify-between gap-2">
-      <span className="text-[10px] font-semibold text-rose-600">EPF 8% (Deducted)</span>
-      <span className="font-mono text-[10px] tabular-nums text-rose-600">− {fmtSimLKR(epfEmp)}</span>
-    </div>
-    {apit > 0 && (
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[10px] font-semibold text-violet-600">APIT (Deducted)</span>
-        <span className="font-mono text-[10px] tabular-nums text-violet-600">− {fmtSimLKR(apit)}</span>
-      </div>
-    )}
-    {stampDuty > 0 && (
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[10px] font-semibold text-rose-600">Stamp Duty</span>
-        <span className="font-mono text-[10px] tabular-nums text-rose-600">− {fmtSimLKR(stampDuty)}</span>
-      </div>
-    )}
-  </div>
-);
+const simApit = (gross: number): number => {
+  const slabs = [
+    { min: 0,      max: 150000, rate: 0  },
+    { min: 150000, max: 233333, rate: 6  },
+    { min: 233333, max: 275000, rate: 18 },
+    { min: 275000, max: 316667, rate: 24 },
+    { min: 316667, max: 358334, rate: 30 },
+    { min: 358334, max: Infinity, rate: 36 },
+  ];
+  let tax = 0;
+  for (const slab of slabs) {
+    if (gross <= slab.min) break;
+    const taxable = Math.min(gross, slab.max) - slab.min;
+    if (taxable > 0 && slab.rate > 0) tax += (taxable * slab.rate) / 100;
+  }
+  return Math.round(tax);
+};
 
 const fmtSimLKR = (n: number) =>
   `LKR ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-const MONTH_SIM_STEPPER_BTN =
-  'flex h-6 w-6 shrink-0 select-none items-center justify-center rounded border border-amber-300 bg-amber-100 text-amber-800 transition hover:bg-amber-200 active:scale-95 active:bg-amber-200 text-xs font-black leading-none touch-manipulation disabled:cursor-not-allowed disabled:opacity-40';
-
-const MonthSimQtyRow = ({
-  label,
-  value,
-  rate,
-  min = 0,
-  max = 31,
-  onDelta,
-}: {
-  label: string;
-  value: number;
-  rate: number;
-  min?: number;
-  max?: number;
-  onDelta: (delta: number) => void;
-}) => (
-  <div className="flex items-center justify-between gap-2">
-    <span className="truncate text-[10px] font-semibold text-amber-900">{label}</span>
-    <div className="flex items-center gap-1.5">
-      <button
-        type="button"
-        onClick={() => onDelta(-1)}
-        disabled={value <= min}
-        aria-label={`Decrease ${label}`}
-        className={MONTH_SIM_STEPPER_BTN}
-      >
-        −
-      </button>
-      <span
-        className="w-6 text-center font-mono text-xs font-black tabular-nums text-amber-900"
-        aria-live="polite"
-      >
-        {value}
-      </span>
-      <button
-        type="button"
-        onClick={() => onDelta(1)}
-        disabled={value >= max}
-        aria-label={`Increase ${label}`}
-        className={MONTH_SIM_STEPPER_BTN}
-      >
-        +
-      </button>
-      <span className="w-28 text-right font-mono text-[10px] tabular-nums text-amber-800">
-        {fmtSimLKR(value * rate)}
-      </span>
-    </div>
-  </div>
-);
-
-const MonthSimScalarRow = ({
-  label,
-  value,
-  amount,
-  min = 0,
-  max = 200,
-  onDelta,
-}: {
-  label: string;
-  value: number;
-  amount: number;
-  min?: number;
-  max?: number;
-  onDelta: (delta: number) => void;
-}) => (
-  <div className="flex items-center justify-between gap-2">
-    <span className="truncate text-[10px] font-semibold text-amber-900">{label}</span>
-    <div className="flex items-center gap-1.5">
-      <button
-        type="button"
-        onClick={() => onDelta(-1)}
-        disabled={value <= min}
-        aria-label={`Decrease ${label}`}
-        className={MONTH_SIM_STEPPER_BTN}
-      >
-        −
-      </button>
-      <span
-        className="w-8 text-center font-mono text-xs font-black tabular-nums text-amber-900"
-        aria-live="polite"
-      >
-        {value}
-      </span>
-      <button
-        type="button"
-        onClick={() => onDelta(1)}
-        disabled={value >= max}
-        aria-label={`Increase ${label}`}
-        className={MONTH_SIM_STEPPER_BTN}
-      >
-        +
-      </button>
-      <span className="w-28 text-right font-mono text-[10px] tabular-nums text-amber-800">
-        {fmtSimLKR(amount)}
-      </span>
-    </div>
-  </div>
-);
-
 // ── Month Simulation Panel — Guard (B = LKR 30,000) ──────────────────────────
 
 const MonthSimulator = ({
-  basic,
   qty,
-  onBasicChange,
   onQtyChange,
-  guardFormulas,
-  apitSlabs,
-  stampDutyAmount,
-  stampDutyThresholdLkr,
 }: {
-  basic: number;
   qty: GuardMonthPreviewQty;
-  onBasicChange: (value: number) => void;
-  onQtyChange: React.Dispatch<React.SetStateAction<GuardMonthPreviewQty>>;
-  guardFormulas: GuardPayFormulas;
-  apitSlabs: ApitSlab[];
-  stampDutyAmount: number;
-  stampDutyThresholdLkr: number;
+  onQtyChange: (qty: GuardMonthPreviewQty) => void;
 }) => {
-  const B = basic;
-  const rates = guardMonthPreviewRates(B, undefined, guardFormulas);
-  const gross = computeGuardMonthSimulatorGross(qty, B, undefined, guardFormulas);
-  const { epfEmp, apit, stampDuty, net } = monthSimStatutoryDeductions(
-    gross,
-    apitSlabs,
-    stampDutyAmount,
-    stampDutyThresholdLkr,
-  );
+  const B = 30_000;
 
-  const bumpKey = (key: keyof GuardMonthPreviewQty, delta: number) =>
-    onQtyChange((prev) => ({
-      ...prev,
-      [key]: Math.max(0, Math.min(31, prev[key] + delta)),
-    }));
+  const rates = {
+    std:    B / 26 + (B / 26) * (14 / 12) * (1 / 26) + (B / 200) * 1.5 * 3,
+    sun:    (B / 200) * 1.5 * 11,
+    poya:   (B / 200) * (2 * 11),
+    pubHol: B / 26 + (B / 26) * (14 / 12) * (1 / 26) + (B / 200) * 1.5 * 3,
+    sat:    (B / 26) * (6 / 8) + (B / 200) * 1.5 * 5,
+  };
+
+  const gross =
+    qty.std * rates.std +
+    qty.sun * rates.sun +
+    qty.poya * rates.poya +
+    qty.pubHol * rates.pubHol +
+    qty.sat * rates.sat;
+
+  const epfEmp   = Math.round(gross * SIM_EPF_EMP);
+  const apit     = simApit(gross);
+  const net      = gross - epfEmp - apit - SIM_STAMP;
+
+  const bump = (key: keyof GuardMonthPreviewQty, delta: number) =>
+    onQtyChange({ ...qty, [key]: Math.max(0, Math.min(31, qty[key] + delta)) });
+
+  const SimRow = ({
+    label,
+    k,
+    rate,
+  }: {
+    label: string;
+    k: keyof GuardMonthPreviewQty;
+    rate: number;
+  }) => (
+    <div className="flex items-center justify-between gap-2">
+      <span className="truncate text-[10px] font-semibold text-amber-900">{label}</span>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => bump(k, -1)}
+          className="flex h-5 w-5 items-center justify-center rounded border border-amber-300 bg-amber-100 text-amber-800 hover:bg-amber-200 text-xs font-black leading-none"
+        >
+          −
+        </button>
+        <span className="w-5 text-center font-mono text-xs font-black tabular-nums text-amber-900">
+          {qty[k]}
+        </span>
+        <button
+          type="button"
+          onClick={() => bump(k, 1)}
+          className="flex h-5 w-5 items-center justify-center rounded border border-amber-300 bg-amber-100 text-amber-800 hover:bg-amber-200 text-xs font-black leading-none"
+        >
+          +
+        </button>
+        <span className="w-28 text-right font-mono text-[10px] tabular-nums text-amber-800">
+          {fmtSimLKR(qty[k] * rate)}
+        </span>
+      </div>
+    </div>
+  );
 
   return (
     <div className="rounded-xl border border-amber-300/80 bg-amber-50/95 px-4 py-3 shadow-sm ring-1 ring-amber-200/60 min-w-[300px]">
@@ -1155,30 +1016,17 @@ const MonthSimulator = ({
           Month Simulation
         </p>
         <span className="rounded-md border border-amber-300 bg-amber-100 px-2 py-0.5 font-mono text-[10px] font-bold text-amber-800">
-          B = LKR {B.toLocaleString()}
+          B = LKR 30,000
         </span>
-      </div>
-      <div className="mb-2.5">
-        <label className="text-[10px] font-semibold uppercase tracking-widest text-amber-800">
-          Preview basic (rank matrix)
-        </label>
-        <input
-          type="number"
-          min={0}
-          step={500}
-          value={B}
-          onChange={(e) => onBasicChange(parseInt(e.target.value, 10) || 0)}
-          className="mt-1 w-full rounded-lg border border-amber-300 bg-white px-2 py-1 font-mono text-xs text-amber-900"
-        />
       </div>
 
       {/* Day-type rows */}
       <div className="space-y-1.5">
-        <MonthSimQtyRow label="Std Working Days"  value={qty.std}    rate={rates.std}    onDelta={(d) => bumpKey('std', d)} />
-        <MonthSimQtyRow label="Sundays"           value={qty.sun}    rate={rates.sun}    onDelta={(d) => bumpKey('sun', d)} />
-        <MonthSimQtyRow label="Poya Days"         value={qty.poya}   rate={rates.poya}   onDelta={(d) => bumpKey('poya', d)} />
-        <MonthSimQtyRow label="Public Holidays"   value={qty.pubHol} rate={rates.pubHol} onDelta={(d) => bumpKey('pubHol', d)} />
-        <MonthSimQtyRow label="Saturdays" value={qty.sat}    rate={rates.sat}    onDelta={(d) => bumpKey('sat', d)} />
+        <SimRow label="Std Working Days"  k="std"    rate={rates.std} />
+        <SimRow label="Sundays"           k="sun"    rate={rates.sun} />
+        <SimRow label="Poya Days"         k="poya"   rate={rates.poya} />
+        <SimRow label="Public Holidays"   k="pubHol" rate={rates.pubHol} />
+        <SimRow label="Saturdays (½ Day)" k="sat"    rate={rates.sat} />
       </div>
 
       {/* Gross subtotal */}
@@ -1190,7 +1038,22 @@ const MonthSimulator = ({
       </div>
 
       {/* Deductions */}
-      <MonthSimDeductions epfEmp={epfEmp} apit={apit} stampDuty={stampDuty} />
+      <div className="mt-1.5 space-y-1">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] font-semibold text-rose-600">EPF 8% (Deducted)</span>
+          <span className="font-mono text-[10px] tabular-nums text-rose-600">− {fmtSimLKR(epfEmp)}</span>
+        </div>
+        {apit > 0 && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] font-semibold text-violet-600">APIT (Deducted)</span>
+            <span className="font-mono text-[10px] tabular-nums text-violet-600">− {fmtSimLKR(apit)}</span>
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] font-semibold text-rose-600">Stamp Duty</span>
+          <span className="font-mono text-[10px] tabular-nums text-rose-600">− {fmtSimLKR(SIM_STAMP)}</span>
+        </div>
+      </div>
 
       {/* Net take-home */}
       <div className="mt-2.5 flex items-center justify-between border-t border-amber-300/70 pt-2.5">
@@ -1217,32 +1080,24 @@ const CafeMonthSimulator = ({
   onBasicChange,
   onQtyChange,
   onOtHoursChange,
-  apitSlabs,
-  stampDutyAmount,
-  stampDutyThresholdLkr,
 }: {
   basic: number;
   qty: CafeMonthPreviewQty;
   otHours: number;
   formulas: CafePayFormulas;
   onBasicChange: (value: number) => void;
-  onQtyChange: React.Dispatch<React.SetStateAction<CafeMonthPreviewQty>>;
-  onOtHoursChange: React.Dispatch<React.SetStateAction<number>>;
-  apitSlabs: ApitSlab[];
-  stampDutyAmount: number;
-  stampDutyThresholdLkr: number;
+  onQtyChange: (qty: CafeMonthPreviewQty) => void;
+  onOtHoursChange: (value: number) => void;
 }) => {
   const B = basic;
 
   const rates = {
-    std: calculateCafeShift(CAFE_SIM_SHIFT_HRS, evaluateFormulaAtB(formulas.otRatePerHour, B), {
-      weeklyHoursBefore: 0,
-    }).grossPay,
-    sun: evaluateFormulaAtB(formulas.weeklyHolidaySunday, B),
-    poya: evaluateFormulaAtB(formulas.poyaDay, B, CAFE_SIM_SHIFT_HRS),
-    pubHol: evaluateFormulaAtB(formulas.publicHoliday, B),
+    std:       evaluateFormulaAtB(formulas.standardShift, B),
+    sun:       evaluateFormulaAtB(formulas.weeklyHolidaySunday, B),
+    poya:      evaluateFormulaAtB(formulas.poyaDay, B, CAFE_SIM_SHIFT_HRS),
+    pubHol:    evaluateFormulaAtB(formulas.publicHoliday, B),
     statutory: evaluateFormulaAtB(formulas.statutoryHoliday, B, CAFE_SIM_SHIFT_HRS),
-    sat: evaluateFormulaAtB(formulas.saturdayShift, B),
+    sat:       evaluateFormulaAtB(formulas.saturdayShift, B),
   };
   const otRate = evaluateFormulaAtB(formulas.otRatePerHour, B);
 
@@ -1253,23 +1108,53 @@ const CafeMonthSimulator = ({
     qty.pubHol * rates.pubHol +
     qty.statutory * rates.statutory +
     qty.sat * rates.sat;
-  const otPay = otHours > 0 ? otHours * otRate : 0;
-  const gross = dayGross + otPay;
-  const { epfEmp, apit, stampDuty, net } = monthSimStatutoryDeductions(
-    gross,
-    apitSlabs,
-    stampDutyAmount,
-    stampDutyThresholdLkr,
-  );
+  const otPay  = Math.round(otRate * otHours);
+  const gross  = dayGross + otPay;
+  const epfEmp = Math.round(gross * SIM_EPF_EMP);
+  const apit   = simApit(gross);
+  const net    = gross - epfEmp - apit - SIM_STAMP;
 
   const bumpQty = (key: keyof CafeMonthPreviewQty, delta: number) =>
-    onQtyChange((prev) => ({
-      ...prev,
-      [key]: Math.max(0, Math.min(31, prev[key] + delta)),
-    }));
+    onQtyChange({ ...qty, [key]: Math.max(0, Math.min(31, qty[key] + delta)) });
 
   const bumpOt = (delta: number) =>
-    onOtHoursChange((prev) => Math.max(0, Math.min(200, prev + delta)));
+    onOtHoursChange(Math.max(0, Math.min(200, otHours + delta)));
+
+  const SimRow = ({
+    label,
+    k,
+    rate,
+  }: {
+    label: string;
+    k: keyof CafeMonthPreviewQty;
+    rate: number;
+  }) => (
+    <div className="flex items-center justify-between gap-2">
+      <span className="truncate text-[10px] font-semibold text-amber-900">{label}</span>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => bumpQty(k, -1)}
+          className="flex h-5 w-5 items-center justify-center rounded border border-amber-300 bg-amber-100 text-amber-800 hover:bg-amber-200 text-xs font-black leading-none"
+        >
+          −
+        </button>
+        <span className="w-5 text-center font-mono text-xs font-black tabular-nums text-amber-900">
+          {qty[k]}
+        </span>
+        <button
+          type="button"
+          onClick={() => bumpQty(k, 1)}
+          className="flex h-5 w-5 items-center justify-center rounded border border-amber-300 bg-amber-100 text-amber-800 hover:bg-amber-200 text-xs font-black leading-none"
+        >
+          +
+        </button>
+        <span className="w-28 text-right font-mono text-[10px] tabular-nums text-amber-800">
+          {fmtSimLKR(qty[k] * rate)}
+        </span>
+      </div>
+    </div>
+  );
 
   return (
     <div className="rounded-xl border border-amber-300/80 bg-amber-50/95 px-4 py-3 shadow-sm ring-1 ring-amber-200/60 min-w-[300px]">
@@ -1291,22 +1176,39 @@ const CafeMonthSimulator = ({
 
       {/* Day-type rows */}
       <div className="space-y-1.5">
-        <MonthSimQtyRow label="Std Working Days"   value={qty.std}       rate={rates.std}       onDelta={(d) => bumpQty('std', d)} />
-        <MonthSimQtyRow label="Sundays"            value={qty.sun}       rate={rates.sun}       onDelta={(d) => bumpQty('sun', d)} />
-        <MonthSimQtyRow label="Poya Days"          value={qty.poya}      rate={rates.poya}      onDelta={(d) => bumpQty('poya', d)} />
-        <MonthSimQtyRow label="Public Holidays"    value={qty.pubHol}    rate={rates.pubHol}    onDelta={(d) => bumpQty('pubHol', d)} />
-        <MonthSimQtyRow label="Statutory Holidays" value={qty.statutory} rate={rates.statutory} onDelta={(d) => bumpQty('statutory', d)} />
-        <MonthSimQtyRow label="Saturdays"          value={qty.sat}       rate={rates.sat}       onDelta={(d) => bumpQty('sat', d)} />
+        <SimRow label="Std Working Days"  k="std"       rate={rates.std} />
+        <SimRow label="Sundays"           k="sun"       rate={rates.sun} />
+        <SimRow label="Poya Days"         k="poya"      rate={rates.poya} />
+        <SimRow label="Public Holidays"   k="pubHol"    rate={rates.pubHol} />
+        <SimRow label="Statutory Holidays" k="statutory" rate={rates.statutory} />
+        <SimRow label="Saturdays"         k="sat"       rate={rates.sat} />
       </div>
 
       {/* OT Hours row */}
-      <div className="mt-2 border-t border-amber-300/50 pt-2">
-        <MonthSimScalarRow
-          label="OT Hours (Month)"
-          value={otHours}
-          amount={otPay}
-          onDelta={bumpOt}
-        />
+      <div className="mt-2 flex items-center justify-between gap-2 border-t border-amber-300/50 pt-2">
+        <span className="truncate text-[10px] font-semibold text-amber-900">OT Hours (Month)</span>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => bumpOt(-1)}
+            className="flex h-5 w-5 items-center justify-center rounded border border-amber-300 bg-amber-100 text-amber-800 hover:bg-amber-200 text-xs font-black leading-none"
+          >
+            −
+          </button>
+          <span className="w-8 text-center font-mono text-xs font-black tabular-nums text-amber-900">
+            {otHours}
+          </span>
+          <button
+            type="button"
+            onClick={() => bumpOt(1)}
+            className="flex h-5 w-5 items-center justify-center rounded border border-amber-300 bg-amber-100 text-amber-800 hover:bg-amber-200 text-xs font-black leading-none"
+          >
+            +
+          </button>
+          <span className="w-28 text-right font-mono text-[10px] tabular-nums text-amber-800">
+            {fmtSimLKR(otPay)}
+          </span>
+        </div>
       </div>
 
       {/* Gross subtotal */}
@@ -1325,7 +1227,22 @@ const CafeMonthSimulator = ({
       </div>
 
       {/* Deductions */}
-      <MonthSimDeductions epfEmp={epfEmp} apit={apit} stampDuty={stampDuty} />
+      <div className="mt-1.5 space-y-1">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] font-semibold text-rose-600">EPF 8% (Deducted)</span>
+          <span className="font-mono text-[10px] tabular-nums text-rose-600">− {fmtSimLKR(epfEmp)}</span>
+        </div>
+        {apit > 0 && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] font-semibold text-violet-600">APIT (Deducted)</span>
+            <span className="font-mono text-[10px] tabular-nums text-violet-600">− {fmtSimLKR(apit)}</span>
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] font-semibold text-rose-600">Stamp Duty</span>
+          <span className="font-mono text-[10px] tabular-nums text-rose-600">− {fmtSimLKR(SIM_STAMP)}</span>
+        </div>
+      </div>
 
       {/* Net take-home */}
       <div className="mt-2.5 flex items-center justify-between border-t border-amber-300/70 pt-2.5">
@@ -1608,14 +1525,7 @@ export default function SettingsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const navGuardRef = useExecutiveNavGuardRef();
-  const vault = useExecutiveVaultSessionOptional();
-  const vaultBlocksSave = Boolean(
-    vault?.enabled &&
-      vault.pinCheckDone &&
-      vault.vaultPinConfigured &&
-      vault.locked,
-  );
-  const [activeTab, setActiveTab]   = useState<SettingsTab>('CATALOGS');
+  const [activeTab, setActiveTab]   = useState<SettingsTab>('GENERAL');
   const [showGlobalSettingsWarning, setShowGlobalSettingsWarning] = useState(false);
   const [pendingTab, setPendingTab] = useState<SettingsTab | null>(null);
   const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
@@ -1675,12 +1585,10 @@ export default function SettingsPage() {
   const [enforceFlatSiteRate, setEnforceFlatSiteRate] = useState(true);
   const [allowPoyaOnFlatRate, setAllowPoyaOnFlatRate] = useState(false);
   const [requireDeductionMonthLock, setRequireDeductionMonthLock] = useState(true);
-  const [uniformMonthlyInstalmentLkr, setUniformMonthlyInstalmentLkr] = useState(2_000);
 
   // ── Live Wage Preview calculator state ───────────────────────────────────────
   const [smVisits,     setSmVisits]     = useState(70);
   const [hoSalary,     setHoSalary]     = useState(180000);
-  const [guardPreviewBasic, setGuardPreviewBasic] = useState(35_000);
   const [guardPreviewQty, setGuardPreviewQty] = useState<GuardMonthPreviewQty>({
     std: 20, sun: 4, poya: 1, pubHol: 0, sat: 4,
   });
@@ -1710,19 +1618,15 @@ export default function SettingsPage() {
   const leaveBypassRef = useRef(false);
 
   // ── Rank Pay Matrix state ───────────────────────────────────────────────────
-  const BLANK_RANK: RankPayDraft = blankRankDraftForSection('GUARD');
+  const BLANK_RANK: Omit<RankPay, 'id'> = { rankCode: '', fullTitle: '', basicPay: 0, annualIncrement: 0, salaryType: 'BANK', operationalGroup: 'GUARD_FIELD' };
   const [editingRankId,  setEditingRankId]  = useState<string | null>(null);
-  const [editDraft,      setEditDraft]      = useState<RankPayDraft>(BLANK_RANK);
-  const [addingRankSection, setAddingRankSection] = useState<RankLedgerSectionId | null>(null);
-  const [newRankDraft,   setNewRankDraft]   = useState<RankPayDraft>(BLANK_RANK);
+  const [editDraft,      setEditDraft]      = useState<Omit<RankPay, 'id'>>(BLANK_RANK);
+  const [showAddRank,    setShowAddRank]    = useState(false);
+  const [newRankDraft,   setNewRankDraft]   = useState<Omit<RankPay, 'id'>>(BLANK_RANK);
   const [rankMatrixError, setRankMatrixError] = useState('');
   const [rankMatrixSaving, setRankMatrixSaving] = useState(false);
-  const [canManageExecutiveRanks, setCanManageExecutiveRanks] = useState(false);
 
   const [stampDutyAmount, setStampDutyAmount] = useState(DEFAULT_STAMP_DUTY_LKR);
-  const [stampDutyThresholdLkr, setStampDutyThresholdLkr] = useState(
-    DEFAULT_STAMP_DUTY_THRESHOLD_LKR,
-  );
   const [apitSlabs, setApitSlabs] = useState(DEFAULT_APIT_SLABS);
   const [guardFormulas, setGuardFormulas] = useState<GuardPayFormulas>(DEFAULT_GUARD_PAY_FORMULAS);
   const [cafeFormulas, setCafeFormulas] = useState<CafePayFormulas>(DEFAULT_CAFE_PAY_FORMULAS);
@@ -1731,15 +1635,9 @@ export default function SettingsPage() {
     setS((prev) => ({ ...prev, [key]: value }));
 
   const startEditRank = (r: RankPay) => {
-    if (!promptVaultUnlockForRankMatrix()) return;
-    if (isLockedExecutiveLedgerRank(r.rankCode) && !canManageExecutiveRanks) {
-      setRankMatrixError('Only MD or OD can edit MD and OD ranks.');
-      return;
-    }
-    setRankMatrixError('');
     setEditingRankId(r.id);
     setEditDraft({ rankCode: r.rankCode, fullTitle: r.fullTitle.toUpperCase(), basicPay: r.basicPay, annualIncrement: r.annualIncrement, salaryType: r.salaryType, operationalGroup: r.operationalGroup });
-    setAddingRankSection(null);
+    setShowAddRank(false);
   };
 
   const cancelEditRank = () => {
@@ -1747,27 +1645,13 @@ export default function SettingsPage() {
     setEditDraft(BLANK_RANK);
   };
 
-  const promptVaultUnlockForRankMatrix = useCallback((): boolean => {
-    if (!vaultBlocksSave) return true;
-    setRankMatrixError(
-      'Vault is locked. Enter your 4-digit PIN to unlock, then save the rank again.',
-    );
-    vault?.requestUnlock();
-    return false;
-  }, [vault, vaultBlocksSave]);
-
   const persistRankPayMatrix = async (matrix: RankPay[]): Promise<boolean> => {
-    if (!promptVaultUnlockForRankMatrix()) return false;
     setRankMatrixSaving(true);
     setRankMatrixError('');
     try {
       const res = await saveRankPayMatrix(matrix);
       if (!res.success) {
-        const error = res.error ?? 'Failed to save rank matrix';
-        setRankMatrixError(error);
-        if (isVaultLockSaveError(error)) {
-          vault?.requestUnlock();
-        }
+        setRankMatrixError(res.error ?? 'Failed to save rank matrix');
         return false;
       }
       return true;
@@ -1783,89 +1667,56 @@ export default function SettingsPage() {
     if (!editingRankId || !editDraft.rankCode.trim() || !editDraft.fullTitle.trim()) {
       return matrix;
     }
-    const existing = matrix.find((r) => r.id === editingRankId);
-    if (!existing) return matrix;
-    const merged = {
-      ...existing,
-      ...editDraft,
-      salaryType: 'BANK' as const,
-    };
-    const unchanged =
-      merged.rankCode.trim().toUpperCase() === existing.rankCode &&
-      merged.fullTitle.trim().toUpperCase() === existing.fullTitle &&
-      merged.basicPay === existing.basicPay &&
-      merged.annualIncrement === existing.annualIncrement &&
-      merged.operationalGroup === existing.operationalGroup;
-    if (unchanged) return matrix;
-    return matrix.map((r) => (r.id === editingRankId ? merged : r));
+    return matrix.map((r) =>
+      r.id === editingRankId ? { ...r, ...editDraft, salaryType: 'BANK' as const } : r,
+    );
   };
 
   const commitEditRank = async () => {
     if (!editingRankId || !editDraft.rankCode.trim() || !editDraft.fullTitle.trim()) return;
-    const nextMatrix = sanitizeRankPayMatrixEntries(
-      s.rankPay.map((r) =>
-        r.id === editingRankId ? { ...r, ...editDraft, salaryType: 'BANK' as const } : r,
-      ),
-    ) as RankPay[];
+    const nextMatrix = s.rankPay.map((r) =>
+      r.id === editingRankId ? { ...r, ...editDraft, salaryType: 'BANK' as const } : r,
+    );
     if (!(await persistRankPayMatrix(nextMatrix))) return;
+    const nextSettings = { ...s, rankPay: nextMatrix };
+    setS(nextSettings);
     setEditingRankId(null);
     setEditDraft(BLANK_RANK);
-    setS((prev) => {
-      const nextSettings = { ...prev, rankPay: nextMatrix };
-      syncSavedSnapshotRef.current({
-        settings: nextSettings,
-        rankPay: nextMatrix,
-        rankAddDraft: null,
-      });
-      return nextSettings;
+    syncSavedSnapshotRef.current({
+      settings: nextSettings,
+      rankPay: nextMatrix,
+      rankAddDraft: null,
     });
   };
 
   const deleteRank = async (id: string) => {
-    if (!promptVaultUnlockForRankMatrix()) return;
-    const target = s.rankPay.find((r) => r.id === id);
-    if (
-      target &&
-      (isLockedExecutiveLedgerRank(target.rankCode) ||
-        isLockedSectorManagerLedgerRank(target.rankCode))
-    ) {
-      setRankMatrixError('MD, OD, and SM ranks are system ranks and cannot be removed.');
-      return;
-    }
-    const nextMatrix = sanitizeRankPayMatrixEntries(
-      s.rankPay.filter((r) => r.id !== id),
-    ) as RankPay[];
+    const nextMatrix = s.rankPay.filter((r) => r.id !== id);
     if (!(await persistRankPayMatrix(nextMatrix))) return;
+    const nextSettings = { ...s, rankPay: nextMatrix };
+    setS(nextSettings);
     if (editingRankId === id) cancelEditRank();
-    setS((prev) => {
-      const nextSettings = { ...prev, rankPay: nextMatrix };
-      syncSavedSnapshotRef.current({
-        settings: nextSettings,
-        rankPay: nextMatrix,
-        rankAddDraft: null,
-      });
-      return nextSettings;
+    syncSavedSnapshotRef.current({
+      settings: nextSettings,
+      rankPay: nextMatrix,
+      rankAddDraft: null,
     });
   };
 
   const commitAddRank = async () => {
     if (!newRankDraft.rankCode.trim() || !newRankDraft.fullTitle.trim()) return;
-    if (!promptVaultUnlockForRankMatrix()) return;
-    const nextMatrix = sanitizeRankPayMatrixEntries([
+    const nextMatrix = [
       ...s.rankPay,
       { id: `rp-${Date.now()}`, ...newRankDraft, salaryType: 'BANK' as const },
-    ]) as RankPay[];
+    ];
     if (!(await persistRankPayMatrix(nextMatrix))) return;
+    const nextSettings = { ...s, rankPay: nextMatrix };
+    setS(nextSettings);
     setNewRankDraft(BLANK_RANK);
-    setAddingRankSection(null);
-    setS((prev) => {
-      const nextSettings = { ...prev, rankPay: nextMatrix };
-      syncSavedSnapshotRef.current({
-        settings: nextSettings,
-        rankPay: nextMatrix,
-        rankAddDraft: null,
-      });
-      return nextSettings;
+    setShowAddRank(false);
+    syncSavedSnapshotRef.current({
+      settings: nextSettings,
+      rankPay: nextMatrix,
+      rankAddDraft: null,
     });
   };
 
@@ -1875,7 +1726,6 @@ export default function SettingsPage() {
       entities: overrides?.entities ?? entities,
       apitSlabs: overrides?.apitSlabs ?? apitSlabs,
       stampDutyAmount: overrides?.stampDutyAmount ?? stampDutyAmount,
-      stampDutyThresholdLkr: overrides?.stampDutyThresholdLkr ?? stampDutyThresholdLkr,
       masterBankFormat: overrides?.masterBankFormat ?? masterBankFormat,
       enforceBankFormat: overrides?.enforceBankFormat ?? enforceBankFormat,
       isolateExternalBank: overrides?.isolateExternalBank ?? isolateExternalBank,
@@ -1885,8 +1735,6 @@ export default function SettingsPage() {
       allowPoyaOnFlatRate: overrides?.allowPoyaOnFlatRate ?? allowPoyaOnFlatRate,
       requireDeductionMonthLock:
         overrides?.requireDeductionMonthLock ?? requireDeductionMonthLock,
-      uniformMonthlyInstalmentLkr:
-        overrides?.uniformMonthlyInstalmentLkr ?? uniformMonthlyInstalmentLkr,
       smVisits: overrides?.smVisits ?? smVisits,
       hoSalary: overrides?.hoSalary ?? hoSalary,
       guardPreviewQty: overrides?.guardPreviewQty ?? guardPreviewQty,
@@ -1909,14 +1757,13 @@ export default function SettingsPage() {
       rankPay: overrides?.rankPay ?? rankPayWithPendingEdit(s.rankPay),
       rankAddDraft:
         overrides?.rankAddDraft ??
-        (addingRankSection && hasRankAddDraft(newRankDraft) ? newRankDraft : null),
+        (showAddRank && hasRankAddDraft(newRankDraft) ? newRankDraft : null),
     }),
     [
       s,
       entities,
       apitSlabs,
       stampDutyAmount,
-      stampDutyThresholdLkr,
       masterBankFormat,
       enforceBankFormat,
       isolateExternalBank,
@@ -1946,7 +1793,7 @@ export default function SettingsPage() {
       companyLogo,
       editingRankId,
       editDraft,
-      addingRankSection,
+      showAddRank,
       newRankDraft,
     ],
   );
@@ -1970,7 +1817,7 @@ export default function SettingsPage() {
   const resetRankDraftUi = () => {
     setEditingRankId(null);
     setEditDraft(BLANK_RANK);
-    setAddingRankSection(null);
+    setShowAddRank(false);
     setNewRankDraft(BLANK_RANK);
   };
 
@@ -1979,7 +1826,6 @@ export default function SettingsPage() {
     setEntities(snap.entities);
     setApitSlabs(snap.apitSlabs);
     setStampDutyAmount(snap.stampDutyAmount);
-    setStampDutyThresholdLkr(snap.stampDutyThresholdLkr);
     setMasterBankFormat(snap.masterBankFormat);
     setEnforceBankFormat(snap.enforceBankFormat);
     setIsolateExternalBank(snap.isolateExternalBank);
@@ -1988,7 +1834,6 @@ export default function SettingsPage() {
     setEnforceFlatSiteRate(snap.enforceFlatSiteRate);
     setAllowPoyaOnFlatRate(snap.allowPoyaOnFlatRate);
     setRequireDeductionMonthLock(snap.requireDeductionMonthLock);
-    setUniformMonthlyInstalmentLkr(snap.uniformMonthlyInstalmentLkr);
     setSmVisits(snap.smVisits);
     setHoSalary(snap.hoSalary);
     setGuardPreviewQty(snap.guardPreviewQty);
@@ -2068,10 +1913,7 @@ export default function SettingsPage() {
       smFixedBasic: engine.smFixedBasic,
       smPerVisitBonus: engine.smPerVisitBonus,
       fuelSurplusCorrection: engine.fuelSurplusCorrection,
-      smFuelAdvanceLkr: engine.smFuelAdvanceLkr,
-      smFuelPerKmLkr: engine.smFuelPerKmLkr,
       cafeOtMaxMonthlyHours: engine.cafeOtMaxMonthlyHours,
-      cafeWeeklyOtThresholdHours: engine.cafeWeeklyOtThresholdHours,
       vatRate: cfg.vatRate,
       ssclRate: cfg.ssclRate,
       invoiceHeadOffice: cfg.headOffice,
@@ -2095,7 +1937,6 @@ export default function SettingsPage() {
       entities: names,
       apitSlabs: payroll.apitSlabs,
       stampDutyAmount: payroll.stampDutyLkr,
-      stampDutyThresholdLkr: payroll.stampDutyThresholdLkr,
       masterBankFormat: bank.masterFormatId,
       enforceBankFormat: bank.enforceFormatGlobally,
       isolateExternalBank: bank.isolateExternalBank,
@@ -2104,7 +1945,6 @@ export default function SettingsPage() {
       enforceFlatSiteRate: engine.enforceFlatSiteRate,
       allowPoyaOnFlatRate: engine.allowPoyaOnFlatRate,
       requireDeductionMonthLock: engine.requireDeductionMonthLock,
-      uniformMonthlyInstalmentLkr: engine.uniformMonthlyInstalmentLkr,
       smVisits: engine.smPreviewVisits,
       hoSalary: engine.hoPreviewSalary,
       guardPreviewQty: engine.guardPreviewQty,
@@ -2144,15 +1984,6 @@ export default function SettingsPage() {
     });
   }, [reloadSettingsFromDb]);
 
-  useEffect(() => {
-    fetchExecutiveSessionProfile()
-      .then((profile) => {
-        const rank = profile?.rank?.trim().toUpperCase() ?? '';
-        setCanManageExecutiveRanks(rank === 'MD' || rank === 'OD');
-      })
-      .catch(() => setCanManageExecutiveRanks(false));
-  }, []);
-
   const refreshAuditTrail = useCallback(async () => {
     try {
       setAuditTrail(await getSettingsAuditTrail());
@@ -2164,19 +1995,6 @@ export default function SettingsPage() {
   useEffect(() => {
     refreshAuditTrail().catch(() => undefined);
   }, [refreshAuditTrail]);
-
-  useEffect(() => {
-    const onVaultUnlocked = () => {
-      setUnsavedSaveError((prev) =>
-        prev && isVaultLockSaveError(prev) ? null : prev,
-      );
-      setRankMatrixError((prev) =>
-        prev && isVaultLockSaveError(prev) ? '' : prev,
-      );
-    };
-    window.addEventListener('executive-vault-unlocked', onVaultUnlocked);
-    return () => window.removeEventListener('executive-vault-unlocked', onVaultUnlocked);
-  }, []);
 
   useEffect(() => {
     if (!settingsHydrated || savedSnapshot !== null) return;
@@ -2318,14 +2136,10 @@ export default function SettingsPage() {
     smFixedBasic: s.smFixedBasic,
     smPerVisitBonus: s.smPerVisitBonus,
     fuelSurplusCorrection: s.fuelSurplusCorrection,
-    smFuelAdvanceLkr: s.smFuelAdvanceLkr,
-    smFuelPerKmLkr: s.smFuelPerKmLkr,
     cafeOtMaxMonthlyHours: s.cafeOtMaxMonthlyHours,
-    cafeWeeklyOtThresholdHours: s.cafeWeeklyOtThresholdHours,
     enforceFlatSiteRate,
     allowPoyaOnFlatRate,
     requireDeductionMonthLock,
-    uniformMonthlyInstalmentLkr,
     prevMonthRetentionThreshold: prevMonthThreshold,
     salaryMonthRetentionThreshold: salaryMonthThreshold,
     cafeOpenStart,
@@ -2358,14 +2172,10 @@ export default function SettingsPage() {
       snap.settings.smFixedBasic = s.smFixedBasic;
       snap.settings.smPerVisitBonus = s.smPerVisitBonus;
       snap.settings.fuelSurplusCorrection = s.fuelSurplusCorrection;
-      snap.settings.smFuelAdvanceLkr = s.smFuelAdvanceLkr;
-      snap.settings.smFuelPerKmLkr = s.smFuelPerKmLkr;
       snap.settings.cafeOtMaxMonthlyHours = s.cafeOtMaxMonthlyHours;
-      snap.settings.cafeWeeklyOtThresholdHours = s.cafeWeeklyOtThresholdHours;
       snap.enforceFlatSiteRate = enforceFlatSiteRate;
       snap.allowPoyaOnFlatRate = allowPoyaOnFlatRate;
       snap.requireDeductionMonthLock = requireDeductionMonthLock;
-      snap.uniformMonthlyInstalmentLkr = uniformMonthlyInstalmentLkr;
       snap.prevMonthThreshold = prevMonthThreshold;
       snap.salaryMonthThreshold = salaryMonthThreshold;
       snap.cafeOpenStart = cafeOpenStart;
@@ -2382,7 +2192,6 @@ export default function SettingsPage() {
       enforceFlatSiteRate,
       allowPoyaOnFlatRate,
       requireDeductionMonthLock,
-      uniformMonthlyInstalmentLkr,
       prevMonthThreshold,
       salaryMonthThreshold,
       cafeOpenStart,
@@ -2405,22 +2214,7 @@ export default function SettingsPage() {
 
   const sectionAudit = (sectionId: SettingsSectionId) => auditTrail[sectionId];
 
-  const saveSettingsSection = async (
-    sectionId: SettingsSectionId,
-    options?: { quiet?: boolean },
-  ): Promise<boolean> => {
-    if (vaultBlocksSave) {
-      vault?.requestUnlock();
-      const message =
-        'Vault is locked. Enter your 4-digit PIN in the unlock screen, then save this section again.';
-      if (options?.quiet) {
-        setUnsavedSaveError(message);
-      } else {
-        alert(message);
-      }
-      return false;
-    }
-
+  const saveSettingsSection = async (sectionId: SettingsSectionId): Promise<boolean> => {
     setSectionSaving(sectionId);
     const record = (label: string, res: { success: boolean; error?: string }) => {
       if (!res.success) failures.push(`${label}: ${res.error ?? 'unknown error'}`);
@@ -2471,7 +2265,6 @@ export default function SettingsPage() {
               monthlyDaysDivisor: s.monthlyDaysDivisor,
               apitSlabs,
               stampDutyLkr: stampDutyAmount,
-              stampDutyThresholdLkr,
             }),
           );
           if (!failures.length) {
@@ -2492,7 +2285,6 @@ export default function SettingsPage() {
               snap.settings.monthlyDaysDivisor = s.monthlyDaysDivisor;
               snap.apitSlabs = apitSlabs;
               snap.stampDutyAmount = stampDutyAmount;
-              snap.stampDutyThresholdLkr = stampDutyThresholdLkr;
             });
           }
           break;
@@ -2529,6 +2321,14 @@ export default function SettingsPage() {
           }
           break;
         case 'billingCycle':
+          record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
+          if (!failures.length) {
+            patchSavedSnapshot((snap) => {
+              patchSnapEngineConstants(snap);
+            });
+          }
+          break;
+        case 'fuelSurplus':
           record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
           if (!failures.length) {
             patchSavedSnapshot((snap) => {
@@ -2586,19 +2386,14 @@ export default function SettingsPage() {
           break;
         }
         case 'rankPay': {
-          let rankPayToSave = sanitizeRankPayMatrixEntries(
-            rankPayWithPendingEdit(s.rankPay),
-          ) as RankPay[];
-          if (addingRankSection && newRankDraft.rankCode.trim() && newRankDraft.fullTitle.trim()) {
-            rankPayToSave = sanitizeRankPayMatrixEntries([
-              ...rankPayToSave,
-              { id: `rp-${Date.now()}`, ...newRankDraft, salaryType: 'BANK' as const },
-            ]) as RankPay[];
+          const rankPayToSave = rankPayWithPendingEdit(s.rankPay);
+          if (editingRankId && editDraft.rankCode.trim() && editDraft.fullTitle.trim()) {
+            setS((prev) => ({ ...prev, rankPay: rankPayToSave }));
+            setEditingRankId(null);
+            setEditDraft(BLANK_RANK);
           }
           record('Rank pay matrix', await saveRankPayMatrix(rankPayToSave));
           if (!failures.length) {
-            resetRankDraftUi();
-            setS((prev) => ({ ...prev, rankPay: rankPayToSave }));
             patchSavedSnapshot((snap) => {
               snap.rankPay = rankPayToSave;
               snap.settings = { ...snap.settings, rankPay: rankPayToSave };
@@ -2660,17 +2455,7 @@ export default function SettingsPage() {
       }
 
       if (failures.length > 0) {
-        if (failuresIncludeVaultLock(failures)) {
-          vault?.requestUnlock();
-        }
-        const message = failuresIncludeVaultLock(failures)
-          ? 'Vault is locked. Enter your 4-digit PIN in the unlock screen, then save this section again.'
-          : `Could not save this section:\n\n${failures.join('\n')}`;
-        if (options?.quiet) {
-          setUnsavedSaveError(message);
-        } else {
-          alert(message);
-        }
+        alert(`Could not save this section:\n\n${failures.join('\n')}`);
         return false;
       }
 
@@ -2690,41 +2475,126 @@ export default function SettingsPage() {
   };
 
   const handleSave = async (options?: { quiet?: boolean }): Promise<boolean> => {
-    if (vaultBlocksSave) {
-      vault?.requestUnlock();
-      const message =
-        'Vault is locked. Enter your 4-digit PIN in the unlock screen, then try saving again.';
+    setSaving(true);
+    const failures: string[] = [];
+
+    const record = (label: string, res: { success: boolean; error?: string }) => {
+      if (!res.success) failures.push(`${label}: ${res.error ?? 'unknown error'}`);
+    };
+
+    const reportFailures = (message: string) => {
       if (options?.quiet) {
         setUnsavedSaveError(message);
       } else {
         alert(message);
       }
-      return false;
-    }
-
-    const sectionsToSave = listDirtySettingsSections(savedSnapshot, currentSnapshot);
-    if (sectionsToSave.length === 0) return true;
-
-    setSaving(true);
-    if (options?.quiet) {
-      setUnsavedSaveError(null);
-    }
+    };
 
     try {
-      for (const sectionId of sectionsToSave) {
-        const ok = await saveSettingsSection(sectionId, options);
-        if (!ok) return false;
+      record(
+        'Invoice & taxes',
+        await saveMdInvoiceConfig({
+          vatRate: s.vatRate,
+          ssclRate: s.ssclRate,
+          headOffice: s.invoiceHeadOffice,
+          telephone: s.invoiceTelephone,
+          email: s.invoiceEmail,
+          pvNumber: s.invoicePvNo,
+          supplierTin: s.supplierTin,
+          supplierAddress: s.supplierAddress,
+        }),
+      );
+
+      record(
+        'Payroll statutory',
+        await savePayrollStatutorySettings({
+          epfEmployeeRate: s.epfEmployeeRate,
+          epfEmployerRate: s.epfEmployerRate,
+          etfRate: s.etfRate,
+          payrollEpfEmployer: s.payrollEpfEmployer,
+          payrollEtfEmployer: s.payrollEtfEmployer,
+          monthlyDaysDivisor: s.monthlyDaysDivisor,
+          apitSlabs,
+          stampDutyLkr: stampDutyAmount,
+        }),
+      );
+
+      record(
+        'Bank export',
+        await saveBankExportSettings({
+          masterFormatId: masterBankFormat,
+          enforceFormatGlobally: enforceBankFormat,
+          isolateExternalBank,
+        }),
+      );
+
+      record('Pay formulas', await savePayFormulasSettings({ guard: guardFormulas, cafe: cafeFormulas }));
+
+      record('Engine constants', await saveMdEngineConstants(buildEngineConstantsPayload()));
+
+      record('Division names', await saveDivisionNames(entities));
+
+      let rankPayToSave = rankPayWithPendingEdit(s.rankPay);
+      if (showAddRank && newRankDraft.rankCode.trim() && newRankDraft.fullTitle.trim()) {
+        rankPayToSave = [
+          ...rankPayToSave,
+          { id: `rp-${Date.now()}`, ...newRankDraft, salaryType: 'BANK' as const },
+        ];
+        setS((prev) => ({ ...prev, rankPay: rankPayToSave }));
+        setShowAddRank(false);
+        setNewRankDraft(BLANK_RANK);
+      } else if (editingRankId && editDraft.rankCode.trim() && editDraft.fullTitle.trim()) {
+        setS((prev) => ({ ...prev, rankPay: rankPayToSave }));
+        setEditingRankId(null);
+        setEditDraft(BLANK_RANK);
       }
+      record('Rank pay matrix', await saveRankPayMatrix(rankPayToSave));
+      record('Gratuity', await saveGratuitySettings(gratuitySettings));
+      record('Welfare fund', await saveWelfareFundSettings(welfareFundSettings));
+
+      const radius = parseInt(defaultGeofenceRadiusM, 10);
+      if (!Number.isFinite(radius)) {
+        failures.push('Geofence: invalid radius');
+      } else {
+        record('Geofence default', await updateGeofenceSettings(radius));
+      }
+
+      const invalidInternalBranch = [...internalWorkLocations.headOffice, ...internalWorkLocations.cafe].find(
+        (loc) => !loc.name.trim() || !Number.isFinite(loc.latitude) || !Number.isFinite(loc.longitude),
+      );
+      if (invalidInternalBranch) {
+        failures.push('Internal locations: each branch needs a name and GPS coordinates');
+      } else {
+        record('Internal work locations', await saveInternalWorkLocations(internalWorkLocations));
+      }
+
+      record(
+        'Guard shift times',
+        await updateShiftSettings(dayShiftStart, dayShiftEnd, nightShiftStart, nightShiftEnd),
+      );
+
+      if (companyLogo.startsWith('data:')) {
+        const logoRes = await persistCompanyLogo(companyLogo);
+        if (!logoRes.success) {
+          failures.push(`Company logo: ${logoRes.error ?? 'upload failed'}`);
+        } else if (logoRes.url) {
+          setCompanyLogo(logoRes.url);
+          localStorage.setItem(LOGO_STORAGE_KEY, logoRes.url);
+        }
+      }
+
+      if (failures.length > 0) {
+        reportFailures(`Some settings could not be saved:\n\n${failures.join('\n')}`);
+        return false;
+      }
+
+      await reloadSettingsFromDb();
+      await refreshAuditTrail();
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
       return true;
     } catch {
-      const message = 'Failed to save settings. Please try again.';
-      if (options?.quiet) {
-        setUnsavedSaveError(message);
-      } else {
-        alert(message);
-      }
+      reportFailures('Failed to save settings. Please try again.');
       return false;
     } finally {
       setSaving(false);
@@ -2732,14 +2602,6 @@ export default function SettingsPage() {
   };
 
   const saveUnsavedChangesAndLeave = async () => {
-    if (vaultBlocksSave) {
-      vault?.requestUnlock();
-      setUnsavedSaveError(
-        'Vault is locked. Enter your 4-digit PIN in the unlock screen, then tap Save & Leave again.',
-      );
-      return;
-    }
-
     setUnsavedSaveError(null);
     const navHref = pendingNavigation;
     const tabSwitch = pendingTabSwitch;
@@ -2762,9 +2624,9 @@ export default function SettingsPage() {
       {/* ── Unsaved changes dialog ── */}
       {showUnsavedDialog && (
         <div className="fixed inset-0 z-[310] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm">
-          <div className="mx-4 w-full max-w-md overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl shadow-slate-900/30 ring-1 ring-slate-900/[0.05]">
-            <div className="flex items-center gap-3 border-b border-slate-200/80 bg-slate-50/80 px-6 py-4">
-              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-amber-300/80 bg-amber-100/80">
+          <div className="mx-4 w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-900/30 ring-1 ring-slate-900/[0.05]">
+            <div className="border-b border-slate-200/80 bg-slate-50/80 px-6 py-4 flex items-center gap-3">
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-amber-300/80 bg-amber-100/80">
                 <AlertTriangle className="h-5 w-5 text-amber-600" />
               </div>
               <div>
@@ -2792,21 +2654,6 @@ export default function SettingsPage() {
               <p className="mt-4 text-sm font-medium text-slate-600 leading-relaxed">
                 Save them before leaving, discard and revert to the last saved version, or keep editing.
               </p>
-              {vaultBlocksSave ? (
-                <div className="mt-4 space-y-3 rounded-xl border border-[color:var(--cvs-accent-muted)] bg-[var(--cvs-accent-soft)] px-4 py-3">
-                  <p className="text-sm font-semibold text-[color:var(--cvs-accent)] leading-relaxed">
-                    Vault is locked. Unlock with your 4-digit PIN before saving settings.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => vault?.requestUnlock()}
-                    className="inline-flex items-center gap-2 rounded-xl bg-[color:var(--cvs-accent)] px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-[color:var(--cvs-accent-hover)] transition-all"
-                  >
-                    <Lock className="h-4 w-4" />
-                    Unlock Vault
-                  </button>
-                </div>
-              ) : null}
               {unsavedSaveError ? (
                 <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800 whitespace-pre-line">
                   {unsavedSaveError}
@@ -2831,8 +2678,7 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   onClick={() => void saveUnsavedChangesAndLeave()}
-                  disabled={saving || vaultBlocksSave}
-                  title={vaultBlocksSave ? 'Unlock the vault before saving' : undefined}
+                  disabled={saving}
                   className="rounded-xl bg-emerald-600 px-5 py-2 text-sm font-black uppercase tracking-wider text-white shadow-lg shadow-emerald-600/25 hover:bg-emerald-500 transition-all disabled:opacity-50"
                 >
                   {saving ? 'Saving…' : 'Save & Leave'}
@@ -2846,9 +2692,9 @@ export default function SettingsPage() {
       {/* ── Global settings warning dialog (Finance, Catalogs, RBAC, Operations) ── */}
       {showGlobalSettingsWarning && pendingTab && GLOBAL_SETTINGS_WARNING_TABS[pendingTab] && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm">
-          <div className="mx-4 w-full max-w-md overflow-hidden rounded-3xl border border-amber-300/80 bg-white shadow-2xl shadow-slate-900/30 ring-1 ring-slate-900/[0.05]">
-            <div className="flex items-center gap-3 border-b border-amber-200/80 bg-amber-50/80 px-6 py-4">
-              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-amber-300/80 bg-amber-100/80">
+          <div className="mx-4 w-full max-w-md rounded-2xl border border-amber-300/80 bg-white shadow-2xl shadow-slate-900/30 ring-1 ring-slate-900/[0.05]">
+            <div className="border-b border-amber-200/80 bg-amber-50/80 px-6 py-4 flex items-center gap-3">
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-amber-300/80 bg-amber-100/80">
                 <AlertTriangle className="h-5 w-5 text-amber-600" />
               </div>
               <div>
@@ -2898,36 +2744,45 @@ export default function SettingsPage() {
         </div>
       )}
 
-      <ExecutivePageShell>
-        <ExecutivePageHeader
-          title="Settings & Compensations"
-          subtitle={
-            isDirty
-              ? `Unsaved: ${dirtySections.map((id) => SETTINGS_SECTION_LABELS[id]).join(' · ')}`
-              : 'Master Configurator · each section saves independently'
-          }
-          toolbar={
-            <ExecutivePageToolbar>
-              {SETTINGS_TABS.map(({ id, label, Icon }) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => requestTabChange(id)}
-                  className={`flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition-all ${
-                    activeTab === id
-                      ? `${CVS_BRAND_CLASSES.mobileTabActive} border-transparent`
-                      : 'text-slate-600 hover:bg-white/70'
-                  }`}
-                >
-                  <Icon className="h-3.5 w-3.5" />
-                  {label}
-                </button>
-              ))}
-            </ExecutivePageToolbar>
-          }
-        />
+      <div className="min-h-0 pb-24 font-sans">
+        {/* ── Header ── */}
+        <header className="sticky top-0 z-40 border-b border-white/60 bg-white/45 px-6 py-4 shadow-[0_8px_32px_-12px_rgba(15,23,42,0.08)] backdrop-blur-xl backdrop-saturate-150">
+          <div className="flex w-full items-center justify-between gap-4">
+            <div>
+              <h1 className="text-2xl font-black text-slate-900 tracking-tight uppercase">
+                Settings & Compensations
+              </h1>
+              <p className="text-sm font-semibold text-slate-500 uppercase tracking-wider">
+                {isDirty
+                  ? `Unsaved: ${dirtySections.map((id) => SETTINGS_SECTION_LABELS[id]).join(' · ')}`
+                  : 'Master Configurator · each section saves independently'}
+              </p>
+            </div>
+          </div>
+        </header>
 
-        <ExecutivePageBody>
+        {/* ── Tab bar ── */}
+        <div className="border-b border-slate-200/60 bg-white/30 backdrop-blur-sm">
+          <div className="flex w-full gap-1 overflow-x-auto px-4 py-3 sm:px-6 lg:px-12 2xl:px-24 scrollbar-none">
+            {SETTINGS_TABS.map(({ id, label, Icon }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => requestTabChange(id)}
+                className={`flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition-all ${
+                  activeTab === id
+                    ? 'bg-slate-900 text-white shadow-sm'
+                    : 'text-slate-600 hover:bg-white/70'
+                }`}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="w-full space-y-6 px-6 lg:px-12 2xl:px-24 py-8">
 
           {activeTab === 'CATALOGS' && (
             <AssetCatalogsPanel />
@@ -3057,6 +2912,8 @@ export default function SettingsPage() {
                           <span className="inline-flex items-center rounded-md border border-slate-300 bg-white px-2 py-0.5 text-xs font-semibold text-slate-700">HQ Staff</span>
                           <span className="text-xs font-bold text-slate-400">+</span>
                           <span className="inline-flex items-center rounded-md border border-slate-300 bg-white px-2 py-0.5 text-xs font-semibold text-slate-700">SM Group</span>
+                          <span className="text-xs font-bold text-slate-400">+</span>
+                          <span className="inline-flex items-center rounded-md border border-slate-300 bg-white px-2 py-0.5 text-xs font-semibold text-slate-700">SM CVS</span>
                         </div>
                       </div>
 
@@ -3361,37 +3218,16 @@ export default function SettingsPage() {
                         <span className="text-sm font-semibold text-slate-700">Stamp Duty</span>
                       </div>
                       <div className="flex-1 space-y-1.5">
-                        <div className="flex flex-wrap items-center gap-3">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded border border-slate-200">LKR</span>
-                            <input
-                              type="number"
-                              min={0}
-                              value={stampDutyAmount}
-                              onChange={(e) => setStampDutyAmount(Math.max(0, Number(e.target.value) || 0))}
-                              className="w-20 px-2 py-1 text-xs font-bold border border-slate-300 rounded bg-white text-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none"
-                            />
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 whitespace-nowrap">
-                              Apply when gross ≥
-                            </span>
-                            <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded border border-slate-200">LKR</span>
-                            <input
-                              type="number"
-                              min={0}
-                              step={1000}
-                              value={stampDutyThresholdLkr}
-                              onChange={(e) =>
-                                setStampDutyThresholdLkr(Math.max(0, Number(e.target.value) || 0))
-                              }
-                              className="w-28 px-2 py-1 text-xs font-bold border border-slate-300 rounded bg-white text-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none"
-                            />
-                          </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded border border-slate-200">LKR</span>
+                          <input
+                            type="number"
+                            value={stampDutyAmount}
+                            onChange={(e) => setStampDutyAmount(Number(e.target.value))}
+                            className="w-20 px-2 py-1 text-xs font-bold border border-slate-300 rounded bg-white text-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none"
+                          />
                         </div>
-                        <p className="text-xs font-medium text-slate-500">
-                          Fixed deduction of LKR {stampDutyAmount.toLocaleString()} applied when monthly gross is at or above LKR {stampDutyThresholdLkr.toLocaleString()}. Used in payroll, payslips, and wage simulations below.
-                        </p>
+                        <p className="text-xs font-medium text-slate-500">Fixed deduction applied to all salaries exceeding LKR 30,000.</p>
                       </div>
                     </div>
                   </div>
@@ -3448,45 +3284,26 @@ export default function SettingsPage() {
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-lg font-bold text-slate-800">Guard (Field Operations)</p>
-                        <p className="mt-1 text-sm font-semibold text-slate-600">Pay dictated by Dynamic Day-Type Formula Engine — daily rate is calculated from the guard&apos;s basic salary, varying by day type: weekday, Sunday, Poya, public holiday, and Saturday.</p>
+                        <p className="mt-1 text-sm font-semibold text-slate-600">Pay dictated by Dynamic Day-Type Formula Engine — daily rate is calculated from the guard&apos;s basic salary, varying by day type: weekday (1×), weekend (1.25×), or public holiday (1.5×).</p>
                         <div className="mt-3 flex flex-wrap gap-2">
                           <span className="px-3 py-1 bg-blue-50 border border-blue-200/70 rounded text-xs font-bold text-blue-700 flex items-center gap-1">
                             <Sun className="h-3 w-3" /> Weekday: 1× daily rate
                           </span>
                           <span className="px-3 py-1 bg-indigo-50 border border-indigo-200/70 rounded text-xs font-bold text-indigo-700 flex items-center gap-1">
-                            <Moon className="h-3 w-3" /> Sunday: statutory OT bundle
-                          </span>
-                          <span className="px-3 py-1 bg-rose-50 border border-rose-200/70 rounded text-xs font-bold text-rose-700 flex items-center gap-1">
-                            <Star className="h-3 w-3" /> Poya: 1.5× daily + OT
+                            <Star className="h-3 w-3" /> Weekend: 1.25×
                           </span>
                           <span className="px-3 py-1 bg-violet-50 border border-violet-200/70 rounded text-xs font-bold text-violet-700 flex items-center gap-1">
-                            <Flag className="h-3 w-3" /> Public Holiday: full day formula
+                            <Moon className="h-3 w-3" /> Public Holiday: 1.5×
                           </span>
                           <span className="px-3 py-1 bg-slate-50 border border-slate-200/70 rounded text-xs font-bold text-slate-600 flex items-center gap-1">
                             No OT — attendance-based
                           </span>
                         </div>
-                        <div className="mt-3 rounded-xl border border-blue-200/80 bg-blue-50/60 px-4 py-3">
-                          <p className="text-[10px] font-black uppercase tracking-widest text-blue-700 mb-2">Poya Day Formula</p>
-                          <p className="font-mono text-xs font-bold text-slate-800 break-all">{guardFormulas.poyaDay}</p>
-                          <p className="mt-1 text-xs font-medium text-slate-500">
-                            1.5× daily rate plus statutory OT component — editable in Guard Pay Formulas below.
-                          </p>
-                          <p className="mt-1 font-mono text-[10px] tabular-nums text-blue-800">
-                            @ B = LKR {guardPreviewBasic.toLocaleString()}: {fmtSimLKR(evaluateFormulaAtB(guardFormulas.poyaDay, guardPreviewBasic))}
-                          </p>
-                        </div>
                         {/* Month Simulation Preview */}
                         <div className="mt-3">
                           <MonthSimulator
-                            basic={guardPreviewBasic}
                             qty={guardPreviewQty}
-                            onBasicChange={setGuardPreviewBasic}
                             onQtyChange={setGuardPreviewQty}
-                            guardFormulas={guardFormulas}
-                            apitSlabs={apitSlabs}
-                            stampDutyAmount={stampDutyAmount}
-                            stampDutyThresholdLkr={stampDutyThresholdLkr}
                           />
                           <p className="mt-1.5 text-xs font-medium text-slate-500">
                             Month simulation counts persist when you save this section.
@@ -3605,11 +3422,7 @@ export default function SettingsPage() {
                               const epfEr       = Math.round(gross * s.epfEmployerRate / 100);
                               const etf         = Math.round(gross * s.etfRate / 100);
                               const apit        = calcApit(gross, apitSlabs);
-                              const stampDuty   = calcStampDutyLkr(
-                                gross,
-                                stampDutyAmount,
-                                stampDutyThresholdLkr,
-                              );
+                              const stampDuty   = stampDutyAmount;
                               const net         = gross - epfEmp - apit - stampDuty;
                               const breakdown =
                                 s.smPayMode === 'FIXED_ONLY'
@@ -3637,9 +3450,7 @@ export default function SettingsPage() {
                                     )}
                                     <div className="min-w-[130px]">
                                       <p className="text-[9px] font-black uppercase tracking-widest text-slate-500">Stamp Duty (Deducted)</p>
-                                      <p className="mt-0.5 text-xs tabular-nums font-semibold text-rose-700">
-                                        {stampDuty > 0 ? `− LKR ${stampDuty.toLocaleString()}` : '—'}
-                                      </p>
+                                      <p className="mt-0.5 text-xs tabular-nums font-semibold text-rose-700">− LKR {stampDuty.toLocaleString()}</p>
                                     </div>
                                     <div className="min-w-[130px]">
                                       <p className="text-[9px] font-black uppercase tracking-widest text-slate-500">Net Take-Home</p>
@@ -3674,28 +3485,20 @@ export default function SettingsPage() {
                       <div className="flex-1 min-w-0">
                         <p className="text-lg font-bold text-slate-800">Head Office (HO)</p>
                         <p className="mt-1 text-sm font-semibold text-slate-600">Flat Monthly Salary. Zero OT applied. Ad-hoc expenses strictly via FM/MD approval vault.</p>
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                          <span className="flex items-center gap-1 rounded border border-slate-200/70 bg-slate-100/80 px-3 py-1 text-xs font-bold text-slate-700">
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button type="button" className="px-3 py-1 bg-slate-50 border border-slate-200 border-dashed rounded text-xs font-bold text-slate-700 cursor-pointer hover:bg-slate-100 hover:border-slate-400 transition-all flex items-center gap-1">
                             Flat Monthly Salary
-                          </span>
-                          <span className="flex items-center gap-1 rounded border border-slate-200/70 bg-slate-100/80 px-3 py-1 text-xs font-bold text-slate-700">
+                            <Pencil className="h-3 w-3 text-slate-400" />
+                          </button>
+                          <button type="button" className="px-3 py-1 bg-slate-50 border border-slate-200 border-dashed rounded text-xs font-bold text-slate-700 cursor-pointer hover:bg-slate-100 hover:border-slate-400 transition-all flex items-center gap-1">
                             Zero OT
-                          </span>
-                          <span className="flex items-center gap-1 rounded border border-slate-200/70 bg-slate-100/80 px-3 py-1 text-xs font-bold text-slate-700">
+                            <Pencil className="h-3 w-3 text-slate-400" />
+                          </button>
+                          <button type="button" className="px-3 py-1 bg-slate-50 border border-slate-200 border-dashed rounded text-xs font-bold text-slate-700 cursor-pointer hover:bg-slate-100 hover:border-slate-400 transition-all flex items-center gap-1">
                             FM/MD Approval Vault Only
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => scrollToRankPaySection('head-office')}
-                            className="inline-flex items-center gap-1 rounded-xl border border-[color:var(--cvs-accent-muted)] bg-[var(--cvs-accent-soft)] px-3 py-1 text-xs font-bold text-[color:var(--cvs-accent)] transition-all hover:bg-[var(--cvs-accent-soft)] hover:text-[color:var(--cvs-accent-hover)]"
-                          >
-                            Manage HO ranks
-                            <ArrowRightLeft className="h-3 w-3" />
+                            <Pencil className="h-3 w-3 text-slate-400" />
                           </button>
                         </div>
-                        <p className="mt-2 text-xs font-medium text-slate-500">
-                          HO pay policy is fixed. Edit rank basic pay in the Master Rank ledger below.
-                        </p>
                         {/* HO Live Wage Preview */}
                         <div className="bg-slate-100 border border-slate-200 rounded-md p-3 mt-3 shadow-inner">
                           <div className="mb-2.5 flex items-center justify-between gap-2">
@@ -3719,11 +3522,7 @@ export default function SettingsPage() {
                             const epfEr      = Math.round(basic * s.epfEmployerRate / 100);
                             const etf        = Math.round(basic * s.etfRate / 100);
                             const apit       = calcApit(basic, apitSlabs);
-                            const stampDuty  = calcStampDutyLkr(
-                              basic,
-                              stampDutyAmount,
-                              stampDutyThresholdLkr,
-                            );
+                            const stampDuty  = stampDutyAmount;
                             const net        = basic - epfEmp - apit - stampDuty;
                             return (
                               <div className="space-y-2">
@@ -3743,9 +3542,7 @@ export default function SettingsPage() {
                                   </div>
                                   <div className="min-w-[130px]">
                                     <p className="text-[9px] font-black uppercase tracking-widest text-slate-500">Stamp Duty (Deducted)</p>
-                                    <p className="mt-0.5 text-xs tabular-nums font-semibold text-rose-700">
-                                      {stampDuty > 0 ? `− LKR ${stampDuty.toLocaleString()}` : '—'}
-                                    </p>
+                                    <p className="mt-0.5 text-xs tabular-nums font-semibold text-rose-700">− LKR {stampDuty.toLocaleString()}</p>
                                   </div>
                                   <div className="min-w-[130px]">
                                     <p className="text-[9px] font-black uppercase tracking-widest text-slate-500">Net Take-Home</p>
@@ -3778,31 +3575,22 @@ export default function SettingsPage() {
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-lg font-bold text-slate-800">Café Operations</p>
-                        <p className="mt-1 text-sm font-semibold text-slate-600">9-hour shift base. OT rate applies only to hours above the weekly threshold (Mon–Sun rollup). Minutes worked after the OT stop time are excluded from OT pay.</p>
+                        <p className="mt-1 text-sm font-semibold text-slate-600">9-Hour standard shift base. OT accumulates after 9 hours per shift, up to the MD-set monthly maximum.</p>
                         <div className="mt-3 flex flex-wrap items-center gap-3">
                           <span className="px-3 py-1 bg-amber-50 border border-amber-200/70 rounded text-xs font-bold text-amber-700 flex items-center gap-1">
                             <Clock className="h-3 w-3" /> 9-Hour Shift Base
                           </span>
                           <div className="flex items-center gap-2 rounded-lg border border-amber-200/80 bg-white/80 px-2 py-1">
-                            <p className="text-[9px] font-black uppercase tracking-widest text-amber-700 whitespace-nowrap">Weekly OT after</p>
+                            <p className="text-[9px] font-black uppercase tracking-widest text-amber-700 whitespace-nowrap">Max OT / Month</p>
                             <input
                               type="number"
                               min={0}
-                              max={168}
-                              value={s.cafeWeeklyOtThresholdHours}
-                              onChange={(e) => set('cafeWeeklyOtThresholdHours', Math.max(0, Math.min(168, parseInt(e.target.value, 10) || 0)))}
+                              max={100}
+                              value={s.cafeOtMaxMonthlyHours}
+                              onChange={(e) => set('cafeOtMaxMonthlyHours', Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0)))}
                               className="w-16 rounded border border-amber-200 bg-white px-2 py-0.5 text-xs font-black text-amber-900 text-center"
                             />
-                            <span className="text-[9px] font-bold text-amber-600">hrs / week</span>
-                          </div>
-                          <div className="flex items-center gap-2 rounded-lg border border-amber-200/80 bg-white/80 px-2 py-1">
-                            <p className="text-[9px] font-black uppercase tracking-widest text-amber-700 whitespace-nowrap">OT stop time</p>
-                            <input
-                              type="time"
-                              value={s.cafeOtCutoffTime}
-                              onChange={(e) => set('cafeOtCutoffTime', e.target.value)}
-                              className="rounded border border-amber-200 bg-white px-1 py-0.5 text-xs font-black text-amber-900"
-                            />
+                            <span className="text-[9px] font-bold text-amber-600">hrs</span>
                           </div>
                         </div>
                         {/* Café Month Simulation */}
@@ -3815,9 +3603,6 @@ export default function SettingsPage() {
                             onBasicChange={setCafePreviewBasic}
                             onQtyChange={setCafePreviewQty}
                             onOtHoursChange={setCafePreviewOtHours}
-                            apitSlabs={apitSlabs}
-                            stampDutyAmount={stampDutyAmount}
-                            stampDutyThresholdLkr={stampDutyThresholdLkr}
                           />
                           <p className="mt-1.5 text-xs font-medium text-slate-500">
                             Basic, day-type counts, and OT hours persist when you save this section.
@@ -3918,8 +3703,6 @@ export default function SettingsPage() {
 
                 </div>
               </ExecutiveGlassCard>
-
-              <AdvanceSalarySettingsCard />
 
               {/* ── Dynamic Statutory Formula Builder Guards ── */}
               <ExecutiveGlassCard className="overflow-hidden">
@@ -4048,7 +3831,7 @@ export default function SettingsPage() {
                   <div className="flex items-start gap-2 rounded-xl border border-amber-200/80 bg-amber-50/60 px-4 py-3">
                     <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600" />
                     <p className="text-sm font-semibold text-amber-800">
-                      Invalid expressions will be rejected by the engine at compile-time. Minutes worked after the OT stop time are excluded before any OT formula is applied.
+                      Invalid expressions will be rejected by the engine at compile-time. Café staff OT is capped at the MD-set monthly maximum before any formula is applied.
                     </p>
                   </div>
                 </div>
@@ -4455,25 +4238,6 @@ export default function SettingsPage() {
                     }
                   </button>
                 </div>
-
-                <div>
-                  <label className={labelCls}>Default uniform monthly instalment (LKR)</label>
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="number"
-                      min={0}
-                      step={100}
-                      value={uniformMonthlyInstalmentLkr}
-                      onChange={(e) =>
-                        setUniformMonthlyInstalmentLkr(Math.max(0, Math.round(Number(e.target.value) || 0)))
-                      }
-                      className={`${inputCls} w-36 text-right font-mono`}
-                    />
-                    <span className="text-sm text-slate-500">
-                      Used when HQ Deductions Admin has no saved uniform amount and no uniform issue this month (guards with shifts only).
-                    </span>
-                  </div>
-                </div>
               </div>
 
               {/* Visual cycle summary */}
@@ -4507,12 +4271,7 @@ export default function SettingsPage() {
                   </div>
                   <div className="min-w-0">
                     <h3 className="text-lg font-bold text-slate-800">Master Rank Basic Pay Ledger</h3>
-                    <p className="text-sm font-medium text-slate-600">
-                      Rank titles for Head Office (including Sector Managers), Guards, and Café.
-                      Base pay and annual increment apply to field guards only — HO, SM, and café pay is set per employee in MNR.
-                      HR can only assign ranks defined here during onboarding — no free-text ranks.
-                      MD and OD are always listed under Head Office and cannot be removed; only MD or OD can edit those rows (others can view).
-                    </p>
+                    <p className="text-sm font-medium text-slate-600">Base monthly pay, salary type (Bank/Cash), and pay category per rank — HO, Guard (Field Operations), Café Operations, or SM (MD dictated). Shared with FM; increment applies each completed service year.</p>
                     <SettingsTraceability audit={sectionAudit('rankPay')} />
                   </div>
                 </div>
@@ -4523,81 +4282,304 @@ export default function SettingsPage() {
                     saved={sectionSaved.rankPay}
                     onClick={saveSection('rankPay')}
                   />
+                  <button
+                    type="button"
+                    onClick={() => { setShowAddRank((v) => !v); setEditingRankId(null); }}
+                    className={`flex items-center gap-2 rounded-2xl border px-4 py-2.5 text-sm font-black uppercase tracking-widest shadow-sm transition-all ${
+                      showAddRank
+                        ? 'border-slate-300/80 bg-slate-100/80 text-slate-600'
+                        : 'border-emerald-300/80 bg-emerald-600 text-white shadow-emerald-600/25 hover:bg-emerald-500'
+                    }`}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Add New Rank
+                  </button>
                 </div>
               </div>
             </div>
 
-            {vaultBlocksSave ? (
-              <div className="mx-6 mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[color:var(--cvs-accent-muted)] bg-[var(--cvs-accent-soft)] px-4 py-3">
-                <p className="text-sm font-semibold text-[color:var(--cvs-accent)] leading-relaxed">
-                  Vault is locked. Unlock with your 4-digit PIN before editing or deleting ranks.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => vault?.requestUnlock()}
-                  className="inline-flex items-center gap-2 rounded-xl bg-[color:var(--cvs-accent)] px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-[color:var(--cvs-accent-hover)] transition-all"
-                >
-                  <Lock className="h-4 w-4" />
-                  Unlock Vault
-                </button>
-              </div>
-            ) : null}
+            {/* Table */}
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="border-b border-slate-200/80 bg-slate-50/60 text-sm font-bold uppercase tracking-widest text-slate-500">
+                  <tr>
+                    <th className="w-28 px-6 py-3">Rank Code</th>
+                    <th className="px-6 py-3">Full Title</th>
+                    <th className="px-6 py-3 text-right">Base Monthly Pay (LKR)</th>
+                    <th className="px-6 py-3">Pay Category</th>
+                    <th className="px-6 py-3 text-right">Annual Increment (LKR)</th>
+                    <th className="w-24 px-6 py-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200/60">
+                  {s.rankPay.map((r, i) => {
+                    const isEditing = editingRankId === r.id;
+                    return (
+                      <tr
+                        key={r.id}
+                        className={`transition-colors ${
+                          isEditing
+                            ? 'bg-emerald-50/40'
+                            : i % 2 === 0
+                            ? 'bg-white/20 hover:bg-white/40'
+                            : 'hover:bg-white/40'
+                        }`}
+                      >
+                        {/* Rank Code */}
+                        <td className="px-6 py-3">
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              value={editDraft.rankCode}
+                              onChange={(e) => setEditDraft((d) => ({ ...d, rankCode: e.target.value.toUpperCase().slice(0, 6) }))}
+                              placeholder="e.g. OIC"
+                              className="w-24 rounded-lg border border-emerald-200/80 bg-white/90 px-2.5 py-1.5 text-center font-mono text-sm font-black uppercase tracking-widest text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 transition-all"
+                            />
+                          ) : (
+                            <span className="inline-flex h-8 items-center justify-center rounded-lg border border-slate-200/80 bg-slate-100/80 px-3 font-mono text-sm font-black tracking-widest text-slate-800">
+                              {r.rankCode}
+                            </span>
+                          )}
+                        </td>
 
-            {rankMatrixError ? (
-              <div className="mx-6 mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">
-                {rankMatrixError}
-              </div>
-            ) : null}
+                        {/* Full Title */}
+                        <td className="px-6 py-3">
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              value={editDraft.fullTitle}
+                              onChange={(e) => setEditDraft((d) => ({ ...d, fullTitle: e.target.value.toUpperCase() }))}
+                              placeholder="e.g. OFFICER IN CHARGE"
+                              className="w-full max-w-xs rounded-lg border border-emerald-200/80 bg-white/90 px-2.5 py-1.5 text-sm font-semibold uppercase text-slate-900 shadow-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 transition-all"
+                            />
+                          ) : (
+                            <span className="text-sm font-semibold uppercase text-slate-800">{r.fullTitle}</span>
+                          )}
+                        </td>
 
-            <RankPayLedgerSections
-              rankPay={s.rankPay}
-              editingRankId={editingRankId}
-              editDraft={editDraft}
-              addingRankSection={addingRankSection}
-              newRankDraft={newRankDraft}
-              rankMatrixSaving={rankMatrixSaving}
-              canManageExecutiveRanks={canManageExecutiveRanks}
-              vaultLocked={vaultBlocksSave}
-              onRequestVaultUnlock={() => {
-                setRankMatrixError(
-                  'Vault is locked. Enter your 4-digit PIN to unlock, then try again.',
-                );
-                vault?.requestUnlock();
-              }}
-              onStartEdit={startEditRank}
-              onCancelEdit={cancelEditRank}
-              onEditDraftChange={setEditDraft}
-              onCommitEdit={() => void commitEditRank()}
-              onDelete={(id) => void deleteRank(id)}
-              onStartAdd={(sectionId) => {
-                if (!promptVaultUnlockForRankMatrix()) return;
-                setEditingRankId(null);
-                setAddingRankSection(sectionId);
-                setNewRankDraft(blankRankDraftForSection(sectionId));
-              }}
-              onCancelAdd={() => {
-                setAddingRankSection(null);
-                setNewRankDraft(BLANK_RANK);
-              }}
-              onNewRankDraftChange={setNewRankDraft}
-              onCommitAdd={() => void commitAddRank()}
-            />
+                        {/* Base Pay */}
+                        <td className="px-6 py-3 text-right">
+                          {isEditing ? (
+                            <div className="flex items-center justify-end gap-2">
+                              <span className="text-sm font-mono text-slate-600">LKR</span>
+                              <input
+                                type="number"
+                                min={0}
+                                value={editDraft.basicPay}
+                                onChange={(e) => setEditDraft((d) => ({ ...d, basicPay: parseInt(e.target.value) || 0 }))}
+                                className="w-32 rounded-lg border border-emerald-200/80 bg-white/90 py-1.5 pr-2 text-right text-sm font-black tabular-nums text-emerald-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 transition-all"
+                              />
+                            </div>
+                          ) : (
+                            <span className="font-mono text-sm font-black tabular-nums text-slate-900">
+                              {r.basicPay.toLocaleString()}
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Pay Category */}
+                        <td className="px-6 py-3">
+                          {isEditing ? (
+                            <select
+                              value={editDraft.operationalGroup}
+                              onChange={(e) => setEditDraft((d) => ({ ...d, operationalGroup: e.target.value as OperationalGroup }))}
+                              className="w-full min-w-[12rem] rounded-lg border border-emerald-200/80 bg-white/90 px-2.5 py-1.5 text-sm font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 transition-all"
+                            >
+                              {OPERATIONAL_GROUPS.map((g) => (
+                                <option key={g.id} value={g.id}>{g.label}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span className="inline-flex items-center rounded-lg border border-slate-200/80 bg-slate-100/80 px-2.5 py-1 text-sm font-bold text-slate-700">
+                              {OPERATIONAL_GROUPS.find((g) => g.id === r.operationalGroup)?.label ?? r.operationalGroup}
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Annual increment */}
+                        <td className="px-6 py-3 text-right">
+                          {isEditing ? (
+                            <div className="flex items-center justify-end gap-2">
+                              <span className="text-sm font-mono text-slate-600">+</span>
+                              <input
+                                type="number"
+                                min={0}
+                                value={editDraft.annualIncrement}
+                                onChange={(e) =>
+                                  setEditDraft((d) => ({
+                                    ...d,
+                                    annualIncrement: parseInt(e.target.value, 10) || 0,
+                                  }))
+                                }
+                                className="w-28 rounded-lg border border-emerald-200/80 bg-white/90 py-1.5 pr-2 text-right text-sm font-black tabular-nums text-emerald-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 transition-all"
+                              />
+                            </div>
+                          ) : (
+                            <span className="font-mono text-sm font-bold tabular-nums text-emerald-800">
+                              +{r.annualIncrement.toLocaleString()}
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Actions */}
+                        <td className="px-6 py-3 text-right">
+                          {isEditing ? (
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => void commitEditRank()}
+                                disabled={rankMatrixSaving || !editDraft.rankCode.trim() || !editDraft.fullTitle.trim()}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-emerald-200/80 bg-emerald-50/80 text-emerald-700 transition-all hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+                                title="Save rank to database"
+                              >
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={cancelEditRank}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-transparent text-slate-600 transition-all hover:border-slate-200 hover:bg-slate-50/80 hover:text-slate-600"
+                                title="Cancel"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => startEditRank(r)}
+                                disabled={rankMatrixSaving}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-transparent text-slate-300 transition-all hover:border-indigo-200/80 hover:bg-indigo-50/80 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
+                                title="Edit rank"
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void deleteRank(r.id)}
+                                disabled={rankMatrixSaving}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-transparent text-slate-300 transition-all hover:border-rose-200/80 hover:bg-rose-50/80 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-40"
+                                title="Delete rank"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {/* Add new rank inline form */}
+                  {showAddRank && (
+                    <tr className="bg-emerald-50/30">
+                      <td className="px-6 py-3">
+                        <input
+                          type="text"
+                          value={newRankDraft.rankCode}
+                          onChange={(e) => setNewRankDraft((d) => ({ ...d, rankCode: e.target.value.toUpperCase().slice(0, 6) }))}
+                          placeholder="e.g. DSO"
+                          autoFocus
+                          className="w-24 rounded-lg border border-emerald-300/80 bg-white/90 px-2.5 py-1.5 text-center font-mono text-sm font-black uppercase tracking-widest text-slate-900 shadow-sm placeholder:text-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 transition-all"
+                        />
+                      </td>
+                      <td className="px-6 py-3">
+                        <input
+                          type="text"
+                          value={newRankDraft.fullTitle}
+                          onChange={(e) => setNewRankDraft((d) => ({ ...d, fullTitle: e.target.value.toUpperCase() }))}
+                          placeholder="e.g. DEPUTY SECURITY OFFICER"
+                          className="w-full max-w-xs rounded-lg border border-emerald-300/80 bg-white/90 px-2.5 py-1.5 text-sm font-semibold uppercase text-slate-900 shadow-sm placeholder:text-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 transition-all"
+                        />
+                      </td>
+                      <td className="px-6 py-3 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <span className="text-sm font-mono text-slate-600">LKR</span>
+                          <input
+                            type="number"
+                            min={0}
+                            value={newRankDraft.basicPay || ''}
+                            onChange={(e) => setNewRankDraft((d) => ({ ...d, basicPay: parseInt(e.target.value) || 0 }))}
+                            placeholder="0"
+                            className="w-32 rounded-lg border border-emerald-300/80 bg-white/90 py-1.5 pr-2 text-right text-sm font-black tabular-nums text-emerald-900 shadow-sm placeholder:text-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 transition-all"
+                          />
+                        </div>
+                      </td>
+                      <td className="px-6 py-3">
+                        <select
+                          value={newRankDraft.operationalGroup}
+                          onChange={(e) => setNewRankDraft((d) => ({ ...d, operationalGroup: e.target.value as OperationalGroup }))}
+                          className="w-full min-w-[12rem] rounded-lg border border-emerald-300/80 bg-white/90 px-2.5 py-1.5 text-sm font-semibold text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 transition-all"
+                        >
+                          {OPERATIONAL_GROUPS.map((g) => (
+                            <option key={g.id} value={g.id}>{g.label}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-6 py-3 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <span className="text-sm font-mono text-slate-600">+</span>
+                          <input
+                            type="number"
+                            min={0}
+                            value={newRankDraft.annualIncrement || ''}
+                            onChange={(e) =>
+                              setNewRankDraft((d) => ({
+                                ...d,
+                                annualIncrement: parseInt(e.target.value, 10) || 0,
+                              }))
+                            }
+                            placeholder="0"
+                            className="w-28 rounded-lg border border-emerald-300/80 bg-white/90 py-1.5 pr-2 text-right text-sm font-black tabular-nums text-emerald-900 shadow-sm placeholder:text-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 transition-all"
+                          />
+                        </div>
+                      </td>
+                      <td className="px-6 py-3 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => void commitAddRank()}
+                            disabled={rankMatrixSaving || !newRankDraft.rankCode.trim() || !newRankDraft.fullTitle.trim()}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-emerald-200/80 bg-emerald-50/80 text-emerald-700 transition-all hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+                            title="Save new rank to database"
+                          >
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { setShowAddRank(false); setNewRankDraft(BLANK_RANK); }}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-transparent text-slate-600 transition-all hover:border-slate-200 hover:bg-slate-50/80 hover:text-slate-600"
+                            title="Cancel"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {s.rankPay.length === 0 && !showAddRank && (
+              <div className="px-6 py-10 text-center text-sm text-slate-600">
+                No ranks defined. Click &ldquo;Add New Rank&rdquo; to create the first entry.
+              </div>
+            )}
 
             {/* Footer */}
             <div className="border-t border-slate-200/60 bg-slate-50/60 px-6 py-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="text-sm text-slate-500">
-                  {s.rankPay.length} rank{s.rankPay.length !== 1 ? 's' : ''} defined
-                  {s.rankPay.some((r) => r.operationalGroup === 'GUARD_FIELD' || r.operationalGroup === 'GUARD')
-                    ? ' · Guard adjusted basic = base + (annual increment × completed years)'
-                    : ''}
+                  {s.rankPay.length} rank{s.rankPay.length !== 1 ? 's' : ''} defined &middot; Adjusted basic = base + (annual increment × completed years)
                 </p>
+                {rankMatrixError && (
+                  <p className="text-xs font-bold text-red-700 w-full sm:w-auto">{rankMatrixError}</p>
+                )}
                 <p className="text-xs font-medium text-slate-500">
                   {rankMatrixSaving
                     ? 'Saving rank ledger…'
-                    : vaultBlocksSave
-                      ? 'Unlock the vault, then click ✓ on a row to save that rank immediately.'
-                      : 'Click ✓ on a row to save that rank immediately, or use Save to commit the full matrix.'}
+                    : 'Click ✓ on a row to save that rank immediately, or use Save to commit the full matrix.'}
                 </p>
               </div>
             </div>
@@ -4703,6 +4685,50 @@ export default function SettingsPage() {
               </div>
             )}
           </ExecutiveGlassCard>
+
+          {/* ── Row 3: Fuel Toggle ── */}
+          <ExecutiveGlassCard className="p-6">
+              <SectionHeader
+                Icon={Car}
+                title="Automated Fuel Surplus Correction"
+                sub="Subtracts unverified mileage payouts from the next month's fuel advance"
+                audit={sectionAudit('fuelSurplus')}
+                onSave={saveSection('fuelSurplus')}
+                saving={sectionSaving === 'fuelSurplus'}
+                saved={sectionSaved.fuelSurplus}
+              />
+
+              <div className="mb-4 flex items-center justify-between rounded-2xl border border-slate-200/70 bg-white/50 px-4 py-4 shadow-inner">
+                <div>
+                  <p className="text-sm font-bold text-slate-900">Fuel Surplus Auto-Correction</p>
+                  <p className="text-sm text-slate-500">
+                    {s.fuelSurplusCorrection
+                      ? 'Active — unverified Google Maps mileage payouts will be clawed back next month'
+                      : 'Inactive — no automatic fuel surplus recovery'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => set('fuelSurplusCorrection', !s.fuelSurplusCorrection)}
+                  className="flex-shrink-0"
+                >
+                  {s.fuelSurplusCorrection
+                    ? <ToggleRight className="h-10 w-10 text-emerald-600" />
+                    : <ToggleLeft  className="h-10 w-10 text-slate-600" />
+                  }
+                </button>
+              </div>
+
+              <div className={`rounded-xl border px-3 py-2 text-sm font-semibold ${
+                s.fuelSurplusCorrection
+                  ? 'border-emerald-200/80 bg-emerald-50/60 text-emerald-800'
+                  : 'border-slate-200/60 bg-slate-50/60 text-slate-500'
+              }`}>
+                {s.fuelSurplusCorrection
+                  ? 'Mileage discrepancies flagged by the time engine will auto-deduct next cycle.'
+                  : 'Toggle ON to enable automatic fuel surplus recovery.'}
+              </div>
+            </ExecutiveGlassCard>
 
             </div>
           )}
@@ -4961,8 +4987,8 @@ export default function SettingsPage() {
             </div>
           )}
 
-        </ExecutivePageBody>
-      </ExecutivePageShell>
+        </div>
+      </div>
     </>
   );
 }

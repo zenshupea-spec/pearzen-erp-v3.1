@@ -12,13 +12,12 @@ import {
   FM_SM_COMPENSATION,
   computeSmGrossLkr,
 } from './lib/sm-pay-settings';
-import { calculateStandardDay } from '../../lib/compensation-engine';
+import { calculateStandardDay, type GuardPayDayDivisors } from '../../lib/compensation-engine';
 import { completedYearsOfService } from '../../../../packages/gratuity';
 import {
   adjustedMonthlyBasicFromRank,
   type RankPayEntry,
 } from '../../../../packages/rank-pay-matrix';
-import { getRankPayMatrix } from '../executive/settings/rank-matrix-actions';
 import {
   type CorporatePayrollGroup,
   EMPTY_VARIABLE_EARNINGS,
@@ -56,19 +55,43 @@ import {
   type FmPortfolioDeduction,
 } from './lib/fm-employee-deduction-plans';
 import {
+  guardGrossFromSiteShifts,
+  type GuardPayEngineFlags,
+} from '../../lib/guard-site-pay';
+import {
+  guardFormulaGrossFromShiftDates,
+  type GuardDayTypeBreakdownEntry,
+} from '../../lib/guard-shift-day-types';
+import type { FmHolidayCalendarEntry } from '../../lib/fm-holiday-calendar';
+import { fetchFmPortfolioMdSettingsBundle } from './lib/fm-portfolio-md-settings';
+import { fetchGuardShiftRecordsForFm } from '../hq/deductions/lib/monthly-site-shifts';
+import {
   fetchActiveFmDeductionPlans,
   fetchApprovedSalaryAdvances,
   fetchHqMonthlyDeductions,
 } from './lib/fm-deduction-plans-data';
+import {
+  fetchApprovedSmPenaltiesForPayrollMonth,
+  groupSmPenaltiesByEmployee,
+  type SmPenaltyDeduction,
+} from './lib/fm-sm-penalties';
+import { applyGuardPenaltyShiftOffset } from './lib/shift-adjustments';
+
+type GuardShiftRecord = {
+  employeeId: string;
+  siteProfileId: string | null;
+  shiftDate: string;
+};
 
 export type { FmPortfolioDeduction };
 
-export type FmPortfolioEmployeeSeed = {
+  export type FmPortfolioEmployeeSeed = {
   id: string;
   empNumber: string;
   name: string;
   rank: string;
   corporateGroup: CorporatePayrollGroup;
+  debtNotes?: string | null;
   shiftsAtSite: number;
   totalGross: number;
   totalDeductions: number;
@@ -137,6 +160,11 @@ const EMPTY: FmPortfolioPayload = {
 type SiteRegistrationKind = 'client' | 'head_office' | 'cafe_branch';
 
 type PortfolioEmployeeRow = Awaited<ReturnType<typeof fetchEmployees>>[number];
+
+function debtNotesFromEmployeeRow(emp: PortfolioEmployeeRow): string | null {
+  const raw = (emp as { debt_notes?: string | null }).debt_notes;
+  return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null;
+}
 
 function employeeCorporateGroup(emp: PortfolioEmployeeRow): CorporatePayrollGroup {
   return inferCorporatePayrollGroup({ group: emp.group, rank: emp.rank });
@@ -228,6 +256,7 @@ function guardPayFromEmployee(
   emp: PortfolioEmployeeRow,
   rankMatrix: RankPayEntry[],
   periodEndIso: string,
+  dayDivisors?: Partial<GuardPayDayDivisors>,
 ): GuardFieldEarnings {
   const rank = emp.rank != null ? String(emp.rank) : null;
   const years = completedYearsOfService(
@@ -244,8 +273,95 @@ function guardPayFromEmployee(
     years,
     recordedBasic,
   );
-  const standardDayGrossLkr = calculateStandardDay(monthlyBasicLkr).grossPay;
+  const standardDayGrossLkr = calculateStandardDay(monthlyBasicLkr, dayDivisors).grossPay;
   return { monthlyBasicLkr, standardDayGrossLkr };
+}
+
+function guardGrossForEmployeeAtSites(
+  emp: PortfolioEmployeeRow,
+  guardPay: GuardFieldEarnings,
+  siteRows: { siteName: string; shifts: number; rateMatrix: unknown }[],
+  flags: GuardPayEngineFlags,
+): number {
+  return guardGrossFromSiteShifts({
+    homeSiteName: emp.site as string | null | undefined,
+    rank: emp.rank != null ? String(emp.rank) : null,
+    standardDayGrossLkr: guardPay.standardDayGrossLkr,
+    siteShifts: siteRows,
+    flags,
+  });
+}
+
+function guardShiftDatesFromIndex(
+  index: { byEmployee: Map<string, string[]>; byEmployeeSite: Map<string, string[]> },
+  employeeId: string,
+  siteId?: string,
+): string[] {
+  if (siteId) {
+    return index.byEmployeeSite.get(`${employeeId}:${siteId}`) ?? [];
+  }
+  return index.byEmployee.get(employeeId) ?? [];
+}
+
+function indexGuardShiftRecords(records: GuardShiftRecord[]) {
+  const byEmployee = new Map<string, string[]>();
+  const byEmployeeSite = new Map<string, string[]>();
+
+  for (const record of records) {
+    if (!record.shiftDate) continue;
+    const empDates = byEmployee.get(record.employeeId) ?? [];
+    empDates.push(record.shiftDate);
+    byEmployee.set(record.employeeId, empDates);
+
+    if (record.siteProfileId) {
+      const siteKey = `${record.employeeId}:${record.siteProfileId}`;
+      const siteDates = byEmployeeSite.get(siteKey) ?? [];
+      siteDates.push(record.shiftDate);
+      byEmployeeSite.set(siteKey, siteDates);
+    }
+  }
+
+  return { byEmployee, byEmployeeSite };
+}
+
+function buildGuardPayrollBreakdown(input: {
+  emp: PortfolioEmployeeRow;
+  guardPay: GuardFieldEarnings;
+  siteRows: { siteName: string; shifts: number; rateMatrix: unknown }[];
+  shiftDates: string[];
+  holidays: FmHolidayCalendarEntry[];
+  engineFlags: GuardPayEngineFlags;
+  dayDivisors: Partial<GuardPayDayDivisors>;
+}): {
+  dayTypeBreakdown: GuardDayTypeBreakdownEntry[];
+  formulaGrossLkr: number;
+  siteRateGrossLkr: number;
+  basePayLkr: number;
+  guardData: GuardFieldEarnings;
+} {
+  const { breakdown, grossLkr: formulaGrossLkr } = guardFormulaGrossFromShiftDates({
+    shiftDates: input.shiftDates,
+    holidays: input.holidays,
+    monthlyBasicLkr: input.guardPay.monthlyBasicLkr,
+    divisors: input.dayDivisors,
+  });
+  const siteRateGrossLkr = guardGrossForEmployeeAtSites(
+    input.emp,
+    input.guardPay,
+    input.siteRows,
+    input.engineFlags,
+  );
+  return {
+    dayTypeBreakdown: breakdown,
+    formulaGrossLkr,
+    siteRateGrossLkr,
+    basePayLkr: siteRateGrossLkr,
+    guardData: {
+      ...input.guardPay,
+      formulaGrossLkr,
+      siteRateGrossLkr,
+    },
+  };
 }
 
 function guardGrossFromShifts(shifts: number, guardPay: GuardFieldEarnings): number {
@@ -263,7 +379,7 @@ async function fetchEmployees(companyId: string | null) {
   let query = supabase
     .from('employees')
     .select(
-      'id, emp_number, epf_no, epf_num, full_name, rank, site, group, status, base_salary, date_joined, bank_name, site_allowance_lkr, meal_allowance_lkr, transport_allowance_lkr',
+      'id, emp_number, epf_no, epf_num, full_name, rank, site, group, status, base_salary, date_joined, bank_name, site_allowance_lkr, meal_allowance_lkr, transport_allowance_lkr, debt_notes',
     )
     .ilike('status', 'active')
     .order('full_name', { ascending: true });
@@ -280,7 +396,7 @@ async function fetchSites(companyId: string | null) {
   const supabase = createSupabaseServiceClient();
   let query = supabase
     .from('site_profiles')
-    .select('id, site_name, client_name, address, rate_matrix, site_type, site_status')
+    .select('id, site_name, client_name, address, rate_matrix, site_type, site_status, verification_mode')
     .order('site_name', { ascending: true });
   if (companyId) query = query.eq('company_id', companyId);
   const { data, error } = await query;
@@ -385,6 +501,7 @@ function finalizeEmployeePay(
   const totalGross = totalGrossFromPayParts(basePayLkr, fixedAllowances, variableEarnings);
   return {
     ...seed,
+    debtNotes: seed.debtNotes ?? debtNotesFromEmployeeRow(emp),
     totalGross,
     netTakeHome: Math.max(0, totalGross - seed.totalDeductions),
     earnings: {
@@ -398,16 +515,35 @@ function finalizeEmployeePay(
 
 function buildGuardEmployee(
   emp: PortfolioEmployeeRow,
-  siteId: string,
-  siteName: string,
+  site: { id: string; site_name: string; rate_matrix: unknown },
   shiftCounts: Map<string, number>,
+  shiftIndex: ReturnType<typeof indexGuardShiftRecords>,
+  guardPayCache: Map<string, GuardFieldEarnings>,
+  holidays: FmHolidayCalendarEntry[],
   variableByEmployee: Map<string, VariablePayrollEarnings>,
   rankMatrix: RankPayEntry[],
   periodEndIso: string,
+  engineFlags: GuardPayEngineFlags,
+  dayDivisors: Partial<GuardPayDayDivisors>,
 ): FmPortfolioEmployeeSeed {
-  const shifts = shiftCounts.get(`${emp.id}:${siteId}`) ?? 0;
-  const guardPay = guardPayFromEmployee(emp, rankMatrix, periodEndIso);
-  const basePayLkr = guardGrossFromShifts(shifts, guardPay);
+  const shifts = shiftCounts.get(`${emp.id}:${site.id}`) ?? 0;
+  const empId = String(emp.id);
+  let guardPay = guardPayCache.get(empId);
+  if (!guardPay) {
+    guardPay = guardPayFromEmployee(emp, rankMatrix, periodEndIso, dayDivisors);
+    guardPayCache.set(empId, guardPay);
+  }
+  const siteRows = [{ siteName: site.site_name, shifts, rateMatrix: site.rate_matrix }];
+  const shiftDates = guardShiftDatesFromIndex(shiftIndex, empId, String(site.id));
+  const payroll = buildGuardPayrollBreakdown({
+    emp,
+    guardPay,
+    siteRows,
+    shiftDates,
+    holidays,
+    engineFlags,
+    dayDivisors,
+  });
   return finalizeEmployeePay(
     {
       id: emp.id,
@@ -419,13 +555,13 @@ function buildGuardEmployee(
       totalDeductions: 0,
       deductions: [],
       earnings: {
-        crossSiteDistribution: [{ site: siteName, shifts }],
-        guardData: guardPay,
-        dayTypeBreakdown: minimalDayTypes(shifts, basePayLkr),
+        crossSiteDistribution: [{ site: site.site_name, shifts }],
+        guardData: payroll.guardData,
+        dayTypeBreakdown: payroll.dayTypeBreakdown,
       },
     },
     emp,
-    basePayLkr,
+    payroll.basePayLkr,
     variableByEmployee,
   );
 }
@@ -434,9 +570,14 @@ function buildGuardEmployeeAggregate(
   emp: PortfolioEmployeeRow,
   sites: Awaited<ReturnType<typeof fetchSites>>,
   shiftCounts: Map<string, number>,
+  shiftIndex: ReturnType<typeof indexGuardShiftRecords>,
+  guardPayCache: Map<string, GuardFieldEarnings>,
+  holidays: FmHolidayCalendarEntry[],
   variableByEmployee: Map<string, VariablePayrollEarnings>,
   rankMatrix: RankPayEntry[],
   periodEndIso: string,
+  engineFlags: GuardPayEngineFlags,
+  dayDivisors: Partial<GuardPayDayDivisors>,
 ): FmPortfolioEmployeeSeed {
   const crossSiteDistribution = sites
     .map((site) => ({
@@ -451,8 +592,27 @@ function buildGuardEmployeeAggregate(
   }
 
   const totalShifts = crossSiteDistribution.reduce((sum, entry) => sum + entry.shifts, 0);
-  const guardPay = guardPayFromEmployee(emp, rankMatrix, periodEndIso);
-  const basePayLkr = guardGrossFromShifts(totalShifts, guardPay);
+  const empId = String(emp.id);
+  let guardPay = guardPayCache.get(empId);
+  if (!guardPay) {
+    guardPay = guardPayFromEmployee(emp, rankMatrix, periodEndIso, dayDivisors);
+    guardPayCache.set(empId, guardPay);
+  }
+  const siteRows = sites.map((site) => ({
+    siteName: site.site_name,
+    shifts: shiftCounts.get(`${emp.id}:${site.id}`) ?? 0,
+    rateMatrix: site.rate_matrix,
+  }));
+  const shiftDates = guardShiftDatesFromIndex(shiftIndex, empId);
+  const payroll = buildGuardPayrollBreakdown({
+    emp,
+    guardPay,
+    siteRows,
+    shiftDates,
+    holidays,
+    engineFlags,
+    dayDivisors,
+  });
 
   return finalizeEmployeePay(
     {
@@ -466,12 +626,12 @@ function buildGuardEmployeeAggregate(
       deductions: [],
       earnings: {
         crossSiteDistribution,
-        guardData: guardPay,
-        dayTypeBreakdown: minimalDayTypes(totalShifts, basePayLkr),
+        guardData: payroll.guardData,
+        dayTypeBreakdown: payroll.dayTypeBreakdown,
       },
     },
     emp,
-    basePayLkr,
+    payroll.basePayLkr,
     variableByEmployee,
   );
 }
@@ -480,9 +640,14 @@ function buildGuardCohortPinnedSites(
   guardEmployees: PortfolioEmployeeRow[],
   sites: Awaited<ReturnType<typeof fetchSites>>,
   shiftCounts: Map<string, number>,
+  shiftIndex: ReturnType<typeof indexGuardShiftRecords>,
+  guardPayCache: Map<string, GuardFieldEarnings>,
+  holidays: FmHolidayCalendarEntry[],
   variableByEmployee: Map<string, VariablePayrollEarnings>,
   rankMatrix: RankPayEntry[],
   periodEndIso: string,
+  engineFlags: GuardPayEngineFlags,
+  dayDivisors: Partial<GuardPayDayDivisors>,
 ): FmPortfolioSiteSeed[] {
   const cohortEmployees = new Map<GuardPayrollCohort, FmPortfolioEmployeeSeed[]>();
 
@@ -490,7 +655,19 @@ function buildGuardCohortPinnedSites(
     const cohort = classifyGuardCohort(emp.emp_number ?? '', emp.bank_name as string | null);
     const list = cohortEmployees.get(cohort) ?? [];
     list.push(
-      buildGuardEmployeeAggregate(emp, sites, shiftCounts, variableByEmployee, rankMatrix, periodEndIso),
+      buildGuardEmployeeAggregate(
+        emp,
+        sites,
+        shiftCounts,
+        shiftIndex,
+        guardPayCache,
+        holidays,
+        variableByEmployee,
+        rankMatrix,
+        periodEndIso,
+        engineFlags,
+        dayDivisors,
+      ),
     );
     cohortEmployees.set(cohort, list);
   });
@@ -674,6 +851,7 @@ function applyDeductionBundleToEmployee(
   hqByEmployee: Map<string, { meals: number; uniform: number }>,
   advancesByProfile: Map<string, number>,
   plansByEmployee: Map<string, FmEmployeeDeductionPlanRow[]>,
+  smPenaltiesByEmployee: Map<string, SmPenaltyDeduction[]>,
 ): FmPortfolioEmployeeSeed {
   const deductions = mergePortfolioDeductionsForEmployee(
     emp.id,
@@ -681,8 +859,10 @@ function applyDeductionBundleToEmployee(
     hqByEmployee,
     advancesByProfile,
     plansByEmployee,
+    smPenaltiesByEmployee,
   );
-  return recalcEmployeeDeductionTotals({ ...emp, deductions });
+  const withPenalties = applyGuardPenaltyShiftOffset({ ...emp, deductions });
+  return recalcEmployeeDeductionTotals(withPenalties);
 }
 
 function applyDeductionBundleToSites(
@@ -691,6 +871,7 @@ function applyDeductionBundleToSites(
   hqByEmployee: Map<string, { meals: number; uniform: number }>,
   advancesByProfile: Map<string, number>,
   plansByEmployee: Map<string, FmEmployeeDeductionPlanRow[]>,
+  smPenaltiesByEmployee: Map<string, SmPenaltyDeduction[]>,
 ): FmPortfolioSiteSeed[] {
   return sites.map((site) => {
     const employees = site.employees.map((emp) =>
@@ -700,6 +881,7 @@ function applyDeductionBundleToSites(
         hqByEmployee,
         advancesByProfile,
         plansByEmployee,
+        smPenaltiesByEmployee,
       ),
     );
     return {
@@ -710,6 +892,21 @@ function applyDeductionBundleToSites(
   });
 }
 
+const FM_PORTFOLIO_SLOW_MS = 3000;
+
+function logSlowGetFmPortfolio(
+  startedAt: number,
+  payrollPeriod: PayrollPeriod,
+  counts: { employees: number; guards: number; clientSites: number },
+) {
+  const durationMs = Math.round(performance.now() - startedAt);
+  if (durationMs < FM_PORTFOLIO_SLOW_MS) return;
+  const periodKey = `${payrollPeriod.year}-${String(payrollPeriod.month).padStart(2, '0')}`;
+  console.warn(
+    `[getFmPortfolio] slow ${durationMs}ms period=${periodKey} employees=${counts.employees} guards=${counts.guards} clientSites=${counts.clientSites}`,
+  );
+}
+
 /** Live FM portfolio from employees, sites, time shifts, and SM visits. */
 export async function getFmPortfolio(
   payrollPeriod: PayrollPeriod = FM_LIVE_PAYROLL_PERIOD,
@@ -718,19 +915,40 @@ export async function getFmPortfolio(
   const companyId = await resolveCompanyId();
   if (!companyId) return { ...EMPTY, error: 'No company context' };
 
+  const startedAt = performance.now();
+  let employeeCount = 0;
+  let guardCount = 0;
+  let clientSiteCount = 0;
+
+  try {
   const payrollMonth = payrollMonthFromFmPeriod(payrollPeriod);
   const periodEndIso = payrollPeriodEndIso(payrollPeriod);
-  const [employees, sites, shiftCounts, smVisits, adjustments, siteStaffAssignments, variableByEmployee, rankMatrix] =
+  const mdSettingsPromise = fetchFmPortfolioMdSettingsBundle(companyId);
+  const [employees, sites, smVisits, adjustments, siteStaffAssignments, variableByEmployee, mdSettings] =
     await Promise.all([
       fetchWithRosterCompanyFallback(fetchEmployees, companyId),
       fetchWithRosterCompanyFallback(fetchSites, companyId),
-      fetchShiftCounts(companyId, payrollMonth),
       fetchSmVisits(companyId, payrollMonth),
       fetchShiftAdjustments(companyId, payrollMonth),
       fetchSiteStaffAssignments(companyId),
       fetchPayrollEarningsAdjustments(companyId, payrollPeriod),
-      getRankPayMatrix(),
+      mdSettingsPromise,
     ]);
+
+  const { rankMatrix, engineConstants, workingDaysSettings, holidayCalendar } = mdSettings;
+
+  const guardDayDivisors: Partial<GuardPayDayDivisors> = {
+    wbWorkingDays: workingDaysSettings.wbWorkingDays,
+    wbHours: workingDaysSettings.wbHours,
+  };
+  const engineFlags: GuardPayEngineFlags = {
+    enforceFlatSiteRate: engineConstants.enforceFlatSiteRate,
+    allowPoyaOnFlatRate: engineConstants.allowPoyaOnFlatRate,
+  };
+
+  let shiftCounts = new Map<string, number>();
+  let shiftIndex = indexGuardShiftRecords([]);
+  const guardPayCache = new Map<string, GuardFieldEarnings>();
 
   const activeSites = sites.filter(
     (site) => String(site.site_status ?? 'ACTIVE').toUpperCase() !== 'ARCHIVED',
@@ -739,6 +957,9 @@ export async function getFmPortfolio(
   const cafeBranchSites = activeSites.filter((site) => inferSiteKind(site) === 'cafe_branch');
   const headOfficeSites = activeSites.filter((site) => inferSiteKind(site) === 'head_office');
   const cafeBranchLabels = cafeBranchSites.map((site) => String(site.site_name ?? '').trim()).filter(Boolean);
+  const modeASites = activeSites
+    .filter((site) => String(site.verification_mode ?? '').toUpperCase() === 'A')
+    .map((site) => ({ id: String(site.id), site_name: String(site.site_name ?? '') }));
 
   const staffEpfsBySiteId = new Map<string, string[]>();
   siteStaffAssignments.forEach((row) => {
@@ -764,6 +985,39 @@ export async function getFmPortfolio(
     ),
   ]);
   const guardEmployees = employees.filter((e) => isEmployeeCorporateGroup(e, 'GUARD_FIELD'));
+  employeeCount = employees.length;
+  guardCount = guardEmployees.length;
+  clientSiteCount = clientGuardSites.length;
+
+  const allEmployeeIds = [
+    ...hoEmployees.map((e) => e.id),
+    ...smEmployees.map((e) => e.id),
+    ...cafeEmployees.map((e) => e.id),
+    ...guardEmployees.map((e) => e.id),
+  ];
+  const deductionsPromise = Promise.all([
+    fetchHqMonthlyDeductions(companyId, payrollMonth),
+    fetchApprovedSalaryAdvances(companyId, payrollPeriod.year, payrollPeriod.month),
+    fetchActiveFmDeductionPlans(companyId, allEmployeeIds),
+    fetchApprovedSmPenaltiesForPayrollMonth(companyId, payrollPeriod.year, payrollPeriod.month),
+  ]);
+
+  if (guardEmployees.length > 0) {
+    const guardShiftData = await fetchGuardShiftRecordsForFm(
+      createSupabaseServiceClient(),
+      guardEmployees.map((emp) => ({
+        id: String(emp.id),
+        emp_number: emp.emp_number as string | null,
+        epf_no: emp.epf_no as string | null,
+        epf_num: emp.epf_num as string | number | null,
+      })),
+      `${payrollMonth}-01`,
+      companyId,
+      modeASites,
+    );
+    shiftCounts = guardShiftData.counts;
+    shiftIndex = indexGuardShiftRecords(guardShiftData.records);
+  }
 
   const siteNames = clientGuardSites.map((s) => s.site_name);
   const pinnedSites: FmPortfolioSiteSeed[] = [];
@@ -818,9 +1072,14 @@ export async function getFmPortfolio(
       guardEmployees,
       clientGuardSites,
       shiftCounts,
+      shiftIndex,
+      guardPayCache,
+      holidayCalendar,
       variableByEmployee,
       rankMatrix,
       periodEndIso,
+      engineFlags,
+      guardDayDivisors,
     ),
   );
 
@@ -841,12 +1100,16 @@ export async function getFmPortfolio(
     const emps = siteGuards.map((emp) =>
       buildGuardEmployee(
         emp,
-        site.id,
-        site.site_name,
+        site,
         shiftCounts,
+        shiftIndex,
+        guardPayCache,
+        holidayCalendar,
         variableByEmployee,
         rankMatrix,
         periodEndIso,
+        engineFlags,
+        guardDayDivisors,
       ),
     );
     const payrollCost = sumPayrollCost(emps);
@@ -879,18 +1142,8 @@ export async function getFmPortfolio(
     shiftAdjustments[key] = existing;
   });
 
-  const allEmployeeIds = [
-    ...hoEmployees.map((e) => e.id),
-    ...smEmployees.map((e) => e.id),
-    ...cafeEmployees.map((e) => e.id),
-    ...guardEmployees.map((e) => e.id),
-  ];
-
-  const [hqByEmployee, advancesByProfile, plansByEmployee] = await Promise.all([
-    fetchHqMonthlyDeductions(companyId, payrollMonth),
-    fetchApprovedSalaryAdvances(companyId, payrollPeriod.year, payrollPeriod.month),
-    fetchActiveFmDeductionPlans(companyId, allEmployeeIds),
-  ]);
+  const [hqByEmployee, advancesByProfile, plansByEmployee, smPenalties] = await deductionsPromise;
+  const smPenaltiesByEmployee = groupSmPenaltiesByEmployee(smPenalties);
 
   const withDeductions = (sites: FmPortfolioSiteSeed[]) =>
     applyDeductionBundleToSites(
@@ -899,6 +1152,7 @@ export async function getFmPortfolio(
       hqByEmployee,
       advancesByProfile,
       plansByEmployee,
+      smPenaltiesByEmployee,
     );
 
   return {
@@ -909,6 +1163,13 @@ export async function getFmPortfolio(
     sites: withDeductions(clientSites),
     shiftAdjustments,
   };
+  } finally {
+    logSlowGetFmPortfolio(startedAt, payrollPeriod, {
+      employees: employeeCount,
+      guards: guardCount,
+      clientSites: clientSiteCount,
+    });
+  }
 }
 
 /** Persist an FM shift adjustment for the active payroll month. */

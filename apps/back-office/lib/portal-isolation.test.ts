@@ -26,6 +26,7 @@ import {
   omSectorOwnsSmKey,
 } from './om-sector-scope-build';
 import { canManageSectorOmAssignments } from './om-sector-assignment-spec';
+import { canManageSectorRoleAssignments } from './sector-role-assignment-spec';
 
 describe('portal-isolation cafe-front', () => {
   it('routes café front daily signout to /login/cafe-front', () => {
@@ -344,5 +345,21 @@ describe('OM sector assignment isolation (CVS MD portal security)', () => {
     expect(omA.map((tile) => tile.id)).toEqual(['144']);
     expect(omB.map((tile) => tile.id)).toEqual(['200']);
     expect(omA.some((tile) => omB.some((other) => other.id === tile.id))).toBe(false);
+  });
+});
+
+describe('Sector role assignment isolation (Staff Command Center board)', () => {
+  it('allows MD and OD to manage sector role pickers', () => {
+    expect(canManageSectorRoleAssignments('MD')).toBe(true);
+    expect(canManageSectorRoleAssignments('OD')).toBe(true);
+    expect(canManageSectorRoleAssignments(' od ')).toBe(true);
+  });
+
+  it('rejects OM, FM, HR, and other ranks from sector role assignment actions', () => {
+    for (const role of ['OM', 'FM', 'HR', 'EA', 'AD', 'SC', 'TM', 'GAD'] as const) {
+      expect(canManageSectorRoleAssignments(role)).toBe(false);
+    }
+    expect(canManageSectorRoleAssignments(null)).toBe(false);
+    expect(canManageSectorRoleAssignments('')).toBe(false);
   });
 });

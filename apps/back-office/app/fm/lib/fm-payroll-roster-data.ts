@@ -1,5 +1,8 @@
 import type { FmPortfolioDeduction, FmPortfolioSiteSeed } from '../portfolio-actions';
+import { resolveEmployeeDebtNote } from './fm-debt-notes';
 import type { GuardPayrollCohort, PinnedPayrollGroupKind } from './guard-payroll-cohorts';
+import type { SmPayMode } from './sm-pay-settings';
+import type { PayslipEmployeeKind } from './fm-payslip-layout';
 
 export type FmShiftTypeLine = {
   label: string;
@@ -48,6 +51,8 @@ export type FmPayrollRosterRow = {
   noPayRecoveryLkr?: number;
   adjustedBasicTotalLkr?: number;
   siteAllowanceLkr?: number;
+  fixedAllowanceLkr?: number;
+  specialAllowanceLkr?: number;
   attendanceAllowanceLkr?: number;
   mealAllowanceLkr?: number;
   transportAllowanceLkr?: number;
@@ -72,6 +77,13 @@ export type FmPayrollRosterRow = {
   etfEmployerLkr?: number;
   bankName?: string;
   bankAccountNo?: string;
+  payslipKind?: PayslipEmployeeKind;
+  smPayMode?: SmPayMode;
+  smVisitPayLkr?: number;
+  guardFormulaGrossLkr?: number;
+  guardSiteRateGrossLkr?: number;
+  /** Legacy / bulk-import recovery note for FM instalment planning. */
+  debtNote?: string | null;
 };
 
 type PortfolioSeedEmployee = FmPortfolioSiteSeed['employees'][number];
@@ -152,13 +164,16 @@ function shiftTypeLinesFromEmployee(emp: PortfolioSeedEmployee): FmShiftTypeLine
 }
 
 function deductionLinesFromEmployee(emp: PortfolioSeedEmployee) {
-  return emp.deductions.map((deduction) => ({
-    type: deduction.type,
-    amountLkr: deduction.thisMonthAmount,
-  }));
+  return emp.deductions
+    .filter((deduction) => deduction.type !== 'Penalty')
+    .map((deduction) => ({
+      type: deduction.type,
+      amountLkr: deduction.thisMonthAmount,
+    }));
 }
 
 function salaryFromEmployee(emp: PortfolioSeedEmployee): number {
+  if (emp.earnings.smPayData) return emp.totalGross;
   if (emp.earnings.hoFixedData) return emp.earnings.hoFixedData.mnrBaseSalaryLkr;
   if (emp.earnings.cafeData) return emp.earnings.cafeData.monthlyBasicLkr;
   if (emp.earnings.guardData) return emp.earnings.guardData.monthlyBasicLkr;
@@ -193,19 +208,49 @@ function flattenSite(site: PortfolioSeedSite): FmPayrollRosterRow[] {
 
   return site.employees.map((emp) => {
     const shiftTypeLines = shiftTypeLinesFromEmployee(emp);
-    const basicShiftPaidLkr = shiftTypeLines.reduce((sum, line) => sum + line.amountLkr, 0);
+    let basicShiftPaidLkr = shiftTypeLines.reduce((sum, line) => sum + line.amountLkr, 0);
     const totalShifts = emp.shiftsAtSite;
+    const recordedShifts =
+      emp.earnings.crossSiteDistribution?.reduce((sum, entry) => sum + entry.shifts, 0) ??
+      totalShifts;
+    if (recordedShifts > 0 && totalShifts < recordedShifts && basicShiftPaidLkr > 0) {
+      basicShiftPaidLkr = Math.round(basicShiftPaidLkr * (totalShifts / recordedShifts));
+    }
     const salaryLkr = salaryFromEmployee(emp);
     const fixedAllowances = emp.earnings.fixedAllowances;
     const variableEarnings = emp.earnings.variableEarnings;
-    const siteAllowanceLkr =
-      fixedAllowances != null
-        ? fixedAllowances.siteAllowanceLkr
-        : Math.max(0, emp.totalGross - basicShiftPaidLkr);
+    const fixedAllowanceLkr = fixedAllowances?.fixedAllowanceLkr ?? 0;
     const mealAllowanceLkr = fixedAllowances?.mealAllowanceLkr ?? 0;
     const transportAllowanceLkr = fixedAllowances?.transportAllowanceLkr ?? 0;
+    const specialAllowanceLkr = fixedAllowances?.specialAllowanceLkr ?? 0;
     const arrearsLkr = variableEarnings?.arrearsLkr ?? 0;
     const performanceIncentiveLkr = variableEarnings?.performanceIncentiveLkr ?? 0;
+    const smPayData = emp.earnings.smPayData;
+    const hoFixedData = emp.earnings.hoFixedData;
+    const guardData = emp.earnings.guardData;
+    const payslipKind: PayslipEmployeeKind = smPayData
+      ? 'sm'
+      : hoFixedData
+        ? 'ho_fixed'
+        : emp.earnings.cafeData
+          ? 'cafe'
+          : 'guard';
+    const guardSiteAllowanceLkr =
+      guardData?.siteRateGrossLkr != null && guardData?.formulaGrossLkr != null
+        ? Math.max(0, guardData.siteRateGrossLkr - guardData.formulaGrossLkr)
+        : null;
+    const siteAllowanceLkr =
+      guardSiteAllowanceLkr != null
+        ? guardSiteAllowanceLkr
+        : fixedAllowances != null
+          ? fixedAllowances.siteAllowanceLkr
+          : Math.max(0, emp.totalGross - basicShiftPaidLkr);
+    const statutoryDeductionsLkr = smPayData
+      ? (smPayData.epfEmployeeLkr ?? 0) +
+        (smPayData.payeeTaxLkr ?? 0) +
+        (smPayData.stampDutyLkr ?? 0)
+      : 0;
+    const totalDeductionsLkr = emp.totalDeductions + statutoryDeductionsLkr;
 
     return {
       id: emp.id,
@@ -219,7 +264,7 @@ function flattenSite(site: PortfolioSeedSite): FmPayrollRosterRow[] {
       site: primarySiteLabel(emp, site.name),
       salaryLkr,
       earningsLkr: emp.totalGross,
-      deductionsLkr: emp.totalDeductions,
+      deductionsLkr: totalDeductionsLkr,
       advanceDeductionLkr: advanceDeductionLkr(emp),
       netPayLkr: emp.netTakeHome,
       payslipId: `PS-${emp.empNumber.replace(/[^A-Z0-9]/gi, '')}-202605`,
@@ -228,6 +273,8 @@ function flattenSite(site: PortfolioSeedSite): FmPayrollRosterRow[] {
       shiftTypeLines,
       basicShiftPaidLkr,
       siteAllowanceLkr,
+      fixedAllowanceLkr,
+      specialAllowanceLkr,
       mealAllowanceLkr,
       transportAllowanceLkr,
       arrearsLkr,
@@ -242,10 +289,23 @@ function flattenSite(site: PortfolioSeedSite): FmPayrollRosterRow[] {
       unitDamagesDeductionLkr: deductionAmountByType(emp, 'Unit Damages'),
       trainingDeductionLkr: deductionAmountByType(emp, 'Training'),
       salaryLoanDeductionLkr: deductionAmountByType(emp, 'Salary Loan'),
-      otherDeductionsLkr:
-        deductionAmountByType(emp, 'Other Deductions') +
-        deductionAmountByType(emp, 'Penalty'),
-      adjustedBasicTotalLkr: salaryLkr,
+      otherDeductionsLkr: deductionAmountByType(emp, 'Other Deductions'),
+      debtNote: resolveEmployeeDebtNote({
+        debtNotes: emp.debtNotes,
+        deductions: emp.deductions,
+      }),
+      adjustedBasicTotalLkr: smPayData ? emp.totalGross : salaryLkr,
+      payeeTaxLkr: smPayData?.payeeTaxLkr,
+      stampDutyLkr: smPayData?.stampDutyLkr,
+      epfEmployeeLkr: smPayData?.epfEmployeeLkr,
+      epfEmployerLkr: smPayData?.epfEmployerLkr,
+      etfEmployerLkr: smPayData?.etfEmployerLkr,
+      payslipKind,
+      smPayMode: smPayData?.payMode,
+      smVisitPayLkr: smPayData?.visitPayLkr,
+      smFixedBasicLkr: smPayData?.fixedBasicLkr ?? (hoFixedData ? salaryLkr : undefined),
+      guardFormulaGrossLkr: guardData?.formulaGrossLkr,
+      guardSiteRateGrossLkr: guardData?.siteRateGrossLkr,
     };
   });
 }

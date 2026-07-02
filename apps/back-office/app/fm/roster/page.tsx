@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import FmRosterPayslipHistoryPanel from '../components/FmRosterPayslipHistoryPanel';
 import FmSubnav from '../components/FmSubnav';
+import StaffPortalLoading from '../../../components/portal/StaffPortalLoading';
+import { useFmHolidayCalendarIncomplete } from '../use-fm-holiday-calendar-incomplete';
 import FmPayrollMonthSelector from '../components/FmPayrollMonthSelector';
 import FmPayslipPreviewModal from '../components/FmPayslipPreviewModal';
 import {
@@ -29,6 +31,7 @@ import {
   type PayrollWorkforceFilter,
   type RosterSortKey,
 } from '../lib/fm-payroll-roster-data';
+import { rosterRowHasDebtNote } from '../lib/fm-debt-notes';
 import {
   matchesSalaryPaymentFilter,
   SALARY_PAYMENT_FILTER_OPTIONS,
@@ -74,13 +77,24 @@ const GROUP_BADGE: Record<FmPayrollRosterRow['workforceGroup'], string> = {
 export default function FmPayrollRosterPage() {
   const [pinnedSites, setPinnedSites] = useState<Parameters<typeof buildFmPayrollRoster>[0]>([]);
   const [clientSites, setClientSites] = useState<Parameters<typeof buildFmPayrollRoster>[1]>([]);
+  const [portfolioError, setPortfolioError] = useState<string | null>(null);
+  const [portfolioLoading, setPortfolioLoading] = useState(true);
   const [payrollPeriod, setPayrollPeriod] = useState<PayrollPeriod>(FM_LIVE_PAYROLL_PERIOD);
 
   useEffect(() => {
-    void getFmPortfolio(payrollPeriod).then((payload) => {
-      setPinnedSites(payload.pinnedSites);
-      setClientSites(payload.sites);
-    });
+    setPortfolioLoading(true);
+    void getFmPortfolio(payrollPeriod)
+      .then((payload) => {
+        setPinnedSites(payload.pinnedSites);
+        setClientSites(payload.sites);
+        setPortfolioError(payload.error ?? null);
+      })
+      .catch((err) => {
+        setPinnedSites([]);
+        setClientSites([]);
+        setPortfolioError(err instanceof Error ? err.message : 'Failed to load payroll roster.');
+      })
+      .finally(() => setPortfolioLoading(false));
   }, [payrollPeriod]);
 
   const allRows = useMemo(
@@ -136,6 +150,10 @@ export default function FmPayrollRosterPage() {
   );
 
   const totals = useMemo(() => rosterTotals(scaledRows), [scaledRows]);
+  const debtNoteCount = useMemo(
+    () => scaledRows.filter((row) => rosterRowHasDebtNote(row.debtNote)).length,
+    [scaledRows],
+  );
 
   const selectionLabel = useMemo(() => {
     const workforceOpt = WORKFORCE_FILTER_OPTIONS.find((o) => o.id === workforce);
@@ -156,7 +174,7 @@ export default function FmPayrollRosterPage() {
     }
   };
 
-  const holidayCalendarIncomplete = true;
+  const holidayCalendarIncomplete = useFmHolidayCalendarIncomplete();
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -171,6 +189,13 @@ export default function FmPayrollRosterPage() {
 
       <div className="relative z-10 mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <FmSubnav holidayCalendarIncomplete={holidayCalendarIncomplete} />
+
+        {portfolioError ? (
+          <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-950">
+            Payroll register could not load: {portfolioError}. MNR may still list staff — check
+            corporate group and rank on each employee record, then refresh.
+          </div>
+        ) : null}
 
         <div className="mb-8">
           <div className="mb-3 flex items-center gap-2">
@@ -193,7 +218,9 @@ export default function FmPayrollRosterPage() {
           <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-semibold text-slate-600 shadow-sm">
               <Users className="h-3.5 w-3.5 text-slate-400" />
-              {allRows.length} employees in master register
+              {portfolioLoading
+                ? 'Loading register…'
+                : `${allRows.length} employees in master register`}
             </div>
             <FmPayrollMonthSelector period={payrollPeriod} onChange={setPayrollPeriod} />
           </div>
@@ -364,6 +391,14 @@ export default function FmPayrollRosterPage() {
           </div>
         </div>
 
+        {debtNoteCount > 0 ? (
+          <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-950">
+            {debtNoteCount} employee{debtNoteCount === 1 ? '' : 's'}{' '}
+            {debtNoteCount === 1 ? 'has' : 'have'} a debt note from bulk import — review instalment
+            plans on <strong>/fm</strong> (Deductions on each site row) before locking payroll.
+          </div>
+        ) : null}
+
         {/* Summary strip */}
         <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[
@@ -418,6 +453,9 @@ export default function FmPayrollRosterPage() {
                   <th className="px-3 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-slate-400">
                     Net
                   </th>
+                  <th className="px-3 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                    Debt note
+                  </th>
                   <th className="px-4 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">
                     Payslip
                   </th>
@@ -426,7 +464,7 @@ export default function FmPayrollRosterPage() {
               <tbody className="divide-y divide-slate-100">
                 {scaledRows.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-6 py-16 text-center">
+                    <td colSpan={9} className="px-6 py-16 text-center">
                       <p className="text-sm font-bold text-slate-600">No employees match your filters</p>
                       <p className="mt-1 text-xs text-slate-400">
                         Try another workforce group, payment filter, or clear the search bar.
@@ -504,6 +542,16 @@ export default function FmPayrollRosterPage() {
                       <td className="px-3 py-3 text-right font-mono text-xs font-black text-emerald-700">
                         {lkr(row.netPayLkr)}
                       </td>
+                      <td className="max-w-[12rem] px-3 py-3">
+                        {row.debtNote ? (
+                          <p
+                            className="text-[11px] font-semibold leading-snug text-amber-900"
+                            title={row.debtNote}
+                          >
+                            {row.debtNote}
+                          </p>
+                        ) : null}
+                      </td>
                       <td className="px-4 py-3" onClick={(event) => event.stopPropagation()}>
                         <div className="flex items-center justify-center gap-1">
                           <button
@@ -565,6 +613,10 @@ export default function FmPayrollRosterPage() {
           )}
         </div>
       </div>
+
+      {portfolioLoading ? (
+        <StaffPortalLoading portal="fm" message="Loading register…" overlay />
+      ) : null}
 
       {previewRow && (
         <FmPayslipPreviewModal

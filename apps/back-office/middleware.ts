@@ -35,6 +35,7 @@ import {
 } from "./lib/pearzen-website-host";
 import {
   isShalomPublicHost,
+  isShalomPublicInternalPath,
   shalomPublicInternalPath,
 } from "./lib/shalom-public-host";
 import {
@@ -74,7 +75,7 @@ import {
   isPortalPinExemptPath,
   requiresHeadOfficePortalPin,
   resolvePortalAccessGate,
-} from "./lib/head-office-portal-auth";
+} from "./lib/head-office-portal-middleware-gate";
 import { isHeadOfficeGeofenceExempt } from "./lib/head-office-geofence-exempt";
 import { isDedicatedPartnerHost, isPartnerRoute } from "./lib/partner-host";
 import { isDedicatedPearsHost, isPearsRoute } from "./lib/pears-host";
@@ -428,7 +429,8 @@ async function runAuthProxy(
     !pathname.startsWith("/login") &&
     !pathname.startsWith("/auth/") &&
     !isPearzenWebsitePublicPath(pathname) &&
-    !isSecurityWebsitePublicPath(pathname)
+    !isSecurityWebsitePublicPath(pathname) &&
+    !isShalomPublicInternalPath(pathname)
   ) {
     const tenant = await resolveTenantCompany(tenantSlug);
     if (tenant?.isSuspended) {
@@ -624,13 +626,29 @@ async function runAuthProxy(
   }
 
   if (
+    portalGate === "change_password" &&
+    pathname !== "/account/change-password"
+  ) {
+    const changePasswordUrl = new URL("/account/change-password", req.url);
+    if (
+      pathname.startsWith("/") &&
+      !pathname.startsWith("/login") &&
+      pathname !== "/account/change-password"
+    ) {
+      changePasswordUrl.searchParams.set("returnTo", pathname);
+    }
+    return applyCookies(NextResponse.redirect(changePasswordUrl));
+  }
+
+  if (
     !(await enforceHeadOfficeGeofenceSession(
       req,
       profile,
       user.email ?? "",
       pathname,
     )) &&
-    !isPortalPinExemptPath(pathname)
+    !isPortalPinExemptPath(pathname) &&
+    pathname !== "/account/change-password"
   ) {
     await supabase.auth.signOut();
     const loginUrl = new URL(userLoginPath, req.url);
@@ -1025,6 +1043,16 @@ async function handleTenantPortalHost(
   }
 
   if (
+    isSecurityWebsitePublicPath(pathname) ||
+    isShalomPublicInternalPath(pathname)
+  ) {
+    return stampTenant(
+      NextResponse.next({ request: { headers: requestHeaders } }),
+      tenantSlug,
+    );
+  }
+
+  if (
     pathname === binding.loginPath ||
     pathname.startsWith(`${binding.loginPath}/`) ||
     isTenantPortalAuthFlowPath(pathname) ||
@@ -1091,6 +1119,40 @@ export async function middleware(req: NextRequest) {
     redirectUrl.pathname = deploymentRedirect;
     redirectUrl.search = "";
     return NextResponse.redirect(redirectUrl);
+  }
+
+  // Shalom guest site — must run before tenant portal / custom-domain routing
+  // (shalom.pearzen.tech would otherwise match `{slug}om` → tenant `shal`).
+  if (isShalomPublicHost(hostname)) {
+    const internalPath = shalomPublicInternalPath(pathname);
+    if (internalPath) {
+      if (internalPath !== pathname) {
+        const rewriteUrl = req.nextUrl.clone();
+        rewriteUrl.pathname = internalPath;
+        return NextResponse.rewrite(rewriteUrl);
+      }
+      return NextResponse.next();
+    }
+    const redirectUrl = req.nextUrl.clone();
+    redirectUrl.pathname = "/";
+    redirectUrl.search = "";
+    return NextResponse.redirect(redirectUrl);
+  }
+
+  // Local dev: rewrite clean Shalom guest URLs (/properties, /book, …) to /shalom-public/*.
+  if (isLocalDevHost(hostname)) {
+    if (
+      pathname !== '/' &&
+      pathname !== '/shalom-public' &&
+      !pathname.startsWith('/shalom-public/')
+    ) {
+      const internalPath = shalomPublicInternalPath(pathname);
+      if (internalPath && internalPath !== pathname) {
+        const rewriteUrl = req.nextUrl.clone();
+        rewriteUrl.pathname = internalPath;
+        return NextResponse.rewrite(rewriteUrl);
+      }
+    }
   }
 
   const customDomainBinding = await lookupTenantCustomDomain(hostname);
@@ -1182,23 +1244,6 @@ export async function middleware(req: NextRequest) {
       return NextResponse.redirect(redirectUrl);
     }
     return NextResponse.redirect(tenantSubdomainUrl(slug, pathname, search));
-  }
-
-  // Shalom Residence public site — shalom.pearzen.tech (policies + future bookings).
-  if (isShalomPublicHost(hostname)) {
-    const internalPath = shalomPublicInternalPath(pathname);
-    if (internalPath) {
-      if (internalPath !== pathname) {
-        const rewriteUrl = req.nextUrl.clone();
-        rewriteUrl.pathname = internalPath;
-        return NextResponse.rewrite(rewriteUrl);
-      }
-      return NextResponse.next();
-    }
-    const redirectUrl = req.nextUrl.clone();
-    redirectUrl.pathname = "/";
-    redirectUrl.search = "";
-    return NextResponse.redirect(redirectUrl);
   }
 
   // Public security marketing site — classicventuresecurity.com: marketing pages + /clientlogin only.

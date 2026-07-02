@@ -2,7 +2,7 @@ import type { BackOfficeUserProfile } from './hr-portal-access';
 import { isCafeFrontAuthEmail } from './cafe-front-auth-shared';
 import { EXECUTIVE_DESK_PATH, HQ_HUB_PATH } from './hq-hub';
 import { isExecutiveRank, normalizePortalRole } from './portal-role-utils';
-import { canAccessArCollections } from './ar-invoicing/payment-guards';
+import { canAccessArCollections } from './ar-collections-access';
 import { isShalomFrontAuthEmail } from './shalom-front-auth-shared';
 
 /** Four isolated staff portals — separate sign-in URLs and route boundaries. */
@@ -242,6 +242,9 @@ export function pathBelongsToStaffPortal(
       if (pathname === '/security-website' || pathname.startsWith('/security-website/')) {
         return true;
       }
+      if (pathname === '/shalom-public' || pathname.startsWith('/shalom-public/')) {
+        return true;
+      }
       if (isArCollectionsPath(pathname)) return true;
       return pathname === '/executive' || pathname.startsWith('/executive/');
     case 'om':
@@ -259,6 +262,9 @@ export function pathBelongsToStaffPortal(
       if (pathname === '/fm-dashboard' || pathname.startsWith('/fm-dashboard/')) return true;
       if (pathname === '/invoice-desk' || pathname.startsWith('/invoice-desk/')) return true;
       if (pathname === '/security-website' || pathname.startsWith('/security-website/')) {
+        return true;
+      }
+      if (pathname === '/shalom-public' || pathname.startsWith('/shalom-public/')) {
         return true;
       }
       if (isCafeBackofficePath(pathname)) return true;
@@ -338,6 +344,9 @@ function isExecutiveCrossPortalPath(pathname: string, search = ''): boolean {
   if (isCafeFrontPath(pathname)) return true;
   if (isShalomFrontPath(pathname)) return true;
   if (pathname === '/security-website' || pathname.startsWith('/security-website/')) {
+    return true;
+  }
+  if (pathname === '/shalom-public' || pathname.startsWith('/shalom-public/')) {
     return true;
   }
   if (pathBelongsToStaffPortal(pathname, 'hq', search)) return true;

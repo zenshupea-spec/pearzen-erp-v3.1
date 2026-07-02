@@ -7,11 +7,8 @@ import {
 } from '../../../../../packages/supabase/server';
 import { isMissingUniformVoStockTable } from '../../../../../packages/uniform-vo-stock';
 import { resolveCompanyIdForSession } from '../../../lib/company-context-server';
+import { fetchActiveSectorManagerRecordsForCompany } from '../../../lib/sector-manager-roster';
 import { auditStaffAction } from '../../../lib/staff-audit';
-import {
-  MEALS_DEDUCTIONS_LEDGER,
-  UNIFORM_DEDUCTIONS_LEDGER,
-} from '../../fm/lib/batch-deductions-ledger';
 import {
   computeMonthMealCostByEmployee,
   siteFoodByKeyFromProfiles,
@@ -21,10 +18,16 @@ import {
   guardEpfKeys,
   hasShiftRollupData,
 } from './lib/monthly-site-shifts';
-import { payrollMonthFirstDay, payrollMonthLabel } from './lib/payroll-month';
+import { payrollMonthDateRange, payrollMonthFirstDay, payrollMonthLabel } from './lib/payroll-month';
 import { uniformReorderMinQty } from './lib/uniform-stock';
-import { DEFAULT_UNIFORM_CATALOG } from '../../../../../packages/uniform-catalog';
+import {
+  isMissingUniformCollectionTable,
+  mergeReturnedAgainstIssued,
+  mergeUniformItemLines,
+} from '../../../lib/uniform-collection/issued-history';
 import type {
+  UniformCollectionQueueOverview,
+  UniformCollectionQueueRow,
   MealSupplierMonthOwed,
   MealSupplierRow,
   SiteDeductionGroup,
@@ -41,6 +44,8 @@ import type {
 } from './lib/types';
 import { deductHqUniformWarehouseStock } from '../../../../../packages/uniform-hq-stock';
 import { fetchUniformVoStockOnHand } from '../../../../../packages/uniform-vo-stock';
+import { loadMdEngineConstantsForCompany } from '../../executive/settings/engine-constants';
+import { resolveUniformInstalmentAmountLkr } from './lib/uniform-instalment';
 
 const DEDUCTIONS_BASE = '/hq/deductions';
 
@@ -51,6 +56,7 @@ function revalidateDeductions() {
   revalidatePath(`${DEDUCTIONS_BASE}/uniform-suppliers`);
   revalidatePath(`${DEDUCTIONS_BASE}/uniform-issue`);
   revalidatePath(`${DEDUCTIONS_BASE}/uniform-courier`);
+  revalidatePath(`${DEDUCTIONS_BASE}/uniform-collecting`);
   revalidatePath(`${DEDUCTIONS_BASE}/issue-vo-stock`);
   revalidatePath('/fm/batch');
   revalidatePath('/fm');
@@ -216,43 +222,8 @@ function mapUniformCourierRow(row: Record<string, unknown>): UniformCourierQueue
   };
 }
 
-function demoUniformCourierQueue(): UniformCourierQueueOverview {
-  const pending: UniformCourierQueueRow[] = [
-    {
-      id: 'demo-courier-1',
-      requestedAt: new Date().toISOString(),
-      issuerEpf: 'SM042',
-      portal: 'SM',
-      guardEpf: 'G10042',
-      guardName: 'Demo Guard Perera',
-      items: [
-        { item: 'Shirt (Short Sleeve)', qty: 1 },
-        { item: 'Trousers', qty: 1 },
-      ],
-      totalAmountLkr: 6000,
-      notes: 'Uniform courier request: 1× Shirt (Short Sleeve), 1× Trousers — LKR 6,000',
-      consentSelfieUrl: null,
-      status: 'PENDING',
-      dispatchedAt: null,
-      courierDispatchNotes: null,
-    },
-    {
-      id: 'demo-courier-2',
-      requestedAt: new Date(Date.now() - 86400000).toISOString(),
-      issuerEpf: 'TM015',
-      portal: 'TM',
-      guardEpf: 'G20015',
-      guardName: 'Demo Guard Silva',
-      items: [{ item: 'Boots', qty: 1 }],
-      totalAmountLkr: 6500,
-      notes: 'TM uniform courier request: 1× Boots — LKR 6,500',
-      consentSelfieUrl: null,
-      status: 'PENDING',
-      dispatchedAt: null,
-      courierDispatchNotes: null,
-    },
-  ];
-  return { pending, dispatched: [], isDemo: true };
+function deductionsTablesMissingOverview(): UniformCourierQueueOverview {
+  return { pending: [], dispatched: [], isDemo: true };
 }
 
 export async function getUniformCourierQueue(): Promise<UniformCourierQueueOverview> {
@@ -271,7 +242,7 @@ export async function getUniformCourierQueue(): Promise<UniformCourierQueueOverv
 
   if (error) {
     if (isMissingTableError(error.message)) {
-      return demoUniformCourierQueue();
+      return deductionsTablesMissingOverview();
     }
     return { pending: [], dispatched: [], isDemo: false };
   }
@@ -414,91 +385,15 @@ function deductionsSetupError(message: string): string {
   return message;
 }
 
-function parseDemoShiftCount(detail: string | undefined): number {
-  const m = (detail ?? '').match(/(\d+)\s*shift/i);
-  return m ? Number(m[1]) : 1;
-}
-
-function demoSiteGroups(payrollMonth: string): SiteDeductionGroup[] {
-  const bySite = new Map<string, SiteDeductionGroup>();
-
-  const upsert = (
-    site: string,
-    empNo: string,
-    name: string,
-    rank: string,
-    uniform: number,
-    meals: number,
-    shiftCount: number,
-  ) => {
-    const siteKey = site.trim().toLowerCase();
-    let group = bySite.get(siteKey);
-    if (!group) {
-      group = {
-        siteKey,
-        siteName: site,
-        siteProfileId: null,
-        mealSupplierName: null,
-        employees: [],
-        pendingCount: 0,
-      };
-      bySite.set(siteKey, group);
-    }
-    const existing = group.employees.find((e) => e.empNumber === empNo);
-    if (existing) {
-      existing.uniformAmountLkr += uniform;
-      existing.mealsAmountLkr += meals;
-      existing.monthMealCostLkr += meals;
-      existing.shiftCount = Math.max(existing.shiftCount, shiftCount);
-      return;
-    }
-    group.employees.push({
-      employeeId: `demo-${empNo}`,
-      empNumber: empNo,
-      fullName: name,
-      rank,
-      shiftCount,
-      monthMealCostLkr: meals,
-      entryId: null,
-      uniformAmountLkr: uniform,
-      mealsAmountLkr: meals,
-      mealsFromShifts: meals > 0,
-      status: null,
-    });
-  };
-
-  for (const row of MEALS_DEDUCTIONS_LEDGER) {
-    upsert(row.site, row.empNo, row.name, row.rank, 0, row.amountLkr, parseDemoShiftCount(row.detail));
-    const g = bySite.get(row.site.trim().toLowerCase())!;
-    if (!g.mealSupplierName) g.mealSupplierName = row.supplier;
-  }
-  for (const row of UNIFORM_DEDUCTIONS_LEDGER) {
-    upsert(row.site, row.empNo, row.name, row.rank, row.amountLkr, 0, 1);
-  }
-
-  const monthMealByEmpNo = new Map<string, number>();
-  for (const row of MEALS_DEDUCTIONS_LEDGER) {
-    monthMealByEmpNo.set(row.empNo, (monthMealByEmpNo.get(row.empNo) ?? 0) + row.amountLkr);
-  }
-
-  for (const g of bySite.values()) {
-    for (const e of g.employees) {
-      const total = monthMealByEmpNo.get(e.empNumber);
-      if (total != null) e.monthMealCostLkr = total;
-    }
-    g.employees.sort((a, b) => a.fullName.localeCompare(b.fullName));
-    g.pendingCount = g.employees.filter((e) => !e.status).length;
-  }
-
-  return [...bySite.values()].sort((a, b) => a.siteName.localeCompare(b.siteName));
-}
-
 export async function getSiteDeductionGroups(
   payrollMonthInput?: string,
 ): Promise<{ groups: SiteDeductionGroup[]; payrollMonth: string; isDemo: boolean }> {
   const payrollMonth = payrollMonthFirstDay(payrollMonthInput);
   const supabase = await createSupabaseServerClient();
   const companyId = await resolveCompanyIdForSession(supabase);
+  const defaultUniformInstalmentLkr = companyId
+    ? (await loadMdEngineConstantsForCompany(supabase, companyId)).uniformMonthlyInstalmentLkr
+    : 2_000;
 
   let empQuery = supabase
     .from('employees')
@@ -548,11 +443,17 @@ export async function getSiteDeductionGroups(
     status: string;
   }[] = [];
 
-  const { data: entryRows, error: entryError } = await supabase
+  let entryQuery = supabase
     .from('payroll_monthly_deduction_entries')
     .select('id, employee_id, uniform_amount_lkr, meals_amount_lkr, status')
     .eq('payroll_month', payrollMonth)
     .in('employee_id', employeeIds);
+
+  if (companyId) {
+    entryQuery = entryQuery.eq('company_id', companyId);
+  }
+
+  const { data: entryRows, error: entryError } = await entryQuery;
 
   if (entryError) {
     if (!isMissingTableError(entryError.message)) {
@@ -668,7 +569,12 @@ export async function getSiteDeductionGroups(
 
     const savedUniform = Number(entry?.uniform_amount_lkr ?? 0);
     const issuedUniform = uniformIssuedByGuard.get(emp.id as string) ?? 0;
-    const uniformAmountLkr = savedUniform > 0 ? savedUniform : issuedUniform;
+    const uniformResolved = resolveUniformInstalmentAmountLkr({
+      savedUniform,
+      issuedUniform,
+      defaultInstalmentLkr: defaultUniformInstalmentLkr,
+      shiftCount,
+    });
 
     const monthMealCostLkr = monthMealCostByEmployee.get(emp.id as string) ?? 0;
     const savedMeals = Number(entry?.meals_amount_lkr ?? 0);
@@ -682,8 +588,9 @@ export async function getSiteDeductionGroups(
       shiftCount,
       monthMealCostLkr,
       entryId: entry?.id ?? null,
-      uniformAmountLkr,
-      uniformFromIssue: savedUniform === 0 && issuedUniform > 0,
+      uniformAmountLkr: uniformResolved.amountLkr,
+      uniformFromIssue: uniformResolved.fromIssue,
+      uniformFromDefault: uniformResolved.fromDefault,
       mealsAmountLkr,
       mealsFromShifts: savedMeals === 0 && monthMealCostLkr > 0,
       status: status as 'DRAFT' | 'APPROVED' | null,
@@ -703,6 +610,17 @@ export async function getSiteDeductionGroups(
         addEmployeeToGroup(siteKey, siteName, emp, shiftCount);
       }
     }
+
+    const placedGuardIds = new Set<string>();
+    for (const group of bySite.values()) {
+      for (const row of group.employees) placedGuardIds.add(row.employeeId);
+    }
+    for (const emp of guards) {
+      const employeeId = String(emp.id);
+      if (placedGuardIds.has(employeeId)) continue;
+      const siteName = (emp.site as string | null)?.trim() || 'Unassigned Site';
+      addEmployeeToGroup(siteName.toLowerCase(), siteName, emp, 0);
+    }
   } else {
     for (const emp of guards) {
       const siteName = (emp.site as string | null)?.trim() || 'Unassigned Site';
@@ -719,6 +637,28 @@ export async function getSiteDeductionGroups(
   return { groups, payrollMonth, isDemo: false };
 }
 
+async function countEmployeeShiftsForMonth(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  companyId: string,
+  employeeId: string,
+  payrollMonth: string,
+): Promise<number> {
+  const { start, end } = payrollMonthDateRange(payrollMonth);
+  let query = supabase
+    .from('guard_shift_records')
+    .select('id', { count: 'exact', head: true })
+    .eq('employee_id', employeeId)
+    .gte('shift_date', start)
+    .lte('shift_date', end);
+  query = query.eq('company_id', companyId);
+  const { count, error } = await query;
+  if (error && !isMissingTableError(error.message)) {
+    console.error('❌ Deductions (uniform shift count):', error.message);
+    return 0;
+  }
+  return count ?? 0;
+}
+
 async function resolveUniformAmountLkrForEntry(
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
   companyId: string,
@@ -733,7 +673,6 @@ async function resolveUniformAmountLkrForEntry(
     .maybeSingle();
 
   const savedUniform = Number(entry?.uniform_amount_lkr ?? 0);
-  if (savedUniform > 0) return savedUniform;
 
   let uniformDedQuery = supabase
     .from('payroll_deductions')
@@ -746,10 +685,27 @@ async function resolveUniformAmountLkrForEntry(
   const { data: uniformDeductions, error: uniformDedError } = await uniformDedQuery;
   if (uniformDedError && !isMissingTableError(uniformDedError.message)) {
     console.error('❌ Deductions (uniform resolve on save):', uniformDedError.message);
-    return 0;
+    return savedUniform;
   }
 
-  return (uniformDeductions ?? []).reduce((sum, row) => sum + Number(row.amount ?? 0), 0);
+  const issuedUniform = (uniformDeductions ?? []).reduce(
+    (sum, row) => sum + Number(row.amount ?? 0),
+    0,
+  );
+  const engine = await loadMdEngineConstantsForCompany(supabase, companyId);
+  const shiftCount = await countEmployeeShiftsForMonth(
+    supabase,
+    companyId,
+    employeeId,
+    payrollMonth,
+  );
+
+  return resolveUniformInstalmentAmountLkr({
+    savedUniform,
+    issuedUniform,
+    defaultInstalmentLkr: engine.uniformMonthlyInstalmentLkr,
+    shiftCount,
+  }).amountLkr;
 }
 
 export async function saveEmployeeDeductionEntry(input: {
@@ -960,7 +916,7 @@ export async function countUnapprovedDeductions(): Promise<number> {
   const { count, error } = await query;
   if (error) {
     if (isMissingTableError(error.message)) {
-      return MEALS_DEDUCTIONS_LEDGER.length + UNIFORM_DEDUCTIONS_LEDGER.length;
+      return 0;
     }
     return 0;
   }
@@ -988,22 +944,7 @@ export async function listMealSuppliers(
   const { data, error } = await query;
   if (error) {
     if (isMissingTableError(error.message)) {
-      const names = [...new Set(MEALS_DEDUCTIONS_LEDGER.map((r) => r.supplier))];
-      return {
-        isDemo: true,
-        suppliers: names.map((name, i) => ({
-          id: `demo-supplier-${i}`,
-          name,
-          address: null,
-          phone: null,
-          bankName: null,
-          bankBranch: null,
-          accountName: null,
-          accountNumber: null,
-          status: 'ACTIVE' as const,
-          archivedAt: null,
-        })),
-      };
+      return { isDemo: true, suppliers: [] };
     }
     return { suppliers: [], isDemo: false };
   }
@@ -1180,23 +1121,15 @@ export async function getSiteMealAssignments(): Promise<{
   if (companyId) siteQuery = siteQuery.eq('company_id', companyId);
 
   const { data: sites, error } = await siteQuery;
-  if (error || !sites?.length) {
-    const demoSites = [...new Set(MEALS_DEDUCTIONS_LEDGER.map((r) => r.site))].sort();
-    const supplierBySite = new Map(
-      MEALS_DEDUCTIONS_LEDGER.map((r) => [r.site, r.supplier]),
-    );
-    return {
-      isDemo: true,
-      suppliers,
-      rows: demoSites.map((siteName, i) => ({
-        siteProfileId: `demo-site-${i}`,
-        siteName,
-        address: null,
-        mealSupplierId: null,
-        mealSupplierName: supplierBySite.get(siteName) ?? null,
-        assignmentId: null,
-      })),
-    };
+  if (error) {
+    if (isMissingTableError(error.message)) {
+      return { isDemo: true, suppliers, rows: [] };
+    }
+    return { isDemo: false, suppliers, rows: [] };
+  }
+
+  if (!sites?.length) {
+    return { isDemo: suppliersDemo, suppliers, rows: [] };
   }
 
   const siteIds = sites.map((s) => s.id as string);
@@ -1312,47 +1245,6 @@ function mapUniformSupplierRow(r: Record<string, unknown>): UniformSupplierRow {
   };
 }
 
-function demoUniformStockOverview(): UniformStockOverview {
-  const activeEmployeeCount = 120;
-  const reorderMinQty = uniformReorderMinQty(activeEmployeeCount);
-  const supplier: UniformSupplierRow = {
-    id: 'demo-uniform-supplier',
-    name: 'Pearzen Uniforms (Preview)',
-    address: 'Colombo 03',
-    phone: '+94 11 000 0000',
-    email: null,
-    bankName: null,
-    bankBranch: null,
-    accountName: null,
-    accountNumber: null,
-    status: 'ACTIVE',
-    archivedAt: null,
-  };
-  const items: UniformStockItemRow[] = DEFAULT_UNIFORM_CATALOG.map((entry, i) => {
-    const quantityInStock = i % 3 === 0 ? reorderMinQty - 1 : reorderMinQty + 4;
-    return {
-      id: `demo-item-${entry.id}`,
-      itemName: entry.item,
-      sku: entry.id,
-      quantityInStock,
-      unitCostLkr: entry.cost,
-      notes: null,
-      supplierId: supplier.id,
-      supplierName: supplier.name,
-      supplierPhone: supplier.phone,
-      supplierAddress: supplier.address,
-      lowStock: quantityInStock < reorderMinQty,
-    };
-  });
-  return {
-    items,
-    suppliers: [supplier],
-    activeEmployeeCount,
-    reorderMinQty,
-    isDemo: true,
-  };
-}
-
 export async function getUniformStockOverview(): Promise<UniformStockOverview> {
   const supabase = await createSupabaseServerClient();
   const companyId = await resolveCompanyIdForSession(supabase);
@@ -1374,7 +1266,13 @@ export async function getUniformStockOverview(): Promise<UniformStockOverview> {
 
   if (itemError) {
     if (isMissingTableError(itemError.message)) {
-      return demoUniformStockOverview();
+      return {
+        items: [],
+        suppliers: [],
+        activeEmployeeCount,
+        reorderMinQty,
+        isDemo: true,
+      };
     }
     return {
       items: [],
@@ -1439,7 +1337,7 @@ export async function listUniformSuppliers(
   const { data, error } = await query;
   if (error) {
     if (isMissingTableError(error.message)) {
-      return { isDemo: true, suppliers: demoUniformStockOverview().suppliers };
+      return { isDemo: true, suppliers: [] };
     }
     return { suppliers: [], isDemo: false };
   }
@@ -1593,14 +1491,6 @@ export async function deleteUniformStockItem(
 
 const VO_HOLDER_ROLE_ORDER: UniformVoHolderRole[] = ['SM', 'TM', 'OM'];
 
-function demoUniformVoHolders(): UniformVoHolderOption[] {
-  return [
-    { epf: 'SM042', fullName: 'Demo Sector Manager', role: 'SM', detail: 'Colombo North' },
-    { epf: 'TM015', fullName: 'Demo Territory Manager', role: 'TM', detail: null },
-    { epf: 'OM008', fullName: 'Demo Operations Manager', role: 'OM', detail: null },
-  ];
-}
-
 export async function getUniformVoStockHolders(): Promise<{
   holders: UniformVoHolderOption[];
   isDemo: boolean;
@@ -1609,21 +1499,13 @@ export async function getUniformVoStockHolders(): Promise<{
   const companyId = await resolveCompanyIdForSession(supabase);
   const holders: UniformVoHolderOption[] = [];
 
-  let smQuery = supabase
-    .from('employees')
-    .select('emp_number, full_name, site')
-    .eq('group', 'SECTOR_MANAGER')
-    .eq('status', 'ACTIVE')
-    .order('full_name', { ascending: true });
+  const sectorManagers = await fetchActiveSectorManagerRecordsForCompany(
+    supabase,
+    companyId,
+    'emp_number, full_name, site',
+  );
 
-  if (companyId) smQuery = smQuery.eq('company_id', companyId);
-
-  const { data: sectorManagers, error: smError } = await smQuery;
-  if (smError && isMissingTableError(smError.message)) {
-    return { holders: demoUniformVoHolders(), isDemo: true };
-  }
-
-  for (const row of sectorManagers ?? []) {
+  for (const row of sectorManagers) {
     const epf = String(row.emp_number ?? '').trim().toUpperCase();
     if (!epf) continue;
     holders.push({
@@ -1696,7 +1578,7 @@ export async function getUniformVoStockHolders(): Promise<{
     });
 
   if (merged.length === 0) {
-    return { holders: demoUniformVoHolders(), isDemo: true };
+    return { holders: [], isDemo: false };
   }
 
   return { holders: merged, isDemo: false };
@@ -1841,5 +1723,266 @@ export async function allocateUniformStockToVo(input: {
   revalidateDeductions();
   revalidatePath('/tm/uniform');
   revalidatePath('/om/uniform');
+  return { success: true };
+}
+
+function uniformCollectionTablesMissingOverview(
+  payrollMonth: string,
+): UniformCollectionQueueOverview {
+  return {
+    pending: [],
+    confirmed: [],
+    isDemo: true,
+    payrollMonth,
+    payrollMonthLabel: payrollMonthLabel(payrollMonth),
+  };
+}
+
+function uniformCollectionMonthBounds(payrollMonthInput?: string): {
+  payrollMonth: string;
+  rangeStart: string;
+  rangeEndExclusive: string;
+} {
+  const payrollMonth = payrollMonthFirstDay(payrollMonthInput?.slice(0, 7));
+  const { start, end } = payrollMonthDateRange(payrollMonth);
+  const endDate = new Date(`${end}T12:00:00`);
+  endDate.setDate(endDate.getDate() + 1);
+  return {
+    payrollMonth,
+    rangeStart: `${start}T00:00:00.000Z`,
+    rangeEndExclusive: `${endDate.toISOString().slice(0, 10)}T00:00:00.000Z`,
+  };
+}
+
+function mapUniformCollectionQueueRow(
+  row: Record<string, unknown>,
+  employee?: { full_name?: string | null; rank?: string | null },
+): UniformCollectionQueueRow {
+  return {
+    caseId: String(row.id),
+    employeeId: String(row.employee_id),
+    guardEpf: String(row.guard_epf ?? '')
+      .trim()
+      .toUpperCase(),
+    fullName: String(employee?.full_name ?? row.guard_epf ?? '—'),
+    rank: employee?.rank ? String(employee.rank) : null,
+    issuedItems: parseUniformCourierItems(row.issued_items),
+    returnedItems: parseUniformCourierItems(row.returned_items),
+    adminNotes: (row.admin_notes as string | null) ?? null,
+    requestedAt: String(row.requested_at),
+    confirmedAt: (row.confirmed_at as string | null) ?? null,
+  };
+}
+
+function validateReturnedUniformItems(
+  issued: UniformCourierItem[],
+  returned: UniformCourierItem[],
+): { ok: true; normalized: UniformCourierItem[] } | { ok: false; error: string } {
+  const issuedMap = new Map(
+    mergeUniformItemLines(issued).map((line) => [line.item, line.qty]),
+  );
+
+  const normalized = mergeUniformItemLines(returned);
+  for (const line of normalized) {
+    if (line.qty < 0) {
+      return { ok: false, error: `Returned quantity for "${line.item}" cannot be negative.` };
+    }
+    const issuedQty = issuedMap.get(line.item);
+    if (issuedQty == null) {
+      return { ok: false, error: `"${line.item}" was not issued to this guard.` };
+    }
+    if (line.qty > issuedQty) {
+      return {
+        ok: false,
+        error: `Returned quantity for "${line.item}" (${line.qty}) exceeds issued (${issuedQty}).`,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    normalized: normalized.map((line) => ({ item: line.item, qty: line.qty })),
+  };
+}
+
+export async function getUniformCollectionQueue(
+  payrollMonthInput?: string,
+): Promise<UniformCollectionQueueOverview> {
+  const { payrollMonth, rangeStart, rangeEndExclusive } =
+    uniformCollectionMonthBounds(payrollMonthInput);
+  const monthLabel = payrollMonthLabel(payrollMonth);
+
+  const supabase = await createSupabaseServerClient();
+  const companyId = await resolveCompanyIdForSession(supabase);
+  if (!companyId) {
+    return { pending: [], confirmed: [], isDemo: false, payrollMonth, payrollMonthLabel: monthLabel };
+  }
+
+  const db = createSupabaseServiceClient();
+
+  const [pendingResult, confirmedResult] = await Promise.all([
+    db
+      .from('uniform_collection_cases')
+      .select(
+        'id, employee_id, guard_epf, status, issued_items, returned_items, admin_notes, requested_at, confirmed_at',
+      )
+      .eq('company_id', companyId)
+      .eq('status', 'PENDING')
+      .gte('requested_at', rangeStart)
+      .lt('requested_at', rangeEndExclusive)
+      .order('requested_at', { ascending: true })
+      .limit(200),
+    db
+      .from('uniform_collection_cases')
+      .select(
+        'id, employee_id, guard_epf, status, issued_items, returned_items, admin_notes, requested_at, confirmed_at',
+      )
+      .eq('company_id', companyId)
+      .eq('status', 'CONFIRMED')
+      .gte('confirmed_at', rangeStart)
+      .lt('confirmed_at', rangeEndExclusive)
+      .order('confirmed_at', { ascending: false })
+      .limit(200),
+  ]);
+
+  const error = pendingResult.error ?? confirmedResult.error;
+  if (error) {
+    if (isMissingUniformCollectionTable(error.message)) {
+      return uniformCollectionTablesMissingOverview(payrollMonth);
+    }
+    return { pending: [], confirmed: [], isDemo: false, payrollMonth, payrollMonthLabel: monthLabel };
+  }
+
+  const data = [...(pendingResult.data ?? []), ...(confirmedResult.data ?? [])];
+
+  const employeeIds = [...new Set((data ?? []).map((row) => String(row.employee_id)))];
+  const employeeById = new Map<string, { full_name?: string | null; rank?: string | null }>();
+
+  if (employeeIds.length > 0) {
+    const { data: employees } = await db
+      .from('employees')
+      .select('id, full_name, rank')
+      .eq('company_id', companyId)
+      .in('id', employeeIds);
+
+    for (const emp of employees ?? []) {
+      employeeById.set(String(emp.id), {
+        full_name: emp.full_name as string | null,
+        rank: emp.rank as string | null,
+      });
+    }
+  }
+
+  const mapped = (data ?? []).map((row) => ({
+    status: String(row.status),
+    queueRow: mapUniformCollectionQueueRow(
+      row as Record<string, unknown>,
+      employeeById.get(String(row.employee_id)),
+    ),
+  }));
+
+  const pending = mapped
+    .filter((entry) => entry.status === 'PENDING')
+    .map((entry) => entry.queueRow);
+
+  const confirmed = mapped
+    .filter((entry) => entry.status === 'CONFIRMED')
+    .map((entry) => entry.queueRow);
+
+  return { pending, confirmed, isDemo: false, payrollMonth, payrollMonthLabel: monthLabel };
+}
+
+export async function confirmUniformCollection(input: {
+  caseId: string;
+  returnedItems: UniformCourierItem[];
+  adminNotes?: string;
+}): Promise<{ success: boolean; error?: string }> {
+  if (input.caseId.startsWith('demo-')) {
+    return { success: false, error: 'Preview mode — run migrations first.' };
+  }
+
+  const supabase = await createSupabaseServerClient();
+  const companyId = await resolveCompanyIdForSession(supabase);
+  if (!companyId) return { success: false, error: 'Company context required.' };
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { success: false, error: 'You must be signed in.' };
+
+  const db = createSupabaseServiceClient();
+  const { data: caseRow, error: fetchErr } = await db
+    .from('uniform_collection_cases')
+    .select(
+      'id, company_id, employee_id, guard_epf, status, issued_items, returned_items, admin_notes',
+    )
+    .eq('id', input.caseId)
+    .eq('company_id', companyId)
+    .maybeSingle();
+
+  if (fetchErr) {
+    if (isMissingUniformCollectionTable(fetchErr.message)) {
+      return { success: false, error: 'Uniform collection is not set up yet. Run migrations first.' };
+    }
+    return { success: false, error: fetchErr.message };
+  }
+
+  if (!caseRow) {
+    return { success: false, error: 'Uniform collection case not found.' };
+  }
+
+  if (caseRow.status !== 'PENDING') {
+    return { success: false, error: 'This collection case is no longer pending.' };
+  }
+
+  const issuedItems = parseUniformCourierItems(caseRow.issued_items);
+  if (issuedItems.length === 0) {
+    return { success: false, error: 'Case has no issued uniform lines on file.' };
+  }
+
+  const validation = validateReturnedUniformItems(issuedItems, input.returnedItems ?? []);
+  if (!validation.ok) {
+    return { success: false, error: validation.error };
+  }
+
+  const mergeResult = mergeReturnedAgainstIssued(issuedItems, validation.normalized);
+  const now = new Date().toISOString();
+  const adminNotes = input.adminNotes?.trim() || null;
+
+  const { error: updateErr } = await db
+    .from('uniform_collection_cases')
+    .update({
+      status: 'CONFIRMED',
+      returned_items: validation.normalized,
+      admin_notes: adminNotes,
+      confirmed_at: now,
+      confirmed_by: user.id,
+      updated_at: now,
+    })
+    .eq('id', input.caseId)
+    .eq('company_id', companyId)
+    .eq('status', 'PENDING');
+
+  if (updateErr) {
+    return { success: false, error: updateErr.message };
+  }
+
+  await auditStaffAction({
+    supabase,
+    portal: 'hq',
+    action: 'Confirm Uniform Collection',
+    targetEntity: `${String(caseRow.guard_epf ?? '').toUpperCase()} (${input.caseId})`,
+    details: {
+      caseId: input.caseId,
+      employeeId: caseRow.employee_id,
+      returnedItems: validation.normalized,
+      allReturned: mergeResult.allReturned,
+      shortfallLines: mergeResult.shortfallLines,
+      adminNotes,
+    },
+  });
+
+  revalidateDeductions();
+  revalidatePath('/hr/mnr');
   return { success: true };
 }

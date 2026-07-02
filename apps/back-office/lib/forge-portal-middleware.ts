@@ -2,7 +2,17 @@ import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 
+import { replaySupabaseAuthCookiesOnResponse } from '../../../packages/supabase/auth-cookie-handlers';
+import {
+  normalizeSupabaseAuthCookieBatch,
+  supabaseServerAuthCookieOptions,
+  type SupabaseAuthCookie,
+} from '../../../packages/supabase/cookie-options';
 import { isForgeOperatorEmail } from './forge-access';
+import {
+  forgeLocalDevSkipsSecurityGates,
+  isForgeLocalDevRequestFromReq,
+} from './forge-local-dev';
 import {
   clearForgePortalSessionCookiesOnResponse,
   forgeGateRedirectPath,
@@ -11,18 +21,10 @@ import {
   isForgeGatePath,
   resolveForgeAccessGate,
   resolveForgePortalEntryPath,
-} from './forge-portal-auth';
+} from './forge-portal-session-gate';
 import { isSignInBeforeLatestColomboMidnight } from './portal-sl-midnight';
-import {
-  decodeSupabaseAccessTokenSessionId,
-  getActivePendingChallengeForChallenger,
-} from './portal-pending-login';
 
-type CookieToSet = {
-  name: string;
-  value: string;
-  options?: Parameters<NextResponse['cookies']['set']>[2];
-};
+type CookieToSet = SupabaseAuthCookie;
 
 export async function runForgeAuthGate(
   req: NextRequest,
@@ -36,12 +38,17 @@ export async function runForgeAuthGate(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
+      cookieOptions: supabaseServerAuthCookieOptions(),
       cookies: {
         getAll() {
           return req.cookies.getAll();
         },
         setAll(cookies) {
-          cookies.forEach((cookie) => cookiesToSet.push(cookie));
+          cookiesToSet.splice(
+            0,
+            cookiesToSet.length,
+            ...normalizeSupabaseAuthCookieBatch(cookies),
+          );
         },
       },
     },
@@ -52,37 +59,8 @@ export async function runForgeAuthGate(
   } = await supabase.auth.getUser();
 
   const applyCookies = (response: NextResponse) => {
-    cookiesToSet.forEach(({ name, value, options }) => {
-      response.cookies.set(name, value, options);
-    });
+    replaySupabaseAuthCookiesOnResponse(response, cookiesToSet);
     return stampTenant(response);
-  };
-
-  const redirectForgeChallengerIfPending = async (): Promise<NextResponse | null> => {
-    if (!user?.email || !(await isForgeOperatorEmail(user.email))) {
-      return null;
-    }
-    if (pathname === '/login/forge/await-session') {
-      return null;
-    }
-
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    const currentSessionId = session?.access_token
-      ? decodeSupabaseAccessTokenSessionId(session.access_token)
-      : null;
-    if (!currentSessionId) return null;
-
-    const pendingChallenge = await getActivePendingChallengeForChallenger({
-      operatorEmail: user.email,
-      challengerSessionId: currentSessionId,
-    });
-    if (!pendingChallenge) return null;
-
-    const awaitUrl = new URL('/login/forge/await-session', req.url);
-    awaitUrl.searchParams.set('pending', pendingChallenge.id);
-    return applyCookies(NextResponse.redirect(awaitUrl));
   };
 
   const publicForgePaths = new Set([
@@ -103,27 +81,31 @@ export async function runForgeAuthGate(
     return applyCookies(NextResponse.next({ request: { headers: requestHeaders } }));
   }
 
-  const challengerRedirect = await redirectForgeChallengerIfPending();
-  if (challengerRedirect) return challengerRedirect;
-
   if (pathname === '/login/forge') {
     if (user?.email && (await isForgeOperatorEmail(user.email))) {
-      const hasGoogle = await hasValidForgeGoogleSession(
-        req,
-        user.email,
-        user.last_sign_in_at,
-      );
+      const localDevBypass = isForgeLocalDevRequestFromReq(req);
       const hasPassword = await hasValidForgePasswordSession(
         req,
         user.email,
         user.last_sign_in_at,
       );
+      const hasGoogle = await hasValidForgeGoogleSession(
+        req,
+        user.email,
+        user.last_sign_in_at,
+      );
+      const credentialsReady = localDevBypass
+        ? hasPassword
+        : hasGoogle && hasPassword;
 
-      if (hasGoogle && hasPassword) {
-        const landing = await resolveForgePortalEntryPath(
-          user.email,
-          user.last_sign_in_at,
-        );
+      if (credentialsReady) {
+        const landing =
+          localDevBypass && forgeLocalDevSkipsSecurityGates()
+            ? '/forge'
+            : await resolveForgePortalEntryPath(
+                user.email,
+                user.last_sign_in_at,
+              );
         if (landing !== '/login/forge' && !landing.startsWith('/login/forge?')) {
           return applyCookies(NextResponse.redirect(new URL(landing, req.url)));
         }

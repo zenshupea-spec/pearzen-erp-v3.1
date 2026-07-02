@@ -1,77 +1,42 @@
 import type { SupabaseClient, User } from '@supabase/supabase-js';
 
+import { resolveAuthUserCompanyId } from '../../../packages/supabase/auth-tenant-metadata';
 import { createSupabaseServiceClient } from '../../../packages/supabase/service';
 
-export type CafeEmployeeRow = {
-  id: string;
-  full_name: string | null;
-  emp_number: string | null;
-  epf_no: string | null;
-  epf_num: string | null;
-  status: string | null;
-  group: string | null;
-  rank: string | null;
-  site: string | null;
-};
+export {
+  CAFE_FRONT_AUTH_EMAIL_DOMAIN,
+  CAFE_FRONT_EPF_MAX_LENGTH,
+  CAFE_FRONT_OTP_MAX_LENGTH,
+  CAFE_FRONT_PIN_LENGTH,
+  CAFE_PORTAL_OTP_LIFETIME_MS,
+  cafeEmployeeEpfKey,
+  cafeFrontAuthEmail,
+  cafeFrontAuthEmailDomain,
+  cafeFrontAuthPassword,
+  employeeRosterKey,
+  epfAuthLocalPart,
+  isCafeEmployee,
+  isCafeFrontAuthEmail,
+  isCafeOtpValid,
+  isEmployeeActive,
+  normalizeEpfNo,
+  type CafeEmployeeRow,
+} from './cafe-front-auth-shared';
 
-export const CAFE_FRONT_EPF_MAX_LENGTH = 10;
-/** Matches SM portal — Supabase Auth requires at least 6 characters. */
-export const CAFE_FRONT_PIN_LENGTH = 6;
-export const CAFE_FRONT_OTP_MAX_LENGTH = 6;
-export const CAFE_PORTAL_OTP_LIFETIME_MS = 60 * 1000;
-
-export function cafeEmployeeEpfKey(employee: CafeEmployeeRow): string {
-  const epf = employee.epf_no ?? employee.epf_num;
-  return epf ? normalizeEpfNo(String(epf)) : '';
-}
-
-export function normalizeEpfNo(input: string): string {
-  return input.trim().toUpperCase().slice(0, CAFE_FRONT_EPF_MAX_LENGTH);
-}
-
-export function epfAuthLocalPart(epf: string): string {
-  return normalizeEpfNo(epf).toLowerCase();
-}
-
-export function cafeFrontAuthEmail(epf: string): string {
-  return `${epfAuthLocalPart(epf)}@pearzen.local`;
-}
-
-export function cafeFrontAuthPassword(epfOrKey: string): string {
-  const fixed = process.env.FIELD_PWA_AUTH_PASSWORD;
-  if (fixed) return fixed;
-
-  const template = process.env.FIELD_PWA_AUTH_PASSWORD_TEMPLATE;
-  let password = epfOrKey;
-  if (template) {
-    password = template
-      .replaceAll('{{epfNo}}', epfOrKey)
-      .replaceAll('{{empNumber}}', epfOrKey);
-  }
-
-  // Keep in sync with field-pwa guard-auth (Supabase min password length).
-  if (password.length < 6) return `guard-${password}`;
-  return password;
-}
-
-export function isCafeEmployee(employee: CafeEmployeeRow): boolean {
-  const group = (employee.group ?? '').trim().toUpperCase();
-  return group === 'CAFE';
-}
-
-export function isEmployeeActive(employee: CafeEmployeeRow): boolean {
-  return (employee.status ?? '').trim().toUpperCase() === 'ACTIVE';
-}
-
-export function employeeRosterKey(employee: CafeEmployeeRow): string {
-  if (employee.emp_number) return String(employee.emp_number).trim().toUpperCase();
-  const epf = employee.epf_no ?? employee.epf_num;
-  if (epf != null) return String(epf).trim();
-  return '';
-}
+import {
+  CAFE_PORTAL_OTP_LIFETIME_MS,
+  cafeEmployeeEpfKey,
+  cafeFrontAuthEmail,
+  isCafeEmployee,
+  isCafeFrontAuthEmail,
+  isCafeOtpValid,
+  isEmployeeActive,
+  normalizeEpfNo,
+  type CafeEmployeeRow,
+} from './cafe-front-auth-shared';
 
 const FULL_EMPLOYEE_SELECT =
-  'id, full_name, emp_number, epf_no, epf_num, status, group, rank, site';
+  'id, full_name, emp_number, epf_no, epf_num, status, group, rank, site, company_id';
 
 function mapEmployeeRow(
   row: Record<string, unknown> | null,
@@ -89,43 +54,58 @@ function mapEmployeeRow(
     group: (row.group as string | null) ?? null,
     rank: (row.rank as string | null) ?? null,
     site: (row.site as string | null) ?? null,
+    company_id: row.company_id != null ? String(row.company_id) : null,
   };
 }
 
+function applyCafeEmployeeScope<T extends { eq: (col: string, val: string) => T }>(
+  query: T,
+  companyId?: string | null,
+): T {
+  let scoped = query.eq('group', 'CAFE');
+  if (companyId) scoped = scoped.eq('company_id', companyId);
+  return scoped;
+}
+
+/** Tenant-scoped café roster lookup — `group = CAFE` only (R-CAFE-AUTH-01). */
 export async function findCafeEmployeeByEpf(
   supabase: SupabaseClient,
   epfInput: string,
+  companyId?: string | null,
 ): Promise<CafeEmployeeRow | null> {
   const key = normalizeEpfNo(epfInput);
   if (!key) return null;
 
   for (const column of ['epf_no', 'epf_num'] as const) {
-    const { data } = await supabase
-      .from('employees')
-      .select(FULL_EMPLOYEE_SELECT)
-      .eq(column, key)
-      .maybeSingle();
+    const { data } = await applyCafeEmployeeScope(
+      supabase.from('employees').select(FULL_EMPLOYEE_SELECT).eq(column, key),
+      companyId,
+    ).maybeSingle();
     if (data) return mapEmployeeRow(data as Record<string, unknown>);
   }
 
-  const { data: ilike } = await supabase
-    .from('employees')
-    .select(FULL_EMPLOYEE_SELECT)
-    .or(`epf_no.ilike.${key},epf_num.ilike.${key}`)
-    .maybeSingle();
+  const ilikeQuery = applyCafeEmployeeScope(
+    supabase.from('employees').select(FULL_EMPLOYEE_SELECT),
+    companyId,
+  ).or(`epf_no.ilike.${key},epf_num.ilike.${key}`);
+  const { data: ilikeRows } = await ilikeQuery;
+  if (ilikeRows?.length === 1) {
+    return mapEmployeeRow(ilikeRows[0] as Record<string, unknown>);
+  }
 
-  return mapEmployeeRow(ilike as Record<string, unknown> | null);
+  return null;
 }
 
 export async function resolveCafeEmployeeForUser(
   user: User,
 ): Promise<CafeEmployeeRow | null> {
-  if (!user.email) return null;
+  if (!user.email || !isCafeFrontAuthEmail(user.email)) return null;
   const localPart = user.email.split('@')[0]?.trim();
   if (!localPart) return null;
 
   const service = createSupabaseServiceClient();
-  const employee = await findCafeEmployeeByEpf(service, localPart);
+  const companyId = resolveAuthUserCompanyId(user);
+  const employee = await findCafeEmployeeByEpf(service, localPart, companyId);
   if (!employee || !isEmployeeActive(employee) || !isCafeEmployee(employee)) {
     return null;
   }
@@ -160,16 +140,6 @@ export async function getCafePortalAuthRecord(
   };
 }
 
-export function isCafeOtpValid(
-  authRecord: Pick<
-    NonNullable<Awaited<ReturnType<typeof getCafePortalAuthRecord>>>,
-    'current_otp' | 'otp_expires_at'
-  >,
-): boolean {
-  if (!authRecord?.current_otp || !authRecord.otp_expires_at) return false;
-  return Date.now() < new Date(authRecord.otp_expires_at).getTime();
-}
-
 export async function provisionCafePortalOtp(
   supabase: SupabaseClient,
   employee: CafeEmployeeRow,
@@ -180,6 +150,24 @@ export async function provisionCafePortalOtp(
 
   const email = cafeFrontAuthEmail(epf);
 
+  const companyId =
+    employee.company_id ??
+    (
+      await supabase.from('employees').select('company_id').eq('id', employee.id).maybeSingle()
+    ).data?.company_id;
+  if (!companyId) {
+    return { ok: false, error: 'Employee is missing company_id.' };
+  }
+
+  const authPayload = {
+    app_metadata: { company_id: companyId },
+    user_metadata: {
+      role: 'CAFE_STAFF',
+      employee_id: employee.id,
+      full_name: employee.full_name,
+    },
+  };
+
   const { data: existing } = await supabase.auth.admin.listUsers();
   const found = existing?.users?.find(
     (u) => u.email?.toLowerCase() === email.toLowerCase(),
@@ -189,11 +177,7 @@ export async function provisionCafePortalOtp(
     const { error } = await supabase.auth.admin.updateUserById(found.id, {
       password: otp,
       email_confirm: true,
-      user_metadata: {
-        role: 'CAFE_STAFF',
-        employee_id: employee.id,
-        full_name: employee.full_name,
-      },
+      ...authPayload,
     });
     if (error) return { ok: false, error: error.message };
   } else {
@@ -201,11 +185,7 @@ export async function provisionCafePortalOtp(
       email,
       password: otp,
       email_confirm: true,
-      user_metadata: {
-        role: 'CAFE_STAFF',
-        employee_id: employee.id,
-        full_name: employee.full_name,
-      },
+      ...authPayload,
     });
     if (error) return { ok: false, error: error.message };
   }
@@ -224,4 +204,52 @@ export async function provisionCafePortalOtp(
 
   if (dbError) return { ok: false, error: dbError.message };
   return { ok: true };
+}
+
+function randomPortalPassword(): string {
+  const buffer = new Uint8Array(24);
+  crypto.getRandomValues(buffer);
+  return Array.from(buffer, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/** Clear OTP metadata after successful login — keep auth password until set-PIN. */
+export async function burnCafePortalOtpAfterLogin(
+  supabase: SupabaseClient,
+  epf: string,
+): Promise<void> {
+  const normalizedEpf = epf.trim().toUpperCase();
+  await supabase
+    .from('cafe_portal_auth')
+    .update({
+      current_otp: null,
+      otp_expires_at: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('epf_number', normalizedEpf);
+}
+
+/** Revoke a provisioned café OTP so it cannot sign in again (expired OTP attempt). */
+export async function revokeCafePortalOtpCredentials(
+  supabase: SupabaseClient,
+  epf: string,
+): Promise<void> {
+  const normalizedEpf = epf.trim().toUpperCase();
+  const email = cafeFrontAuthEmail(normalizedEpf);
+
+  const { data: existing } = await supabase.auth.admin.listUsers({ perPage: 1000, page: 1 });
+  const user = existing?.users?.find((u) => u.email?.toLowerCase() === email.toLowerCase());
+  if (user) {
+    await supabase.auth.admin.updateUserById(user.id, {
+      password: randomPortalPassword(),
+    });
+  }
+
+  await supabase
+    .from('cafe_portal_auth')
+    .update({
+      current_otp: null,
+      otp_expires_at: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('epf_number', normalizedEpf);
 }

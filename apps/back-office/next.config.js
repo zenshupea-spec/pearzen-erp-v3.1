@@ -5,8 +5,10 @@ const nextConfig = {
   images: {
     remotePatterns: [{ protocol: 'https', hostname: '**' }],
   },
-  serverActions: {
-    bodySizeLimit: '4mb',
+  experimental: {
+    serverActions: {
+      bodySizeLimit: '8mb',
+    },
   },
   typescript: {
     // WIP branches have TS drift; unblock production deploys until types are aligned.
